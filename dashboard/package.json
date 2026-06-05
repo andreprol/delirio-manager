@@ -1,0 +1,55 @@
+{
+  "name": "delirio-manager-dashboard",
+  "version": "1.0.0",
+  "description": "Delirio Manager - Dashboard de Monitoramento",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:icon": "node scripts/build-icon.js",
+    "electron": "electron .",
+    "start": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dist": "npm run build:icon && vite build && electron-builder",
+    "release": "bash scripts/release.sh"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "^0.1.100",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^9.0.0",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.0.0",
+    "vite": "^6.0.0",
+    "wait-on": "^8.0.0"
+  },
+  "build": {
+    "appId": "com.deliriotropical.manager",
+    "productName": "Delirio Manager",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "electron/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Delirio Manager"
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://dt-manager.brazilsouth.cloudapp.azure.com/dashboard-updates/"
+    }
+  }
+}

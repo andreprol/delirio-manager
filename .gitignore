@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-electron/
+agent/agent.exe
+agent/delirio-agent.exe
+
+# Database & sensitive config
+server/data/
+server/public/
+server/config.json
+server/logs/
+
+# Test/scratch files in root
+*.png
+*.txt
+!README.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude/Superpowers internal
+.agents/
+.claude/
+.superpowers/
+test_restore.py

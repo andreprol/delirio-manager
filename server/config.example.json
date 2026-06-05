@@ -1,0 +1,25 @@
+{
+  "alerts": {
+    "email": {
+      "enabled": false,
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 587,
+      "user": "",
+      "pass": "",
+      "to": []
+    },
+    "teams": {
+      "enabled": false,
+      "webhook_url": ""
+    }
+  },
+  "insights": {
+    "enabled": false,
+    "interval_hours": 6,
+    "claude_api_key": "sk-ant-api03-YOUR_KEY_HERE",
+    "lookback_days": 7
+  },
+  "autoWake": {
+    "enabled": false
+  }
+}

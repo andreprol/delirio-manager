@@ -1,0 +1,7 @@
+﻿{
+    "createdAt":  "2026-06-03 14:59:45",
+    "fqdn":  "dt-manager.brazilsouth.cloudapp.azure.com",
+    "adminUser":  "delirioadmin",
+    "sshKeyPath":  "C:\\Users\\fileserver\\.ssh\\id_rsa",
+    "publicIP":  "20.226.33.21"
+}
