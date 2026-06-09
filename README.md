@@ -208,6 +208,17 @@ SQLite database at `server/data/dt-manager.db`:
 
 ---
 
+## Created By
+
+**André Dias Moreira Prol** — Developer & IT Manager
+
+Delirio Manager was designed and built by [André Dias Moreira Prol](https://github.com/andreprol), a software developer and IT manager specializing in Windows fleet management, AI-powered monitoring systems, and enterprise automation tools.
+
+- GitHub: [github.com/andreprol](https://github.com/andreprol)
+- Other projects: [Revivio](https://revivio.com.br) — AI-powered photo restoration platform
+
+---
+
 ## License
 
 MIT
