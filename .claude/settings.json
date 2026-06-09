@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Claude_in_Chrome__get_page_text",
+      "mcp__plugin_playwright_playwright__browser_take_screenshot",
+      "mcp__plugin_playwright_playwright__browser_snapshot",
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "mcp__plugin_playwright_playwright__browser_console_messages",
+      "mcp__plugin_playwright_playwright__browser_tabs",
+      "mcp__plugin_playwright_playwright__browser_wait_for",
+      "mcp__plugin_playwright_playwright__browser_network_requests",
+      "mcp__excel__read_data_from_excel",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "mcp__perplexity__perplexity_search",
+      "mcp__perplexity__perplexity_ask",
+      "mcp__Claude_in_Chrome__read_network_requests",
+      "Bash(cd F:\\Revivio && git status)",
+      "Bash(az vm list *)",
+      "Bash(az vm show *)",
+      "Write(F:\\*)",
+      "Write(D:\\*)",
+      "Write(G:\\*)",
+      "Write(C:\\Users\\fileserver\\.claude\\*)",
+      "Edit(F:\\*)",
+      "Edit(D:\\*)",
+      "Edit(G:\\*)",
+      "Edit(C:\\Users\\fileserver\\.claude\\*)"
+    ]
+  }
+}

@@ -24,6 +24,9 @@ Thumbs.db
 
 # Claude/Superpowers internal
 .agents/
-.claude/
+.claude/projects/
+.claude/todos/
+.claude/statsig/
+.claude/*.jsonl
 .superpowers/
 test_restore.py
