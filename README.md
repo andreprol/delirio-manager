@@ -168,7 +168,10 @@ Two-layer protection keeps the server running in production.
 **Layer 1 — PM2 + systemd (VM reboots and PM2 daemon crashes):**
 
 ```bash
-pm2 start server.js --name dt-manager
+# ALWAYS start via ecosystem.config.js — it sets DB_PATH and other required env vars.
+# Running `pm2 start server.js` directly bypasses these and creates an empty database.
+cd /opt/dt-manager
+pm2 start ecosystem.config.js
 pm2 save
 pm2 startup systemd -u root --hp /root
 # Then run the printed command to register the systemd unit
