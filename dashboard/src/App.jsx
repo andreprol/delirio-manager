@@ -5,7 +5,6 @@ import { SplitView } from './components/SplitView'
 import { UpdatePanel } from './components/UpdatePanel'
 import { OfflineToast }                from './components/OfflineToast'
 import { AlertsPanel, useAlertsCount } from './components/AlertsPanel'
-import { GlobalInsightsPanel } from './components/GlobalInsightsPanel'
 import { api, setServerUrl, getServerUrl } from './api'
 
 export default function App() {
@@ -17,6 +16,8 @@ export default function App() {
   const [configLoaded, setConfigLoaded] = useState(false)
   const [autoWakeEnabled, setAutoWakeEnabled] = useState(false)
   const [autoWakeLoading, setAutoWakeLoading] = useState(false)
+  const [generating,      setGenerating]      = useState(false)
+  const [generateMsg,     setGenerateMsg]     = useState(null)
 
   const {
     machines, groupMap, groupsList,
@@ -100,6 +101,22 @@ export default function App() {
       alert(`Erro ao alterar Auto-Wake: ${err.message}`)
     } finally {
       setAutoWakeLoading(false)
+    }
+  }
+
+  async function handleGenerate() {
+    setGenerating(true)
+    setGenerateMsg(null)
+    try {
+      const result = await api.generateInsights()
+      const n = result?.generated ?? 0
+      setGenerateMsg(n > 0 ? `${n} insight${n !== 1 ? 's' : ''} gerado${n !== 1 ? 's' : ''}` : 'Nenhum padrão novo')
+      setTimeout(() => setGenerateMsg(null), 4000)
+    } catch (err) {
+      setGenerateMsg(`Erro: ${err.message}`)
+      setTimeout(() => setGenerateMsg(null), 4000)
+    } finally {
+      setGenerating(false)
     }
   }
 
@@ -235,6 +252,14 @@ export default function App() {
             <button className="pill-btn" onClick={() => setShowUpdate(true)} title="Publicar nova versao do agente">
               ⬆ Agentes
             </button>
+            <button
+              className="pill-btn"
+              onClick={handleGenerate}
+              disabled={generating}
+              title="Gerar insights de IA agora (analisa logs das máquinas)"
+            >
+              {generating ? '⏳...' : generateMsg ? `✨ ${generateMsg}` : '✨ Insights'}
+            </button>
           </div>
 
           <button
@@ -285,8 +310,6 @@ export default function App() {
           ))}
         </div>
       )}
-
-      <GlobalInsightsPanel refreshTrigger={insightVersion} />
 
       {/* Conteudo principal */}
       {viewMode === 'cards' ? (
