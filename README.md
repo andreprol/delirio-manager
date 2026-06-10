@@ -161,6 +161,34 @@ Use the provided script to deploy server updates without SSH:
 
 This uses `az vm run-command invoke` to transfer files encoded in base64 and restart PM2.
 
+### Production: Server Resilience
+
+Two-layer protection keeps the server running in production.
+
+**Layer 1 — PM2 + systemd (VM reboots and PM2 daemon crashes):**
+
+```bash
+pm2 start server.js --name dt-manager
+pm2 save
+pm2 startup systemd -u root --hp /root
+# Then run the printed command to register the systemd unit
+```
+
+This makes systemd restart PM2 automatically whenever the VM boots or the PM2 daemon itself crashes.
+
+**Layer 2 — Watchdog cron (process alive but server unresponsive):**
+
+```bash
+# Copy watchdog to VM
+# (run from local machine via az vm run-command invoke)
+
+# Install cron entry on the VM:
+(crontab -l 2>/dev/null | grep -v watchdog; echo "*/5 * * * * /opt/dt-manager/watchdog.sh") | crontab -
+chmod +x /opt/dt-manager/watchdog.sh
+```
+
+`infra/watchdog.sh` polls `GET /health` every 5 minutes and runs `pm2 restart dt-manager` if it doesn't receive HTTP 200. Log: `/var/log/dt-manager-watchdog.log`.
+
 ---
 
 ## API Reference
