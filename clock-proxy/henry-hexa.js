@@ -21,6 +21,26 @@ class HenryHexa {
     }
   }
 
+  // Verifica se o relógio está acessível na rede sem iniciar browser
+  // Faz GET HTTP simples com timeout de 5 segundos
+  async checkReachable() {
+    const http = require('http');
+    const start = Date.now();
+    return new Promise((resolve) => {
+      const req = http.get(this.baseUrl, { timeout: 5000 }, (res) => {
+        res.resume(); // descarta o body
+        resolve({ reachable: true, responseTimeMs: Date.now() - start, statusCode: res.statusCode });
+      });
+      req.on('error', (err) => {
+        resolve({ reachable: false, responseTimeMs: Date.now() - start, error: err.message });
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ reachable: false, responseTimeMs: 5000, error: 'timeout' });
+      });
+    });
+  }
+
   async login(page) {
     await page.goto(this.baseUrl, { waitUntil: 'load', timeout: 30000 });
     // Aguarda o relógio buscar a chave RSA pública antes de enviar credenciais
@@ -244,8 +264,12 @@ class HenryHexa {
               const name = (await cells[0].textContent() || '').trim();
               const cpf  = (await cells[1].textContent() || '').trim();
               const refs = (await cells[2].textContent() || '').trim();
+              // Refs column usually shows "ref1 / ref2" or just one value
+              const refParts = refs.split('/').map(s => s.trim());
+              const ref1 = refParts[0] || '';
+              const ref2 = refParts[1] || '';
               if (name && cpf) {
-                employees.push({ name, cpf, refs });
+                employees.push({ name, cpf, ref1, ref2, refs });
               }
             }
           }
