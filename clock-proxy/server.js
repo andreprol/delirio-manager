@@ -132,6 +132,157 @@ app.post('/rh/offboard', async (req, res) => {
   res.json(summary);
 });
 
+// ─── STATUS DE TODOS OS RELÓGIOS ─────────────────────────────────────────────
+// Verifica acessibilidade de cada relógio em paralelo (checkReachable, ~5s)
+app.get('/rh/clocks/status', async (req, res) => {
+  if (CLOCK_IPS.length === 0) {
+    return res.status(500).json({ error: 'CLOCK_IPS nao configurado no .env' });
+  }
+
+  const results = await Promise.all(
+    CLOCK_IPS.map(async (ip) => {
+      const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+      const check = await henry.checkReachable();
+      return { ip, ...check };
+    })
+  );
+
+  res.json({
+    total:       results.length,
+    reachable:   results.filter(r => r.reachable).length,
+    unreachable: results.filter(r => !r.reachable).length,
+    clocks:      results,
+    timestamp:   new Date().toISOString(),
+  });
+});
+
+// ─── FUNCIONÁRIOS DE TODOS OS RELÓGIOS ───────────────────────────────────────
+// Busca funcionários de cada relógio (Playwright — pode demorar vários minutos).
+// Retorna lista mestre com presentIn/absentIn por funcionário.
+app.get('/rh/employees', async (req, res) => {
+  if (CLOCK_IPS.length === 0) {
+    return res.status(500).json({ error: 'CLOCK_IPS nao configurado no .env' });
+  }
+
+  const clockResults = [];
+  for (const ip of CLOCK_IPS) {
+    console.log(`[${new Date().toISOString()}] Buscando funcionarios de ${ip}...`);
+    const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+    const result = await henry.listEmployees();
+    clockResults.push({ ip, ...result });
+    if (ip !== CLOCK_IPS[CLOCK_IPS.length - 1]) {
+      await new Promise(r => setTimeout(r, 10000));
+    }
+  }
+
+  const masterMap = new Map();
+  for (const clock of clockResults) {
+    if (!clock.success) continue;
+    for (const emp of clock.employees) {
+      if (!masterMap.has(emp.cpf)) {
+        masterMap.set(emp.cpf, {
+          name: emp.name,
+          cpf:  emp.cpf,
+          ref1: emp.ref1,
+          ref2: emp.ref2,
+          presentIn: [],
+          absentIn:  [],
+        });
+      }
+      masterMap.get(emp.cpf).presentIn.push(clock.ip);
+    }
+  }
+
+  const reachableIps = clockResults.filter(r => r.success).map(r => r.ip);
+  for (const emp of masterMap.values()) {
+    emp.absentIn = reachableIps.filter(ip => !emp.presentIn.includes(ip));
+  }
+
+  const employees = Array.from(masterMap.values());
+  const divergent = employees.filter(e => e.absentIn.length > 0);
+
+  res.json({
+    total:        employees.length,
+    divergent:    divergent.length,
+    synchronized: employees.length - divergent.length,
+    employees,
+    clocks: clockResults.map(r => ({
+      ip:      r.ip,
+      success: r.success,
+      total:   r.total || 0,
+      error:   r.message,
+    })),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// ─── CADASTRO EM TODOS OS RELÓGIOS ───────────────────────────────────────────
+// Body: { cpf, name, ref1, ref2, password, clockIps? }
+// clockIps (optional array): subset of IPs to enroll. Defaults to CLOCK_IPS.
+app.post('/rh/enroll', async (req, res) => {
+  const { cpf, name, ref1, ref2, password, clockIps } = req.body;
+
+  if (!cpf || !name || !ref1) {
+    return res.status(400).json({ error: 'cpf, name e ref1 (matricula) sao obrigatorios' });
+  }
+
+  const targets = clockIps || CLOCK_IPS;
+  if (targets.length === 0) {
+    return res.status(500).json({ error: 'CLOCK_IPS nao configurado e clockIps nao informado' });
+  }
+
+  const timestamp = new Date().toISOString();
+  const results = [];
+  for (const ip of targets) {
+    const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+    const result = await henry.enrollEmployee({ cpf, name, ref1, ref2, password });
+    results.push({ clockIp: ip, ...result });
+  }
+
+  res.json({
+    success:  results.every(r => r.success),
+    cpf, name, ref1,
+    timestamp,
+    clocks:   results,
+    total:    results.length,
+    enrolled: results.filter(r => r.success).length,
+    failed:   results.filter(r => !r.success).length,
+  });
+});
+
+// ─── ATUALIZAR CARTÃO EM TODOS OS RELÓGIOS ───────────────────────────────────
+// Body: { cpf, ref2, clockIps? }
+app.put('/rh/employee', async (req, res) => {
+  const { cpf, ref2, clockIps } = req.body;
+
+  if (!cpf || !ref2) {
+    return res.status(400).json({ error: 'cpf e ref2 sao obrigatorios' });
+  }
+
+  const targets = clockIps || CLOCK_IPS;
+  if (targets.length === 0) {
+    return res.status(500).json({ error: 'CLOCK_IPS nao configurado' });
+  }
+
+  const timestamp = new Date().toISOString();
+  const results = [];
+  for (const ip of targets) {
+    const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+    const result = await henry.updateCardRef2(cpf, ref2);
+    results.push({ clockIp: ip, ...result });
+  }
+
+  res.json({
+    success: results.every(r => r.success),
+    cpf, ref2,
+    timestamp,
+    clocks:  results,
+    total:   results.length,
+    updated: results.filter(r => r.success).length,
+    failed:  results.filter(r => !r.success).length,
+  });
+});
+
 // Escuta em todas as interfaces para ser acessível via LAN/VPN pelo backend Azure
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[dt-clock-proxy] Rodando em 0.0.0.0:${PORT}`);
