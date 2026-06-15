@@ -130,6 +130,23 @@ function migrate(db) {
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_hash
       ON insights(pattern_hash);
+
+    -- Log de auditoria LGPD Art. 15/16 — evidência de exclusão de dados biométricos
+    CREATE TABLE IF NOT EXISTS clock_offboard_log (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      cpf            TEXT NOT NULL,
+      employee_name  TEXT DEFAULT '',
+      triggered_by   TEXT DEFAULT '',
+      timestamp      TEXT NOT NULL,
+      success        INTEGER NOT NULL DEFAULT 0,
+      removed        INTEGER DEFAULT 0,
+      already_absent INTEGER DEFAULT 0,
+      failed         INTEGER DEFAULT 0,
+      detail         TEXT DEFAULT '[]'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_clock_offboard_cpf
+      ON clock_offboard_log(cpf, timestamp);
   `);
 
   // Migrações incrementais — seguras para rodar múltiplas vezes
@@ -507,6 +524,22 @@ function countUnreadInsights(machineId) {
   return getDb().prepare(`SELECT COUNT(*) as c FROM insights WHERE is_read = 0`).get().c;
 }
 
+// ── Clock Offboard Log (LGPD Art. 15/16) ─────────────────────────────────────
+
+function logClockOffboard({ cpf, employeeName, triggeredBy, timestamp, success, removed, alreadyAbsent, failed, detail }) {
+  getDb().prepare(`
+    INSERT INTO clock_offboard_log
+      (cpf, employee_name, triggered_by, timestamp, success, removed, already_absent, failed, detail)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(cpf, employeeName, triggeredBy, timestamp, success, removed, alreadyAbsent, failed, detail);
+}
+
+function getClockOffboardLog(limit = 100) {
+  return getDb().prepare(`
+    SELECT * FROM clock_offboard_log ORDER BY timestamp DESC LIMIT ?
+  `).all(limit);
+}
+
 module.exports = {
   getDb,
   // machines
@@ -528,4 +561,6 @@ module.exports = {
   saveWinEvents, getWinEvents, markWinEventsRead, countUnreadWinEvents,
   // insights
   saveInsight, getInsights, markInsightRead, countUnreadInsights,
+  // rh / clock offboard
+  logClockOffboard, getClockOffboardLog,
 };

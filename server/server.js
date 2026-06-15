@@ -18,6 +18,7 @@ const winEventsRoutes = require('./routes/winEvents');
 const insightRoutes  = require('./routes/insights');
 const reportRoutes   = require('./routes/reports');
 const settingsRoutes = require('./routes/settings');
+const rhRoutes       = require('./routes/rh');
 
 const PORT    = process.env.PORT    || 3847;
 const VERSION = '1.0.0';
@@ -68,6 +69,7 @@ app.use('/api/groups',   groupRoutes);
 app.use('/api/insights', insightRoutes);
 app.use('/api/reports',  reportRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/rh',       rhRoutes);
 
 // ── Servir o instalador e o binario do agente ─────────────────────────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');

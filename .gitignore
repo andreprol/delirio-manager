@@ -28,5 +28,20 @@ Thumbs.db
 .claude/todos/
 .claude/statsig/
 .claude/*.jsonl
+.claude/launch.json
+.claude/skills/
+.claude-flow/
+.playwright-mcp/
+.swarm/
 .superpowers/
 test_restore.py
+
+# Clock proxy runtime
+clock-proxy/.env
+clock-proxy/debug/
+
+# Databases / vector stores
+ruvector.db
+
+# Documents
+*.pdf
