@@ -1,4 +1,5 @@
 const { chromium } = require('playwright');
+const http = require('http');
 
 class HenryHexa {
   constructor(ip, user, password) {
@@ -24,7 +25,6 @@ class HenryHexa {
   // Verifica se o relógio está acessível na rede sem iniciar browser
   // Faz GET HTTP simples com timeout de 5 segundos
   async checkReachable() {
-    const http = require('http');
     const start = Date.now();
     return new Promise((resolve) => {
       const req = http.get(this.baseUrl, { timeout: 5000 }, (res) => {
@@ -36,7 +36,7 @@ class HenryHexa {
       });
       req.on('timeout', () => {
         req.destroy();
-        resolve({ reachable: false, responseTimeMs: 5000, error: 'timeout' });
+        resolve({ reachable: false, responseTimeMs: Date.now() - start, error: 'timeout' });
       });
     });
   }
