@@ -75,4 +75,22 @@ export const api = {
   // Settings
   getSettings:    ()     => request('GET', '/api/settings'),
   updateSettings: (data) => request('PUT', '/api/settings', data),
+
+  // RH -- Relogios e Funcionarios
+  rh: {
+    getClockStatus:  () =>
+      request('GET', '/api/rh/clocks/status'),
+    getEmployees:    () =>
+      request('GET', '/api/rh/employees'),
+    getOffboardLog:  (limit = 50) =>
+      request('GET', `/api/rh/offboard-log?limit=${limit}`),
+    getOperationLog: (limit = 100, op = '') =>
+      request('GET', `/api/rh/operation-log?limit=${limit}${op ? `&operation=${op}` : ''}`),
+    offboard:   (cpf, employeeName, triggeredBy) =>
+      request('POST', '/api/rh/offboard',  { cpf, employeeName, triggeredBy }),
+    enroll:     (cpf, name, ref1, ref2, password, clockIps) =>
+      request('POST', '/api/rh/enroll',    { cpf, name, ref1, ref2, password, clockIps }),
+    updateCard: (cpf, ref2, clockIps) =>
+      request('PUT',  '/api/rh/employee',  { cpf, ref2, clockIps }),
+  },
 }
