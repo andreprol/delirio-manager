@@ -5,6 +5,7 @@ import { SplitView } from './components/SplitView'
 import { UpdatePanel } from './components/UpdatePanel'
 import { OfflineToast }                from './components/OfflineToast'
 import { AlertsPanel, useAlertsCount } from './components/AlertsPanel'
+import { RhModule } from './components/RhModule'
 import { api, setServerUrl, getServerUrl } from './api'
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
 
   const [offlineToast,    setOfflineToast]    = useState(null)
   const [showAlertsPanel, setShowAlertsPanel] = useState(false)
+  const [showRh, setShowRh] = useState(false)
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
   const [alertsCount,     setAlertsCount]     = useAlertsCount()
 
@@ -263,6 +265,23 @@ export default function App() {
           </div>
 
           <button
+            onClick={() => setShowRh(true)}
+            title="Modulo RH -- Relogios e Funcionarios"
+            style={{
+              padding: '5px 12px',
+              background: '#0d2b0d',
+              color: '#5e5',
+              border: '1px solid #1a5a1a',
+              borderRadius: 6,
+              cursor: 'pointer',
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            RH
+          </button>
+
+          <button
             className="bell-btn"
             onClick={() => { setShowAlertsPanel(v => !v); if (!showAlertsPanel) setAlertsCount(0) }}
             title="Alertas"
@@ -392,6 +411,7 @@ export default function App() {
           onClose={() => setShowAlertsPanel(false)}
         />
       )}
+      {showRh && <RhModule onClose={() => setShowRh(false)} />}
     </div>
   )
 }
