@@ -1,0 +1,701 @@
+import { useState } from 'react'
+import { api } from '../api'
+
+const IP_TO_STORE = {
+  '192.168.15.151': 'Gávea',
+  '192.168.14.151': 'Metro',
+  '192.168.12.151': 'Bshop',
+  '192.168.0.151':  'Assembl.',
+  '192.168.13.151': 'Città',
+  '192.168.18.151': 'Ipanema',
+  '192.168.16.151': 'Rio Sul',
+  '192.168.20.151': 'Tijuca',
+  '192.168.20.150': 'Niterói',
+}
+
+const styles = {
+  container: {
+    padding: '16px',
+    background: 'var(--bg, #181c20)',
+    color: 'var(--text, #e2e8f0)',
+    fontFamily: 'inherit',
+  },
+  header: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: '16px',
+    flexWrap: 'wrap',
+    gap: '8px',
+  },
+  title: {
+    fontSize: '15px',
+    fontWeight: 700,
+    color: 'var(--text, #e2e8f0)',
+    margin: 0,
+  },
+  headerRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    flexWrap: 'wrap',
+  },
+  summary: {
+    fontSize: '13px',
+    color: 'var(--text-muted, #94a3b8)',
+  },
+  summaryDivergent: {
+    fontWeight: 700,
+    color: 'var(--yellow, #fbbf24)',
+  },
+  summaryTotal: {
+    fontWeight: 700,
+    color: 'var(--green, #4ade80)',
+  },
+  loadBtn: {
+    padding: '6px 14px',
+    background: 'var(--accent, #3b82f6)',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '6px',
+    fontSize: '13px',
+    fontWeight: 600,
+    cursor: 'pointer',
+    transition: 'opacity 0.15s',
+  },
+  loadBtnDisabled: {
+    opacity: 0.6,
+    cursor: 'not-allowed',
+  },
+  warningBanner: {
+    background: 'rgba(251,191,36,0.10)',
+    border: '1px solid rgba(251,191,36,0.4)',
+    borderRadius: '8px',
+    padding: '10px 14px',
+    marginBottom: '14px',
+    fontSize: '13px',
+    color: 'var(--yellow, #fbbf24)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  loadingMsg: {
+    textAlign: 'center',
+    padding: '32px 0',
+    fontSize: '14px',
+    color: 'var(--text-muted, #94a3b8)',
+  },
+  controls: {
+    display: 'flex',
+    gap: '10px',
+    marginBottom: '14px',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  searchInput: {
+    padding: '6px 10px',
+    background: 'var(--card-bg, #1e2530)',
+    border: '1px solid var(--border, #2d3748)',
+    borderRadius: '6px',
+    color: 'var(--text, #e2e8f0)',
+    fontSize: '13px',
+    outline: 'none',
+    width: '220px',
+  },
+  toggleGroup: {
+    display: 'flex',
+    border: '1px solid var(--border, #2d3748)',
+    borderRadius: '6px',
+    overflow: 'hidden',
+  },
+  toggleBtn: (active) => ({
+    padding: '5px 12px',
+    background: active ? 'var(--accent, #3b82f6)' : 'var(--card-bg, #1e2530)',
+    color: active ? '#fff' : 'var(--text-muted, #94a3b8)',
+    border: 'none',
+    fontSize: '12px',
+    fontWeight: active ? 700 : 400,
+    cursor: 'pointer',
+    transition: 'background 0.15s',
+  }),
+  tableWrapper: {
+    overflowX: 'auto',
+    borderRadius: '10px',
+    border: '1px solid var(--border, #2d3748)',
+  },
+  table: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: '13px',
+    minWidth: '600px',
+  },
+  th: {
+    background: 'var(--card-bg, #1e2530)',
+    color: 'var(--text-muted, #94a3b8)',
+    fontWeight: 600,
+    fontSize: '12px',
+    padding: '8px 10px',
+    textAlign: 'left',
+    borderBottom: '1px solid var(--border, #2d3748)',
+    whiteSpace: 'nowrap',
+  },
+  thCenter: {
+    background: 'var(--card-bg, #1e2530)',
+    color: 'var(--text-muted, #94a3b8)',
+    fontWeight: 600,
+    fontSize: '12px',
+    padding: '8px 10px',
+    textAlign: 'center',
+    borderBottom: '1px solid var(--border, #2d3748)',
+    whiteSpace: 'nowrap',
+  },
+  td: {
+    padding: '8px 10px',
+    borderBottom: '1px solid var(--border, #2d3748)',
+    verticalAlign: 'middle',
+    whiteSpace: 'nowrap',
+  },
+  tdCenter: {
+    padding: '8px 10px',
+    borderBottom: '1px solid var(--border, #2d3748)',
+    textAlign: 'center',
+    verticalAlign: 'middle',
+  },
+  trNormal: {
+    background: 'transparent',
+  },
+  trDivergent: {
+    background: 'rgba(251,191,36,0.06)',
+  },
+  trHoverDivergent: {
+    background: 'rgba(251,191,36,0.10)',
+  },
+  cpfText: {
+    fontFamily: 'monospace',
+    fontSize: '12px',
+    color: 'var(--text-muted, #94a3b8)',
+  },
+  actionBtn: (variant) => {
+    const map = {
+      sync:   { bg: 'rgba(59,130,246,0.15)', color: '#60a5fa', border: 'rgba(59,130,246,0.4)' },
+      remove: { bg: 'rgba(248,113,113,0.12)', color: '#f87171', border: 'rgba(248,113,113,0.35)' },
+    }
+    const v = map[variant] || map.sync
+    return {
+      padding: '3px 10px',
+      background: v.bg,
+      color: v.color,
+      border: `1px solid ${v.border}`,
+      borderRadius: '5px',
+      fontSize: '12px',
+      fontWeight: 600,
+      cursor: 'pointer',
+      whiteSpace: 'nowrap',
+    }
+  },
+  actionBtnDisabled: {
+    opacity: 0.5,
+    cursor: 'not-allowed',
+  },
+  actionsCell: {
+    display: 'flex',
+    gap: '6px',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  // Enrollment form
+  enrollForm: {
+    background: 'var(--card-bg, #1e2530)',
+    border: '1px solid rgba(59,130,246,0.4)',
+    borderRadius: '10px',
+    padding: '14px 16px',
+    marginBottom: '14px',
+  },
+  enrollTitle: {
+    fontWeight: 700,
+    fontSize: '14px',
+    color: 'var(--text, #e2e8f0)',
+    marginBottom: '10px',
+  },
+  enrollRow: {
+    display: 'flex',
+    gap: '10px',
+    flexWrap: 'wrap',
+    marginBottom: '10px',
+    alignItems: 'flex-end',
+  },
+  enrollField: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+  },
+  enrollLabel: {
+    fontSize: '11px',
+    color: 'var(--text-muted, #94a3b8)',
+    fontWeight: 600,
+  },
+  enrollInput: {
+    padding: '5px 10px',
+    background: '#181c20',
+    border: '1px solid var(--border, #2d3748)',
+    borderRadius: '6px',
+    color: 'var(--text, #e2e8f0)',
+    fontSize: '13px',
+    outline: 'none',
+    minWidth: '140px',
+  },
+  enrollClocks: {
+    fontSize: '12px',
+    color: 'var(--text-muted, #94a3b8)',
+    marginBottom: '10px',
+  },
+  enrollBtnRow: {
+    display: 'flex',
+    gap: '8px',
+  },
+  // Status area
+  statusBox: (type) => {
+    const map = {
+      success: { bg: 'rgba(74,222,128,0.10)', border: 'rgba(74,222,128,0.35)', color: '#4ade80' },
+      partial: { bg: 'rgba(251,191,36,0.10)', border: 'rgba(251,191,36,0.35)', color: '#fbbf24' },
+      error:   { bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.35)', color: '#f87171' },
+    }
+    const v = map[type] || map.error
+    return {
+      background: v.bg,
+      border: `1px solid ${v.border}`,
+      borderRadius: '8px',
+      padding: '10px 14px',
+      marginBottom: '14px',
+      fontSize: '13px',
+      color: v.color,
+    }
+  },
+  statusTitle: {
+    fontWeight: 700,
+    marginBottom: '6px',
+  },
+  statusClockList: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '6px',
+    marginTop: '6px',
+  },
+  clockChip: (ok) => ({
+    padding: '2px 8px',
+    borderRadius: '4px',
+    fontSize: '11px',
+    fontWeight: 600,
+    background: ok ? 'rgba(74,222,128,0.15)' : 'rgba(248,113,113,0.15)',
+    color: ok ? '#4ade80' : '#f87171',
+    border: `1px solid ${ok ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}`,
+  }),
+}
+
+// Derive which clock IPs were seen in the last fetch (reachable clocks)
+function getReachableIps(clocks) {
+  if (!clocks || clocks.length === 0) return []
+  return clocks.filter(c => c.success > 0 || c.total > 0).map(c => c.ip)
+}
+
+function isDivergent(emp) {
+  return emp.absentIn && emp.absentIn.length > 0
+}
+
+export function EmployeeTable() {
+  const [data, setData]           = useState(null)
+  const [loading, setLoading]     = useState(false)
+  const [showWarning, setShowWarning] = useState(false)
+
+  const [search, setSearch]       = useState('')
+  const [filter, setFilter]       = useState('all') // 'all' | 'divergent'
+
+  // Enrollment form state
+  const [enrollTarget, setEnrollTarget] = useState(null) // employee object
+  const [enrollRef1, setEnrollRef1]     = useState('')
+  const [enrollRef2, setEnrollRef2]     = useState('')
+  const [enrolling, setEnrolling]       = useState(false)
+
+  // Operation status
+  const [opStatus, setOpStatus]   = useState(null) // { type, title, clocks }
+  const [removing, setRemoving]   = useState(null) // cpf being removed
+
+  async function loadEmployees() {
+    setShowWarning(false)
+    setLoading(true)
+    setOpStatus(null)
+    try {
+      const result = await api.rh.getEmployees()
+      setData(result)
+    } catch (err) {
+      setOpStatus({ type: 'error', title: `Erro ao carregar: ${err.message}`, clocks: [] })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function handleLoadClick() {
+    setShowWarning(true)
+  }
+
+  function handleConfirmLoad() {
+    setShowWarning(false)
+    loadEmployees()
+  }
+
+  function openEnrollForm(emp) {
+    setEnrollTarget(emp)
+    setEnrollRef1(emp.ref1 || '')
+    setEnrollRef2(emp.ref2 || '')
+    setOpStatus(null)
+  }
+
+  function closeEnrollForm() {
+    setEnrollTarget(null)
+    setEnrollRef1('')
+    setEnrollRef2('')
+  }
+
+  async function handleEnroll() {
+    if (!enrollTarget) return
+    if (!enrollRef1.trim()) {
+      setOpStatus({ type: 'error', title: 'Ref1 (matrícula) é obrigatória.', clocks: [] })
+      return
+    }
+    setEnrolling(true)
+    setOpStatus(null)
+    try {
+      const clockIps = enrollTarget.absentIn || []
+      const result = await api.rh.enroll(
+        enrollTarget.cpf,
+        enrollTarget.name,
+        enrollRef1.trim(),
+        enrollRef2.trim(),
+        '',
+        clockIps,
+      )
+      const allOk = result.failed === 0
+      const type  = allOk ? 'success' : result.enrolled > 0 ? 'partial' : 'error'
+      const clockChips = (result.clocks || []).map(c => ({
+        label: IP_TO_STORE[c.clockIp] || c.clockIp,
+        ok:    c.success,
+      }))
+      setOpStatus({
+        type,
+        title: allOk
+          ? `Cadastrado em ${result.enrolled} relógio(s).`
+          : `Cadastrado em ${result.enrolled}, falhou em ${result.failed}.`,
+        clocks: clockChips,
+      })
+      closeEnrollForm()
+      // Refresh data so table reflects new state
+      loadEmployees()
+    } catch (err) {
+      setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [] })
+    } finally {
+      setEnrolling(false)
+    }
+  }
+
+  async function handleRemove(emp) {
+    const confirmed = window.confirm(
+      `Remover "${emp.name}" (CPF ${emp.cpf}) de TODOS os relógios?\n\nEsta ação não pode ser desfeita.`
+    )
+    if (!confirmed) return
+    setRemoving(emp.cpf)
+    setOpStatus(null)
+    try {
+      const result = await api.rh.offboard(emp.cpf, emp.name, 'dashboard')
+      const allOk  = result.failed === 0
+      const type   = allOk ? 'success' : result.removed > 0 ? 'partial' : 'error'
+      const clockChips = (result.clocks || []).map(c => ({
+        label: IP_TO_STORE[c.clockIp] || c.clockIp,
+        ok:    c.success || c.alreadyAbsent,
+      }))
+      setOpStatus({
+        type,
+        title: allOk
+          ? `"${emp.name}" removido de ${result.removed} relógio(s).`
+          : `Removido de ${result.removed}, falhou em ${result.failed}.`,
+        clocks: clockChips,
+      })
+      // Refresh
+      loadEmployees()
+    } catch (err) {
+      setOpStatus({ type: 'error', title: `Erro ao remover: ${err.message}`, clocks: [] })
+    } finally {
+      setRemoving(null)
+    }
+  }
+
+  // Compute visible clock columns from the data
+  const reachableIps = data ? getReachableIps(data.clocks) : []
+
+  // Filter employees
+  const employees = data?.employees || []
+  const filtered  = employees.filter(emp => {
+    const q = search.trim().toLowerCase()
+    if (q && !emp.name.toLowerCase().includes(q) && !emp.cpf.includes(q)) return false
+    if (filter === 'divergent' && !isDivergent(emp)) return false
+    return true
+  })
+
+  const totalCount     = data?.total ?? 0
+  const divergentCount = data?.divergent ?? 0
+
+  return (
+    <div style={styles.container}>
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+
+      {/* Header */}
+      <div style={styles.header}>
+        <h3 style={styles.title}>Funcionários nos Relógios</h3>
+        <div style={styles.headerRight}>
+          {data && (
+            <span style={styles.summary}>
+              <span style={styles.summaryTotal}>{totalCount}</span>
+              {' funcionários | '}
+              <span style={styles.summaryDivergent}>{divergentCount}</span>
+              {' com divergência'}
+            </span>
+          )}
+          <button
+            style={{ ...styles.loadBtn, ...(loading ? styles.loadBtnDisabled : {}) }}
+            onClick={handleLoadClick}
+            disabled={loading}
+          >
+            {loading ? 'Carregando…' : 'Carregar Funcionários'}
+          </button>
+        </div>
+      </div>
+
+      {/* Warning banner before load */}
+      {showWarning && (
+        <div style={styles.warningBanner}>
+          <span>⚠️</span>
+          <span style={{ flex: 1 }}>
+            Esta consulta pode levar <strong>vários minutos</strong> pois precisa conectar a todos os relógios.
+            Deseja continuar?
+          </span>
+          <button
+            style={{ ...styles.loadBtn, padding: '4px 12px', fontSize: '12px' }}
+            onClick={handleConfirmLoad}
+          >
+            Sim, carregar
+          </button>
+          <button
+            style={{ ...styles.loadBtn, padding: '4px 12px', fontSize: '12px', background: '#334155' }}
+            onClick={() => setShowWarning(false)}
+          >
+            Cancelar
+          </button>
+        </div>
+      )}
+
+      {/* Loading state */}
+      {loading && (
+        <div style={styles.loadingMsg}>
+          <div style={{ marginBottom: '8px' }}>⏳ Consultando todos os relógios…</div>
+          <div style={{ fontSize: '12px' }}>Isso pode levar vários minutos.</div>
+        </div>
+      )}
+
+      {/* Operation status */}
+      {opStatus && (
+        <div style={styles.statusBox(opStatus.type)}>
+          <div style={styles.statusTitle}>{opStatus.title}</div>
+          {opStatus.clocks.length > 0 && (
+            <div style={styles.statusClockList}>
+              {opStatus.clocks.map(c => (
+                <span key={c.label} style={styles.clockChip(c.ok)}>
+                  {c.ok ? '✅' : '❌'} {c.label}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Enrollment form */}
+      {enrollTarget && (
+        <div style={styles.enrollForm}>
+          <div style={styles.enrollTitle}>
+            Cadastrar: {enrollTarget.name}
+          </div>
+          <div style={styles.enrollRow}>
+            <div style={styles.enrollField}>
+              <label style={styles.enrollLabel}>CPF</label>
+              <input
+                style={{ ...styles.enrollInput, color: 'var(--text-muted, #94a3b8)' }}
+                value={enrollTarget.cpf}
+                readOnly
+              />
+            </div>
+            <div style={styles.enrollField}>
+              <label style={styles.enrollLabel}>Ref1 — Matrícula *</label>
+              <input
+                style={styles.enrollInput}
+                value={enrollRef1}
+                onChange={e => setEnrollRef1(e.target.value)}
+                placeholder="ex: 00123"
+              />
+            </div>
+            <div style={styles.enrollField}>
+              <label style={styles.enrollLabel}>Ref2 — Crachá NFC (opcional)</label>
+              <input
+                style={styles.enrollInput}
+                value={enrollRef2}
+                onChange={e => setEnrollRef2(e.target.value)}
+                placeholder="Número do cartão"
+              />
+            </div>
+          </div>
+          <div style={styles.enrollClocks}>
+            Relógios alvo:{' '}
+            {(enrollTarget.absentIn || []).map(ip => (
+              <span key={ip} style={{ ...styles.clockChip(false), marginRight: '4px', display: 'inline-block' }}>
+                {IP_TO_STORE[ip] || ip}
+              </span>
+            ))}
+            {enrollTarget.absentIn?.length === 0 && (
+              <span style={{ color: 'var(--green, #4ade80)' }}>Nenhum — já sincronizado.</span>
+            )}
+          </div>
+          <div style={styles.enrollBtnRow}>
+            <button
+              style={{ ...styles.loadBtn, ...(enrolling ? styles.loadBtnDisabled : {}) }}
+              onClick={handleEnroll}
+              disabled={enrolling}
+            >
+              {enrolling ? 'Cadastrando…' : 'Cadastrar'}
+            </button>
+            <button
+              style={{ ...styles.loadBtn, background: '#334155' }}
+              onClick={closeEnrollForm}
+              disabled={enrolling}
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Controls */}
+      {data && !loading && (
+        <div style={styles.controls}>
+          <input
+            style={styles.searchInput}
+            placeholder="Buscar por nome ou CPF…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          <div style={styles.toggleGroup}>
+            <button
+              style={styles.toggleBtn(filter === 'all')}
+              onClick={() => setFilter('all')}
+            >
+              Todos
+            </button>
+            <button
+              style={styles.toggleBtn(filter === 'divergent')}
+              onClick={() => setFilter('divergent')}
+            >
+              Só divergentes
+            </button>
+          </div>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted, #94a3b8)' }}>
+            {filtered.length} exibidos
+          </span>
+        </div>
+      )}
+
+      {/* Table */}
+      {data && !loading && (
+        <div style={styles.tableWrapper}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Nome</th>
+                <th style={styles.th}>CPF</th>
+                <th style={styles.th}>Ref1</th>
+                {reachableIps.map(ip => (
+                  <th key={ip} style={styles.thCenter} title={ip}>
+                    {IP_TO_STORE[ip] || ip}
+                  </th>
+                ))}
+                <th style={styles.th}>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={4 + reachableIps.length}
+                    style={{ ...styles.td, textAlign: 'center', color: 'var(--text-muted, #94a3b8)', padding: '24px' }}
+                  >
+                    Nenhum funcionário encontrado.
+                  </td>
+                </tr>
+              ) : (
+                filtered.map(emp => {
+                  const divergent = isDivergent(emp)
+                  const rowStyle  = divergent ? styles.trDivergent : styles.trNormal
+                  const isRemoving = removing === emp.cpf
+
+                  return (
+                    <tr key={emp.cpf} style={rowStyle}>
+                      <td style={styles.td}>
+                        {divergent && (
+                          <span title="Divergente" style={{ marginRight: '5px', fontSize: '12px' }}>⚠️</span>
+                        )}
+                        {emp.name}
+                      </td>
+                      <td style={{ ...styles.td, ...styles.cpfText }}>{emp.cpf}</td>
+                      <td style={{ ...styles.td, ...styles.cpfText }}>{emp.ref1 || '—'}</td>
+                      {reachableIps.map(ip => {
+                        const present = emp.presentIn?.includes(ip)
+                        return (
+                          <td key={ip} style={styles.tdCenter}>
+                            {present ? '✅' : '❌'}
+                          </td>
+                        )
+                      })}
+                      <td style={styles.td}>
+                        <div style={styles.actionsCell}>
+                          {divergent && !enrollTarget && (
+                            <button
+                              style={styles.actionBtn('sync')}
+                              onClick={() => openEnrollForm(emp)}
+                              disabled={isRemoving}
+                            >
+                              Sincronizar
+                            </button>
+                          )}
+                          {enrollTarget?.cpf === emp.cpf && (
+                            <span style={{ fontSize: '11px', color: 'var(--yellow, #fbbf24)' }}>
+                              Form aberto acima ↑
+                            </span>
+                          )}
+                          <button
+                            style={{
+                              ...styles.actionBtn('remove'),
+                              ...(isRemoving ? styles.actionBtnDisabled : {}),
+                            }}
+                            onClick={() => handleRemove(emp)}
+                            disabled={isRemoving || !!enrollTarget}
+                          >
+                            {isRemoving ? 'Removendo…' : 'Remover'}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
