@@ -1,4 +1,4 @@
-# deploy.ps1 — copia arquivos do PC local e reinicia via PM2
+# deploy.ps1 -- copia arquivos do PC local e reinicia via PM2
 # Executar no Servidor Skill: .\deploy.ps1
 
 $src = "\\tsclient\F\RichClub\clock-proxy"
@@ -31,7 +31,7 @@ if (Get-Command pm2 -ErrorAction SilentlyContinue) {
 
 $health = Invoke-RestMethod http://localhost:4321/health -ErrorAction SilentlyContinue
 if ($health.ok) {
-    Write-Host "OK — servidor rodando na porta 4321" -ForegroundColor Green
+    Write-Host "OK -- servidor rodando na porta 4321" -ForegroundColor Green
 } else {
-    Write-Host "ERRO — servidor nao respondeu. Ver logs: pm2 logs DtClockProxy" -ForegroundColor Red
+    Write-Host "ERRO -- servidor nao respondeu. Ver logs: pm2 logs DtClockProxy" -ForegroundColor Red
 }
