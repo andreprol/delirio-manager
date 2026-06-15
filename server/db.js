@@ -147,6 +147,26 @@ function migrate(db) {
 
     CREATE INDEX IF NOT EXISTS idx_clock_offboard_cpf
       ON clock_offboard_log(cpf, timestamp);
+
+    CREATE TABLE IF NOT EXISTS clock_operation_log (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      operation     TEXT NOT NULL,
+      cpf           TEXT NOT NULL,
+      employee_name TEXT DEFAULT '',
+      triggered_by  TEXT DEFAULT '',
+      timestamp     TEXT NOT NULL,
+      success       INTEGER NOT NULL DEFAULT 0,
+      total         INTEGER DEFAULT 0,
+      ok_count      INTEGER DEFAULT 0,
+      failed_count  INTEGER DEFAULT 0,
+      detail        TEXT DEFAULT '[]'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_clock_op_log_cpf
+      ON clock_operation_log(cpf, timestamp);
+
+    CREATE INDEX IF NOT EXISTS idx_clock_op_log_operation
+      ON clock_operation_log(operation, timestamp);
   `);
 
   // Migrações incrementais — seguras para rodar múltiplas vezes
@@ -540,6 +560,33 @@ function getClockOffboardLog(limit = 100) {
   `).all(limit);
 }
 
+function logClockOperation({ operation, cpf, employeeName, triggeredBy, timestamp, success, total, okCount, failedCount, detail }) {
+  getDb().prepare(`
+    INSERT INTO clock_operation_log
+      (operation, cpf, employee_name, triggered_by, timestamp, success, total, ok_count, failed_count, detail)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    operation,
+    cpf,
+    employeeName || '',
+    triggeredBy  || '',
+    timestamp,
+    success ? 1 : 0,
+    total        || 0,
+    okCount      || 0,
+    failedCount  || 0,
+    typeof detail === 'string' ? detail : JSON.stringify(detail || [])
+  );
+}
+
+function getClockOperationLog(limit = 100, operation = null) {
+  const q = operation
+    ? 'SELECT * FROM clock_operation_log WHERE operation = ? ORDER BY timestamp DESC LIMIT ?'
+    : 'SELECT * FROM clock_operation_log ORDER BY timestamp DESC LIMIT ?';
+  const args = operation ? [operation, limit] : [limit];
+  return getDb().prepare(q).all(...args);
+}
+
 module.exports = {
   getDb,
   // machines
@@ -563,4 +610,6 @@ module.exports = {
   saveInsight, getInsights, markInsightRead, countUnreadInsights,
   // rh / clock offboard
   logClockOffboard, getClockOffboardLog,
+  // rh / clock operation log
+  logClockOperation, getClockOperationLog,
 };
