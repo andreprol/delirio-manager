@@ -154,6 +154,7 @@ git push
 | 1.0.4 | 2026-06-16 | Alerts panel fix topbar |
 | 1.0.5 | 2026-06-16 | Fix IP Niterói 192.168.20.150→192.168.10.150 (reachable: 6→7) |
 | 1.0.6 | 2026-06-16 | /rh/employees assíncrono — background job + cache + polling frontend |
+| 1.0.7 | 2026-06-16 | EmployeeTable: coluna Ref2, filtro Não divergentes, botão Novo Funcionário |
 
 ---
 
