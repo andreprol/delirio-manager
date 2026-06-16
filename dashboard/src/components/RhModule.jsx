@@ -289,10 +289,6 @@ export function RhModule({ onClose }) {
     },
   }
 
-  function handleOverlayClick(e) {
-    if (e.target === e.currentTarget) onClose()
-  }
-
   return (
     <div style={s.overlay}>
       <div style={s.panel}>
