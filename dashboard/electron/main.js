@@ -22,10 +22,10 @@ function saveConfig(cfg) {
 
 function createWindow() {
   const win = new BrowserWindow({
-    width:  1400,
+    width:  1600,
     height: 900,
-    minWidth:  1440,
-    minHeight: 600,
+    minWidth:  1520,
+    minHeight: 700,
     title: 'Delirio Manager',
     backgroundColor: '#0f1117',
     webPreferences: {

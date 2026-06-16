@@ -218,24 +218,17 @@ export function RhModule({ onClose }) {
     overlay: {
       position: 'fixed',
       inset: 0,
-      background: 'rgba(0,0,0,0.72)',
+      background: 'var(--bg, #0f1117)',
       zIndex: 1000,
       display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '16px',
+      flexDirection: 'column',
     },
     panel: {
-      width: '92vw',
-      maxWidth: '1100px',
-      maxHeight: '88vh',
-      background: 'var(--bg, #181c20)',
-      border: '1px solid var(--border, #2d3748)',
-      borderRadius: '12px',
+      flex: 1,
+      background: 'var(--bg, #0f1117)',
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden',
-      boxShadow: '0 24px 64px rgba(0,0,0,0.6)',
     },
     header: {
       display: 'flex',
@@ -301,7 +294,7 @@ export function RhModule({ onClose }) {
   }
 
   return (
-    <div style={s.overlay} onClick={handleOverlayClick}>
+    <div style={s.overlay}>
       <div style={s.panel}>
         <div style={s.header}>
           <div style={s.headerLeft}>
