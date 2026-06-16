@@ -10,7 +10,7 @@ const IP_TO_STORE = {
   '192.168.18.151': 'Ipanema',
   '192.168.16.151': 'Rio Sul',
   '192.168.20.151': 'Tijuca',
-  '192.168.20.150': 'Niterói',
+  '192.168.10.150': 'Niterói',
 }
 
 const styles = {
