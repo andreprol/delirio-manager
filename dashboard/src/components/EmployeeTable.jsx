@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import { api } from '../api'
 
+// Module-level cache — persists while the app is open, survives tab switches
+let _empCache     = null
+let _empCacheTime = null
+
 const IP_TO_STORE = {
   '192.168.15.151': 'Gávea',
   '192.168.14.151': 'Metro',
@@ -303,7 +307,7 @@ function isDivergent(emp) {
 }
 
 export function EmployeeTable() {
-  const [data, setData]           = useState(null)
+  const [data, setData]           = useState(_empCache)
   const [loading, setLoading]     = useState(false)
   const [showWarning, setShowWarning] = useState(false)
 
@@ -347,6 +351,8 @@ export function EmployeeTable() {
       if (result._pending) {
         throw new Error('Tempo excedido aguardando relógios (> 6 min)')
       }
+      _empCache     = result
+      _empCacheTime = new Date()
       setData(result)
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao carregar: ${err.message}`, clocks: [] })
@@ -356,7 +362,11 @@ export function EmployeeTable() {
   }
 
   function handleLoadClick() {
-    setShowWarning(true)
+    if (data) {
+      loadEmployees() // já tem dados — atualizar sem aviso
+    } else {
+      setShowWarning(true)
+    }
   }
 
   function handleConfirmLoad() {
@@ -534,6 +544,11 @@ export function EmployeeTable() {
               {' funcionários | '}
               <span style={styles.summaryDivergent}>{divergentCount}</span>
               {' com divergência'}
+              {_empCacheTime && (
+                <span style={{ color: 'var(--text-muted)', fontSize: 11, marginLeft: 8 }}>
+                  · {_empCacheTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
             </span>
           )}
           <button
@@ -548,7 +563,7 @@ export function EmployeeTable() {
             onClick={handleLoadClick}
             disabled={loading}
           >
-            {loading ? 'Carregando…' : 'Carregar Funcionários'}
+            {loading ? 'Carregando…' : data ? 'Atualizar' : 'Carregar Funcionários'}
           </button>
         </div>
       </div>

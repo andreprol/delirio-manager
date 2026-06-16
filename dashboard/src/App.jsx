@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import pkg from '../package.json'
 import { useMachines } from './hooks/useMachines'
 import { LocationGroup } from './components/LocationGroup'
 import { SplitView } from './components/SplitView'
@@ -177,6 +178,7 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-left">
           <span className="logo">Delirio Manager</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 6, fontFamily: 'monospace', letterSpacing: '0.02em' }}>v{pkg.version}</span>
           <div className={`conn-status ${connected ? 'connected' : 'disconnected'}`}>
             <span className="conn-dot" />
             {connected ? 'API OK' : 'Sem conexao'}
