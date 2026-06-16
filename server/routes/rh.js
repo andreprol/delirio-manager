@@ -38,13 +38,16 @@ function callClockProxy(path, body, method = 'POST') {
       let data = '';
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
+        try {
+          const parsed = JSON.parse(data);
+          resolve(res.statusCode === 202 ? { ...parsed, _statusCode: 202 } : parsed);
+        }
         catch (_) { resolve({ error: data }); }
       });
     });
 
     req.on('error', reject);
-    req.setTimeout(600000, () => req.destroy(new Error('Timeout apos 10 minutos')));
+    req.setTimeout(15000, () => req.destroy(new Error('Timeout apos 15s')));
     if (!isGet) req.write(payload);
     req.end();
   });
@@ -140,6 +143,9 @@ router.get('/employees', async (req, res) => {
   }
   try {
     const result = await callClockProxy('/rh/employees', null, 'GET');
+    if (result._statusCode === 202) {
+      return res.status(202).json({ status: result.status });
+    }
     res.json(result);
   } catch (err) {
     res.status(502).json({ error: 'Falha ao conectar com o clock-proxy', detail: err.message });

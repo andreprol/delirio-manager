@@ -325,7 +325,20 @@ export function EmployeeTable() {
     setLoading(true)
     setOpStatus(null)
     try {
-      const result = await api.rh.getEmployees()
+      let result
+      let attempts = 0
+      const MAX_ATTEMPTS = 80 // 80 × 5s = ~6.5 min
+      do {
+        result = await api.rh.getEmployees()
+        if (result._pending) {
+          await new Promise(r => setTimeout(r, 5000))
+          attempts++
+        }
+      } while (result._pending && attempts < MAX_ATTEMPTS)
+
+      if (result._pending) {
+        throw new Error('Tempo excedido aguardando relógios (> 6 min)')
+      }
       setData(result)
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao carregar: ${err.message}`, clocks: [] })

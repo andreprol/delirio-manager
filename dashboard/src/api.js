@@ -16,6 +16,10 @@ async function request(method, path, body) {
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   })
+  if (res.status === 202) {
+    const json = await res.json().catch(() => ({}))
+    return { _pending: true, ...json }
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }))
     throw new Error(err.error || `HTTP ${res.status}`)

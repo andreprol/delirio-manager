@@ -162,17 +162,17 @@ app.get('/rh/clocks/status', async (req, res) => {
 });
 
 // ─── FUNCIONÁRIOS DE TODOS OS RELÓGIOS ───────────────────────────────────────
-// Busca funcionários de cada relógio (Playwright — pode demorar vários minutos).
-// Retorna lista mestre com presentIn/absentIn por funcionário.
-app.get('/rh/employees', async (req, res) => {
-  try {
-    if (CLOCK_IPS.length === 0) {
-      return res.status(500).json({ error: 'CLOCK_IPS nao configurado no .env' });
-    }
+// Assíncrono: inicia job em background, retorna 202 imediatamente.
+// Polling: chamar novamente até receber 200 com o resultado em cache.
+let _empJobState = 'idle'; // 'idle' | 'running'
+let _empCache    = null;   // resultado completo ou { error: msg }
+let _empCacheAt  = 0;
+const EMP_CACHE_TTL = 10 * 60 * 1000;
 
-    // This endpoint runs Playwright on all clocks — disable socket timeout
-    req.socket.setTimeout(0);
-    res.setTimeout(0);
+async function runEmployeesInBackground() {
+  _empJobState = 'running';
+  try {
+    if (CLOCK_IPS.length === 0) throw new Error('CLOCK_IPS nao configurado no .env');
 
     const clockResults = [];
     for (const ip of CLOCK_IPS) {
@@ -214,7 +214,7 @@ app.get('/rh/employees', async (req, res) => {
     const employees = Array.from(masterMap.values());
     const divergent = employees.filter(e => e.absentIn.length > 0);
 
-    res.json({
+    _empCache = {
       total:        employees.length,
       divergent:    divergent.length,
       synchronized: employees.length - divergent.length,
@@ -226,11 +226,27 @@ app.get('/rh/employees', async (req, res) => {
         error:   r.message,
       })),
       timestamp: new Date().toISOString(),
-    });
+    };
+    _empCacheAt = Date.now();
+    console.log(`[/rh/employees] Job concluído — ${employees.length} funcionários, ${divergent.length} divergentes`);
   } catch (err) {
-    console.error('[/rh/employees]', err.message);
-    res.status(500).json({ error: 'Internal server error', detail: err.message });
+    console.error('[/rh/employees bg]', err.message);
+    _empCache   = { error: err.message };
+    _empCacheAt = Date.now();
+  } finally {
+    _empJobState = 'idle';
   }
+}
+
+app.get('/rh/employees', (req, res) => {
+  if (_empCache && !_empCache.error && (Date.now() - _empCacheAt) < EMP_CACHE_TTL) {
+    return res.json({ ..._empCache, cached: true });
+  }
+  if (_empJobState === 'running') {
+    return res.status(202).json({ status: 'running' });
+  }
+  runEmployeesInBackground();
+  return res.status(202).json({ status: 'started' });
 });
 
 // ─── CADASTRO EM TODOS OS RELÓGIOS ───────────────────────────────────────────
