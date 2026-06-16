@@ -125,7 +125,13 @@ export function SplitView({
   onCommand, onWol, onMoveToGroup,
   onRename, onDelete,
   selectedGroup, onSelectGroup,
+  search = '',
 }) {
+  const hasSearch = search.trim().length > 0
+  const searchMachines = hasSearch
+    ? filteredGroups.flatMap(([, macs]) => macs)
+    : null
+
   const effectiveSelected = selectedGroup ?? allGroups[0]?.[0] ?? null
   const selectedEntry     = allGroups.find(([n]) => n === effectiveSelected)
   const selectedMachines  = selectedEntry?.[1] || []
@@ -153,7 +159,40 @@ export function SplitView({
 
       {/* ── Painel direito ── */}
       <div className="split-panel">
-        {effectiveSelected !== null ? (
+        {hasSearch ? (
+          /* Search mode: flat list of all matching machines */
+          <>
+            <div className="split-panel-header">
+              <div className="split-panel-title-row">
+                <span className="split-panel-title">Resultados para "{search}"</span>
+                <span className="split-panel-count">
+                  {searchMachines.filter(m => m.status === 'online').length} online
+                  {' / '}{searchMachines.length} encontrada{searchMachines.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+            </div>
+            {searchMachines.length === 0 ? (
+              <div className="split-empty-state">Nenhuma máquina encontrada para "{search}".</div>
+            ) : (
+              <div className="split-machines">
+                {[...searchMachines]
+                  .sort((a, b) => (a.displayName || a.id).localeCompare(b.displayName || b.id))
+                  .map(m => (
+                    <MachineCard
+                      key={m.id}
+                      machine={m}
+                      onCommand={onCommand}
+                      onWol={onWol}
+                      onMoveToGroup={onMoveToGroup}
+                      groupsList={groupsList}
+                    />
+                  ))
+                }
+              </div>
+            )}
+          </>
+        ) : effectiveSelected !== null ? (
+          /* Normal mode: selected group */
           <>
             <div className="split-panel-header">
               <div className="split-panel-title-row">
@@ -164,7 +203,6 @@ export function SplitView({
                 </span>
               </div>
             </div>
-
             {selectedIsEmpty || selectedMachines.length === 0 ? (
               <div className="split-empty-state">
                 Nenhuma máquina conectada neste grupo ainda.

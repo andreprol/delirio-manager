@@ -371,6 +371,7 @@ export default function App() {
           onDelete={deleteGroup}
           selectedGroup={selectedGroup}
           onSelectGroup={setSelectedGroup}
+          search={search}
         />
       )}
 
