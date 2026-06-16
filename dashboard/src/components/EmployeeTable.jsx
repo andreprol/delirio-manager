@@ -308,7 +308,7 @@ export function EmployeeTable() {
   const [showWarning, setShowWarning] = useState(false)
 
   const [search, setSearch]       = useState('')
-  const [filter, setFilter]       = useState('all') // 'all' | 'divergent'
+  const [filter, setFilter]       = useState('all') // 'all' | 'divergent' | 'synced'
 
   // Enrollment form state
   const [enrollTarget, setEnrollTarget] = useState(null) // employee object
@@ -319,6 +319,14 @@ export function EmployeeTable() {
   // Operation status
   const [opStatus, setOpStatus]   = useState(null) // { type, title, clocks }
   const [removing, setRemoving]   = useState(null) // cpf being removed
+
+  // New employee form
+  const [newEmpMode, setNewEmpMode]     = useState(false)
+  const [newEmpName, setNewEmpName]     = useState('')
+  const [newEmpCpf, setNewEmpCpf]       = useState('')
+  const [newEmpRef1, setNewEmpRef1]     = useState('')
+  const [newEmpRef2, setNewEmpRef2]     = useState('')
+  const [newEnrolling, setNewEnrolling] = useState(false)
 
   async function loadEmployees() {
     setShowWarning(false)
@@ -410,6 +418,61 @@ export function EmployeeTable() {
     }
   }
 
+  function openNewEmpForm() {
+    closeEnrollForm()
+    setNewEmpMode(true)
+    setNewEmpName('')
+    setNewEmpCpf('')
+    setNewEmpRef1('')
+    setNewEmpRef2('')
+    setOpStatus(null)
+  }
+
+  function closeNewEmpForm() {
+    setNewEmpMode(false)
+    setNewEmpName('')
+    setNewEmpCpf('')
+    setNewEmpRef1('')
+    setNewEmpRef2('')
+  }
+
+  async function handleNewEnroll() {
+    if (!newEmpName.trim()) { setOpStatus({ type: 'error', title: 'Nome é obrigatório.', clocks: [] }); return }
+    if (!newEmpCpf.trim())  { setOpStatus({ type: 'error', title: 'CPF é obrigatório.', clocks: [] }); return }
+    if (!newEmpRef1.trim()) { setOpStatus({ type: 'error', title: 'Ref1 (matrícula) é obrigatória.', clocks: [] }); return }
+    setNewEnrolling(true)
+    setOpStatus(null)
+    try {
+      const result = await api.rh.enroll(
+        newEmpCpf.trim(),
+        newEmpName.trim().toUpperCase(),
+        newEmpRef1.trim(),
+        newEmpRef2.trim(),
+        '',
+        undefined, // undefined = todos os relógios (CLOCK_IPS no servidor)
+      )
+      const allOk = result.failed === 0
+      const type  = allOk ? 'success' : result.enrolled > 0 ? 'partial' : 'error'
+      const clockChips = (result.clocks || []).map(c => ({
+        label: IP_TO_STORE[c.clockIp] || c.clockIp,
+        ok:    c.success,
+      }))
+      setOpStatus({
+        type,
+        title: allOk
+          ? `${newEmpName.trim().toUpperCase()} cadastrado em ${result.enrolled} relógio(s).`
+          : `Cadastrado em ${result.enrolled}, falhou em ${result.failed}.`,
+        clocks: clockChips,
+      })
+      closeNewEmpForm()
+      loadEmployees()
+    } catch (err) {
+      setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [] })
+    } finally {
+      setNewEnrolling(false)
+    }
+  }
+
   async function handleRemove(emp) {
     const confirmed = window.confirm(
       `Remover "${emp.name}" (CPF ${emp.cpf}) de TODOS os relógios?\n\nEsta ação não pode ser desfeita.`
@@ -450,6 +513,7 @@ export function EmployeeTable() {
     const q = search.trim().toLowerCase()
     if (q && !emp.name.toLowerCase().includes(q) && !emp.cpf.includes(q)) return false
     if (filter === 'divergent' && !isDivergent(emp)) return false
+    if (filter === 'synced'    &&  isDivergent(emp)) return false
     return true
   })
 
@@ -472,6 +536,13 @@ export function EmployeeTable() {
               {' com divergência'}
             </span>
           )}
+          <button
+            style={{ ...styles.loadBtn, background: '#334155' }}
+            onClick={openNewEmpForm}
+            disabled={loading}
+          >
+            + Novo Funcionário
+          </button>
           <button
             style={{ ...styles.loadBtn, ...(loading ? styles.loadBtnDisabled : {}) }}
             onClick={handleLoadClick}
@@ -593,6 +664,70 @@ export function EmployeeTable() {
         </div>
       )}
 
+      {/* New employee form */}
+      {newEmpMode && (
+        <div style={styles.enrollForm}>
+          <div style={styles.enrollTitle}>Cadastrar novo funcionário em todos os relógios</div>
+          <div style={styles.enrollRow}>
+            <div style={styles.enrollField}>
+              <label style={styles.enrollLabel}>Nome *</label>
+              <input
+                style={{ ...styles.enrollInput, minWidth: '200px' }}
+                value={newEmpName}
+                onChange={e => setNewEmpName(e.target.value)}
+                placeholder="Nome completo"
+              />
+            </div>
+            <div style={styles.enrollField}>
+              <label style={styles.enrollLabel}>CPF *</label>
+              <input
+                style={styles.enrollInput}
+                value={newEmpCpf}
+                onChange={e => setNewEmpCpf(e.target.value)}
+                placeholder="000.000.000-00"
+              />
+            </div>
+            <div style={styles.enrollField}>
+              <label style={styles.enrollLabel}>Ref1 — Matrícula *</label>
+              <input
+                style={styles.enrollInput}
+                value={newEmpRef1}
+                onChange={e => setNewEmpRef1(e.target.value)}
+                placeholder="ex: 00123"
+              />
+            </div>
+            <div style={styles.enrollField}>
+              <label style={styles.enrollLabel}>Ref2 — Crachá NFC (opcional)</label>
+              <input
+                style={styles.enrollInput}
+                value={newEmpRef2}
+                onChange={e => setNewEmpRef2(e.target.value)}
+                placeholder="Número do cartão"
+              />
+            </div>
+          </div>
+          <div style={styles.enrollClocks}>
+            Será cadastrado em todos os relógios acessíveis no momento.
+          </div>
+          <div style={styles.enrollBtnRow}>
+            <button
+              style={{ ...styles.loadBtn, ...(newEnrolling ? styles.loadBtnDisabled : {}) }}
+              onClick={handleNewEnroll}
+              disabled={newEnrolling}
+            >
+              {newEnrolling ? 'Cadastrando…' : 'Cadastrar em todos'}
+            </button>
+            <button
+              style={{ ...styles.loadBtn, background: '#334155' }}
+              onClick={closeNewEmpForm}
+              disabled={newEnrolling}
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Controls */}
       {data && !loading && (
         <div style={styles.controls}>
@@ -615,6 +750,12 @@ export function EmployeeTable() {
             >
               Só divergentes
             </button>
+            <button
+              style={styles.toggleBtn(filter === 'synced')}
+              onClick={() => setFilter('synced')}
+            >
+              Não divergentes
+            </button>
           </div>
           <span style={{ fontSize: '12px', color: 'var(--text-muted, #94a3b8)' }}>
             {filtered.length} exibidos
@@ -631,6 +772,7 @@ export function EmployeeTable() {
                 <th style={styles.th}>Nome</th>
                 <th style={styles.th}>CPF</th>
                 <th style={styles.th}>Ref1</th>
+                <th style={styles.th}>Ref2 — Crachá</th>
                 {reachableIps.map(ip => (
                   <th key={ip} style={styles.thCenter} title={ip}>
                     {IP_TO_STORE[ip] || ip}
@@ -643,7 +785,7 @@ export function EmployeeTable() {
               {filtered.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={4 + reachableIps.length}
+                    colSpan={5 + reachableIps.length}
                     style={{ ...styles.td, textAlign: 'center', color: 'var(--text-muted, #94a3b8)', padding: '24px' }}
                   >
                     Nenhum funcionário encontrado.
@@ -665,6 +807,7 @@ export function EmployeeTable() {
                       </td>
                       <td style={{ ...styles.td, ...styles.cpfText }}>{emp.cpf}</td>
                       <td style={{ ...styles.td, ...styles.cpfText }}>{emp.ref1 || '—'}</td>
+                      <td style={{ ...styles.td, ...styles.cpfText }}>{emp.ref2 || '—'}</td>
                       {reachableIps.map(ip => {
                         const present = emp.presentIn?.includes(ip)
                         return (
