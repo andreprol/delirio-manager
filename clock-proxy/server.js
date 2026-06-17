@@ -384,6 +384,10 @@ app.post('/deploy', (req, res) => {
     }
   }
 
+  const written = Object.values(results).filter(r => r.ok).length;
+  if (written === 0) {
+    return res.status(400).json({ success: false, error: 'Nenhum arquivo permitido foi escrito', files: results });
+  }
   const failed = Object.values(results).some(r => !r.ok);
   if (failed) {
     return res.status(500).json({ success: false, files: results });
@@ -394,7 +398,8 @@ app.post('/deploy', (req, res) => {
   // Detached PowerShell: espera 2s, mata este PID, inicia novo processo
   const pid        = process.pid;
   const nodePath   = process.execPath;
-  const restartCmd = `Start-Sleep -Seconds 2; Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; Start-Process -FilePath "${nodePath}" -ArgumentList "server.js" -WorkingDirectory "${TARGET}" -WindowStyle Hidden`;
+  const scriptPath = __filename.replace(/\\/g, '\\\\');
+  const restartCmd = `Start-Sleep -Seconds 2; Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; Start-Process -FilePath "${nodePath}" -ArgumentList "${scriptPath}" -WindowStyle Hidden`;
   spawn('powershell.exe', ['-Command', restartCmd], { detached: true, stdio: 'ignore' }).unref();
 });
 
