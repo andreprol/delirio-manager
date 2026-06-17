@@ -96,5 +96,7 @@ export const api = {
       request('POST', '/api/rh/enroll',    { cpf, name, ref1, ref2, password, clockIps }),
     updateCard: (cpf, ref2, clockIps) =>
       request('PUT',  '/api/rh/employee',  { cpf, ref2, clockIps }),
+    refreshClocks: (clockIps) =>
+      request('POST', '/api/rh/employees/refresh', { clockIps }),
   },
 }

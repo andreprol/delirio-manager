@@ -232,6 +232,24 @@ router.put('/employee', async (req, res) => {
   }
 });
 
+// POST /api/rh/employees/refresh
+// Dispara leitura parcial — apenas os relógios informados em clockIps.
+// Body: { clockIps: ["192.168.x.x", ...] }
+router.post('/employees/refresh', async (req, res) => {
+  if (!CLOCK_PROXY_TOKEN) {
+    return res.status(500).json({ error: 'CLOCK_PROXY_TOKEN nao configurado' });
+  }
+  try {
+    const result = await callClockProxy('/rh/employees/refresh', req.body, 'POST');
+    if (result._statusCode === 202) {
+      return res.status(202).json({ status: result.status, clockIps: result.clockIps });
+    }
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ error: 'Falha ao conectar com o clock-proxy', detail: err.message });
+  }
+});
+
 // GET /api/rh/operation-log
 // Retorna log de todas as operações (enroll, update_card, offboard)
 router.get('/operation-log', (req, res) => {

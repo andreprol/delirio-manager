@@ -281,24 +281,25 @@ class HenryHexa {
             // até 20 chars → total 40 chars quando ambos preenchidos.
             // Ex: "000000000028979833930000000000619978613" = Ref1(20) + Ref2(20)
             const refsRaw = cells.length > 2 ? (await cells[2].textContent() || '').trim() : '';
-            let ref1 = refsRaw, ref2 = '';
-            // Fallback: alguns firmwares têm 4 colunas separadas
-            if (cells.length > 3) {
-              ref2 = (await cells[3].textContent() || '').trim();
+            const stripped = refsRaw.replace(/\s/g, '');
+            let ref1 = stripped, ref2 = '';
+
+            // Primary: 40-char concat Ref1(20)+Ref2(20) — split FIRST before any other check
+            if (stripped.length > 20) {
+              ref1 = stripped.slice(0, 20);
+              ref2 = stripped.slice(20);
             }
-            // Fallback: formato "ref1 / ref2" com barra
+            // Fallback: "Ref1 / Ref2" slash-separated
             if (!ref2 && refsRaw.includes('/')) {
-              const parts = refsRaw.split('/').map(s => s.trim());
-              ref1 = parts[0] || refsRaw;
+              const parts = refsRaw.split('/').map(s => s.replace(/\s/g, ''));
+              ref1 = parts[0] || ref1;
               ref2 = parts[1] || '';
             }
-            // Formato principal: concatenação Ref1(20) + Ref2(20)
-            if (!ref2) {
-              const stripped = refsRaw.replace(/\s/g, '');
-              if (stripped.length > 20) {
-                ref1 = stripped.slice(0, 20);
-                ref2 = stripped.slice(20);
-              }
+            // Last resort: separate Ref2 column (cells[3]) — only if numeric and 8+ chars
+            // to avoid fingerprint counts, dates, or other non-ref2 fields
+            if (!ref2 && cells.length > 3) {
+              const r = (await cells[3].textContent() || '').replace(/\s/g, '');
+              if (r.length >= 8 && /^\d+$/.test(r)) ref2 = r;
             }
             seenCpfs.add(cpf);
             employees.push({ name, cpf, ref1, ref2 });
@@ -334,6 +335,33 @@ class HenryHexa {
 
       } catch (err) {
         return { success: false, message: err.message, employees: [], clockIp: this.ip };
+      }
+    });
+  }
+}
+
+  // Diagnóstico: retorna dados brutos das primeiras 5 linhas da tabela de colaboradores.
+  // Usado para inspecionar a estrutura real das colunas sem interferir na leitura normal.
+  async debugListEmployees() {
+    return await this.withBrowser(async (page) => {
+      try {
+        await this.login(page);
+        await this.navigateToColaborador(page);
+        await page.waitForSelector('tr.painted, tr.unpainted', { timeout: 15000 }).catch(() => {});
+        const rows = await page.locator('tr.painted, tr.unpainted').all();
+        const sampleRows = [];
+        for (const row of rows.slice(0, 5)) {
+          const cells = await row.locator('td').all();
+          const cellData = [];
+          for (const cell of cells) {
+            const text = (await cell.textContent() || '').trim();
+            cellData.push({ text, strippedLen: text.replace(/\s/g, '').length });
+          }
+          sampleRows.push({ cellCount: cells.length, cells: cellData });
+        }
+        return { success: true, sampleRows, totalRows: rows.length, clockIp: this.ip };
+      } catch (err) {
+        return { success: false, message: err.message, clockIp: this.ip };
       }
     });
   }

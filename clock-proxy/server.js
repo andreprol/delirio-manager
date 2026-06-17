@@ -95,6 +95,17 @@ app.get('/clock/:ip/employees', async (req, res) => {
   res.json(result);
 });
 
+// ─── DEBUG — ESTRUTURA REAL DA TABELA ────────────────────────────────────────
+// Retorna dados brutos das primeiras 5 linhas para diagnóstico de colunas.
+// Usar para confirmar quantas colunas existem e o que cada uma contém.
+app.get('/clock/:ip/employees/debug', async (req, res) => {
+  const { ip } = req.params;
+  if (!CLOCK_IPS.includes(ip)) return res.status(400).json({ error: 'IP nao configurado' });
+  const henry  = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+  const result = await henry.debugListEmployees();
+  res.json(result);
+});
+
 // ─── OFFBOARD LGPD — TODOS OS RELÓGIOS ───────────────────────────────────────
 // Chamado pelo Delirio Manager (Azure) no desligamento de funcionário.
 // Remove o funcionário de todos os relógios configurados em CLOCK_IPS.
@@ -166,95 +177,95 @@ app.get('/rh/clocks/status', async (req, res) => {
 
 // ─── FUNCIONÁRIOS DE TODOS OS RELÓGIOS ───────────────────────────────────────
 // Assíncrono: inicia job em background, retorna 202 imediatamente.
-// Polling: chamar novamente até receber 200 com o resultado em cache.
-let _empJobState = 'idle'; // 'idle' | 'running'
-let _empCache    = null;   // resultado completo ou { error: msg }
-let _empCacheAt  = 0;
+// Polling: chamar GET /rh/employees até receber 200 com dados.
+// Partial refresh: POST /rh/employees/refresh com { clockIps: [...] } atualiza IPs específicos.
+let _empJobState  = 'idle'; // 'idle' | 'running'
+let _empCache     = null;   // resultado completo ou { error: msg }
+let _empCacheAt   = 0;
+let _clockResults = [];     // dados brutos por relógio — persistidos para partial refresh
 const EMP_CACHE_TTL = 10 * 60 * 1000;
 
-async function runEmployeesInBackground() {
+function buildMasterCache(clockResults) {
+  const clockRef2Map = {};
+  for (const clock of clockResults) {
+    if (!clock.success) continue;
+    clockRef2Map[clock.ip] = {};
+    for (const emp of clock.employees) {
+      clockRef2Map[clock.ip][emp.cpf] = emp.ref2 || '';
+    }
+  }
+
+  const masterMap = new Map();
+  for (const clock of clockResults) {
+    if (!clock.success) continue;
+    for (const emp of clock.employees) {
+      if (!masterMap.has(emp.cpf)) {
+        masterMap.set(emp.cpf, {
+          name: emp.name, cpf: emp.cpf, ref1: emp.ref1, ref2: emp.ref2,
+          presentIn: [], absentIn: [],
+        });
+      } else {
+        const existing = masterMap.get(emp.cpf);
+        if (!existing.ref2 && emp.ref2) existing.ref2 = emp.ref2;
+        if (!existing.ref1 && emp.ref1) existing.ref1 = emp.ref1;
+      }
+      masterMap.get(emp.cpf).presentIn.push(clock.ip);
+    }
+  }
+
+  const reachableIps = clockResults.filter(r => r.success).map(r => r.ip);
+  for (const emp of masterMap.values()) {
+    emp.absentIn     = reachableIps.filter(ip => !emp.presentIn.includes(ip));
+    emp.incompleteIn = emp.ref2
+      ? reachableIps.filter(ip => emp.presentIn.includes(ip) && !clockRef2Map[ip]?.[emp.cpf])
+      : [];
+  }
+
+  const employees  = Array.from(masterMap.values());
+  const divergent  = employees.filter(e => e.absentIn.length > 0);
+  const incomplete = employees.filter(e => e.incompleteIn.length > 0);
+  return {
+    total:        employees.length,
+    divergent:    divergent.length,
+    incomplete:   incomplete.length,
+    synchronized: employees.length - divergent.length,
+    employees,
+    clocks: clockResults.map(r => ({
+      ip: r.ip, success: r.success, total: r.total || 0, error: r.message,
+    })),
+    allClockIps: CLOCK_IPS,
+    timestamp:   new Date().toISOString(),
+  };
+}
+
+// targetIps: undefined = full refresh (todos CLOCK_IPS); array = partial refresh (só esses IPs)
+async function runEmployeesInBackground(targetIps) {
   _empJobState = 'running';
+  const ips          = targetIps || CLOCK_IPS;
+  const isFullRefresh = !targetIps;
+  if (isFullRefresh) _clockResults = [];
+
   try {
     if (CLOCK_IPS.length === 0) throw new Error('CLOCK_IPS nao configurado no .env');
 
-    const clockResults = [];
-    for (const ip of CLOCK_IPS) {
+    for (let i = 0; i < ips.length; i++) {
+      const ip = ips[i];
       console.log(`[${new Date().toISOString()}] Buscando funcionarios de ${ip}...`);
-      const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+      const henry  = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
       const result = await henry.listEmployees();
-      clockResults.push({ ip, ...result });
-      if (!result.success) {
-        console.warn(`[/rh/employees] ${ip}: falhou — ${result.message}`);
-      }
-      if (ip !== CLOCK_IPS[CLOCK_IPS.length - 1]) {
-        await new Promise(r => setTimeout(r, 10000));
-      }
+      if (!result.success) console.warn(`[/rh/employees] ${ip}: falhou — ${result.message}`);
+
+      const clockResult = { ip, ...result };
+      const idx = _clockResults.findIndex(r => r.ip === ip);
+      if (idx >= 0) _clockResults[idx] = clockResult;
+      else          _clockResults.push(clockResult);
+
+      if (i < ips.length - 1) await new Promise(r => setTimeout(r, 10000));
     }
 
-    // Mapa por relógio de qual ref2 cada funcionário tinha nessa leitura
-    const clockRef2Map = {};
-    for (const clock of clockResults) {
-      if (!clock.success) continue;
-      clockRef2Map[clock.ip] = {};
-      for (const emp of clock.employees) {
-        clockRef2Map[clock.ip][emp.cpf] = emp.ref2 || '';
-      }
-    }
-
-    const masterMap = new Map();
-    for (const clock of clockResults) {
-      if (!clock.success) continue;
-      for (const emp of clock.employees) {
-        if (!masterMap.has(emp.cpf)) {
-          masterMap.set(emp.cpf, {
-            name: emp.name,
-            cpf:  emp.cpf,
-            ref1: emp.ref1,
-            ref2: emp.ref2,
-            presentIn: [],
-            absentIn:  [],
-          });
-        } else {
-          // Preserva o melhor valor disponível — primeiro não-vazio vence
-          const existing = masterMap.get(emp.cpf);
-          if (!existing.ref2 && emp.ref2) existing.ref2 = emp.ref2;
-          if (!existing.ref1 && emp.ref1) existing.ref1 = emp.ref1;
-        }
-        masterMap.get(emp.cpf).presentIn.push(clock.ip);
-      }
-    }
-
-    const reachableIps = clockResults.filter(r => r.success).map(r => r.ip);
-    for (const emp of masterMap.values()) {
-      emp.absentIn     = reachableIps.filter(ip => !emp.presentIn.includes(ip));
-      emp.incompleteIn = emp.ref2
-        ? reachableIps.filter(ip =>
-            emp.presentIn.includes(ip) && !clockRef2Map[ip]?.[emp.cpf]
-          )
-        : [];
-    }
-
-    const employees  = Array.from(masterMap.values());
-    const divergent  = employees.filter(e => e.absentIn.length > 0);
-    const incomplete = employees.filter(e => e.incompleteIn.length > 0);
-
-    _empCache = {
-      total:        employees.length,
-      divergent:    divergent.length,
-      incomplete:   incomplete.length,
-      synchronized: employees.length - divergent.length,
-      employees,
-      clocks: clockResults.map(r => ({
-        ip:      r.ip,
-        success: r.success,
-        total:   r.total || 0,
-        error:   r.message,
-      })),
-      allClockIps: CLOCK_IPS,
-      timestamp:   new Date().toISOString(),
-    };
+    _empCache   = buildMasterCache(_clockResults);
     _empCacheAt = Date.now();
-    console.log(`[/rh/employees] Job concluído — ${employees.length} funcionários, ${divergent.length} divergentes, ${incomplete.length} incompletos`);
+    console.log(`[/rh/employees] Job concluído — ${_empCache.total} funcionários, ${_empCache.divergent} divergentes, ${_empCache.incomplete} incompletos`);
   } catch (err) {
     console.error('[/rh/employees bg]', err.message);
     _empCache   = { error: err.message };
@@ -264,15 +275,34 @@ async function runEmployeesInBackground() {
   }
 }
 
+// Job state é verificado ANTES do cache para que partial refresh cause polling correto
 app.get('/rh/employees', (req, res) => {
+  if (_empJobState === 'running') {
+    return res.status(202).json({ status: 'running' });
+  }
   if (_empCache && !_empCache.error && (Date.now() - _empCacheAt) < EMP_CACHE_TTL) {
     return res.json({ ..._empCache, cached: true });
+  }
+  runEmployeesInBackground();
+  return res.status(202).json({ status: 'started' });
+});
+
+// POST /rh/employees/refresh — atualiza leitura de relógios específicos sem descartar os demais
+// Body: { clockIps: ["192.168.x.x", ...] }
+app.post('/rh/employees/refresh', (req, res) => {
+  const { clockIps } = req.body || {};
+  if (!clockIps || !Array.isArray(clockIps) || clockIps.length === 0) {
+    return res.status(400).json({ error: 'clockIps array obrigatorio' });
+  }
+  const invalid = clockIps.filter(ip => !CLOCK_IPS.includes(ip));
+  if (invalid.length > 0) {
+    return res.status(400).json({ error: `IPs nao permitidos: ${invalid.join(', ')}` });
   }
   if (_empJobState === 'running') {
     return res.status(202).json({ status: 'running' });
   }
-  runEmployeesInBackground();
-  return res.status(202).json({ status: 'started' });
+  runEmployeesInBackground(clockIps);
+  return res.status(202).json({ status: 'started', clockIps });
 });
 
 // ─── CADASTRO EM TODOS OS RELÓGIOS ───────────────────────────────────────────

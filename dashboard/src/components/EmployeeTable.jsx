@@ -369,6 +369,9 @@ export function EmployeeTable() {
   const [removing, setRemoving]   = useState(null) // cpf being removed
   const [completing, setCompleting] = useState(null) // cpf sendo completado
 
+  // Partial refresh of offline clocks
+  const [refreshingOffline, setRefreshingOffline] = useState(false)
+
   // New employee form
   const [newEmpMode, setNewEmpMode]     = useState(false)
   const [newEmpName, setNewEmpName]     = useState('')
@@ -376,6 +379,33 @@ export function EmployeeTable() {
   const [newEmpRef1, setNewEmpRef1]     = useState('')
   const [newEmpRef2, setNewEmpRef2]     = useState('')
   const [newEnrolling, setNewEnrolling] = useState(false)
+
+  async function handleRefreshOffline() {
+    const offlineIps = allClockIps.filter(ip => !clockStatusMap[ip])
+    if (offlineIps.length === 0) return
+    setRefreshingOffline(true)
+    setOpStatus(null)
+    try {
+      await api.rh.refreshClocks(offlineIps)
+      let attempts = 0
+      while (attempts < 60) {
+        await new Promise(r => setTimeout(r, 5000))
+        const result = await api.rh.getEmployees()
+        if (!result._pending) {
+          _empCache     = result
+          _empCacheTime = new Date()
+          setData(result)
+          break
+        }
+        attempts++
+      }
+      if (attempts >= 60) throw new Error('Tempo excedido aguardando relógios')
+    } catch (err) {
+      setOpStatus({ type: 'error', title: `Erro ao atualizar: ${err.message}`, clocks: [] })
+    } finally {
+      setRefreshingOffline(false)
+    }
+  }
 
   async function loadEmployees() {
     setShowWarning(false)
@@ -904,6 +934,24 @@ export function EmployeeTable() {
             <span style={styles.singleClockBadge}>
               Modo leitura única — {IP_TO_STORE[displayClockIps[0]] || displayClockIps[0]}
             </span>
+          )}
+          {allClockIps.some(ip => !clockStatusMap[ip]) && (
+            <button
+              style={{
+                ...styles.loadBtn,
+                padding: '3px 10px',
+                fontSize: '12px',
+                background: '#334155',
+                marginLeft: 'auto',
+                ...(refreshingOffline || loading ? styles.loadBtnDisabled : {}),
+              }}
+              onClick={handleRefreshOffline}
+              disabled={refreshingOffline || loading}
+            >
+              {refreshingOffline
+                ? 'Atualizando…'
+                : `Atualizar offline (${allClockIps.filter(ip => !clockStatusMap[ip]).length})`}
+            </button>
           )}
         </div>
       )}
