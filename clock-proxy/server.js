@@ -1,4 +1,7 @@
 require('dotenv').config();
+const fs            = require('fs');
+const path          = require('path');
+const { spawn }     = require('child_process');
 const express = require('express');
 const { HenryHexa } = require('./henry-hexa');
 
@@ -188,6 +191,16 @@ async function runEmployeesInBackground() {
       }
     }
 
+    // Mapa por relógio de qual ref2 cada funcionário tinha nessa leitura
+    const clockRef2Map = {};
+    for (const clock of clockResults) {
+      if (!clock.success) continue;
+      clockRef2Map[clock.ip] = {};
+      for (const emp of clock.employees) {
+        clockRef2Map[clock.ip][emp.cpf] = emp.ref2 || '';
+      }
+    }
+
     const masterMap = new Map();
     for (const clock of clockResults) {
       if (!clock.success) continue;
@@ -201,6 +214,11 @@ async function runEmployeesInBackground() {
             presentIn: [],
             absentIn:  [],
           });
+        } else {
+          // Preserva o melhor valor disponível — primeiro não-vazio vence
+          const existing = masterMap.get(emp.cpf);
+          if (!existing.ref2 && emp.ref2) existing.ref2 = emp.ref2;
+          if (!existing.ref1 && emp.ref1) existing.ref1 = emp.ref1;
         }
         masterMap.get(emp.cpf).presentIn.push(clock.ip);
       }
@@ -208,15 +226,22 @@ async function runEmployeesInBackground() {
 
     const reachableIps = clockResults.filter(r => r.success).map(r => r.ip);
     for (const emp of masterMap.values()) {
-      emp.absentIn = reachableIps.filter(ip => !emp.presentIn.includes(ip));
+      emp.absentIn     = reachableIps.filter(ip => !emp.presentIn.includes(ip));
+      emp.incompleteIn = emp.ref2
+        ? reachableIps.filter(ip =>
+            emp.presentIn.includes(ip) && !clockRef2Map[ip]?.[emp.cpf]
+          )
+        : [];
     }
 
-    const employees = Array.from(masterMap.values());
-    const divergent = employees.filter(e => e.absentIn.length > 0);
+    const employees  = Array.from(masterMap.values());
+    const divergent  = employees.filter(e => e.absentIn.length > 0);
+    const incomplete = employees.filter(e => e.incompleteIn.length > 0);
 
     _empCache = {
       total:        employees.length,
       divergent:    divergent.length,
+      incomplete:   incomplete.length,
       synchronized: employees.length - divergent.length,
       employees,
       clocks: clockResults.map(r => ({
@@ -225,10 +250,11 @@ async function runEmployeesInBackground() {
         total:   r.total || 0,
         error:   r.message,
       })),
-      timestamp: new Date().toISOString(),
+      allClockIps: CLOCK_IPS,
+      timestamp:   new Date().toISOString(),
     };
     _empCacheAt = Date.now();
-    console.log(`[/rh/employees] Job concluído — ${employees.length} funcionários, ${divergent.length} divergentes`);
+    console.log(`[/rh/employees] Job concluído — ${employees.length} funcionários, ${divergent.length} divergentes, ${incomplete.length} incompletos`);
   } catch (err) {
     console.error('[/rh/employees bg]', err.message);
     _empCache   = { error: err.message };
@@ -330,6 +356,46 @@ app.put('/rh/employee', async (req, res) => {
     console.error('[/rh/employee]', err.message);
     res.status(500).json({ error: 'Internal server error', detail: err.message });
   }
+});
+
+// ─── DEPLOY REMOTO ───────────────────────────────────────────────────────────
+// Recebe arquivos como base64, salva em disco e reinicia o processo.
+// Body: { files: { "server.js": "<base64>", "henry-hexa.js": "<base64>" } }
+app.post('/deploy', (req, res) => {
+  const { files } = req.body;
+  if (!files || typeof files !== 'object') {
+    return res.status(400).json({ error: 'files obrigatorio' });
+  }
+
+  const ALLOWED = new Set(['server.js', 'henry-hexa.js']);
+  const TARGET  = process.cwd();
+  const results = {};
+
+  for (const [name, b64] of Object.entries(files)) {
+    if (!ALLOWED.has(name)) {
+      results[name] = { ok: false, error: 'arquivo nao permitido' };
+      continue;
+    }
+    try {
+      fs.writeFileSync(path.join(TARGET, name), Buffer.from(b64, 'base64'));
+      results[name] = { ok: true };
+    } catch (e) {
+      results[name] = { ok: false, error: e.message };
+    }
+  }
+
+  const failed = Object.values(results).some(r => !r.ok);
+  if (failed) {
+    return res.status(500).json({ success: false, files: results });
+  }
+
+  res.json({ success: true, files: results, message: 'Reiniciando em 2s...' });
+
+  // Detached PowerShell: espera 2s, mata este PID, inicia novo processo
+  const pid        = process.pid;
+  const nodePath   = process.execPath;
+  const restartCmd = `Start-Sleep -Seconds 2; Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; Start-Process -FilePath "${nodePath}" -ArgumentList "server.js" -WorkingDirectory "${TARGET}" -WindowStyle Hidden`;
+  spawn('powershell.exe', ['-Command', restartCmd], { detached: true, stdio: 'ignore' }).unref();
 });
 
 // Escuta em todas as interfaces para ser acessível via LAN/VPN pelo backend Azure
