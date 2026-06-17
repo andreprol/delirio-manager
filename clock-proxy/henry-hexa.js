@@ -180,8 +180,18 @@ class HenryHexa {
             .filter(t => t.length > 0)
         );
 
-        const saved = pageTexts.some(t => t.includes('Sucesso ao salvar'));
-        const errorMsg = pageTexts.find(t => t.includes('inválidos') || t.includes('obrigatório'));
+        const saved      = pageTexts.some(t => t.includes('Sucesso ao salvar'));
+        const alreadyReg = pageTexts.some(t => t.includes('já cadastrado') || t.includes('já cadastrada'));
+        const errorMsg   = pageTexts.find(t => t.includes('inválidos') || t.includes('obrigatório'));
+
+        if (alreadyReg) {
+          return {
+            success: true,
+            message: `Funcionário já cadastrado no relógio ${this.ip}`,
+            timestamp,
+            clockIp: this.ip,
+          };
+        }
 
         if (!saved) {
           return {

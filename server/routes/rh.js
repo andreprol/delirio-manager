@@ -47,7 +47,7 @@ function callClockProxy(path, body, method = 'POST') {
     });
 
     req.on('error', reject);
-    req.setTimeout(15000, () => req.destroy(new Error('Timeout apos 15s')));
+    req.setTimeout(90000, () => req.destroy(new Error('Timeout apos 90s')));
     if (!isGet) req.write(payload);
     req.end();
   });
