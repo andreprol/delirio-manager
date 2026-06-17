@@ -296,14 +296,12 @@ const styles = {
   }),
 }
 
-// Derive which clock IPs were seen in the last fetch (reachable clocks)
-function getReachableIps(clocks) {
-  if (!clocks || clocks.length === 0) return []
-  return clocks.filter(c => c.success > 0 || c.total > 0).map(c => c.ip)
-}
-
 function isDivergent(emp) {
   return emp.absentIn && emp.absentIn.length > 0
+}
+
+function isIncomplete(emp) {
+  return emp.incompleteIn && emp.incompleteIn.length > 0
 }
 
 export function EmployeeTable() {
@@ -514,21 +512,25 @@ export function EmployeeTable() {
     }
   }
 
-  // Compute visible clock columns from the data
-  const reachableIps = data ? getReachableIps(data.clocks) : []
+  // Todos os IPs tentados (incluindo offline) — vem do backend
+  const allClockIps    = data?.allClockIps ?? []
+  // Map ip -> bool (true = leitura bem-sucedida nessa rodada)
+  const clockStatusMap = Object.fromEntries((data?.clocks ?? []).map(c => [c.ip, c.success]))
 
   // Filter employees
   const employees = data?.employees || []
   const filtered  = employees.filter(emp => {
     const q = search.trim().toLowerCase()
     if (q && !emp.name.toLowerCase().includes(q) && !emp.cpf.includes(q)) return false
-    if (filter === 'divergent' && !isDivergent(emp)) return false
-    if (filter === 'synced'    &&  isDivergent(emp)) return false
+    if (filter === 'divergent'  && !isDivergent(emp))  return false
+    if (filter === 'synced'     &&  isDivergent(emp))  return false
+    if (filter === 'incomplete' && !isIncomplete(emp)) return false
     return true
   })
 
   const totalCount     = data?.total ?? 0
-  const divergentCount = data?.divergent ?? 0
+  const divergentCount  = data?.divergent ?? 0
+  const incompleteCount = data?.incomplete ?? 0
 
   return (
     <div style={styles.container}>
@@ -544,6 +546,15 @@ export function EmployeeTable() {
               {' funcionários | '}
               <span style={styles.summaryDivergent}>{divergentCount}</span>
               {' com divergência'}
+              {incompleteCount > 0 && (
+                <>
+                  {' | '}
+                  <span style={{ fontWeight: 700, color: 'var(--yellow, #fbbf24)' }}>
+                    {incompleteCount}
+                  </span>
+                  {' incompletos'}
+                </>
+              )}
               {_empCacheTime && (
                 <span style={{ color: 'var(--text-muted)', fontSize: 11, marginLeft: 8 }}>
                   · {_empCacheTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
@@ -788,9 +799,14 @@ export function EmployeeTable() {
                 <th style={styles.th}>CPF</th>
                 <th style={styles.th}>Ref1</th>
                 <th style={styles.th}>Ref2 — Crachá</th>
-                {reachableIps.map(ip => (
-                  <th key={ip} style={styles.thCenter} title={ip}>
+                {allClockIps.map(ip => (
+                  <th key={ip} style={styles.thCenter} title={clockStatusMap[ip] ? ip : `${ip} — offline`}>
                     {IP_TO_STORE[ip] || ip}
+                    {!clockStatusMap[ip] && (
+                      <span style={{ color: 'var(--text-muted, #94a3b8)', fontSize: '10px', display: 'block', fontWeight: 400 }}>
+                        offline
+                      </span>
+                    )}
                   </th>
                 ))}
                 <th style={styles.th}>Ações</th>
@@ -800,7 +816,7 @@ export function EmployeeTable() {
               {filtered.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={5 + reachableIps.length}
+                    colSpan={5 + allClockIps.length}
                     style={{ ...styles.td, textAlign: 'center', color: 'var(--text-muted, #94a3b8)', padding: '24px' }}
                   >
                     Nenhum funcionário encontrado.
@@ -823,11 +839,28 @@ export function EmployeeTable() {
                       <td style={{ ...styles.td, ...styles.cpfText }}>{emp.cpf}</td>
                       <td style={{ ...styles.td, ...styles.cpfText }}>{emp.ref1 || '—'}</td>
                       <td style={{ ...styles.td, ...styles.cpfText }}>{emp.ref2 || '—'}</td>
-                      {reachableIps.map(ip => {
-                        const present = emp.presentIn?.includes(ip)
+                      {allClockIps.map(ip => {
+                        const clockOk    = clockStatusMap[ip]
+                        const present    = emp.presentIn?.includes(ip)
+                        const incomplete = emp.incompleteIn?.includes(ip)
+                        let content, title, extraStyle = {}
+                        if (!clockOk) {
+                          content    = '—'
+                          title      = 'Relógio offline nesta leitura'
+                          extraStyle = { color: 'var(--text-muted, #94a3b8)' }
+                        } else if (present && incomplete) {
+                          content = '⚠️'
+                          title   = 'Presente mas crachá NFC ausente neste relógio'
+                        } else if (present) {
+                          content = '✅'
+                          title   = 'Presente'
+                        } else {
+                          content = '❌'
+                          title   = 'Ausente'
+                        }
                         return (
-                          <td key={ip} style={styles.tdCenter}>
-                            {present ? '✅' : '❌'}
+                          <td key={ip} style={{ ...styles.tdCenter, ...extraStyle }} title={title}>
+                            {content}
                           </td>
                         )
                       })}
