@@ -276,9 +276,18 @@ class HenryHexa {
             const name = (await cells[0].textContent() || '').trim();
             const cpf  = (await cells[1].textContent() || '').trim();
             if (!name || !cpf || seenCpfs.has(cpf)) continue;
-            // Tabela Henry Hexa ADV tem colunas separadas: cells[2]=Ref1, cells[3]=Ref2
-            const ref1 = cells.length > 2 ? (await cells[2].textContent() || '').trim() : '';
-            const ref2 = cells.length > 3 ? (await cells[3].textContent() || '').trim() : '';
+            // Tabela Henry Hexa ADV: coluna Refs pode ser combinada "ref1 / ref2" (3 colunas)
+            // ou separada cells[2]=Ref1, cells[3]=Ref2 (4 colunas). Trata ambos os casos.
+            const refsRaw = cells.length > 2 ? (await cells[2].textContent() || '').trim() : '';
+            let ref1 = refsRaw, ref2 = '';
+            if (cells.length > 3) {
+              ref2 = (await cells[3].textContent() || '').trim();
+            }
+            if (!ref2 && refsRaw.includes('/')) {
+              const parts = refsRaw.split('/').map(s => s.trim());
+              ref1 = parts[0] || refsRaw;
+              ref2 = parts[1] || '';
+            }
             seenCpfs.add(cpf);
             employees.push({ name, cpf, ref1, ref2 });
           }
