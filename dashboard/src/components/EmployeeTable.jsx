@@ -181,7 +181,8 @@ const styles = {
   },
   actionBtn: (variant) => {
     const map = {
-      sync:   { bg: 'rgba(59,130,246,0.15)', color: '#60a5fa', border: 'rgba(59,130,246,0.4)' },
+      sync:   { bg: 'rgba(59,130,246,0.15)',  color: '#60a5fa', border: 'rgba(59,130,246,0.4)'  },
+      edit:   { bg: 'rgba(99,102,241,0.15)',  color: '#818cf8', border: 'rgba(99,102,241,0.4)'  },
       remove: { bg: 'rgba(248,113,113,0.12)', color: '#f87171', border: 'rgba(248,113,113,0.35)' },
     }
     const v = map[variant] || map.sync
@@ -207,10 +208,17 @@ const styles = {
     alignItems: 'center',
     flexWrap: 'wrap',
   },
-  // Enrollment form
+  // Enrollment / edit form
   enrollForm: {
     background: 'var(--card-bg, #1e2530)',
     border: '1px solid rgba(59,130,246,0.4)',
+    borderRadius: '10px',
+    padding: '14px 16px',
+    marginBottom: '14px',
+  },
+  editForm: {
+    background: 'var(--card-bg, #1e2530)',
+    border: '1px solid rgba(99,102,241,0.4)',
     borderRadius: '10px',
     padding: '14px 16px',
     marginBottom: '14px',
@@ -361,6 +369,11 @@ export function EmployeeTable() {
   const [enrollRef2, setEnrollRef2]     = useState('')
   const [enrolling, setEnrolling]       = useState(false)
 
+  // Edit employee form state (edits ref2 in-place on all clocks where employee is present)
+  const [editTarget, setEditTarget] = useState(null)
+  const [editRef2, setEditRef2]     = useState('')
+  const [editSaving, setEditSaving] = useState(false)
+
   // Clock selector — Set of IPs to include; empty Set = all clocks
   const [selectedClockIps, setSelectedClockIps] = useState(new Set())
 
@@ -380,8 +393,19 @@ export function EmployeeTable() {
   const [newEmpRef2, setNewEmpRef2]     = useState('')
   const [newEnrolling, setNewEnrolling] = useState(false)
 
+  // Apply data after any load — sets cache and auto-selects only online clocks
+  function applyData(result) {
+    _empCache     = result
+    _empCacheTime = new Date()
+    setData(result)
+    const onlineIps = new Set((result.clocks || []).filter(c => c.success).map(c => c.ip))
+    // If all clocks are online use empty Set (= "all" mode); otherwise select only online ones
+    setSelectedClockIps(onlineIps.size < (result.allClockIps || []).length ? onlineIps : new Set())
+  }
+
   async function handleRefreshOffline() {
-    const offlineIps = allClockIps.filter(ip => !clockStatusMap[ip])
+    // Refresh only offline clocks that are currently checked in the selector
+    const offlineIps = displayClockIps.filter(ip => !clockStatusMap[ip])
     if (offlineIps.length === 0) return
     setRefreshingOffline(true)
     setOpStatus(null)
@@ -392,9 +416,7 @@ export function EmployeeTable() {
         await new Promise(r => setTimeout(r, 5000))
         const result = await api.rh.getEmployees()
         if (!result._pending) {
-          _empCache     = result
-          _empCacheTime = new Date()
-          setData(result)
+          applyData(result)
           break
         }
         attempts++
@@ -426,9 +448,7 @@ export function EmployeeTable() {
       if (result._pending) {
         throw new Error('Tempo excedido aguardando relógios (> 6 min)')
       }
-      _empCache     = result
-      _empCacheTime = new Date()
-      setData(result)
+      applyData(result)
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao carregar: ${err.message}`, clocks: [] })
     } finally {
@@ -453,6 +473,7 @@ export function EmployeeTable() {
     setEnrollTarget(emp)
     setEnrollRef1(emp.ref1 || '')
     setEnrollRef2(emp.ref2 || '')
+    setEditTarget(null)
     setOpStatus(null)
   }
 
@@ -494,7 +515,6 @@ export function EmployeeTable() {
         clocks: clockChips,
       })
       closeEnrollForm()
-      // Refresh data so table reflects new state
       loadEmployees()
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [] })
@@ -505,6 +525,7 @@ export function EmployeeTable() {
 
   function openNewEmpForm() {
     closeEnrollForm()
+    closeEditForm()
     setNewEmpMode(true)
     setNewEmpName('')
     setNewEmpCpf('')
@@ -558,6 +579,51 @@ export function EmployeeTable() {
     }
   }
 
+  // Edit employee — updates Ref2 (NFC card) on all clocks where employee is present
+  function openEditForm(emp) {
+    setEditTarget(emp)
+    setEditRef2(emp.ref2 || '')
+    setEnrollTarget(null)
+    setOpStatus(null)
+  }
+
+  function closeEditForm() {
+    setEditTarget(null)
+    setEditRef2('')
+  }
+
+  async function handleEditSave() {
+    if (!editTarget) return
+    if (!editRef2.trim()) {
+      setOpStatus({ type: 'error', title: 'Informe o número do crachá NFC para salvar.', clocks: [] })
+      return
+    }
+    setEditSaving(true)
+    setOpStatus(null)
+    try {
+      const result = await api.rh.updateCard(editTarget.cpf, editRef2.trim(), editTarget.presentIn)
+      const allOk = result.failed === 0
+      const type  = allOk ? 'success' : result.updated > 0 ? 'partial' : 'error'
+      const clockChips = (result.clocks || []).map(c => ({
+        label: IP_TO_STORE[c.clockIp] || c.clockIp,
+        ok:    c.success,
+      }))
+      setOpStatus({
+        type,
+        title: allOk
+          ? `Crachá atualizado em ${result.updated} relógio(s).`
+          : `Atualizado em ${result.updated}, falhou em ${result.failed}.`,
+        clocks: clockChips,
+      })
+      closeEditForm()
+      loadEmployees()
+    } catch (err) {
+      setOpStatus({ type: 'error', title: `Erro ao salvar: ${err.message}`, clocks: [] })
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
   async function handleCompleteCard(emp) {
     setCompleting(emp.cpf)
     setOpStatus(null)
@@ -606,7 +672,6 @@ export function EmployeeTable() {
           : `Removido de ${result.removed}, falhou em ${result.failed}.`,
         clocks: clockChips,
       })
-      // Refresh
       loadEmployees()
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao remover: ${err.message}`, clocks: [] })
@@ -638,6 +703,9 @@ export function EmployeeTable() {
     : allClockIps
   const singleClockMode = displayClockIps.length === 1
   const allSelected     = selectedClockIps.size === 0
+
+  // Offline IPs within the current selection — drives the "Atualizar offline" button
+  const offlineSelectedIps = displayClockIps.filter(ip => !clockStatusMap[ip])
 
   // Per-employee helper: effective absent/incomplete relative to displayClockIps
   function effectiveSets(emp) {
@@ -830,6 +898,67 @@ export function EmployeeTable() {
         </div>
       )}
 
+      {/* Edit employee form — edits Ref2 (NFC card) across all clocks where employee is present */}
+      {editTarget && (
+        <div style={styles.editForm}>
+          <div style={styles.enrollTitle}>
+            ✏️ Editar: {editTarget.name}
+          </div>
+          <div style={styles.enrollRow}>
+            <div style={styles.enrollField}>
+              <label style={styles.enrollLabel}>CPF</label>
+              <input
+                style={{ ...styles.enrollInput, color: 'var(--text-muted, #94a3b8)' }}
+                value={editTarget.cpf}
+                readOnly
+              />
+            </div>
+            <div style={styles.enrollField}>
+              <label style={styles.enrollLabel}>Ref1 — Matrícula (somente leitura)</label>
+              <input
+                style={{ ...styles.enrollInput, color: 'var(--text-muted, #94a3b8)' }}
+                value={editTarget.ref1 || '—'}
+                readOnly
+              />
+            </div>
+            <div style={styles.enrollField}>
+              <label style={styles.enrollLabel}>Ref2 — Crachá NFC</label>
+              <input
+                style={styles.enrollInput}
+                value={editRef2}
+                onChange={e => setEditRef2(e.target.value)}
+                placeholder="Número do cartão"
+                autoFocus
+              />
+            </div>
+          </div>
+          <div style={styles.enrollClocks}>
+            Será atualizado em:{' '}
+            {(editTarget.presentIn || []).map(ip => (
+              <span key={ip} style={{ ...styles.clockChip(true), marginRight: '4px', display: 'inline-block' }}>
+                {IP_TO_STORE[ip] || ip}
+              </span>
+            ))}
+          </div>
+          <div style={styles.enrollBtnRow}>
+            <button
+              style={{ ...styles.loadBtn, background: 'rgba(99,102,241,0.8)', ...(editSaving ? styles.loadBtnDisabled : {}) }}
+              onClick={handleEditSave}
+              disabled={editSaving}
+            >
+              {editSaving ? 'Salvando…' : 'Salvar'}
+            </button>
+            <button
+              style={{ ...styles.loadBtn, background: '#334155' }}
+              onClick={closeEditForm}
+              disabled={editSaving}
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* New employee form */}
       {newEmpMode && (
         <div style={styles.enrollForm}>
@@ -935,7 +1064,7 @@ export function EmployeeTable() {
               Modo leitura única — {IP_TO_STORE[displayClockIps[0]] || displayClockIps[0]}
             </span>
           )}
-          {allClockIps.some(ip => !clockStatusMap[ip]) && (
+          {offlineSelectedIps.length > 0 && (
             <button
               style={{
                 ...styles.loadBtn,
@@ -950,7 +1079,7 @@ export function EmployeeTable() {
             >
               {refreshingOffline
                 ? 'Atualizando…'
-                : `Atualizar offline (${allClockIps.filter(ip => !clockStatusMap[ip]).length})`}
+                : `Atualizar offline (${offlineSelectedIps.length})`}
             </button>
           )}
         </div>
@@ -1037,6 +1166,7 @@ export function EmployeeTable() {
                   const incomplete = isIncomplete(effIncomplete)
                   const rowStyle   = divergent ? styles.trDivergent : styles.trNormal
                   const isRemoving = removing === emp.cpf
+                  const isEditing  = editTarget?.cpf === emp.cpf
 
                   // In single-clock mode, show ref2 empty if that clock doesn't have it
                   const displayRef2 = (singleClockMode && emp.incompleteIn?.includes(displayClockIps[0]))
@@ -1088,7 +1218,7 @@ export function EmployeeTable() {
                       })}
                       <td style={styles.td}>
                         <div style={styles.actionsCell}>
-                          {divergent && !singleClockMode && !enrollTarget && (
+                          {divergent && !singleClockMode && !enrollTarget && !editTarget && (
                             <button
                               style={styles.actionBtn('sync')}
                               onClick={() => openEnrollForm(emp)}
@@ -1102,7 +1232,7 @@ export function EmployeeTable() {
                               Form aberto acima ↑
                             </span>
                           )}
-                          {incomplete && emp.ref2 && !singleClockMode && !enrollTarget && (
+                          {incomplete && emp.ref2 && !singleClockMode && !enrollTarget && !editTarget && (
                             <button
                               style={{
                                 ...styles.actionBtn('sync'),
@@ -1112,6 +1242,22 @@ export function EmployeeTable() {
                               disabled={!!completing || isRemoving}
                             >
                               {completing === emp.cpf ? 'Atualizando…' : 'Completar Crachá'}
+                            </button>
+                          )}
+                          {isEditing ? (
+                            <span style={{ fontSize: '11px', color: '#818cf8' }}>
+                              Editando acima ↑
+                            </span>
+                          ) : (
+                            <button
+                              style={{
+                                ...styles.actionBtn('edit'),
+                                ...(isRemoving || !!completing ? styles.actionBtnDisabled : {}),
+                              }}
+                              onClick={() => openEditForm(emp)}
+                              disabled={isRemoving || !!completing || !!enrollTarget}
+                            >
+                              Editar
                             </button>
                           )}
                           <button

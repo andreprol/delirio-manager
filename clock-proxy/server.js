@@ -247,19 +247,35 @@ async function runEmployeesInBackground(targetIps) {
   try {
     if (CLOCK_IPS.length === 0) throw new Error('CLOCK_IPS nao configurado no .env');
 
+    let playwrightRan = false; // controla o intervalo de 10s entre sessões Playwright
     for (let i = 0; i < ips.length; i++) {
-      const ip = ips[i];
+      const ip    = ips[i];
+      const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+
+      // Pré-verifica acessibilidade antes de abrir Playwright (5s timeout via HTTP simples)
+      // Relógios offline são marcados como falha e pulados — evita aguardar timeout por Playwright
+      const reach = await henry.checkReachable();
+      if (!reach.reachable) {
+        console.warn(`[/rh/employees] ${ip}: offline (${reach.error}) — pulando Playwright`);
+        const clockResult = { ip, success: false, employees: [], total: 0, message: 'Relógio offline' };
+        const idx = _clockResults.findIndex(r => r.ip === ip);
+        if (idx >= 0) _clockResults[idx] = clockResult;
+        else          _clockResults.push(clockResult);
+        continue;
+      }
+
+      // Aguarda 10s entre sessões Playwright para não sobrecarregar o servidor embutido do relógio
+      if (playwrightRan) await new Promise(r => setTimeout(r, 10000));
+
       console.log(`[${new Date().toISOString()}] Buscando funcionarios de ${ip}...`);
-      const henry  = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
       const result = await henry.listEmployees();
+      playwrightRan = true;
       if (!result.success) console.warn(`[/rh/employees] ${ip}: falhou — ${result.message}`);
 
       const clockResult = { ip, ...result };
       const idx = _clockResults.findIndex(r => r.ip === ip);
       if (idx >= 0) _clockResults[idx] = clockResult;
       else          _clockResults.push(clockResult);
-
-      if (i < ips.length - 1) await new Promise(r => setTimeout(r, 10000));
     }
 
     _empCache   = buildMasterCache(_clockResults);
