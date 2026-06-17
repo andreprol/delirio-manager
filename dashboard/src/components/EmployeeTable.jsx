@@ -671,6 +671,11 @@ export function EmployeeTable() {
           ? `"${emp.name}" removido de ${result.removed} relógio(s).`
           : `Removido de ${result.removed}, falhou em ${result.failed}.`,
         clocks: clockChips,
+        detail: result.lgpdPath
+          ? `📁 Comprovante LGPD: ${result.lgpdPath}`
+          : result.lgpdError
+          ? `⚠️ Comprovante LGPD não salvo: ${result.lgpdError}`
+          : null,
       })
       loadEmployees()
     } catch (err) {
@@ -829,6 +834,11 @@ export function EmployeeTable() {
                   {c.ok ? '✅' : '❌'} {c.label}
                 </span>
               ))}
+            </div>
+          )}
+          {opStatus.detail && (
+            <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.85, fontFamily: 'monospace' }}>
+              {opStatus.detail}
             </div>
           )}
         </div>

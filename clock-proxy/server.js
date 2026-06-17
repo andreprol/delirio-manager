@@ -11,6 +11,104 @@ const CLOCK_USER = process.env.CLOCK_USER;
 const CLOCK_PASS = process.env.CLOCK_PASS;
 const CLOCK_IPS  = (process.env.CLOCK_IPS || '')
   .split(',').map(ip => ip.trim()).filter(Boolean);
+const LGPD_DIR   = process.env.LGPD_DIR || 'G:\\CENTRAL\\LGPD';
+
+const IP_TO_STORE = {
+  '192.168.15.151': 'Gávea',
+  '192.168.14.151': 'Metro',
+  '192.168.12.151': 'Bshop',
+  '192.168.0.151':  'Assembleia',
+  '192.168.13.151': 'Città',
+  '192.168.18.151': 'Ipanema',
+  '192.168.16.151': 'Rio Sul',
+  '192.168.20.151': 'Tijuca',
+  '192.168.10.150': 'Niterói',
+};
+
+function writeLgpdKit(summary) {
+  try {
+    const safeName = (summary.employeeName || 'DESCONHECIDO')
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .toUpperCase();
+    const safeCpf    = summary.cpf.replace(/[\\/:*?"<>|]/g, '_');
+    const tsFolder   = summary.timestamp.replace(/:/g, '-').replace('T', '_').replace(/\..+$/, '');
+    const folderName = `${safeName}_${safeCpf}_${tsFolder}`;
+    const folderPath = path.join(LGPD_DIR, folderName);
+
+    fs.mkdirSync(folderPath, { recursive: true });
+
+    // log-remocao.json — registro estruturado completo
+    fs.writeFileSync(
+      path.join(folderPath, 'log-remocao.json'),
+      JSON.stringify(summary, null, 2),
+      'utf8',
+    );
+
+    // comprovante.txt — leitura humana para arquivo LGPD
+    const dtBR = new Date(summary.timestamp).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const lines = [
+      '=================================================',
+      '  COMPROVANTE DE EXCLUSÃO DE DADOS BIOMÉTRICOS',
+      '  Delírio Tropical — LGPD Art. 15 e 16',
+      '=================================================',
+      '',
+      `Funcionário : ${summary.employeeName || '—'}`,
+      `CPF         : ${summary.cpf}`,
+      `Data/Hora   : ${dtBR}`,
+      `Operador    : ${summary.triggeredBy || 'dashboard'}`,
+      '',
+      '-------------------------------------------------',
+      'RELÓGIOS PROCESSADOS',
+      '-------------------------------------------------',
+    ];
+
+    for (const c of summary.clocks) {
+      const store  = IP_TO_STORE[c.clockIp] || c.clockIp;
+      const icon   = c.success && !c.alreadyAbsent ? '✓' : c.alreadyAbsent ? '~' : '✗';
+      const status = c.success && !c.alreadyAbsent ? 'Removido com sucesso'
+                   : c.alreadyAbsent               ? 'Já ausente (não cadastrado)'
+                   :                                  'Falhou';
+      lines.push(`${icon} ${store.padEnd(14)} (${c.clockIp}) — ${status}`);
+    }
+
+    lines.push(
+      '',
+      '-------------------------------------------------',
+      'RESUMO',
+      '-------------------------------------------------',
+      `Relógios processados  : ${summary.total}`,
+      `Removidos com sucesso : ${summary.removed}`,
+      `Já ausentes           : ${summary.alreadyAbsent}`,
+      `Falhas                : ${summary.failed}`,
+      '',
+      '-------------------------------------------------',
+      'DECLARAÇÃO',
+      '-------------------------------------------------',
+      'Os dados biométricos (impressões digitais e',
+      'credenciais NFC) do titular identificado acima',
+      'foram excluídos dos sistemas de controle de',
+      'acesso/ponto da Delírio Tropical Ltda.,',
+      'em conformidade com a Lei nº 13.709/2018',
+      '(LGPD), Art. 15 e 16.',
+      '',
+      'Este documento é válido como comprovante de',
+      'eliminação de dados pessoais sensíveis.',
+      '=================================================',
+    );
+
+    fs.writeFileSync(
+      path.join(folderPath, 'comprovante.txt'),
+      lines.join('\r\n'),
+      'utf8',
+    );
+
+    console.log(`[LGPD] Kit salvo em: ${folderPath}`);
+    return { lgpdPath: folderPath };
+  } catch (err) {
+    console.error(`[LGPD] Erro ao salvar kit: ${err.message}`);
+    return { lgpdError: err.message };
+  }
+}
 
 if (!API_TOKEN || !CLOCK_USER || !CLOCK_PASS) {
   console.error('ERRO: API_TOKEN, CLOCK_USER e CLOCK_PASS sao obrigatorios no .env');
@@ -142,7 +240,8 @@ app.post('/rh/offboard', async (req, res) => {
     failed:        results.filter(r => !r.success && !r.alreadyAbsent).length,
   };
 
-  res.json(summary);
+  const lgpdResult = writeLgpdKit(summary);
+  res.json({ ...summary, ...lgpdResult });
 });
 
 // ─── STATUS DE TODOS OS RELÓGIOS ─────────────────────────────────────────────
