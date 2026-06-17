@@ -1,7 +1,6 @@
 require('dotenv').config();
-const fs            = require('fs');
-const path          = require('path');
-const { spawn }     = require('child_process');
+const fs      = require('fs');
+const path    = require('path');
 const express = require('express');
 const { HenryHexa } = require('./henry-hexa');
 
@@ -425,12 +424,8 @@ app.post('/deploy', (req, res) => {
 
   res.json({ success: true, files: results, message: 'Reiniciando em 2s...' });
 
-  // Detached PowerShell: espera 2s, mata este PID, inicia novo processo
-  const pid        = process.pid;
-  const nodePath   = process.execPath;
-  const scriptPath = __filename.replace(/\\/g, '\\\\');
-  const restartCmd = `Start-Sleep -Seconds 2; Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; Start-Process -FilePath "${nodePath}" -ArgumentList "${scriptPath}" -WindowStyle Hidden`;
-  spawn('powershell.exe', ['-Command', restartCmd], { detached: true, stdio: 'ignore' }).unref();
+  // PM2 reinicia automaticamente quando o processo sai — mais confiável que spawn PowerShell
+  setTimeout(() => process.exit(0), 2000);
 });
 
 // Escuta em todas as interfaces para ser acessível via LAN/VPN pelo backend Azure
