@@ -920,7 +920,7 @@ export function EmployeeTable() {
                                 ...(completing === emp.cpf ? styles.actionBtnDisabled : {}),
                               }}
                               onClick={() => handleCompleteCard(emp)}
-                              disabled={completing === emp.cpf || isRemoving}
+                              disabled={!!completing || isRemoving}
                             >
                               {completing === emp.cpf ? 'Atualizando…' : 'Completar Crachá'}
                             </button>
@@ -931,7 +931,7 @@ export function EmployeeTable() {
                               ...(isRemoving ? styles.actionBtnDisabled : {}),
                             }}
                             onClick={() => handleRemove(emp)}
-                            disabled={isRemoving || !!enrollTarget}
+                            disabled={isRemoving || !!enrollTarget || completing === emp.cpf}
                           >
                             {isRemoving ? 'Removendo…' : 'Remover'}
                           </button>
