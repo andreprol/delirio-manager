@@ -75,6 +75,9 @@ app.whenReady().then(() => {
   ipcMain.handle('config:get', () => loadConfig())
   ipcMain.handle('config:set', (_, cfg) => { saveConfig(cfg); return true })
 
+  // IPC: abrir pasta no Windows Explorer
+  ipcMain.handle('shell:openPath', (_, folderPath) => shell.openPath(folderPath))
+
   createWindow()
   setupAutoUpdater()
 

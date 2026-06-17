@@ -19,18 +19,21 @@ function formatDateTime(ts) {
 }
 
 function AuditLog() {
-  const [rows, setRows]       = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError]     = useState(null)
+  const [rows, setRows]         = useState([])
+  const [loading, setLoading]   = useState(true)
+  const [error, setError]       = useState(null)
+  const [lgpdPath, setLgpdPath] = useState(null)
 
   async function fetchData() {
     setLoading(true)
     setError(null)
     try {
-      const [offboard, ops] = await Promise.all([
+      const [offboard, ops, lgpdInfo] = await Promise.all([
         api.rh.getOffboardLog(50),
         api.rh.getOperationLog(100),
+        api.rh.getLgpdInfo().catch(() => null),
       ])
+      if (lgpdInfo?.explorerPath) setLgpdPath(lgpdInfo.explorerPath)
       const offboardRows = (offboard || []).map(e => ({ ...e, operation: 'offboard' }))
       const opRows       = (ops || [])
       const merged = [...offboardRows, ...opRows].sort((a, b) => {
@@ -156,13 +159,24 @@ function AuditLog() {
             <span style={s.count}>{rows.length} registro{rows.length !== 1 ? 's' : ''}</span>
           )}
         </div>
-        <button
-          style={s.refreshBtn}
-          onClick={fetchData}
-          disabled={loading}
-        >
-          {loading ? 'Carregando…' : 'Atualizar'}
-        </button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {lgpdPath && (
+            <button
+              style={{ ...s.refreshBtn, background: '#334155' }}
+              onClick={() => window.electronAPI?.openPath(lgpdPath)}
+              title={lgpdPath}
+            >
+              📁 Abrir pasta LGPD
+            </button>
+          )}
+          <button
+            style={s.refreshBtn}
+            onClick={fetchData}
+            disabled={loading}
+          >
+            {loading ? 'Carregando…' : 'Atualizar'}
+          </button>
+        </div>
       </div>
 
       {error && (

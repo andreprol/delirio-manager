@@ -98,5 +98,7 @@ export const api = {
       request('PUT',  '/api/rh/employee',  { cpf, ref2, clockIps }),
     refreshClocks: (clockIps) =>
       request('POST', '/api/rh/employees/refresh', { clockIps }),
+    getLgpdInfo: () =>
+      request('GET', '/api/rh/lgpd-info'),
   },
 }

@@ -258,4 +258,18 @@ router.get('/operation-log', (req, res) => {
   res.json(db.getClockOperationLog(limit, operation));
 });
 
+// GET /api/rh/lgpd-info
+// Retorna o caminho UNC da pasta LGPD para o Electron abrir no Windows Explorer
+router.get('/lgpd-info', async (req, res) => {
+  if (!CLOCK_PROXY_TOKEN) {
+    return res.status(500).json({ error: 'CLOCK_PROXY_TOKEN nao configurado' });
+  }
+  try {
+    const result = await callClockProxy('/rh/lgpd-info', null, 'GET');
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ error: 'Falha ao conectar com o clock-proxy', detail: err.message });
+  }
+});
+
 module.exports = router;

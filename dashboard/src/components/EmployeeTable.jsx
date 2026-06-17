@@ -671,8 +671,8 @@ export function EmployeeTable() {
           ? `"${emp.name}" removido de ${result.removed} relógio(s).`
           : `Removido de ${result.removed}, falhou em ${result.failed}.`,
         clocks: clockChips,
-        detail: result.lgpdPath
-          ? `📁 Comprovante LGPD: ${result.lgpdPath}`
+        detail: result.lgpdExplorerPath
+          ? `📁 Comprovante LGPD: ${result.lgpdExplorerPath}`
           : result.lgpdError
           ? `⚠️ Comprovante LGPD não salvo: ${result.lgpdError}`
           : null,

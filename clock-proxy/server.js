@@ -11,7 +11,8 @@ const CLOCK_USER = process.env.CLOCK_USER;
 const CLOCK_PASS = process.env.CLOCK_PASS;
 const CLOCK_IPS  = (process.env.CLOCK_IPS || '')
   .split(',').map(ip => ip.trim()).filter(Boolean);
-const LGPD_DIR   = process.env.LGPD_DIR || 'G:\\CENTRAL\\LGPD';
+const LGPD_DIR           = process.env.LGPD_DIR           || 'G:\\CENTRAL\\LGPD\\06_Evidências_e_Registros\\Exclusoes_Biometria';
+const LGPD_EXPLORER_PATH = process.env.LGPD_EXPLORER_PATH || '\\\\fileservergeral.file.core.windows.net\\escritoriocentral\\CENTRAL\\LGPD\\06_Evidências_e_Registros\\Exclusoes_Biometria';
 
 const IP_TO_STORE = {
   '192.168.15.151': 'Gávea',
@@ -102,13 +103,15 @@ function writeLgpdKit(summary) {
       'utf8',
     );
 
-    console.log(`[LGPD] Kit salvo em: ${folderPath}`);
-    return { lgpdPath: folderPath };
+    const explorerPath = path.join(LGPD_EXPLORER_PATH, folderName);
+    console.log(`[LGPD] Kit salvo em: ${folderPath} | UNC: ${explorerPath}`);
+    return { lgpdExplorerPath: explorerPath, lgpdExplorerBase: LGPD_EXPLORER_PATH };
   } catch (err) {
     console.error(`[LGPD] Erro ao salvar kit: ${err.message}`);
     return { lgpdError: err.message };
   }
 }
+
 
 if (!API_TOKEN || !CLOCK_USER || !CLOCK_PASS) {
   console.error('ERRO: API_TOKEN, CLOCK_USER e CLOCK_PASS sao obrigatorios no .env');
@@ -242,6 +245,12 @@ app.post('/rh/offboard', async (req, res) => {
 
   const lgpdResult = writeLgpdKit(summary);
   res.json({ ...summary, ...lgpdResult });
+});
+
+// ─── LGPD INFO ───────────────────────────────────────────────────────────────
+// Retorna o caminho UNC da pasta de evidências LGPD (para o Electron abrir no Explorer)
+app.get('/rh/lgpd-info', (req, res) => {
+  res.json({ explorerPath: LGPD_EXPLORER_PATH });
 });
 
 // ─── STATUS DE TODOS OS RELÓGIOS ─────────────────────────────────────────────
