@@ -321,6 +321,7 @@ export function EmployeeTable() {
   // Operation status
   const [opStatus, setOpStatus]   = useState(null) // { type, title, clocks }
   const [removing, setRemoving]   = useState(null) // cpf being removed
+  const [completing, setCompleting] = useState(null) // cpf sendo completado
 
   // New employee form
   const [newEmpMode, setNewEmpMode]     = useState(false)
@@ -478,6 +479,32 @@ export function EmployeeTable() {
       setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [] })
     } finally {
       setNewEnrolling(false)
+    }
+  }
+
+  async function handleCompleteCard(emp) {
+    setCompleting(emp.cpf)
+    setOpStatus(null)
+    try {
+      const result = await api.rh.updateCard(emp.cpf, emp.ref2, emp.incompleteIn)
+      const allOk  = result.failed === 0
+      const type   = allOk ? 'success' : result.updated > 0 ? 'partial' : 'error'
+      const clockChips = (result.clocks || []).map(c => ({
+        label: IP_TO_STORE[c.clockIp] || c.clockIp,
+        ok:    c.success,
+      }))
+      setOpStatus({
+        type,
+        title: allOk
+          ? `Crachá atualizado em ${result.updated} relógio(s).`
+          : `Atualizado em ${result.updated}, falhou em ${result.failed}.`,
+        clocks: clockChips,
+      })
+      loadEmployees()
+    } catch (err) {
+      setOpStatus({ type: 'error', title: `Erro ao completar crachá: ${err.message}`, clocks: [] })
+    } finally {
+      setCompleting(null)
     }
   }
 
@@ -782,6 +809,12 @@ export function EmployeeTable() {
             >
               Não divergentes
             </button>
+            <button
+              style={styles.toggleBtn(filter === 'incomplete')}
+              onClick={() => setFilter('incomplete')}
+            >
+              Incompletos
+            </button>
           </div>
           <span style={{ fontSize: '12px', color: 'var(--text-muted, #94a3b8)' }}>
             {filtered.length} exibidos
@@ -879,6 +912,18 @@ export function EmployeeTable() {
                             <span style={{ fontSize: '11px', color: 'var(--yellow, #fbbf24)' }}>
                               Form aberto acima ↑
                             </span>
+                          )}
+                          {isIncomplete(emp) && emp.ref2 && !enrollTarget && (
+                            <button
+                              style={{
+                                ...styles.actionBtn('sync'),
+                                ...(completing === emp.cpf ? styles.actionBtnDisabled : {}),
+                              }}
+                              onClick={() => handleCompleteCard(emp)}
+                              disabled={completing === emp.cpf || isRemoving}
+                            >
+                              {completing === emp.cpf ? 'Atualizando…' : 'Completar Crachá'}
+                            </button>
                           )}
                           <button
                             style={{
