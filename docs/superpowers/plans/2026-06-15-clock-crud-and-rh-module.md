@@ -295,7 +295,7 @@ app.put('/rh/employee', async (req, res) => {
 - [ ] **Step 5: Testar os novos endpoints no Servidor Skill**
 
 ```powershell
-$token = "Bearer be2505efc1b0d0c04902c5279bcb794893de4b547c51b1ee63495f8fa155f7cb"
+$token = "Bearer <CLOCK_PROXY_TOKEN>"
 $h = @{Authorization=$token}
 
 # Testar status de todos os relógios (rápido ~5s)
@@ -1223,7 +1223,7 @@ git push origin master
 ### Ponto 1 — Status dos relógios
 ```powershell
 # No Servidor Skill
-$h = @{Authorization="Bearer be2505efc1b0d0c04902c5279bcb794893de4b547c51b1ee63495f8fa155f7cb"}
+$h = @{Authorization="Bearer <CLOCK_PROXY_TOKEN>"}
 Invoke-RestMethod http://localhost:4321/rh/clocks/status -Headers $h | ConvertTo-Json -Depth 3
 ```
 Esperado: JSON com `reachable` e `unreachable` por IP. Metropolitano provavelmente `reachable: false`.

@@ -174,7 +174,7 @@ param(
   [string]$VmName        = "vm-dt-manager"
 )
 
-$TOKEN = "be2505efc1b0d0c04902c5279bcb794893de4b547c51b1ee63495f8fa155f7cb"
+$TOKEN = "<CLOCK_PROXY_TOKEN>"
 $DIR   = $PSScriptRoot
 
 Write-Host "Lendo arquivos..." -ForegroundColor Cyan
@@ -574,7 +574,7 @@ $henryB64  = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes("F:\RichCl
 $script = @"
 echo "$serverB64" | base64 -d > /tmp/server.js.b64
 echo "$henryB64"  | base64 -d > /tmp/henry-hexa.js.b64
-TOKEN=be2505efc1b0d0c04902c5279bcb794893de4b547c51b1ee63495f8fa155f7cb
+TOKEN=<CLOCK_PROXY_TOKEN>
 curl -sf -X POST http://192.168.14.1:4321/deploy \
   -H "Authorization: Bearer \$TOKEN" \
   -H "Content-Type: application/json" \
@@ -588,7 +588,7 @@ Wait — the above passes base64 inline which can exceed `az vm run-command` lim
 
 ```powershell
 # Fallback manual first deploy: copy files directly via az vm run-command download from GitHub raw
-$TOKEN = "be2505efc1b0d0c04902c5279bcb794893de4b547c51b1ee63495f8fa155f7cb"
+$TOKEN = "<CLOCK_PROXY_TOKEN>"
 az vm run-command invoke `
   --resource-group rg-dt-manager `
   --name vm-dt-manager `
@@ -632,7 +632,7 @@ Invoke-RestMethod http://localhost:4321/health
 From Azure VM via `az vm run-command`:
 
 ```powershell
-$TOKEN = "be2505efc1b0d0c04902c5279bcb794893de4b547c51b1ee63495f8fa155f7cb"
+$TOKEN = "<CLOCK_PROXY_TOKEN>"
 az vm run-command invoke `
   --resource-group rg-dt-manager `
   --name vm-dt-manager `
@@ -645,7 +645,7 @@ Expected output (in `value[0].message`): `{"ok":true,"service":"dt-clock-proxy"}
 - [ ] **Step 5: Test `/deploy` endpoint with a no-op call**
 
 ```powershell
-$TOKEN = "be2505efc1b0d0c04902c5279bcb794893de4b547c51b1ee63495f8fa155f7cb"
+$TOKEN = "<CLOCK_PROXY_TOKEN>"
 az vm run-command invoke `
   --resource-group rg-dt-manager `
   --name vm-dt-manager `

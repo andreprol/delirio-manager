@@ -9,8 +9,21 @@ param(
   [string]$VmName        = "vm-dt-manager"
 )
 
-$TOKEN = "be2505efc1b0d0c04902c5279bcb794893de4b547c51b1ee63495f8fa155f7cb"
+# Lê token do .env local (não commitado) ou da variável de ambiente
 $DIR   = $PSScriptRoot
+$TOKEN = $env:CLOCK_PROXY_TOKEN
+if (-not $TOKEN) {
+  $envFile = "$DIR\.env"
+  if (Test-Path $envFile) {
+    Get-Content $envFile | ForEach-Object {
+      if ($_ -match '^CLOCK_PROXY_TOKEN=(.+)$') { $TOKEN = $Matches[1] }
+    }
+  }
+}
+if (-not $TOKEN) {
+  Write-Error "CLOCK_PROXY_TOKEN nao encontrado. Defina em $DIR\.env ou como variavel de ambiente."
+  exit 1
+}
 
 foreach ($f in @('server.js', 'henry-hexa.js')) {
   if (-not (Test-Path "$DIR\$f")) {
