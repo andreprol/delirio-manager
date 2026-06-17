@@ -163,6 +163,7 @@ git push
 | 1.0.13 | 2026-06-17 | Botão Editar por funcionário (Ref2 NFC), Atualizar offline dinâmico por seleção, auto-desmarca offline ao carregar, backend skip offline antes de Playwright |
 | 1.0.14 | 2026-06-17 | Kit LGPD na remoção: cria G:\CENTRAL\LGPD\{NOME}_{CPF}_{ts}\ com log-remocao.json + comprovante.txt |
 | 1.0.15 | 2026-06-17 | LGPD path UNC (Azure File Share), Option B (06_Evidências_e_Registros\Exclusoes_Biometria), botão "Abrir pasta LGPD" na aba Auditoria via shell.openPath |
+| 1.0.16 | 2026-06-17 | Partial refresh por relógio após operações RH (enroll/editar/remover/completar); fix "Usuário já cadastrado" → success; timeout callClockProxy 15s→90s |
 
 ---
 
