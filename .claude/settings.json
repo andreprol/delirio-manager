@@ -61,7 +61,12 @@
       "Edit(C:\\Users\\fileserver\\.claude\\**)",
       "Edit(C:\\Temp\\**)",
       "Read(C:\\Temp\\**)",
-      "Read(C:\\Users\\fileserver\\AppData\\Local\\Temp\\**)"
+      "Read(C:\\Users\\fileserver\\AppData\\Local\\Temp\\**)",
+      "Read(C:\\Users\\FILESE~1\\AppData\\Local\\Temp\\**)",
+      "mcp__Claude_in_Chrome__navigate",
+      "mcp__Claude_in_Chrome__read_page",
+      "mcp__Claude_in_Chrome__find",
+      "mcp__computer-use__request_access"
     ]
   }
 }
