@@ -247,6 +247,7 @@ class HenryHexa {
   }
 
   // Lista todos os funcionários do relógio (percorre paginação)
+  // Colunas da tabela Henry Hexa ADV: Name | CPF | Ref1 | Ref2 | ...
   async listEmployees() {
     return await this.withBrowser(async (page) => {
       try {
@@ -254,31 +255,58 @@ class HenryHexa {
         await this.navigateToColaborador(page);
 
         const employees = [];
+        const seenCpfs = new Set(); // deduplicação dentro do mesmo relógio
         let pageNum = 1;
 
         while (true) {
+          // Aguarda as linhas estarem presentes antes de ler
+          await page.waitForSelector('tr.painted, tr.unpainted', { timeout: 15000 }).catch(() => {});
+
           const rows = await page.locator('tr.painted, tr.unpainted').all();
+
+          // Captura texto da primeira linha ANTES de clicar próxima página
+          // (usado para detectar quando a página realmente mudou)
+          const firstRowText = rows.length > 0
+            ? (await rows[0].locator('td').first().textContent().catch(() => '')).trim()
+            : '';
+
           for (const row of rows) {
             const cells = await row.locator('td').all();
-            if (cells.length >= 3) {
-              const name = (await cells[0].textContent() || '').trim();
-              const cpf  = (await cells[1].textContent() || '').trim();
-              const refs = (await cells[2].textContent() || '').trim();
-              // Refs column usually shows "ref1 / ref2" or just one value
-              const refParts = refs.split('/').map(s => s.trim());
-              const ref1 = refParts[0] || '';
-              const ref2 = refParts[1] || '';
-              if (name && cpf) {
-                employees.push({ name, cpf, ref1, ref2, refs });
-              }
-            }
+            if (cells.length < 2) continue;
+            const name = (await cells[0].textContent() || '').trim();
+            const cpf  = (await cells[1].textContent() || '').trim();
+            if (!name || !cpf || seenCpfs.has(cpf)) continue;
+            // Tabela Henry Hexa ADV tem colunas separadas: cells[2]=Ref1, cells[3]=Ref2
+            const ref1 = cells.length > 2 ? (await cells[2].textContent() || '').trim() : '';
+            const ref2 = cells.length > 3 ? (await cells[3].textContent() || '').trim() : '';
+            seenCpfs.add(cpf);
+            employees.push({ name, cpf, ref1, ref2 });
           }
 
           pageNum++;
           const nextLink = page.locator('a').filter({ hasText: String(pageNum) });
           if (!(await nextLink.isVisible().catch(() => false))) break;
+
           await nextLink.click();
-          await page.waitForTimeout(600);
+
+          // Espera determinística: aguarda o conteúdo da primeira linha mudar,
+          // garantindo que o servidor do relógio terminou de renderizar a nova página.
+          try {
+            await page.waitForFunction(
+              (prev) => {
+                const firstRow = document.querySelector('tr.painted, tr.unpainted');
+                if (!firstRow) return false;
+                const firstCell = firstRow.querySelector('td');
+                return firstCell && firstCell.textContent.trim() !== prev;
+              },
+              firstRowText,
+              { timeout: 20000 }
+            );
+          } catch {
+            // Timeout aguardando mudança de página — encerra paginação
+            break;
+          }
+          await page.waitForTimeout(300); // buffer mínimo para restante do DOM renderizar
         }
 
         return { success: true, employees, total: employees.length, clockIp: this.ip };
