@@ -338,10 +338,7 @@ class HenryHexa {
       }
     });
   }
-}
 
-  // Diagnóstico: retorna dados brutos das primeiras 5 linhas da tabela de colaboradores.
-  // Usado para inspecionar a estrutura real das colunas sem interferir na leitura normal.
   async debugListEmployees() {
     return await this.withBrowser(async (page) => {
       try {
