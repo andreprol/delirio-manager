@@ -294,14 +294,57 @@ const styles = {
     color: ok ? '#4ade80' : '#f87171',
     border: `1px solid ${ok ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}`,
   }),
+  clockSelectorPanel: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '6px',
+    alignItems: 'center',
+    background: 'var(--card-bg, #1e2530)',
+    border: '1px solid var(--border, #2d3748)',
+    borderRadius: '8px',
+    padding: '8px 12px',
+    marginBottom: '12px',
+    fontSize: '12px',
+  },
+  clockSelectorLabel: {
+    color: 'var(--text-muted, #94a3b8)',
+    fontWeight: 600,
+    marginRight: '4px',
+    whiteSpace: 'nowrap',
+  },
+  clockCheckLabel: (checked, offline) => ({
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    padding: '3px 8px',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    background: checked ? 'rgba(59,130,246,0.15)' : 'transparent',
+    border: `1px solid ${checked ? 'rgba(59,130,246,0.4)' : 'var(--border, #2d3748)'}`,
+    color: offline ? 'var(--text-muted, #94a3b8)' : (checked ? '#93c5fd' : 'var(--text-muted, #94a3b8)'),
+    userSelect: 'none',
+    transition: 'background 0.1s, border 0.1s',
+  }),
+  singleClockBadge: {
+    padding: '2px 8px',
+    borderRadius: '4px',
+    fontSize: '11px',
+    fontWeight: 700,
+    background: 'rgba(251,191,36,0.15)',
+    color: '#fbbf24',
+    border: '1px solid rgba(251,191,36,0.35)',
+    whiteSpace: 'nowrap',
+  },
 }
 
-function isDivergent(emp) {
-  return emp.absentIn && emp.absentIn.length > 0
+function isDivergent(emp, absentIn, incompleteIn) {
+  const a = absentIn     ?? emp.absentIn     ?? []
+  const i = incompleteIn ?? emp.incompleteIn ?? []
+  return a.length > 0 || i.length > 0
 }
 
-function isIncomplete(emp) {
-  return emp.incompleteIn && emp.incompleteIn.length > 0
+function isIncomplete(incompleteIn) {
+  return (incompleteIn ?? []).length > 0
 }
 
 export function EmployeeTable() {
@@ -317,6 +360,9 @@ export function EmployeeTable() {
   const [enrollRef1, setEnrollRef1]     = useState('')
   const [enrollRef2, setEnrollRef2]     = useState('')
   const [enrolling, setEnrolling]       = useState(false)
+
+  // Clock selector — Set of IPs to include; empty Set = all clocks
+  const [selectedClockIps, setSelectedClockIps] = useState(new Set())
 
   // Operation status
   const [opStatus, setOpStatus]   = useState(null) // { type, title, clocks }
@@ -544,14 +590,51 @@ export function EmployeeTable() {
   // Map ip -> bool (true = leitura bem-sucedida nessa rodada)
   const clockStatusMap = Object.fromEntries((data?.clocks ?? []).map(c => [c.ip, c.success]))
 
+  // Clock selector helpers
+  function toggleClock(ip) {
+    setSelectedClockIps(prev => {
+      const next = new Set(prev.size === 0 ? allClockIps : prev)
+      if (next.has(ip)) { next.delete(ip); if (next.size === 0) return new Set() }
+      else next.add(ip)
+      if (next.size === allClockIps.length) return new Set() // all = default
+      return next
+    })
+  }
+  function selectAllClocks() { setSelectedClockIps(new Set()) }
+
+  // Effective clock IPs for display: subset when selector active, all otherwise
+  const displayClockIps = selectedClockIps.size > 0
+    ? allClockIps.filter(ip => selectedClockIps.has(ip))
+    : allClockIps
+  const singleClockMode = displayClockIps.length === 1
+  const allSelected     = selectedClockIps.size === 0
+
+  // Per-employee helper: effective absent/incomplete relative to displayClockIps
+  function effectiveSets(emp) {
+    if (allSelected) {
+      return { absentIn: emp.absentIn ?? [], incompleteIn: emp.incompleteIn ?? [] }
+    }
+    return {
+      absentIn:     (emp.absentIn     ?? []).filter(ip => displayClockIps.includes(ip)),
+      incompleteIn: (emp.incompleteIn ?? []).filter(ip => displayClockIps.includes(ip)),
+    }
+  }
+
   // Filter employees
   const employees = data?.employees || []
   const filtered  = employees.filter(emp => {
+    // Clock-selector: only show employees present in at least one selected clock
+    if (!allSelected) {
+      const presentInSelected = emp.presentIn?.some(ip => displayClockIps.includes(ip))
+      if (!presentInSelected) return false
+    }
     const q = search.trim().toLowerCase()
     if (q && !emp.name.toLowerCase().includes(q) && !emp.cpf.includes(q)) return false
-    if (filter === 'divergent'  && !isDivergent(emp))  return false
-    if (filter === 'synced'     &&  isDivergent(emp))  return false
-    if (filter === 'incomplete' && !isIncomplete(emp)) return false
+    const { absentIn, incompleteIn } = effectiveSets(emp)
+    const divergent = isDivergent(emp, absentIn, incompleteIn)
+    if (filter === 'divergent'  && !divergent)               return false
+    if (filter === 'synced'     &&  divergent)               return false
+    if (filter === 'incomplete' && !isIncomplete(incompleteIn)) return false
     return true
   })
 
@@ -781,6 +864,50 @@ export function EmployeeTable() {
         </div>
       )}
 
+      {/* Clock Selector */}
+      {data && !loading && allClockIps.length > 0 && (
+        <div style={styles.clockSelectorPanel}>
+          <span style={styles.clockSelectorLabel}>Relógios na leitura:</span>
+          <label
+            style={styles.clockCheckLabel(allSelected, false)}
+            onClick={selectAllClocks}
+          >
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={selectAllClocks}
+              style={{ margin: 0, accentColor: '#3b82f6' }}
+            />
+            Todos
+          </label>
+          {allClockIps.map(ip => {
+            const checked = allSelected || selectedClockIps.has(ip)
+            const offline = !clockStatusMap[ip]
+            return (
+              <label
+                key={ip}
+                style={styles.clockCheckLabel(checked, offline)}
+                onClick={() => toggleClock(ip)}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleClock(ip)}
+                  style={{ margin: 0, accentColor: '#3b82f6' }}
+                />
+                {IP_TO_STORE[ip] || ip}
+                {offline && <span style={{ fontSize: '10px', opacity: 0.6 }}> (offline)</span>}
+              </label>
+            )
+          })}
+          {singleClockMode && (
+            <span style={styles.singleClockBadge}>
+              Modo leitura única — {IP_TO_STORE[displayClockIps[0]] || displayClockIps[0]}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Controls */}
       {data && !loading && (
         <div style={styles.controls}>
@@ -832,7 +959,7 @@ export function EmployeeTable() {
                 <th style={styles.th}>CPF</th>
                 <th style={styles.th}>Ref1</th>
                 <th style={styles.th}>Ref2 — Crachá</th>
-                {allClockIps.map(ip => (
+                {displayClockIps.map(ip => (
                   <th key={ip} style={styles.thCenter} title={clockStatusMap[ip] ? ip : `${ip} — offline`}>
                     {IP_TO_STORE[ip] || ip}
                     {!clockStatusMap[ip] && (
@@ -849,7 +976,7 @@ export function EmployeeTable() {
               {filtered.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={5 + allClockIps.length}
+                    colSpan={5 + displayClockIps.length}
                     style={{ ...styles.td, textAlign: 'center', color: 'var(--text-muted, #94a3b8)', padding: '24px' }}
                   >
                     Nenhum funcionário encontrado.
@@ -857,31 +984,45 @@ export function EmployeeTable() {
                 </tr>
               ) : (
                 filtered.map(emp => {
-                  const divergent = isDivergent(emp)
-                  const rowStyle  = divergent ? styles.trDivergent : styles.trNormal
+                  const { absentIn: effAbsent, incompleteIn: effIncomplete } = effectiveSets(emp)
+                  const divergent  = isDivergent(emp, effAbsent, effIncomplete)
+                  const incomplete = isIncomplete(effIncomplete)
+                  const rowStyle   = divergent ? styles.trDivergent : styles.trNormal
                   const isRemoving = removing === emp.cpf
+
+                  // In single-clock mode, show ref2 empty if that clock doesn't have it
+                  const displayRef2 = (singleClockMode && emp.incompleteIn?.includes(displayClockIps[0]))
+                    ? ''
+                    : emp.ref2
+
+                  const absentStores     = effAbsent.map(ip => IP_TO_STORE[ip] || ip)
+                  const incompleteStores = effIncomplete.map(ip => IP_TO_STORE[ip] || ip)
+                  const tooltipLines = []
+                  if (absentStores.length)     tooltipLines.push(`Ausente em: ${absentStores.join(', ')}`)
+                  if (incompleteStores.length) tooltipLines.push(`Sem crachá NFC em: ${incompleteStores.join(', ')}`)
+                  const warningTooltip = tooltipLines.join('\n') || 'Divergente'
 
                   return (
                     <tr key={emp.cpf} style={rowStyle}>
                       <td style={styles.td}>
                         {divergent && (
-                          <span title="Divergente" style={{ marginRight: '5px', fontSize: '12px' }}>⚠️</span>
+                          <span title={warningTooltip} style={{ marginRight: '5px', fontSize: '12px', cursor: 'help' }}>⚠️</span>
                         )}
                         {emp.name}
                       </td>
                       <td style={{ ...styles.td, ...styles.cpfText }}>{emp.cpf}</td>
                       <td style={{ ...styles.td, ...styles.cpfText }}>{emp.ref1 || '—'}</td>
-                      <td style={{ ...styles.td, ...styles.cpfText }}>{emp.ref2 || '—'}</td>
-                      {allClockIps.map(ip => {
-                        const clockOk    = clockStatusMap[ip]
-                        const present    = emp.presentIn?.includes(ip)
-                        const incomplete = emp.incompleteIn?.includes(ip)
+                      <td style={{ ...styles.td, ...styles.cpfText }}>{displayRef2 || '—'}</td>
+                      {displayClockIps.map(ip => {
+                        const clockOk      = clockStatusMap[ip]
+                        const present      = emp.presentIn?.includes(ip)
+                        const incompleteIp = emp.incompleteIn?.includes(ip)
                         let content, title, extraStyle = {}
                         if (!clockOk) {
                           content    = '—'
                           title      = 'Relógio offline nesta leitura'
                           extraStyle = { color: 'var(--text-muted, #94a3b8)' }
-                        } else if (present && incomplete) {
+                        } else if (present && incompleteIp) {
                           content = '⚠️'
                           title   = 'Presente mas crachá NFC ausente neste relógio'
                         } else if (present) {
@@ -899,7 +1040,7 @@ export function EmployeeTable() {
                       })}
                       <td style={styles.td}>
                         <div style={styles.actionsCell}>
-                          {divergent && !enrollTarget && (
+                          {divergent && !singleClockMode && !enrollTarget && (
                             <button
                               style={styles.actionBtn('sync')}
                               onClick={() => openEnrollForm(emp)}
@@ -913,7 +1054,7 @@ export function EmployeeTable() {
                               Form aberto acima ↑
                             </span>
                           )}
-                          {isIncomplete(emp) && emp.ref2 && !enrollTarget && (
+                          {incomplete && emp.ref2 && !singleClockMode && !enrollTarget && (
                             <button
                               style={{
                                 ...styles.actionBtn('sync'),

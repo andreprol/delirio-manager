@@ -276,17 +276,29 @@ class HenryHexa {
             const name = (await cells[0].textContent() || '').trim();
             const cpf  = (await cells[1].textContent() || '').trim();
             if (!name || !cpf || seenCpfs.has(cpf)) continue;
-            // Tabela Henry Hexa ADV: coluna Refs pode ser combinada "ref1 / ref2" (3 colunas)
-            // ou separada cells[2]=Ref1, cells[3]=Ref2 (4 colunas). Trata ambos os casos.
+            // Henry Hexa ADV list: 3 colunas (Name, CPF, Refs).
+            // cells[2] contém Ref1 e Ref2 CONCATENADOS sem separador, cada um zero-padded
+            // até 20 chars → total 40 chars quando ambos preenchidos.
+            // Ex: "000000000028979833930000000000619978613" = Ref1(20) + Ref2(20)
             const refsRaw = cells.length > 2 ? (await cells[2].textContent() || '').trim() : '';
             let ref1 = refsRaw, ref2 = '';
+            // Fallback: alguns firmwares têm 4 colunas separadas
             if (cells.length > 3) {
               ref2 = (await cells[3].textContent() || '').trim();
             }
+            // Fallback: formato "ref1 / ref2" com barra
             if (!ref2 && refsRaw.includes('/')) {
               const parts = refsRaw.split('/').map(s => s.trim());
               ref1 = parts[0] || refsRaw;
               ref2 = parts[1] || '';
+            }
+            // Formato principal: concatenação Ref1(20) + Ref2(20)
+            if (!ref2) {
+              const stripped = refsRaw.replace(/\s/g, '');
+              if (stripped.length > 20) {
+                ref1 = stripped.slice(0, 20);
+                ref2 = stripped.slice(20);
+              }
             }
             seenCpfs.add(cpf);
             employees.push({ name, cpf, ref1, ref2 });
