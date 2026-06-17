@@ -429,6 +429,27 @@ export function EmployeeTable() {
     }
   }
 
+  // Partial refresh of only the target clocks — used after enroll/edit/remove.
+  // Does NOT touch opStatus or loading state so the operation result stays visible.
+  async function refreshTargetClocks(clockIps) {
+    if (!clockIps || clockIps.length === 0) return
+    try {
+      await api.rh.refreshClocks(clockIps)
+      let attempts = 0
+      while (attempts < 60) {
+        await new Promise(r => setTimeout(r, 5000))
+        const result = await api.rh.getEmployees()
+        if (!result._pending) {
+          applyData(result)
+          break
+        }
+        attempts++
+      }
+    } catch (_) {
+      // silent — operation result already shown in opStatus
+    }
+  }
+
   async function loadEmployees() {
     setShowWarning(false)
     setLoading(true)
@@ -515,7 +536,7 @@ export function EmployeeTable() {
         clocks: clockChips,
       })
       closeEnrollForm()
-      loadEmployees()
+      refreshTargetClocks(clockIps)
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [] })
     } finally {
@@ -571,7 +592,7 @@ export function EmployeeTable() {
         clocks: clockChips,
       })
       closeNewEmpForm()
-      loadEmployees()
+      refreshTargetClocks((result.clocks || []).map(c => c.clockIp))
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [] })
     } finally {
@@ -616,7 +637,7 @@ export function EmployeeTable() {
         clocks: clockChips,
       })
       closeEditForm()
-      loadEmployees()
+      refreshTargetClocks(editTarget.presentIn || [])
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao salvar: ${err.message}`, clocks: [] })
     } finally {
@@ -642,7 +663,7 @@ export function EmployeeTable() {
           : `Atualizado em ${result.updated}, falhou em ${result.failed}.`,
         clocks: clockChips,
       })
-      loadEmployees()
+      refreshTargetClocks(emp.incompleteIn || [])
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao completar crachá: ${err.message}`, clocks: [] })
     } finally {
@@ -677,7 +698,7 @@ export function EmployeeTable() {
           ? `⚠️ Comprovante LGPD não salvo: ${result.lgpdError}`
           : null,
       })
-      loadEmployees()
+      refreshTargetClocks((result.clocks || []).map(c => c.clockIp))
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao remover: ${err.message}`, clocks: [] })
     } finally {
