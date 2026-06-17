@@ -147,15 +147,22 @@ git push
 
 | Versão | Data | Mudança |
 |---|---|---|
-| 1.0.0 | 2026-06-05 | Release inicial |
-| 1.0.1 | 2026-06-16 | Busca ao vivo + fixes de layout |
-| 1.0.2 | 2026-06-16 | RH Module: ClockStatusGrid |
-| 1.0.3 | 2026-06-16 | RH button redesign + full-screen |
-| 1.0.4 | 2026-06-16 | Alerts panel fix topbar |
-| 1.0.5 | 2026-06-16 | Fix IP Niterói 192.168.20.150→192.168.10.150 (reachable: 6→7) |
-| 1.0.6 | 2026-06-16 | /rh/employees assíncrono — background job + cache + polling frontend |
-| 1.0.8 | 2026-06-16 | Versão no topbar + cache de funcionários entre trocas de aba |
-| 1.0.7 | 2026-06-16 | EmployeeTable: coluna Ref2, filtro Não divergentes, botão Novo Funcionário |
+| 1.0.0  | 2026-06-05 | Release inicial |
+| 1.0.1  | 2026-06-16 | Busca ao vivo + fixes de layout |
+| 1.0.2  | 2026-06-16 | RH Module: ClockStatusGrid |
+| 1.0.3  | 2026-06-16 | RH button redesign + full-screen |
+| 1.0.4  | 2026-06-16 | Alerts panel fix topbar |
+| 1.0.5  | 2026-06-16 | Fix IP Niterói 192.168.20.150→192.168.10.150 (reachable: 6→7) |
+| 1.0.6  | 2026-06-16 | /rh/employees assíncrono — background job + cache + polling frontend |
+| 1.0.7  | 2026-06-16 | EmployeeTable: coluna Ref2, filtro Não divergentes, botão Novo Funcionário |
+| 1.0.8  | 2026-06-16 | Versão no topbar + cache de funcionários entre trocas de aba |
+| 1.0.9  | 2026-06-17 | allClockIps, 4 estados ✅/⚠️/❌/—, filtro Incompletos, Completar Crachá, POST /deploy, deploy-remote.ps1 |
+| 1.0.10 | 2026-06-17 | Tooltip no ⚠️ com lojas ausentes e lojas sem crachá |
+| 1.0.11 | 2026-06-17 | Correção crítica ref2 (concat 40-char), isDivergent expandido, seletor de relógios |
+| 1.0.12 | 2026-06-17 | ref2 confirmado em produção, partial refresh, debug endpoint, PM2, deploy via process.exit(0), Task Scheduler startup |
+| 1.0.13 | 2026-06-17 | Botão Editar por funcionário (Ref2 NFC), Atualizar offline dinâmico por seleção, auto-desmarca offline ao carregar, backend skip offline antes de Playwright |
+| 1.0.14 | 2026-06-17 | Kit LGPD na remoção: cria G:\CENTRAL\LGPD\{NOME}_{CPF}_{ts}\ com log-remocao.json + comprovante.txt |
+| 1.0.15 | 2026-06-17 | LGPD path UNC (Azure File Share), Option B (06_Evidências_e_Registros\Exclusoes_Biometria), botão "Abrir pasta LGPD" na aba Auditoria via shell.openPath |
 
 ---
 
