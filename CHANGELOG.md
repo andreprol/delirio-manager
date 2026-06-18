@@ -4,6 +4,31 @@ All notable changes to Delirio Manager are documented here.
 
 ---
 
+## [1.0.20] — 2026-06-18
+
+### Added
+- **NF-Ce search + DANFE**: new "Buscar DANFE" tab in the Aloha module
+  - Filter by BOH server, date range, value range, and product text
+  - Download DANFE as PDF directly from the dashboard
+  - Send DANFE by email with PDF attachment — mandatory CC to bruno@delirio.com.br and suporteti@delirio.com.br
+- **Agent v1.5.3**: new `aloha-index-nfce-day` command — parses all NF-Ce XMLs from `C:\Bootdrv\AlohaFiscal\ServerData\XML\{DD}\NFCe\`, extracts chave, date, value, products, payment, QR code
+- **Server**: `nfce_index` SQLite table with full-text product search and date/value filters
+- **Server**: `routes/aloha.js` — six new endpoints: trigger indexing, index status, NF-Ce search, get by chave, download DANFE PDF, send email
+- **Server**: `services/danfe.js` — DANFE NFC-e PDF generation with pdfkit
+- **Server**: `services/nfce-mailer.js` — nodemailer email with HTML DANFE + PDF attachment
+- **Server**: automatic indexer scheduled at 23:00 — sends indexing commands to all online BOH machines for the current month
+- **Server**: JSON body limit increased from 1MB to 5MB to accommodate indexing responses
+
+---
+
+## [1.0.19] — 2026-06-18
+
+### Changed
+- **Aloha module**: removed manual "🔍 Escanear" button — scanning is now fully automatic on expand
+- **Agent v1.5.2**: `aloha-scan` now scans `.DBF` files (dBASE Aloha database) instead of SQL Server files; walks `C:\Bootdrv` (skipping AlohaFiscal subtree) and lists top 10 most recent NF-Ce XMLs from `C:\Bootdrv\AlohaFiscal\ServerData\XML`
+
+---
+
 ## [1.0.18] — 2026-06-18
 
 ### Changed

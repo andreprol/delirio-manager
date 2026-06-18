@@ -140,7 +140,22 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
   }
 
   try {
+    // Look up command type before ACKing (type doesn't change, but need it for post-processing)
+    const cmd = db.getCommandById(commandId);
     db.ackCommand(commandId, req.machine.id, success !== false, message || '');
+
+    // Post-process: upsert NF-Ce records when indexing succeeds
+    if (cmd && cmd.type === 'aloha-index-nfce-day' && success !== false && message) {
+      try {
+        const result = JSON.parse(message);
+        if (Array.isArray(result.records) && result.records.length > 0) {
+          db.upsertNFCeRecords(req.machine.id, result.records);
+          console.log(`[NFCe] ${req.machine.id} day=${result.day}: ${result.records.length} registros indexados`);
+        }
+      } catch (e) {
+        console.error('[NFCe] Falha ao indexar registros:', e.message);
+      }
+    }
 
     broadcast('command:acked', {
       commandId,

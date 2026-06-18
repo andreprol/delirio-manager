@@ -67,8 +67,34 @@ export const api = {
 
   // Aloha BOH scan
   aloha: {
-    scan:      (id) => request('POST', `/api/machines/${id}/commands`, { type: 'aloha-scan', params: {} }),
-    getLatest: (id) => request('GET',  `/api/machines/${id}/aloha`),
+    scan:         (id) => request('POST', `/api/machines/${id}/commands`, { type: 'aloha-scan', params: {} }),
+    getLatest:    (id) => request('GET',  `/api/machines/${id}/aloha`),
+    triggerIndex: (id) => request('POST', `/api/aloha/${id}/index/trigger`),
+    indexStatus:  (id) => request('GET',  `/api/aloha/${id}/index/status`),
+  },
+
+  // NF-Ce search + DANFE
+  nfce: {
+    search: (machineId, { dateFrom, dateTo, valueMin, valueMax, product, limit = 50, offset = 0 } = {}) => {
+      const p = new URLSearchParams({ machineId })
+      if (dateFrom)  p.set('dateFrom',  dateFrom)
+      if (dateTo)    p.set('dateTo',    dateTo)
+      if (valueMin != null && valueMin !== '') p.set('valueMin', valueMin)
+      if (valueMax != null && valueMax !== '') p.set('valueMax', valueMax)
+      if (product)   p.set('product',   product)
+      p.set('limit', limit)
+      p.set('offset', offset)
+      return request('GET', `/api/aloha/search?${p}`)
+    },
+    getByChave: (machineId, chave) =>
+      request('GET', `/api/aloha/nfce/${chave}?machineId=${machineId}`),
+    downloadDanfe: async (machineId, chave, nNF) => {
+      const res = await fetch(`${serverUrl}/api/aloha/nfce/${chave}/danfe?machineId=${machineId}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.blob()
+    },
+    sendEmail: (machineId, chave, toEmail, extraCCs = []) =>
+      request('POST', `/api/aloha/nfce/${chave}/email`, { machineId, toEmail, extraCCs }),
   },
 
   // Health

@@ -167,6 +167,26 @@ function migrate(db) {
 
     CREATE INDEX IF NOT EXISTS idx_clock_op_log_operation
       ON clock_operation_log(operation, timestamp);
+
+    CREATE TABLE IF NOT EXISTS nfce_index (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      machine_id    TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      chave         TEXT NOT NULL,
+      n_nf          INTEGER,
+      dh_emi        TEXT NOT NULL,
+      v_nf          REAL NOT NULL,
+      day_folder    TEXT NOT NULL,
+      month_year    TEXT NOT NULL,
+      products_text TEXT NOT NULL DEFAULT '',
+      danfe_json    TEXT NOT NULL DEFAULT '{}',
+      indexed_at    TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_nfce_machine_chave
+      ON nfce_index(machine_id, chave);
+
+    CREATE INDEX IF NOT EXISTS idx_nfce_dh_emi
+      ON nfce_index(machine_id, dh_emi);
   `);
 
   // Migrações incrementais — seguras para rodar múltiplas vezes
@@ -595,6 +615,78 @@ function getClockOperationLog(limit = 100, operation = null) {
   return getDb().prepare(q).all(...args);
 }
 
+// ── NF-Ce Index ───────────────────────────────────────────────────────────────
+
+function getCommandById(id) {
+  return getDb().prepare('SELECT id, machine_id, type, params, status FROM commands WHERE id = ?').get(id);
+}
+
+function upsertNFCeRecords(machineId, records) {
+  const d   = getDb();
+  const now = new Date().toISOString();
+  const stmt = d.prepare(`
+    INSERT INTO nfce_index
+      (machine_id, chave, n_nf, dh_emi, v_nf, day_folder, month_year, products_text, danfe_json, indexed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(machine_id, chave) DO UPDATE SET
+      n_nf          = excluded.n_nf,
+      dh_emi        = excluded.dh_emi,
+      v_nf          = excluded.v_nf,
+      products_text = excluded.products_text,
+      danfe_json    = excluded.danfe_json,
+      indexed_at    = excluded.indexed_at
+  `);
+  d.transaction((recs) => {
+    for (const r of recs) {
+      const monthYear    = (r.dh_emi || '').slice(0, 7);
+      const productsText = (r.danfe?.products || []).map(p => p.xProd || '').join(' | ');
+      stmt.run(
+        machineId, r.chave, r.n_nf || 0, r.dh_emi || '',
+        r.v_nf || 0, r.day_folder || '', monthYear,
+        productsText, JSON.stringify(r.danfe || {}), now
+      );
+    }
+  })(records);
+}
+
+function searchNFCe({ machineId, dateFrom, dateTo, valueMin, valueMax, product, limit = 50, offset = 0 }) {
+  const d          = getDb();
+  const conditions = ['machine_id = ?'];
+  const args       = [machineId];
+
+  if (dateFrom) { conditions.push("dh_emi >= ?");          args.push(dateFrom); }
+  if (dateTo)   { conditions.push("dh_emi <= ?");          args.push(dateTo + 'T23:59:59'); }
+  if (valueMin != null) { conditions.push('v_nf >= ?');    args.push(valueMin); }
+  if (valueMax != null) { conditions.push('v_nf <= ?');    args.push(valueMax); }
+  if (product)  { conditions.push('products_text LIKE ?'); args.push(`%${product}%`); }
+
+  const where = conditions.join(' AND ');
+  const total = d.prepare(`SELECT COUNT(*) as c FROM nfce_index WHERE ${where}`).get(...args).c;
+  const rows  = d.prepare(`
+    SELECT id, chave, n_nf, dh_emi, v_nf, day_folder, month_year, products_text, indexed_at
+    FROM nfce_index WHERE ${where}
+    ORDER BY dh_emi DESC LIMIT ? OFFSET ?
+  `).all(...args, limit, offset);
+
+  return { total, results: rows };
+}
+
+function getNFCeByChave(machineId, chave) {
+  const row = getDb().prepare(
+    'SELECT * FROM nfce_index WHERE machine_id = ? AND chave = ?'
+  ).get(machineId, chave);
+  if (!row) return null;
+  return { ...row, danfe: JSON.parse(row.danfe_json || '{}') };
+}
+
+function getNFCeIndexStatus(machineId) {
+  return getDb().prepare(`
+    SELECT month_year, COUNT(*) as total, MAX(indexed_at) as last_indexed
+    FROM nfce_index WHERE machine_id = ?
+    GROUP BY month_year ORDER BY month_year DESC LIMIT 12
+  `).all(machineId);
+}
+
 module.exports = {
   getDb,
   // machines
@@ -620,4 +712,6 @@ module.exports = {
   logClockOffboard, getClockOffboardLog,
   // rh / clock operation log
   logClockOperation, getClockOperationLog,
+  // nfce index
+  getCommandById, upsertNFCeRecords, searchNFCe, getNFCeByChave, getNFCeIndexStatus,
 };

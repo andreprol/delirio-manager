@@ -108,6 +108,25 @@ func (a *Agent) executeCommand(cmd Command) (string, error) {
 		}
 		return string(data), nil
 
+	case "aloha-index-nfce-day":
+		var params struct {
+			Month string `json:"month"` // "YYYY-MM"
+			Day   string `json:"day"`   // "01"
+		}
+		if err := json.Unmarshal(cmd.Params, &params); err != nil {
+			return "", fmt.Errorf("params aloha-index-nfce-day invalidos: %w", err)
+		}
+		if params.Month == "" || params.Day == "" {
+			return "", fmt.Errorf("month e day obrigatorios")
+		}
+		logInfo(fmt.Sprintf("Comando ALOHA-INDEX-NFCE-DAY: month=%s day=%s", params.Month, params.Day))
+		result := indexNFCeDay(params.Month, params.Day)
+		s, err := nfceRecordToJSON(result)
+		if err != nil {
+			return "", fmt.Errorf("erro ao serializar index NF-Ce: %w", err)
+		}
+		return s, nil
+
 	default:
 		return "", fmt.Errorf("tipo de comando desconhecido: %q", cmd.Type)
 	}

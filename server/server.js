@@ -19,6 +19,7 @@ const insightRoutes  = require('./routes/insights');
 const reportRoutes   = require('./routes/reports');
 const settingsRoutes = require('./routes/settings');
 const rhRoutes       = require('./routes/rh');
+const alohaRoutes    = require('./routes/aloha');
 
 const PORT    = process.env.PORT    || 3847;
 const VERSION = '1.0.0';
@@ -26,7 +27,7 @@ const VERSION = '1.0.0';
 // ── App Express ───────────────────────────────────────────────────────────────
 const app = express();
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '5mb' }));
 
 // CORS simples para o dashboard Electron (origem local)
 app.use((req, res, next) => {
@@ -70,6 +71,7 @@ app.use('/api/insights', insightRoutes);
 app.use('/api/reports',  reportRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/rh',       rhRoutes);
+app.use('/api/aloha',    alohaRoutes);
 
 // ── Servir o instalador e o binario do agente ─────────────────────────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -165,6 +167,36 @@ server.listen(PORT, () => {
   alertEngine.start();
   insightEngine.start();
 });
+
+// ── NF-Ce indexer — dispara diariamente às 23:00 para servidores BOH ─────────
+let _nfceLastIndexDay = null;
+setInterval(() => {
+  const now  = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  const today = now.toISOString().slice(0, 10);
+  if (hhmm === '23:00' && _nfceLastIndexDay !== today) {
+    _nfceLastIndexDay = today;
+    _triggerNFCeIndexing(now).catch(e => console.error('[NFCe] Erro no scheduler:', e.message));
+  }
+}, 60000); // verifica a cada minuto
+
+async function _triggerNFCeIndexing(now) {
+  const { getAllMachines, createCommand } = require('./db');
+  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const today = now.getDate();
+
+  const boh = getAllMachines().filter(m =>
+    m.hostname?.toUpperCase().endsWith('BOH') && m.status === 'online'
+  );
+  if (!boh.length) return;
+
+  console.log(`[NFCe] Indexação noturna: ${boh.length} BOH, ${month}, dias 01–${String(today).padStart(2,'0')}`);
+  for (const machine of boh) {
+    for (let d = 1; d <= today; d++) {
+      createCommand(machine.id, 'aloha-index-nfce-day', { month, day: String(d).padStart(2, '0') });
+    }
+  }
+}
 
 // Shutdown gracioso
 process.on('SIGTERM', () => {

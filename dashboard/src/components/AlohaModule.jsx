@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '../api'
+import { AlohaDANFESearch } from './AlohaDANFESearch'
 
 const STATUS_COLOR = { online: '#22c55e', offline: '#ef4444', unknown: '#6b7280' }
 
@@ -264,6 +265,7 @@ function BohRow({ machine, expanded, onToggle }) {
 
 export function AlohaModule({ onClose, machines = [] }) {
   const bohMachines = machines.filter(isBOH)
+  const [view,     setView]     = useState('servers') // 'servers' | 'danfe'
   const [expanded, setExpanded] = useState(null)
 
   function toggleExpand(id) {
@@ -303,6 +305,17 @@ export function AlohaModule({ onClose, machines = [] }) {
       cursor: 'pointer',
       flexShrink: 0,
     },
+    tabs: { display: 'flex', gap: '4px' },
+    tab: (active) => ({
+      padding: '5px 14px',
+      background: active ? 'var(--accent, #3b82f6)' : 'transparent',
+      color: active ? '#fff' : 'var(--text-muted)',
+      border: `1px solid ${active ? 'var(--accent, #3b82f6)' : 'var(--border)'}`,
+      borderRadius: '6px',
+      fontSize: '12px',
+      fontWeight: active ? 700 : 400,
+      cursor: 'pointer',
+    }),
     content: { overflowY: 'auto', flex: 1, padding: '20px' },
     empty:   { color: 'var(--text-muted)', fontSize: '13px', marginTop: '40px', textAlign: 'center' },
   }
@@ -314,34 +327,48 @@ export function AlohaModule({ onClose, machines = [] }) {
     <div style={s.overlay}>
       <div style={s.panel}>
         <div style={s.header}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '0' }}>
-            <h2 style={s.title}>🍕 Aloha — Servidores BOH</h2>
-            <span style={s.subtitle}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
+            <h2 style={s.title}>🍕 Aloha</h2>
+            <span style={{ fontSize: '12px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
               {bohMachines.length} servidores
               {onlineCount > 0 && <span style={{ color: '#22c55e' }}> · {onlineCount} online</span>}
               {offlineCount > 0 && <span style={{ color: '#ef4444' }}> · {offlineCount} offline</span>}
             </span>
+            <div style={s.tabs}>
+              <button style={s.tab(view === 'servers')} onClick={() => setView('servers')}>Servidores BOH</button>
+              <button style={s.tab(view === 'danfe')}   onClick={() => setView('danfe')}>🧾 Buscar DANFE</button>
+            </div>
           </div>
           <button style={s.closeBtn} onClick={onClose}>Fechar</button>
         </div>
 
-        <div style={s.content}>
-          {bohMachines.length === 0 ? (
-            <div style={s.empty}>
-              Nenhum servidor BOH encontrado no Delirio Manager.<br />
-              <span style={{ fontSize: '11px' }}>Máquinas BOH têm hostname terminando em BOH (ex: METROBOH, CITTABOH).</span>
+        {view === 'servers' ? (
+          <div style={s.content}>
+            {bohMachines.length === 0 ? (
+              <div style={s.empty}>
+                Nenhum servidor BOH encontrado no Delirio Manager.<br />
+                <span style={{ fontSize: '11px' }}>Máquinas BOH têm hostname terminando em BOH (ex: METROBOH, CITTABOH).</span>
+              </div>
+            ) : (
+              bohMachines.map(machine => (
+                <BohRow
+                  key={machine.id}
+                  machine={machine}
+                  expanded={expanded === machine.id}
+                  onToggle={() => toggleExpand(machine.id)}
+                />
+              ))
+            )}
+          </div>
+        ) : (
+          bohMachines.length === 0 ? (
+            <div style={{ ...s.content, ...s.empty }}>
+              Nenhum servidor BOH encontrado.
             </div>
           ) : (
-            bohMachines.map(machine => (
-              <BohRow
-                key={machine.id}
-                machine={machine}
-                expanded={expanded === machine.id}
-                onToggle={() => toggleExpand(machine.id)}
-              />
-            ))
-          )}
-        </div>
+            <AlohaDANFESearch bohMachines={bohMachines} />
+          )
+        )}
       </div>
     </div>
   )
