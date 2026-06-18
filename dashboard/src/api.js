@@ -65,6 +65,12 @@ export const api = {
   markInsightRead:  (id)        => request('PUT', `/api/insights/${id}/read`),
   generateInsights: ()          => request('POST', '/api/insights/generate'),
 
+  // Aloha BOH scan
+  aloha: {
+    scan:      (id) => request('POST', `/api/machines/${id}/commands`, { type: 'aloha-scan', params: {} }),
+    getLatest: (id) => request('GET',  `/api/machines/${id}/aloha`),
+  },
+
   // Health
   health: () => request('GET', '/health'),
 

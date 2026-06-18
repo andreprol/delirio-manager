@@ -22,6 +22,18 @@ router.get('/:id', (req, res) => {
   res.json(parseMachine(m));
 });
 
+// GET /api/machines/:id/aloha — ultimo scan de C:\Bootdrv
+router.get('/:id/aloha', (req, res) => {
+  const scan = db.getLastAlohaScan(req.params.id);
+  if (!scan) return res.json(null);
+  try {
+    const data = JSON.parse(scan.result);
+    res.json({ ...data, command_id: scan.id, acked_at: scan.acked_at });
+  } catch {
+    res.json(null);
+  }
+});
+
 // GET /api/machines/:id/metrics?hours=24
 router.get('/:id/metrics', (req, res) => {
   const hours = parseInt(req.query.hours) || 24;
@@ -57,7 +69,7 @@ router.post('/:id/commands', (req, res) => {
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 
   const { type, params } = req.body;
-  const allowed = ['reboot', 'shutdown', 'wol', 'cancel-shutdown', 'uninstall'];
+  const allowed = ['reboot', 'shutdown', 'wol', 'cancel-shutdown', 'uninstall', 'aloha-scan'];
 
   if (!type || !allowed.includes(type)) {
     return res.status(400).json({ error: `Tipo invalido. Permitidos: ${allowed.join(', ')}` });

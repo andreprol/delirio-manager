@@ -99,6 +99,15 @@ func (a *Agent) executeCommand(cmd Command) (string, error) {
 		})
 		return fmt.Sprintf("Iniciando atualizacao para v%s", params.Version), nil
 
+	case "aloha-scan":
+		logInfo(fmt.Sprintf("Comando ALOHA-SCAN recebido (ID: %s). Escaneando C:\\Bootdrv...", cmd.ID))
+		scan := scanAloha()
+		data, err := json.Marshal(scan)
+		if err != nil {
+			return "", fmt.Errorf("erro ao serializar scan Aloha: %w", err)
+		}
+		return string(data), nil
+
 	default:
 		return "", fmt.Errorf("tipo de comando desconhecido: %q", cmd.Type)
 	}

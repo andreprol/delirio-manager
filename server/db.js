@@ -383,6 +383,14 @@ function getCommandHistory(machineId, limit = 50) {
   `).all(machineId, limit);
 }
 
+function getLastAlohaScan(machineId) {
+  return getDb().prepare(`
+    SELECT id, result, acked_at FROM commands
+    WHERE machine_id=? AND type='aloha-scan' AND status='acked' AND result IS NOT NULL
+    ORDER BY acked_at DESC LIMIT 1
+  `).get(machineId);
+}
+
 // ── Events ────────────────────────────────────────────────────────────────────
 
 function addEvent(machineId, type, details = '') {
@@ -597,7 +605,7 @@ module.exports = {
   // metrics
   saveMetrics, getMetrics,
   // commands
-  createCommand, getPendingCommands, ackCommand, getCommandHistory,
+  createCommand, getPendingCommands, ackCommand, getCommandHistory, getLastAlohaScan,
   // events
   addEvent, getEvents,
   // alerts
