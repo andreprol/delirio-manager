@@ -101,7 +101,7 @@ body {
 .pill-solo-aloha:hover { background: rgba(251,146,60,.28); color: #fdba74; }
 
 .topbar-left  { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-.topbar-center { display: flex; gap: 8px; flex: 1; min-width: 160px; max-width: 420px; justify-content: center; overflow: hidden; }
+.topbar-center { display: flex; gap: 8px; flex: 1; min-width: 310px; max-width: 420px; justify-content: center; }
 .topbar-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
 .logo { font-weight: 700; font-size: 15px; color: var(--text); white-space: nowrap; }
@@ -127,6 +127,7 @@ body {
   padding: 6px 10px; border-radius: var(--radius);
   background: var(--bg-3); border: 1px solid var(--border);
   color: var(--text); font-size: 13px; outline: none; cursor: pointer;
+  min-width: 95px; flex-shrink: 0;
 }
 
 .stats { display: flex; gap: 8px; }

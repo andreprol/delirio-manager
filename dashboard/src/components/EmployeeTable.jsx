@@ -423,7 +423,7 @@ export function EmployeeTable() {
       }
       if (attempts >= 60) throw new Error('Tempo excedido aguardando relógios')
     } catch (err) {
-      setOpStatus({ type: 'error', title: `Erro ao atualizar: ${err.message}`, clocks: [] })
+      setOpStatus({ type: 'error', title: `Erro ao atualizar: ${err.message}`, clocks: [], detail: err.detail || null })
     } finally {
       setRefreshingOffline(false)
     }
@@ -561,7 +561,7 @@ export function EmployeeTable() {
       }
       refreshTargetClocks(clockIps)
     } catch (err) {
-      setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [] })
+      setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [], detail: err.detail || null })
     } finally {
       setEnrolling(false)
     }
@@ -636,7 +636,7 @@ export function EmployeeTable() {
       }
       refreshTargetClocks((result.clocks || []).map(c => c.clockIp))
     } catch (err) {
-      setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [] })
+      setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [], detail: err.detail || null })
     } finally {
       setNewEnrolling(false)
     }
@@ -692,7 +692,7 @@ export function EmployeeTable() {
       }
       refreshTargetClocks(editTarget.presentIn || [])
     } catch (err) {
-      setOpStatus({ type: 'error', title: `Erro ao salvar: ${err.message}`, clocks: [] })
+      setOpStatus({ type: 'error', title: `Erro ao salvar: ${err.message}`, clocks: [], detail: err.detail || null })
     } finally {
       setEditSaving(false)
     }
@@ -726,7 +726,7 @@ export function EmployeeTable() {
       }
       refreshTargetClocks(emp.incompleteIn || [])
     } catch (err) {
-      setOpStatus({ type: 'error', title: `Erro ao completar crachá: ${err.message}`, clocks: [] })
+      setOpStatus({ type: 'error', title: `Erro ao completar crachá: ${err.message}`, clocks: [], detail: err.detail || null })
     } finally {
       setCompleting(null)
     }
@@ -779,7 +779,7 @@ export function EmployeeTable() {
       }
       refreshTargetClocks((result.clocks || []).map(c => c.clockIp))
     } catch (err) {
-      setOpStatus({ type: 'error', title: `Erro ao remover: ${err.message}`, clocks: [] })
+      setOpStatus({ type: 'error', title: `Erro ao remover: ${err.message}`, clocks: [], detail: err.detail || null })
     } finally {
       setRemoving(null)
     }

@@ -4,6 +4,16 @@ All notable changes to Delirio Manager are documented here.
 
 ---
 
+## [1.0.26] — 2026-06-18
+
+### Fixed
+- **clock-proxy**: scan em background limitado a 3 Chromium simultâneos (lotes de 3 IPs) — elimina OOM que derrubava o processo durante scan de 7 relógios em paralelo
+- **clock-proxy**: `/rh/enroll` agora faz precheck HTTP de reachability antes de abrir Playwright — relógios offline recebem `{ success: false, offline: true }` imediatamente sem desperdiçar 30-60s por clock
+- **dashboard**: erros de conexão com clock-proxy agora exibem o detalhe técnico (`detail`) abaixo da mensagem principal — permite diagnóstico sem acesso aos logs do servidor
+- **dashboard**: topbar não corta mais o texto do select "Todas" — `topbar-center` min-width corrigido (160px → 310px), `overflow: hidden` removido, `filter-select` ganhou `min-width: 95px`
+
+---
+
 ## [1.0.25] — 2026-06-18
 
 ### Added

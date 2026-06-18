@@ -394,32 +394,35 @@ async function runEmployeesInBackground(targetIps) {
   try {
     if (CLOCK_IPS.length === 0) throw new Error('CLOCK_IPS nao configurado no .env');
 
-    // Scan em paralelo: IPs independentes não precisam esperar uns pelos outros.
-    // A ClockQueue garante que, se outro usuário está operando um relógio, o scan
-    // aguarda na fila daquele IP sem bloquear os demais.
-    await Promise.allSettled(ips.map(async (ip) => {
-      const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+    // Scan em lotes de 3 IPs por vez: limita Chromium simultâneos para evitar OOM.
+    // A ClockQueue garante que operações de usuário aguardam na fila por IP sem bloquear os demais.
+    const SCAN_BATCH = 3;
+    for (let i = 0; i < ips.length; i += SCAN_BATCH) {
+      const batch = ips.slice(i, i + SCAN_BATCH);
+      await Promise.allSettled(batch.map(async (ip) => {
+        const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
 
-      // Pré-verifica acessibilidade antes de abrir Playwright (5s timeout via HTTP simples)
-      const reach = await henry.checkReachable();
-      if (!reach.reachable) {
-        console.warn(`[/rh/employees] ${ip}: offline (${reach.error}) — pulando Playwright`);
-        const clockResult = { ip, success: false, employees: [], total: 0, message: 'Relógio offline' };
+        // Pré-verifica acessibilidade antes de abrir Playwright (5s timeout via HTTP simples)
+        const reach = await henry.checkReachable();
+        if (!reach.reachable) {
+          console.warn(`[/rh/employees] ${ip}: offline (${reach.error}) — pulando Playwright`);
+          const clockResult = { ip, success: false, employees: [], total: 0, message: 'Relógio offline' };
+          const idx = _clockResults.findIndex(r => r.ip === ip);
+          if (idx >= 0) _clockResults[idx] = clockResult;
+          else          _clockResults.push(clockResult);
+          return;
+        }
+
+        console.log(`[${new Date().toISOString()}] Buscando funcionarios de ${ip}...`);
+        const result = await clockQueue.run(ip, () => henry.listEmployees());
+        if (!result.success) console.warn(`[/rh/employees] ${ip}: falhou — ${result.message}`);
+
+        const clockResult = { ip, ...result };
         const idx = _clockResults.findIndex(r => r.ip === ip);
         if (idx >= 0) _clockResults[idx] = clockResult;
         else          _clockResults.push(clockResult);
-        return;
-      }
-
-      console.log(`[${new Date().toISOString()}] Buscando funcionarios de ${ip}...`);
-      const result = await clockQueue.run(ip, () => henry.listEmployees());
-      if (!result.success) console.warn(`[/rh/employees] ${ip}: falhou — ${result.message}`);
-
-      const clockResult = { ip, ...result };
-      const idx = _clockResults.findIndex(r => r.ip === ip);
-      if (idx >= 0) _clockResults[idx] = clockResult;
-      else          _clockResults.push(clockResult);
-    }));
+      }));
+    }
 
     _empCache   = buildMasterCache(_clockResults);
     _empCacheAt = Date.now();
@@ -500,6 +503,12 @@ app.post('/rh/enroll', async (req, res) => {
     const results = [];
     for (const ip of targets) {
       const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+      const reach = await henry.checkReachable();
+      if (!reach.reachable) {
+        console.warn(`[/rh/enroll] ${ip}: offline — pulando`);
+        results.push({ clockIp: ip, success: false, offline: true, message: `Relógio offline: ${reach.error || 'sem resposta'}` });
+        continue;
+      }
       const result = await clockQueue.run(ip, () => henry.enrollEmployee({ cpf, name, ref1, ref2, password }));
       results.push({ clockIp: ip, ...result });
     }

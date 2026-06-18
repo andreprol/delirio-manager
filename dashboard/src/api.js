@@ -21,8 +21,10 @@ async function request(method, path, body) {
     return { _pending: true, ...json }
   }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(err.error || `HTTP ${res.status}`)
+    const errData = await res.json().catch(() => ({ error: res.statusText }))
+    const ex = new Error(errData.error || `HTTP ${res.status}`)
+    ex.detail = errData.detail || null
+    throw ex
   }
   const text = await res.text()
   return text ? JSON.parse(text) : null
