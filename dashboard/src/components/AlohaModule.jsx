@@ -1,9 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '../api'
 
 const STATUS_COLOR = { online: '#22c55e', offline: '#ef4444', unknown: '#6b7280' }
 
-// Máquinas BOH são aquelas cujo hostname termina em BOH
 function isBOH(machine) {
   return machine.hostname?.toUpperCase().endsWith('BOH')
 }
@@ -15,7 +14,7 @@ function fmtDate(iso) {
 
 function fmtMB(mb) {
   if (!mb && mb !== 0) return '—'
-  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(0)} MB`
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`
 }
 
 // ── Painel de detalhes de um scan ────────────────────────────────────────────
@@ -37,28 +36,19 @@ function ScanDetail({ scan }) {
     th: { padding: '3px 8px 5px 0', fontWeight: 600, color: 'var(--text-muted)', textAlign: 'left' },
     td: { padding: '4px 8px 4px 0', borderTop: '1px solid var(--border)', verticalAlign: 'top' },
     mono: { fontFamily: 'monospace', fontSize: '11px' },
-    tag: {
-      display: 'inline-block',
-      background: 'var(--bg-hover)',
-      border: '1px solid var(--border)',
-      borderRadius: '4px',
-      padding: '2px 8px',
-      fontSize: '11px',
-      fontFamily: 'monospace',
-      marginRight: '4px',
-      marginBottom: '4px',
-    },
   }
+
+  const dbCount   = scan.database_files?.length || 0
+  const nfceTotal = scan.nfce?.total || 0
 
   return (
     <div>
       {/* Resumo */}
-      <div style={{ ...s.section, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '18px' }}>
+      <div style={{ ...s.section, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '18px' }}>
         {[
-          { label: 'Total de arquivos', value: scan.total_files?.toLocaleString('pt-BR') || '0' },
-          { label: 'Tamanho total',     value: fmtMB(scan.total_size_mb) },
-          { label: 'Banco de dados',    value: `${scan.database_files?.length || 0} arquivo(s)` },
-          { label: 'XMLs fiscais',      value: (scan.xml_fiscal?.total || 0).toLocaleString('pt-BR') },
+          { label: 'Banco de dados',  value: `${dbCount} arquivo${dbCount !== 1 ? 's' : ''} DBF` },
+          { label: 'NF-Ce emitidas',  value: nfceTotal.toLocaleString('pt-BR') },
+          { label: 'NF-Ce mais recente', value: scan.nfce?.latest_date || '—' },
         ].map(({ label, value }) => (
           <div key={label} style={{
             background: 'var(--bg-card)',
@@ -72,18 +62,10 @@ function ScanDetail({ scan }) {
         ))}
       </div>
 
-      {/* Pastas */}
-      {scan.directories?.length > 0 && (
-        <div style={s.section}>
-          <div style={s.sectionTitle}>📁 Pastas em C:\Bootdrv</div>
-          <div>{scan.directories.map(d => <span key={d} style={s.tag}>{d}</span>)}</div>
-        </div>
-      )}
-
-      {/* Banco de Dados */}
+      {/* Banco de Dados DBF */}
       <div style={s.section}>
-        <div style={s.sectionTitle}>🗄️ Banco de Dados ({scan.database_files?.length || 0})</div>
-        {scan.database_files?.length > 0 ? (
+        <div style={s.sectionTitle}>🗄️ Banco de Dados — {dbCount} arquivo{dbCount !== 1 ? 's' : ''} DBF</div>
+        {dbCount > 0 ? (
           <table style={s.table}>
             <thead>
               <tr>
@@ -95,7 +77,7 @@ function ScanDetail({ scan }) {
             <tbody>
               {scan.database_files.map((f, i) => (
                 <tr key={i}>
-                  <td style={{ ...s.td, ...s.mono, maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.path}>{f.path}</td>
+                  <td style={{ ...s.td, ...s.mono }}>{f.path}</td>
                   <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>{fmtMB(f.size_mb)}</td>
                   <td style={{ ...s.td, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{f.mod_time?.slice(0, 10)}</td>
                 </tr>
@@ -103,55 +85,43 @@ function ScanDetail({ scan }) {
             </tbody>
           </table>
         ) : (
-          <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>Nenhum arquivo de banco encontrado</span>
+          <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>Nenhum arquivo DBF encontrado em C:\Bootdrv</span>
         )}
       </div>
 
-      {/* XMLs Fiscais */}
+      {/* NF-Ce */}
       <div style={s.section}>
         <div style={s.sectionTitle}>
-          📄 XMLs Fiscais — {(scan.xml_fiscal?.total || 0).toLocaleString('pt-BR')} arquivos
-          {scan.xml_fiscal?.latest_date && (
-            <span style={{ fontWeight: 400, color: 'var(--text-muted)', textTransform: 'none', marginLeft: '8px', fontSize: '11px' }}>
-              · mais recente: {scan.xml_fiscal.latest_date}
+          📄 NF-Ce — {nfceTotal.toLocaleString('pt-BR')} documentos
+          {!scan.nfce?.path_exists && (
+            <span style={{ fontWeight: 400, color: 'var(--red)', textTransform: 'none', marginLeft: '8px', fontSize: '11px' }}>
+              · pasta AlohaFiscal não encontrada
             </span>
           )}
         </div>
-        {scan.xml_fiscal?.recent?.length > 0 ? (
+        {scan.nfce?.recent?.length > 0 ? (
           <table style={s.table}>
             <thead>
               <tr>
-                <th style={s.th}>Arquivo</th>
+                <th style={s.th}>Arquivo XML</th>
                 <th style={s.th}>Data</th>
               </tr>
             </thead>
             <tbody>
-              {scan.xml_fiscal.recent.map((f, i) => (
+              {scan.nfce.recent.map((f, i) => (
                 <tr key={i}>
-                  <td style={{ ...s.td, ...s.mono, maxWidth: '360px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.path}>{f.path}</td>
+                  <td style={{ ...s.td, ...s.mono, maxWidth: '400px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.path}>{f.path}</td>
                   <td style={{ ...s.td, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{f.mod_time?.slice(0, 10)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         ) : (
-          <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>Nenhum XML encontrado</span>
+          <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+            {scan.nfce?.path_exists ? 'Nenhum XML encontrado' : 'Caminho C:\\Bootdrv\\AlohaFiscal\\ServerData\\XML não existe neste servidor'}
+          </span>
         )}
       </div>
-
-      {/* Configs */}
-      {scan.config_files?.length > 0 && (
-        <div style={s.section}>
-          <div style={s.sectionTitle}>⚙️ Configurações ({scan.config_files.length})</div>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-            {scan.config_files.map((f, i) => (
-              <div key={i} style={{ fontFamily: 'monospace', marginBottom: '2px' }}>
-                {f.path} <span style={{ color: 'var(--text)' }}>({fmtMB(f.size_mb)})</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {scan.error && (
         <div style={{ color: 'var(--red)', fontSize: '12px', marginTop: '8px' }}>⚠ {scan.error}</div>
@@ -163,10 +133,12 @@ function ScanDetail({ scan }) {
 // ── Linha de uma máquina BOH ─────────────────────────────────────────────────
 
 function BohRow({ machine, expanded, onToggle }) {
-  const [scan,     setScan]     = useState(null)
-  const [loading,  setLoading]  = useState(false)
-  const [scanning, setScanning] = useState(false)
-  const [error,    setError]    = useState(null)
+  const [scan,          setScan]          = useState(null)
+  const [loading,       setLoading]       = useState(false)
+  const [autoScanning,  setAutoScanning]  = useState(false)
+  const [error,         setError]         = useState(null)
+  const didLoadRef     = useRef(false)
+  const didAutoScanRef = useRef(false)
 
   const loadScan = useCallback(async () => {
     setLoading(true)
@@ -174,28 +146,40 @@ function BohRow({ machine, expanded, onToggle }) {
     try {
       const data = await api.aloha.getLatest(machine.id)
       setScan(data)
+      return data
     } catch (e) {
       setError(e.message)
+      return null
     } finally {
       setLoading(false)
     }
   }, [machine.id])
 
   useEffect(() => {
-    if (expanded && !scan && !loading) loadScan()
-  }, [expanded, scan, loading, loadScan])
+    if (!expanded || didLoadRef.current) return
+    didLoadRef.current = true
 
-  async function handleScan() {
-    setScanning(true)
-    setError(null)
-    try {
-      await api.aloha.scan(machine.id)
-      setTimeout(() => { loadScan(); setScanning(false) }, 15000)
-    } catch (e) {
-      setError(e.message)
-      setScanning(false)
+    const run = async () => {
+      const data = await loadScan()
+      // Auto-scan se não há dados e a máquina está online
+      if (!data && machine.status === 'online' && !didAutoScanRef.current) {
+        didAutoScanRef.current = true
+        setAutoScanning(true)
+        try {
+          await api.aloha.scan(machine.id)
+          setTimeout(async () => {
+            await loadScan()
+            setAutoScanning(false)
+          }, 15000)
+        } catch (e) {
+          setError(e.message)
+          setAutoScanning(false)
+        }
+      }
     }
-  }
+
+    run()
+  }, [expanded, loadScan, machine.id, machine.status])
 
   const statusColor = STATUS_COLOR[machine.status] || STATUS_COLOR.unknown
 
@@ -215,21 +199,15 @@ function BohRow({ machine, expanded, onToggle }) {
       cursor: 'pointer',
       userSelect: 'none',
     },
-    dot: {
-      width: '8px', height: '8px',
-      borderRadius: '50%',
-      background: statusColor,
-      flexShrink: 0,
-    },
-    name: { fontWeight: 700, fontSize: '13px', flex: '0 0 auto' },
+    dot:      { width: '8px', height: '8px', borderRadius: '50%', background: statusColor, flexShrink: 0 },
+    name:     { fontWeight: 700, fontSize: '13px', flex: '0 0 auto' },
     location: { fontSize: '12px', color: 'var(--text-muted)', flex: 1 },
-    meta: { fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap' },
-    actions: { display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 },
-    detail: { padding: '14px 18px', borderTop: '1px solid var(--border)' },
+    meta:     { fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap' },
+    detail:   { padding: '14px 18px', borderTop: '1px solid var(--border)' },
   }
 
   const scanMeta = scan
-    ? `${scan.total_files?.toLocaleString('pt-BR') || '?'} arquivos · ${fmtMB(scan.total_size_mb)} · scan ${fmtDate(scan.acked_at || scan.scanned_at)}`
+    ? `${scan.database_files?.length || 0} DBF · ${(scan.nfce?.total || 0).toLocaleString('pt-BR')} NF-Ce · verificado ${fmtDate(scan.acked_at || scan.scanned_at)}`
     : null
 
   return (
@@ -239,26 +217,20 @@ function BohRow({ machine, expanded, onToggle }) {
         <span style={s.name}>{machine.hostname}</span>
         <span style={s.location}>{machine.location || machine.displayName || '—'}</span>
         {scanMeta && <span style={s.meta}>{scanMeta}</span>}
-        {!scan && !loading && (
+        {!scan && !loading && !autoScanning && (
           <span style={{ ...s.meta, color: 'var(--yellow)' }}>Sem scan</span>
         )}
-        {loading && <span style={s.meta}>Carregando…</span>}
-        <div style={s.actions} onClick={e => e.stopPropagation()}>
-          <button
-            className="btn btn-success"
-            style={{ fontSize: '11px', padding: '3px 10px' }}
-            disabled={scanning || machine.status !== 'online'}
-            title={machine.status !== 'online' ? 'Máquina offline' : 'Escanear C:\\Bootdrv'}
-            onClick={handleScan}
-          >
-            {scanning ? '⏳ Escaneando…' : '🔍 Escanear'}
-          </button>
+        {(loading || autoScanning) && (
+          <span style={s.meta}>{autoScanning ? '⏳ Escaneando…' : 'Carregando…'}</span>
+        )}
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
           {scan && (
             <button
               className="btn btn-secondary"
               style={{ fontSize: '11px', padding: '3px 8px' }}
               onClick={loadScan}
               disabled={loading}
+              title="Recarregar dados do último scan"
             >↻</button>
           )}
         </div>
@@ -267,15 +239,17 @@ function BohRow({ machine, expanded, onToggle }) {
 
       {expanded && (
         <div style={s.detail}>
-          {scanning && (
+          {autoScanning && (
             <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: '10px' }}>
-              ⏳ Scan enviado ao agente, aguardando resultado (~15s)…
+              ⏳ Primeiro scan em andamento, aguardando resultado (~15s)…
             </div>
           )}
           {error && <div style={{ color: 'var(--red)', fontSize: '12px', marginBottom: '8px' }}>⚠ {error}</div>}
-          {!scan && !loading && !scanning && (
+          {!scan && !loading && !autoScanning && (
             <div style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
-              Nenhum scan disponível. Clique em "🔍 Escanear" para mapear C:\Bootdrv.
+              {machine.status !== 'online'
+                ? 'Máquina offline — não é possível escanear.'
+                : 'Nenhum scan disponível.'}
             </div>
           )}
           {loading && <div style={{ color: 'var(--text-muted)', fontSize: '12px' }}>Carregando…</div>}
@@ -305,7 +279,7 @@ export function AlohaModule({ onClose, machines = [] }) {
       display: 'flex',
       flexDirection: 'column',
     },
-    panel: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+    panel:  { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
     header: {
       display: 'flex',
       alignItems: 'center',
@@ -316,7 +290,7 @@ export function AlohaModule({ onClose, machines = [] }) {
       flexShrink: 0,
       gap: '12px',
     },
-    title: { fontSize: '15px', fontWeight: 700, margin: 0, whiteSpace: 'nowrap' },
+    title:    { fontSize: '15px', fontWeight: 700, margin: 0, whiteSpace: 'nowrap' },
     subtitle: { fontSize: '12px', color: 'var(--text-muted)', marginLeft: '10px' },
     closeBtn: {
       padding: '6px 16px',
@@ -330,7 +304,7 @@ export function AlohaModule({ onClose, machines = [] }) {
       flexShrink: 0,
     },
     content: { overflowY: 'auto', flex: 1, padding: '20px' },
-    empty: { color: 'var(--text-muted)', fontSize: '13px', marginTop: '40px', textAlign: 'center' },
+    empty:   { color: 'var(--text-muted)', fontSize: '13px', marginTop: '40px', textAlign: 'center' },
   }
 
   const onlineCount  = bohMachines.filter(m => m.status === 'online').length

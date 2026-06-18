@@ -10,116 +10,121 @@ import (
 	"time"
 )
 
-// AlohaFileInfo descreve um arquivo encontrado em C:\Bootdrv.
+const (
+	alohaBootdrvPath = `C:\Bootdrv`
+	alohaNFCePath    = `C:\Bootdrv\AlohaFiscal\ServerData\XML`
+)
+
+// AlohaFileInfo descreve um arquivo encontrado no BOH.
 type AlohaFileInfo struct {
 	Path    string  `json:"path"`
 	SizeMB  float64 `json:"size_mb"`
 	ModTime string  `json:"mod_time"`
 }
 
-// AlohaXMLSummary resume os XMLs fiscais (DANFE/NF-Ce) sem listar todos.
-type AlohaXMLSummary struct {
+// AlohaNFCeSummary resume os XMLs de NF-Ce em C:\Bootdrv\AlohaFiscal\ServerData\XML.
+type AlohaNFCeSummary struct {
+	PathExists bool            `json:"path_exists"`
 	Total      int             `json:"total"`
 	LatestDate string          `json:"latest_date,omitempty"`
 	Recent     []AlohaFileInfo `json:"recent"`
 }
 
-// AlohaScanResult e o payload completo retornado pelo comando aloha-scan.
+// AlohaScanResult é o payload retornado pelo comando aloha-scan.
 type AlohaScanResult struct {
-	ScannedAt     string          `json:"scanned_at"`
-	BootdrvPath   string          `json:"bootdrv_path"`
-	BootdrvExists bool            `json:"bootdrv_exists"`
-	TotalFiles    int             `json:"total_files"`
-	TotalSizeMB   float64         `json:"total_size_mb"`
-	DatabaseFiles []AlohaFileInfo `json:"database_files"`
-	ConfigFiles   []AlohaFileInfo `json:"config_files"`
-	XMLFiscal     AlohaXMLSummary `json:"xml_fiscal"`
-	Directories   []string        `json:"directories"`
-	Error         string          `json:"error,omitempty"`
+	ScannedAt     string           `json:"scanned_at"`
+	BootdrvExists bool             `json:"bootdrv_exists"`
+	DatabaseFiles []AlohaFileInfo  `json:"database_files"` // .DBF em C:\Bootdrv (sem AlohaFiscal)
+	NFCe          AlohaNFCeSummary `json:"nfce"`           // XMLs em AlohaFiscal\ServerData\XML
+	Error         string           `json:"error,omitempty"`
 }
 
-var alohaDbExt = map[string]bool{
-	".mdb": true, ".mdf": true, ".ldf": true, ".ndf": true,
-	".db": true, ".sqlite": true, ".sqlite3": true, ".sdf": true,
-}
-
-var alohaCfgExt = map[string]bool{
-	".ini": true, ".cfg": true, ".conf": true, ".config": true,
-}
-
-// scanAloha percorre C:\Bootdrv e classifica os arquivos encontrados.
+// scanAloha realiza dois scans focados:
+//  1. Arquivos .DBF em C:\Bootdrv (banco de dados Aloha, ignora subdir AlohaFiscal)
+//  2. XMLs de NF-Ce em C:\Bootdrv\AlohaFiscal\ServerData\XML
 func scanAloha() AlohaScanResult {
 	result := AlohaScanResult{
 		ScannedAt:     time.Now().UTC().Format(time.RFC3339),
-		BootdrvPath:   `C:\Bootdrv`,
 		DatabaseFiles: []AlohaFileInfo{},
-		ConfigFiles:   []AlohaFileInfo{},
-		XMLFiscal:     AlohaXMLSummary{Recent: []AlohaFileInfo{}},
-		Directories:   []string{},
+		NFCe:          AlohaNFCeSummary{Recent: []AlohaFileInfo{}},
 	}
 
-	info, err := os.Stat(result.BootdrvPath)
-	if err != nil || !info.IsDir() {
+	if _, err := os.Stat(alohaBootdrvPath); err != nil {
 		result.BootdrvExists = false
 		result.Error = fmt.Sprintf("C:\\Bootdrv nao encontrado: %v", err)
 		return result
 	}
 	result.BootdrvExists = true
 
-	// Diretórios de primeiro nível
-	entries, _ := os.ReadDir(result.BootdrvPath)
-	for _, e := range entries {
-		if e.IsDir() {
-			result.Directories = append(result.Directories, e.Name())
-		}
-	}
-
-	var xmlFiles []AlohaFileInfo
-	var totalBytes int64
-
-	filepath.WalkDir(result.BootdrvPath, func(path string, d os.DirEntry, werr error) error {
-		if werr != nil || d.IsDir() {
+	// ── 1. Banco de dados: arquivos .DBF em C:\Bootdrv ──────────────────────
+	filepath.WalkDir(alohaBootdrvPath, func(path string, d os.DirEntry, werr error) error {
+		if werr != nil {
 			return nil
 		}
-		fi, ferr := d.Info()
-		if ferr != nil {
+		if d.IsDir() {
+			// Pula a árvore AlohaFiscal — contém milhares de XMLs, não DBFs
+			if strings.EqualFold(d.Name(), "AlohaFiscal") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
-
-		result.TotalFiles++
-		totalBytes += fi.Size()
-
-		relPath := strings.TrimPrefix(path, result.BootdrvPath+`\`)
-		ext := strings.ToLower(filepath.Ext(path))
-		sizeMB := alohaRoundMB(fi.Size())
-		modTime := fi.ModTime().Format("2006-01-02T15:04:05Z")
-		f := AlohaFileInfo{Path: relPath, SizeMB: sizeMB, ModTime: modTime}
-
-		switch {
-		case alohaDbExt[ext]:
-			result.DatabaseFiles = append(result.DatabaseFiles, f)
-		case ext == ".xml" || ext == ".nfe" || ext == ".nfce":
-			xmlFiles = append(xmlFiles, f)
-		case alohaCfgExt[ext]:
-			result.ConfigFiles = append(result.ConfigFiles, f)
+		if strings.EqualFold(filepath.Ext(path), ".dbf") {
+			fi, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			result.DatabaseFiles = append(result.DatabaseFiles, AlohaFileInfo{
+				Path:    filepath.Base(path),
+				SizeMB:  alohaRoundMB(fi.Size()),
+				ModTime: fi.ModTime().Format("2006-01-02T15:04:05Z"),
+			})
 		}
 		return nil
 	})
 
-	result.TotalSizeMB = alohaRoundMB(totalBytes)
-	result.XMLFiscal.Total = len(xmlFiles)
+	// Ordena por tamanho decrescente (arquivos mais importantes primeiro)
+	sort.Slice(result.DatabaseFiles, func(i, j int) bool {
+		return result.DatabaseFiles[i].SizeMB > result.DatabaseFiles[j].SizeMB
+	})
 
+	// ── 2. NF-Ce: XMLs em C:\Bootdrv\AlohaFiscal\ServerData\XML ────────────
+	if _, err := os.Stat(alohaNFCePath); err != nil {
+		result.NFCe.PathExists = false
+		return result
+	}
+	result.NFCe.PathExists = true
+
+	var xmlFiles []AlohaFileInfo
+	filepath.WalkDir(alohaNFCePath, func(path string, d os.DirEntry, werr error) error {
+		if werr != nil || d.IsDir() {
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(path), ".xml") {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		xmlFiles = append(xmlFiles, AlohaFileInfo{
+			Path:    filepath.Base(path),
+			SizeMB:  alohaRoundMB(fi.Size()),
+			ModTime: fi.ModTime().Format("2006-01-02T15:04:05Z"),
+		})
+		return nil
+	})
+
+	result.NFCe.Total = len(xmlFiles)
 	if len(xmlFiles) > 0 {
-		// Ordena por data decrescente para pegar os mais recentes
 		sort.Slice(xmlFiles, func(i, j int) bool {
 			return xmlFiles[i].ModTime > xmlFiles[j].ModTime
 		})
-		result.XMLFiscal.LatestDate = xmlFiles[0].ModTime[:10]
+		result.NFCe.LatestDate = xmlFiles[0].ModTime[:10]
 		n := 10
 		if len(xmlFiles) < n {
 			n = len(xmlFiles)
 		}
-		result.XMLFiscal.Recent = xmlFiles[:n]
+		result.NFCe.Recent = xmlFiles[:n]
 	}
 
 	return result
