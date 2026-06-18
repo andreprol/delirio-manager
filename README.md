@@ -35,6 +35,13 @@ A self-hosted Windows PC fleet management system for multi-location businesses. 
 - Real-time push to dashboard via WebSocket
 - Configurable via the settings UI (no manual config file editing needed)
 
+### Aloha POS — BOH Servers
+- **Full-screen Aloha module** (🍕 button) for managing Aloha POS Back-of-House servers
+- Lists all BOH machines (hostname ending in `BOH`) with online/offline status
+- **On-demand scan** of `C:\Bootdrv` on each BOH server — returns in ~15 seconds
+- Scan shows: database files (.mdb/.mdf/.ldf), XML fiscal documents (DANFE/NF-Ce), config files, directories
+- Results cached server-side — subsequent views don't require a new scan
+
 ---
 
 ## Architecture
@@ -206,6 +213,8 @@ chmod +x /opt/dt-manager/watchdog.sh
 | GET | `/api/settings` | Get server settings (API key masked) |
 | PUT | `/api/settings` | Update settings (autoWake, insights config) |
 | GET | `/api/reports/bios/pdf` | Download BIOS configuration report PDF |
+| GET | `/api/machines/:id/aloha` | Get latest Aloha BOH scan result |
+| POST | `/api/machines/:id/commands` | Send `aloha-scan` command to trigger a new scan |
 
 Full agent API (heartbeat, events, commands): see [`server/routes/agent.js`](server/routes/agent.js)
 

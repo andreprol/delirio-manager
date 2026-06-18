@@ -12,7 +12,7 @@ Go-based Windows service installed on each managed PC. Reports metrics, collects
 
 - Heartbeat every 30 seconds with CPU, RAM, disk usage, temperatures, uptime, IP addresses
 - Windows Event Log collection and forwarding
-- Remote command execution: reboot, shutdown, cancel-shutdown, Wake-on-LAN relay, self-uninstall
+- Remote command execution: reboot, shutdown, cancel-shutdown, Wake-on-LAN relay, self-uninstall, aloha-scan
 - Wake-on-LAN detection: tests and reports WoL driver status automatically
 - Auto-update: downloads and applies new agent versions from the server
 - Graceful service lifecycle (install, start, stop, uninstall)
@@ -28,6 +28,7 @@ agent/
 ├── temperature.go   # CPU/GPU temperature via LHM
 ├── lhm.go           # LibreHardwareMonitor integration
 ├── events.go        # Windows Event Log collection
+├── aloha.go         # Aloha POS BOH scan (C:\Bootdrv)
 ├── commands.go      # Remote command handlers
 ├── wol.go           # Wake-on-LAN detection and relay
 ├── updater.go       # Auto-update logic
