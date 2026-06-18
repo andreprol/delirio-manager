@@ -4,6 +4,17 @@ All notable changes to Delirio Manager are documented here.
 
 ---
 
+## [1.0.28] — 2026-06-18
+
+### Fixed
+- **clock-proxy**: enroll agora é assíncrono — POST `/rh/enroll` retorna 202 + jobId imediatamente e processa em background. Elimina definitivamente o "socket hang up" causado pela conexão HTTP ficar aberta 60-120s enquanto o Playwright rodava nos relógios
+- **clock-proxy**: processamento dos relógios no enroll agora é paralelo (igual ao scan) — todos os IPs alvo rodam simultaneamente, limitados pelo semáforo global (máx 2 Chrome). Ex: cadastrar em 5 relógios leva ~60s em vez de ~150s
+- **clock-proxy**: novo `GET /rh/enroll/:jobId` — endpoint de polling para resultado do enroll
+- **server**: `POST /api/rh/enroll` passa 202 + jobId para o dashboard; novo `GET /api/rh/enroll/:jobId` faz proxy para o clock-proxy com log de auditoria na primeira conclusão
+- **dashboard**: `api.rh.pollEnroll(jobId)` — novo método de polling; `handleEnroll` e `handleNewEnroll` fazem polling automático a cada 3s até o job completar, sem bloquear a UI
+
+---
+
 ## [1.0.27] — 2026-06-18
 
 ### Fixed

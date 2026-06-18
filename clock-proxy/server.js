@@ -79,6 +79,13 @@ async function withPlaywrightSlot(fn) {
   }
 }
 
+// ─── ASYNC ENROLL JOB STORE ──────────────────────────────────────────────────
+// POST /rh/enroll retorna 202 + jobId imediatamente — processa em background.
+// GET /rh/enroll/:jobId retorna 202 enquanto roda, 200 com resultado ao terminar.
+// Isso evita segurar a conexão HTTP por 60-120s (causa de "socket hang up" via proxy Perl).
+const _enrollJobs = {};
+let _enrollJobSeq = 0;
+
 function writeLgpdKit(summary) {
   try {
     const safeName = (summary.employeeName || 'DESCONHECIDO')
@@ -499,55 +506,82 @@ app.post('/rh/employees/refresh', (req, res) => {
   return res.status(202).json({ status: 'started', clockIps });
 });
 
-// ─── CADASTRO EM TODOS OS RELÓGIOS ───────────────────────────────────────────
+// ─── CADASTRO EM TODOS OS RELÓGIOS (ASSÍNCRONO) ──────────────────────────────
+// Retorna 202 + jobId imediatamente. Processa todos os relógios em paralelo
+// (limitado pelo semáforo global — máx 2 Chrome simultâneos).
 // Body: { cpf, name, ref1, ref2, password, clockIps? }
-// clockIps (optional array): subset of IPs to enroll. Defaults to CLOCK_IPS.
-app.post('/rh/enroll', async (req, res) => {
-  try {
-    const { cpf, name, ref1, ref2, password, clockIps } = req.body;
+app.post('/rh/enroll', (req, res) => {
+  const { cpf, name, ref1, ref2, password, clockIps } = req.body;
 
-    if (!cpf || !name || !ref1) {
-      return res.status(400).json({ error: 'cpf, name e ref1 (matricula) sao obrigatorios' });
-    }
+  if (!cpf || !name || !ref1) {
+    return res.status(400).json({ error: 'cpf, name e ref1 (matricula) sao obrigatorios' });
+  }
 
-    const targets = clockIps || CLOCK_IPS;
-    if (clockIps) {
-      const invalid = clockIps.filter(ip => !CLOCK_IPS.includes(ip));
-      if (invalid.length > 0) {
-        return res.status(400).json({ error: `IPs nao permitidos: ${invalid.join(', ')}` });
-      }
+  const targets = clockIps || CLOCK_IPS;
+  if (clockIps) {
+    const invalid = clockIps.filter(ip => !CLOCK_IPS.includes(ip));
+    if (invalid.length > 0) {
+      return res.status(400).json({ error: `IPs nao permitidos: ${invalid.join(', ')}` });
     }
-    if (targets.length === 0) {
-      return res.status(500).json({ error: 'CLOCK_IPS nao configurado e clockIps nao informado' });
-    }
+  }
+  if (targets.length === 0) {
+    return res.status(500).json({ error: 'CLOCK_IPS nao configurado e clockIps nao informado' });
+  }
 
+  const jobId = `enroll-${Date.now()}-${++_enrollJobSeq}`;
+  _enrollJobs[jobId] = { status: 'running', result: null };
+
+  // Processa em background — NÃO aguarda, retorna 202 imediatamente
+  ;(async () => {
     const timestamp = new Date().toISOString();
-    const results = [];
-    for (const ip of targets) {
+    console.log(`[/rh/enroll] job ${jobId} — ${cpf} (${name}) em ${targets.length} relógio(s)`);
+
+    // Todos os IPs em paralelo — semáforo garante máx 2 Chrome simultâneos
+    const settled = await Promise.allSettled(targets.map(async (ip) => {
       const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
       const reach = await henry.checkReachable();
       if (!reach.reachable) {
         console.warn(`[/rh/enroll] ${ip}: offline — pulando`);
-        results.push({ clockIp: ip, success: false, offline: true, message: `Relógio offline: ${reach.error || 'sem resposta'}` });
-        continue;
+        return { clockIp: ip, success: false, offline: true, message: `Relógio offline: ${reach.error || 'sem resposta'}` };
       }
       const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.enrollEmployee({ cpf, name, ref1, ref2, password })));
-      results.push({ clockIp: ip, ...result });
-    }
+      return { clockIp: ip, ...result };
+    }));
 
-    res.json({
-      success:  results.every(r => r.success),
-      cpf, name, ref1,
-      timestamp,
-      clocks:   results,
-      total:    results.length,
-      enrolled: results.filter(r => r.success).length,
-      failed:   results.filter(r => !r.success).length,
-    });
-  } catch (err) {
-    console.error('[/rh/enroll]', err.message);
-    res.status(500).json({ error: 'Internal server error', detail: err.message });
-  }
+    const results = settled.map((s, i) =>
+      s.status === 'fulfilled' ? s.value : { clockIp: targets[i], success: false, message: s.reason?.message || 'Erro interno' }
+    );
+
+    _enrollJobs[jobId] = {
+      status: 'done',
+      result: {
+        success:  results.every(r => r.success),
+        cpf, name, ref1,
+        timestamp,
+        clocks:   results,
+        total:    results.length,
+        enrolled: results.filter(r => r.success).length,
+        failed:   results.filter(r => !r.success).length,
+      },
+    };
+
+    console.log(`[/rh/enroll] job ${jobId} concluído — ${_enrollJobs[jobId].result.enrolled}/${results.length} OK`);
+    // Limpa da memória após 10 minutos
+    setTimeout(() => { delete _enrollJobs[jobId]; }, 10 * 60 * 1000);
+  })().catch(err => {
+    console.error(`[/rh/enroll job ${jobId}]`, err.message);
+    _enrollJobs[jobId] = { status: 'done', result: { success: false, error: err.message, clocks: [], total: 0, enrolled: 0, failed: 0 } };
+  });
+
+  res.status(202).json({ jobId, status: 'running' });
+});
+
+// GET /rh/enroll/:jobId — polling de resultado
+app.get('/rh/enroll/:jobId', (req, res) => {
+  const job = _enrollJobs[req.params.jobId];
+  if (!job) return res.status(404).json({ error: 'Job nao encontrado ou expirado' });
+  if (job.status === 'running') return res.status(202).json({ jobId: req.params.jobId, status: 'running' });
+  res.json({ jobId: req.params.jobId, status: 'done', ...job.result });
 });
 
 // ─── ATUALIZAR CARTÃO EM TODOS OS RELÓGIOS ───────────────────────────────────

@@ -129,6 +129,8 @@ export const api = {
       request('POST', '/api/rh/offboard',  { cpf, employeeName, triggeredBy }),
     enroll:     (cpf, name, ref1, ref2, password, clockIps) =>
       request('POST', '/api/rh/enroll',    { cpf, name, ref1, ref2, password, clockIps }),
+    pollEnroll:  (jobId) =>
+      request('GET', `/api/rh/enroll/${jobId}`),
     updateCard: (cpf, ref2, clockIps) =>
       request('PUT',  '/api/rh/employee',  { cpf, ref2, clockIps }),
     refreshClocks: (clockIps) =>

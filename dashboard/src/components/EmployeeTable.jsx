@@ -528,7 +528,7 @@ export function EmployeeTable() {
     setOpStatus(null)
     try {
       const clockIps = enrollTarget.absentIn || []
-      const result = await api.rh.enroll(
+      let result = await api.rh.enroll(
         enrollTarget.cpf,
         enrollTarget.name,
         enrollRef1.trim(),
@@ -536,6 +536,11 @@ export function EmployeeTable() {
         '',
         clockIps,
       )
+      // Enroll é assíncrono — faz polling a cada 3s até o job completar
+      while (result._pending && result.jobId) {
+        await new Promise(r => setTimeout(r, 3000))
+        result = await api.rh.pollEnroll(result.jobId)
+      }
       const allOk = result.failed === 0
       const type  = allOk ? 'success' : result.enrolled > 0 ? 'partial' : 'error'
       const clockChips = (result.clocks || []).map(c => ({
@@ -593,7 +598,7 @@ export function EmployeeTable() {
     setNewEnrolling(true)
     setOpStatus(null)
     try {
-      const result = await api.rh.enroll(
+      let result = await api.rh.enroll(
         newEmpCpf.trim(),
         newEmpName.trim().toUpperCase(),
         newEmpRef1.trim(),
@@ -601,6 +606,11 @@ export function EmployeeTable() {
         '',
         undefined, // undefined = todos os relógios (CLOCK_IPS no servidor)
       )
+      // Enroll é assíncrono — faz polling a cada 3s até o job completar
+      while (result._pending && result.jobId) {
+        await new Promise(r => setTimeout(r, 3000))
+        result = await api.rh.pollEnroll(result.jobId)
+      }
       const allOk = result.failed === 0
       const type  = allOk ? 'success' : result.enrolled > 0 ? 'partial' : 'error'
       const clockChips = (result.clocks || []).map(c => ({

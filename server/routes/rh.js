@@ -153,7 +153,8 @@ router.get('/employees', async (req, res) => {
 });
 
 // POST /api/rh/enroll
-// Cadastra funcionário em todos os relógios (ou subset em clockIps)
+// Cadastra funcionário — assíncrono: retorna 202 + jobId imediatamente.
+// O clock-proxy processa em background; use GET /api/rh/enroll/:jobId para polling.
 // Body: { cpf, name, ref1, ref2?, password?, clockIps?, triggeredBy? }
 router.post('/enroll', async (req, res) => {
   const { cpf, name, ref1, ref2, password, clockIps, triggeredBy } = req.body;
@@ -165,32 +166,50 @@ router.post('/enroll', async (req, res) => {
     return res.status(500).json({ error: 'CLOCK_PROXY_TOKEN nao configurado' });
   }
 
-  const timestamp = new Date().toISOString();
-
   try {
     const result = await callClockProxy('/rh/enroll', { cpf, name, ref1, ref2, password, clockIps });
-
-    db.logClockOperation({
-      operation:    'enroll',
-      cpf,
-      employeeName: name,
-      triggeredBy:  triggeredBy || 'delirio-manager-rh',
-      timestamp,
-      success:      result.success,
-      total:        result.total    || 0,
-      okCount:      result.enrolled || 0,
-      failedCount:  result.failed   || 0,
-      detail:       result.clocks   || [],
-    });
-
-    res.json(result);
+    // clock-proxy retorna 202 + { jobId, status:'running' }
+    return res.status(202).json({ jobId: result.jobId, status: 'running', cpf, name, triggeredBy });
   } catch (err) {
     db.logClockOperation({
       operation: 'enroll', cpf, employeeName: name,
       triggeredBy: triggeredBy || 'delirio-manager-rh',
-      timestamp, success: false, total: 0, okCount: 0, failedCount: -1,
+      timestamp: new Date().toISOString(), success: false, total: 0, okCount: 0, failedCount: -1,
       detail: [{ error: err.message }],
     });
+    res.status(502).json({ error: 'Falha ao conectar com o clock-proxy', detail: err.message });
+  }
+});
+
+// GET /api/rh/enroll/:jobId — polling de resultado de enroll assíncrono
+const _loggedEnrollJobs = new Set();
+router.get('/enroll/:jobId', async (req, res) => {
+  if (!CLOCK_PROXY_TOKEN) {
+    return res.status(500).json({ error: 'CLOCK_PROXY_TOKEN nao configurado' });
+  }
+  try {
+    const result = await callClockProxy(`/rh/enroll/${req.params.jobId}`, null, 'GET');
+    if (result._statusCode === 202) {
+      return res.status(202).json({ jobId: req.params.jobId, status: 'running' });
+    }
+    // Loga uma única vez quando o job completa
+    if (result.status === 'done' && !_loggedEnrollJobs.has(req.params.jobId)) {
+      _loggedEnrollJobs.add(req.params.jobId);
+      db.logClockOperation({
+        operation:    'enroll',
+        cpf:          result.cpf          || '',
+        employeeName: result.name         || '',
+        triggeredBy:  req.query.triggeredBy || 'delirio-manager-rh',
+        timestamp:    result.timestamp    || new Date().toISOString(),
+        success:      result.success      || false,
+        total:        result.total        || 0,
+        okCount:      result.enrolled     || 0,
+        failedCount:  result.failed       || 0,
+        detail:       result.clocks       || [],
+      });
+    }
+    res.json(result);
+  } catch (err) {
     res.status(502).json({ error: 'Falha ao conectar com o clock-proxy', detail: err.message });
   }
 });
