@@ -100,8 +100,8 @@ body {
 }
 .pill-solo-aloha:hover { background: rgba(251,146,60,.28); color: #fdba74; }
 
-.topbar-left  { display: flex; align-items: center; gap: 12px; min-width: 200px; }
-.topbar-center { display: flex; gap: 8px; flex: 1; min-width: 260px; justify-content: center; }
+.topbar-left  { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.topbar-center { display: flex; gap: 8px; flex: 1; min-width: 160px; max-width: 420px; justify-content: center; overflow: hidden; }
 .topbar-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
 .logo { font-weight: 700; font-size: 15px; color: var(--text); white-space: nowrap; }

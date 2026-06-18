@@ -429,6 +429,20 @@ export function EmployeeTable() {
     }
   }
 
+  // Optimistic patch — immediately updates one employee's clock status in local state
+  // based on the API result, before the background Playwright re-scan confirms it.
+  function patchEmployee(cpf, patchFn) {
+    setData(prev => {
+      if (!prev?.employees) return prev
+      const updated    = prev.employees.map(e => e.cpf === cpf ? patchFn(e) : e)
+      const divergent  = updated.filter(e => e.absentIn.length  > 0)
+      const incomplete = updated.filter(e => e.incompleteIn.length > 0)
+      const next = { ...prev, employees: updated, divergent: divergent.length, incomplete: incomplete.length, synchronized: updated.length - divergent.length }
+      _empCache = next
+      return next
+    })
+  }
+
   // Partial refresh of only the target clocks — used after enroll/edit/remove.
   // Does NOT touch opStatus or loading state so the operation result stays visible.
   async function refreshTargetClocks(clockIps) {
@@ -537,6 +551,14 @@ export function EmployeeTable() {
         clocks: clockChips,
       })
       closeEnrollForm()
+      const enrolledIps = (result.clocks || []).filter(c => c.success).map(c => c.clockIp)
+      if (enrolledIps.length > 0) {
+        patchEmployee(enrollTarget.cpf, e => ({
+          ...e,
+          presentIn: [...e.presentIn, ...enrolledIps.filter(ip => !e.presentIn.includes(ip))],
+          absentIn:  e.absentIn.filter(ip => !enrolledIps.includes(ip)),
+        }))
+      }
       refreshTargetClocks(clockIps)
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [] })
@@ -593,7 +615,25 @@ export function EmployeeTable() {
           : `Cadastrado em ${result.enrolled}, falhou em ${result.failed}.`,
         clocks: clockChips,
       })
+      const cpfNew  = newEmpCpf.trim()
+      const nameNew = newEmpName.trim().toUpperCase()
+      const ref1New = newEmpRef1.trim()
+      const ref2New = newEmpRef2.trim()
       closeNewEmpForm()
+      const enrolledIps = (result.clocks || []).filter(c => c.success).map(c => c.clockIp)
+      if (enrolledIps.length > 0) {
+        setData(prev => {
+          if (!prev?.employees || prev.employees.some(e => e.cpf === cpfNew)) return prev
+          const reachableIps = (prev.clocks || []).filter(c => c.success).map(c => c.ip)
+          const newEmpObj = { name: nameNew, cpf: cpfNew, ref1: ref1New, ref2: ref2New, presentIn: enrolledIps, absentIn: reachableIps.filter(ip => !enrolledIps.includes(ip)), incompleteIn: [] }
+          const updated    = [...prev.employees, newEmpObj]
+          const divergent  = updated.filter(e => e.absentIn.length  > 0)
+          const incomplete = updated.filter(e => e.incompleteIn.length > 0)
+          const next = { ...prev, employees: updated, total: updated.length, divergent: divergent.length, incomplete: incomplete.length, synchronized: updated.length - divergent.length }
+          _empCache = next
+          return next
+        })
+      }
       refreshTargetClocks((result.clocks || []).map(c => c.clockIp))
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao cadastrar: ${err.message}`, clocks: [] })
@@ -639,7 +679,17 @@ export function EmployeeTable() {
           : `Atualizado em ${result.updated}, falhou em ${result.failed}.`,
         clocks: clockChips,
       })
+      const cpfEdited = editTarget.cpf
+      const newRef2   = editRef2.trim()
       closeEditForm()
+      const updatedIps = (result.clocks || []).filter(c => c.success).map(c => c.clockIp)
+      if (updatedIps.length > 0) {
+        patchEmployee(cpfEdited, e => ({
+          ...e,
+          ref2: newRef2 || e.ref2,
+          incompleteIn: e.incompleteIn.filter(ip => !updatedIps.includes(ip)),
+        }))
+      }
       refreshTargetClocks(editTarget.presentIn || [])
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao salvar: ${err.message}`, clocks: [] })
@@ -667,6 +717,13 @@ export function EmployeeTable() {
           : `Atualizado em ${result.updated}, falhou em ${result.failed}.`,
         clocks: clockChips,
       })
+      const updatedIps2 = (result.clocks || []).filter(c => c.success).map(c => c.clockIp)
+      if (updatedIps2.length > 0) {
+        patchEmployee(emp.cpf, e => ({
+          ...e,
+          incompleteIn: e.incompleteIn.filter(ip => !updatedIps2.includes(ip)),
+        }))
+      }
       refreshTargetClocks(emp.incompleteIn || [])
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao completar crachá: ${err.message}`, clocks: [] })
@@ -703,6 +760,23 @@ export function EmployeeTable() {
           ? `⚠️ Comprovante LGPD não salvo: ${result.lgpdError}`
           : null,
       })
+      const removedIps = (result.clocks || []).filter(c => c.success || c.alreadyAbsent).map(c => c.clockIp)
+      if (removedIps.length > 0) {
+        setData(prev => {
+          if (!prev?.employees) return prev
+          const updated = prev.employees
+            .map(e => {
+              if (e.cpf !== emp.cpf) return e
+              return { ...e, presentIn: e.presentIn.filter(ip => !removedIps.includes(ip)), absentIn: [...e.absentIn, ...removedIps.filter(ip => !e.absentIn.includes(ip))] }
+            })
+            .filter(e => e.cpf !== emp.cpf || e.presentIn.length > 0)
+          const divergent  = updated.filter(e => e.absentIn.length  > 0)
+          const incomplete = updated.filter(e => e.incompleteIn.length > 0)
+          const next = { ...prev, employees: updated, total: updated.length, divergent: divergent.length, incomplete: incomplete.length, synchronized: updated.length - divergent.length }
+          _empCache = next
+          return next
+        })
+      }
       refreshTargetClocks((result.clocks || []).map(c => c.clockIp))
     } catch (err) {
       setOpStatus({ type: 'error', title: `Erro ao remover: ${err.message}`, clocks: [] })
