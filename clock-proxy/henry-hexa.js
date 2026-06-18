@@ -170,9 +170,20 @@ class HenryHexa {
         }
 
         await page.locator('a:has-text("Salvar"), button:has-text("Salvar")').click();
-        await page.waitForTimeout(3000);
 
-        // Verificar resultado real: "Sucesso ao salvar" = OK; "inválidos" = erro de validação
+        // Aguarda a resposta real do relógio em vez de um wait fixo.
+        // waitForSelector falha silenciosamente (catch) se o seletor não aparecer em 10s —
+        // o código continua e avalia a página no estado em que estiver.
+        try {
+          await Promise.race([
+            page.waitForSelector('text=Sucesso ao salvar',  { timeout: 10000 }),
+            page.waitForSelector('text=já cadastrado',      { timeout: 10000 }),
+            page.waitForSelector('text=já cadastrada',      { timeout: 10000 }),
+            page.waitForSelector('text=inválidos',          { timeout: 10000 }),
+            page.waitForSelector('text=obrigatório',        { timeout: 10000 }),
+          ]);
+        } catch { /* timeout — avalia o estado atual da página */ }
+
         const pageTexts = await page.evaluate(() =>
           Array.from(document.querySelectorAll('td, div, span, h4, label'))
             .filter(el => el.offsetWidth > 0 && el.offsetHeight > 0 && el.childElementCount === 0)
@@ -236,7 +247,32 @@ class HenryHexa {
         // Já na página de detalhes/edição — preenche Referência 2 diretamente
         await page.locator('#lblRegistration2').fill(String(newRef2).slice(0, 20));
         await page.locator('a:has-text("Salvar"), button:has-text("Salvar")').click();
-        await page.waitForTimeout(2000);
+
+        try {
+          await Promise.race([
+            page.waitForSelector('text=Sucesso ao salvar', { timeout: 10000 }),
+            page.waitForSelector('text=inválidos',         { timeout: 10000 }),
+            page.waitForSelector('text=obrigatório',       { timeout: 10000 }),
+          ]);
+        } catch { /* timeout — avalia estado atual */ }
+
+        const pageTexts = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('td, div, span, h4, label'))
+            .filter(el => el.offsetWidth > 0 && el.offsetHeight > 0 && el.childElementCount === 0)
+            .map(el => el.textContent.trim())
+            .filter(t => t.length > 0)
+        );
+        const saved    = pageTexts.some(t => t.includes('Sucesso ao salvar'));
+        const errorMsg = pageTexts.find(t => t.includes('inválidos') || t.includes('obrigatório'));
+
+        if (!saved) {
+          return {
+            success: false,
+            message: errorMsg || 'Salvar não confirmado — tente novamente',
+            timestamp,
+            clockIp: this.ip,
+          };
+        }
 
         return {
           success: true,

@@ -527,6 +527,7 @@ export function EmployeeTable() {
       const clockChips = (result.clocks || []).map(c => ({
         label: IP_TO_STORE[c.clockIp] || c.clockIp,
         ok:    c.success,
+        msg:   !c.success ? (c.message || null) : null,
       }))
       setOpStatus({
         type,
@@ -583,6 +584,7 @@ export function EmployeeTable() {
       const clockChips = (result.clocks || []).map(c => ({
         label: IP_TO_STORE[c.clockIp] || c.clockIp,
         ok:    c.success,
+        msg:   !c.success ? (c.message || null) : null,
       }))
       setOpStatus({
         type,
@@ -628,6 +630,7 @@ export function EmployeeTable() {
       const clockChips = (result.clocks || []).map(c => ({
         label: IP_TO_STORE[c.clockIp] || c.clockIp,
         ok:    c.success,
+        msg:   !c.success ? (c.message || null) : null,
       }))
       setOpStatus({
         type,
@@ -655,6 +658,7 @@ export function EmployeeTable() {
       const clockChips = (result.clocks || []).map(c => ({
         label: IP_TO_STORE[c.clockIp] || c.clockIp,
         ok:    c.success,
+        msg:   !c.success ? (c.message || null) : null,
       }))
       setOpStatus({
         type,
@@ -685,6 +689,7 @@ export function EmployeeTable() {
       const clockChips = (result.clocks || []).map(c => ({
         label: IP_TO_STORE[c.clockIp] || c.clockIp,
         ok:    c.success || c.alreadyAbsent,
+        msg:   !(c.success || c.alreadyAbsent) ? (c.message || null) : null,
       }))
       setOpStatus({
         type,
@@ -851,9 +856,16 @@ export function EmployeeTable() {
           {opStatus.clocks.length > 0 && (
             <div style={styles.statusClockList}>
               {opStatus.clocks.map(c => (
-                <span key={c.label} style={styles.clockChip(c.ok)}>
+                <span key={c.label} style={styles.clockChip(c.ok)} title={c.msg || undefined}>
                   {c.ok ? '✅' : '❌'} {c.label}
                 </span>
+              ))}
+            </div>
+          )}
+          {opStatus.clocks.some(c => !c.ok && c.msg) && (
+            <div style={{ marginTop: '8px', fontSize: '12px', lineHeight: '1.6', fontFamily: 'monospace', opacity: 0.85 }}>
+              {opStatus.clocks.filter(c => !c.ok && c.msg).map(c => (
+                <div key={c.label}>❌ {c.label}: {c.msg}</div>
               ))}
             </div>
           )}
