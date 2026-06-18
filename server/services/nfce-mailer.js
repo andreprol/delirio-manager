@@ -1,21 +1,74 @@
 'use strict';
 
-const nodemailer = require('nodemailer');
-const path       = require('path');
-const fs         = require('fs');
+const path = require('path');
+const fs   = require('fs');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
 const FIXED_CC    = ['bruno@delirio.com.br', 'suporteti@delirio.com.br'];
+const GRAPH_FROM  = 'andre@delirio.com.br';
 
 const PAG_LABELS = {
   '01': 'Dinheiro', '02': 'Cheque', '03': 'Cartão de Crédito',
   '04': 'Cartão de Débito', '17': 'Pix', '99': 'Outros',
 };
 
-function loadSmtpConfig() {
+// In-memory token cache to avoid hammering the token endpoint
+let _tokenCache = null;
+
+function loadGraphConfig() {
   try {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')).smtp || {};
+    return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')).msGraph || {};
   } catch { return {}; }
+}
+
+async function getAccessToken() {
+  if (_tokenCache && _tokenCache.expiresAt > Date.now() + 300_000) {
+    return _tokenCache.token;
+  }
+
+  const cfg = loadGraphConfig();
+  if (!cfg.tenantId || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
+    throw new Error('Configuração Microsoft Graph ausente. Adicione "msGraph" em config.json com tenantId, clientId, clientSecret e refreshToken.');
+  }
+
+  const params = new URLSearchParams({
+    grant_type:    'refresh_token',
+    client_id:     cfg.clientId,
+    client_secret: cfg.clientSecret,
+    refresh_token: cfg.refreshToken,
+    scope:         'offline_access https://graph.microsoft.com/Mail.Send',
+  });
+
+  const res = await fetch(
+    `https://login.microsoftonline.com/${cfg.tenantId}/oauth2/v2.0/token`,
+    {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    params.toString(),
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Erro ao obter token MS Graph: ${err.slice(0, 400)}`);
+  }
+
+  const data = await res.json();
+  _tokenCache = {
+    token:     data.access_token,
+    expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
+  };
+
+  // Persist a newly-issued refresh_token so it doesn't expire
+  if (data.refresh_token && data.refresh_token !== cfg.refreshToken) {
+    try {
+      const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      config.msGraph.refreshToken = data.refresh_token;
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+    } catch { /* non-fatal */ }
+  }
+
+  return data.access_token;
 }
 
 function fmtMoeda(v) {
@@ -118,39 +171,47 @@ function buildHtml(danfe) {
 }
 
 /**
- * Sends a DANFE NFC-e via email.
- * SMTP credentials must be configured in config.json under the key "smtp":
- *   { "host": "smtp.office365.com", "port": 587, "user": "...", "pass": "...", "from": "..." }
+ * Sends a DANFE NFC-e via Microsoft Graph (delegated auth).
+ * Requires config.json to contain:
+ *   "msGraph": { "tenantId": "...", "clientId": "...", "clientSecret": "...", "refreshToken": "..." }
  */
 async function sendDanfeEmail({ danfe, pdfBuffer, toEmail, extraCCs = [] }) {
-  const smtp = loadSmtpConfig();
-  if (!smtp.host || !smtp.user || !smtp.pass) {
-    throw new Error('Configuração SMTP ausente. Adicione a chave "smtp" em config.json com host, user e pass.');
-  }
-
-  const transporter = nodemailer.createTransport({
-    host:   smtp.host,
-    port:   smtp.port || 587,
-    secure: smtp.port === 465,
-    auth:   { user: smtp.user, pass: smtp.pass },
-    tls:    { rejectUnauthorized: false },
-  });
-
+  const token  = await getAccessToken();
   const store  = (danfe.emit?.xFant || danfe.emit?.xNome || '').slice(0, 30);
   const ccList = [...FIXED_CC, ...extraCCs.filter(e => e && e !== toEmail)];
 
-  await transporter.sendMail({
-    from:        `${store || 'Delirio Tropical'} <${smtp.from || smtp.user}>`,
-    to:          toEmail,
-    cc:          ccList.join(', '),
-    subject:     `DANFE NFC-e Nº ${danfe.nNF} — ${store}`,
-    html:        buildHtml(danfe),
+  const message = {
+    subject: `DANFE NFC-e Nº ${danfe.nNF} — ${store}`,
+    body: {
+      contentType: 'HTML',
+      content:     buildHtml(danfe),
+    },
+    toRecipients: [{ emailAddress: { address: toEmail } }],
+    ccRecipients: ccList.map(addr => ({ emailAddress: { address: addr } })),
     attachments: [{
-      filename:    `DANFE-${danfe.nNF}.pdf`,
-      content:     pdfBuffer,
-      contentType: 'application/pdf',
+      '@odata.type':  '#microsoft.graph.fileAttachment',
+      name:           `DANFE-${danfe.nNF}.pdf`,
+      contentType:    'application/pdf',
+      contentBytes:   pdfBuffer.toString('base64'),
     }],
-  });
+  };
+
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${GRAPH_FROM}/sendMail`,
+    {
+      method:  'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type':  'application/json',
+      },
+      body: JSON.stringify({ message, saveToSentItems: true }),
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Erro ao enviar email via Graph: ${err.slice(0, 400)}`);
+  }
 }
 
 module.exports = { sendDanfeEmail };

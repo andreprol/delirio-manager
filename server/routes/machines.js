@@ -69,7 +69,7 @@ router.post('/:id/commands', (req, res) => {
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 
   const { type, params } = req.body;
-  const allowed = ['reboot', 'shutdown', 'wol', 'cancel-shutdown', 'uninstall', 'aloha-scan', 'aloha-index-nfce-day'];
+  const allowed = ['reboot', 'shutdown', 'wol', 'cancel-shutdown', 'uninstall', 'aloha-scan', 'aloha-index-nfce-day', 'aloha-list-nfce-months'];
 
   if (!type || !allowed.includes(type)) {
     return res.status(400).json({ error: `Tipo invalido. Permitidos: ${allowed.join(', ')}` });

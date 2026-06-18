@@ -4,6 +4,20 @@ All notable changes to Delirio Manager are documented here.
 
 ---
 
+## [1.0.21] — 2026-06-18
+
+### Fixed
+- **Agent v1.5.4**: fixed NF-Ce XML path — month folder (`MM`) was missing, path is now `XML\{MM}\{DD}\NFCe\` as required
+
+### Added
+- **Agent v1.5.4**: new `aloha-list-nfce-months` command — enumerates all month/day subfolders in the XML directory
+- **Server**: `POST /api/aloha/:machineId/history/trigger` — triggers full historical indexation (sends `aloha-list-nfce-months`; ACK handler fans out day commands for every discovered month/day)
+- **Server**: ACK handler for `aloha-list-nfce-months` — auto-queues `aloha-index-nfce-day` per discovered day
+- **Dashboard**: "Indexar histórico completo" button in DANFE Search tab
+- **Email**: switched from SMTP to Microsoft Graph API (`andre@delirio.com.br`); token auto-refreshes from config.json `msGraph` credentials
+
+---
+
 ## [1.0.20] — 2026-06-18
 
 ### Added

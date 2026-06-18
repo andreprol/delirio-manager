@@ -6,6 +6,16 @@ const db      = require('../db');
 const { generateDanfePdf } = require('../services/danfe');
 const { sendDanfeEmail }   = require('../services/nfce-mailer');
 
+// POST /api/aloha/:machineId/history/trigger
+// Envia aloha-list-nfce-months para o agente; o ACK handler enfileira os dias.
+router.post('/:machineId/history/trigger', (req, res) => {
+  const machine = db.getMachineById(req.params.machineId);
+  if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
+
+  const id = db.createCommand(machine.id, 'aloha-list-nfce-months', {});
+  res.json({ ok: true, commandId: id, message: 'Listagem de meses enviada ao agente. Indexação iniciará em instantes.' });
+});
+
 // POST /api/aloha/:machineId/index/trigger
 // Enfileira comandos aloha-index-nfce-day para todos os dias do mês corrente.
 router.post('/:machineId/index/trigger', (req, res) => {

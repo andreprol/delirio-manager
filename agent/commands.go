@@ -108,6 +108,15 @@ func (a *Agent) executeCommand(cmd Command) (string, error) {
 		}
 		return string(data), nil
 
+	case "aloha-list-nfce-months":
+		logInfo("Comando ALOHA-LIST-NFCE-MONTHS recebido")
+		result := listNFCeMonths()
+		data, err := json.Marshal(result)
+		if err != nil {
+			return "", fmt.Errorf("erro ao serializar meses NF-Ce: %w", err)
+		}
+		return string(data), nil
+
 	case "aloha-index-nfce-day":
 		var params struct {
 			Month string `json:"month"` // "YYYY-MM"

@@ -207,8 +207,10 @@ export function AlohaDANFESearch({ bohMachines }) {
   const [offset,     setOffset]     = useState(0)
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState(null)
-  const [indexing,   setIndexing]   = useState(false)
-  const [indexMsg,   setIndexMsg]   = useState(null)
+  const [indexing,      setIndexing]      = useState(false)
+  const [indexMsg,      setIndexMsg]      = useState(null)
+  const [histIndexing,  setHistIndexing]  = useState(false)
+  const [histMsg,       setHistMsg]       = useState(null)
 
   const LIMIT = 50
 
@@ -247,6 +249,20 @@ export function AlohaDANFESearch({ bohMachines }) {
       setIndexMsg('Erro: ' + e.message)
     } finally {
       setIndexing(false)
+    }
+  }
+
+  async function triggerHistory() {
+    if (!machineId) return
+    setHistIndexing(true)
+    setHistMsg(null)
+    try {
+      const r = await api.aloha.triggerHistory(machineId)
+      setHistMsg(r.message || 'Indexação histórica iniciada.')
+    } catch (e) {
+      setHistMsg('Erro: ' + e.message)
+    } finally {
+      setHistIndexing(false)
     }
   }
 
@@ -325,7 +341,7 @@ export function AlohaDANFESearch({ bohMachines }) {
       </div>
 
       {/* Indexing controls */}
-      <div style={{ marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+      <div style={{ marginBottom: '14px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
         <button
           className="btn btn-secondary"
           style={{ fontSize: '11px', padding: '4px 10px' }}
@@ -335,8 +351,20 @@ export function AlohaDANFESearch({ bohMachines }) {
         >
           {indexing ? '⏳ Aguardando…' : '⚙ Indexar mês atual'}
         </button>
+        <button
+          className="btn btn-secondary"
+          style={{ fontSize: '11px', padding: '4px 10px' }}
+          onClick={triggerHistory}
+          disabled={histIndexing || !machineId}
+          title="Indexa todo o histórico disponível nas pastas do servidor BOH"
+        >
+          {histIndexing ? '⏳ Descobrindo meses…' : '📦 Indexar histórico completo'}
+        </button>
         {indexMsg && (
           <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{indexMsg}</span>
+        )}
+        {histMsg && (
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{histMsg}</span>
         )}
       </div>
 

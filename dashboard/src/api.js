@@ -69,8 +69,9 @@ export const api = {
   aloha: {
     scan:         (id) => request('POST', `/api/machines/${id}/commands`, { type: 'aloha-scan', params: {} }),
     getLatest:    (id) => request('GET',  `/api/machines/${id}/aloha`),
-    triggerIndex: (id) => request('POST', `/api/aloha/${id}/index/trigger`),
-    indexStatus:  (id) => request('GET',  `/api/aloha/${id}/index/status`),
+    triggerIndex:   (id) => request('POST', `/api/aloha/${id}/index/trigger`),
+    triggerHistory: (id) => request('POST', `/api/aloha/${id}/history/trigger`),
+    indexStatus:    (id) => request('GET',  `/api/aloha/${id}/index/status`),
   },
 
   // NF-Ce search + DANFE

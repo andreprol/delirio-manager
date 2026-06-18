@@ -157,6 +157,27 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
       }
     }
 
+    // Post-process: queue day-index commands for every discovered month/day
+    if (cmd && cmd.type === 'aloha-list-nfce-months' && success !== false && message) {
+      try {
+        const { months } = JSON.parse(message);
+        if (Array.isArray(months)) {
+          const year = new Date().getFullYear();
+          let total = 0;
+          for (const { month: mm, days } of months) {
+            const monthKey = `${year}-${mm}`; // e.g. "2026-06"
+            for (const day of (days || [])) {
+              db.createCommand(req.machine.id, 'aloha-index-nfce-day', { month: monthKey, day });
+              total++;
+            }
+          }
+          console.log(`[NFCe] ${req.machine.id} histórico: ${months.length} meses, ${total} comandos enfileirados`);
+        }
+      } catch (e) {
+        console.error('[NFCe] Falha ao processar lista de meses:', e.message);
+      }
+    }
+
     broadcast('command:acked', {
       commandId,
       machineId: req.machine.id,
