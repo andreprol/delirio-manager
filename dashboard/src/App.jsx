@@ -7,6 +7,7 @@ import { UpdatePanel } from './components/UpdatePanel'
 import { OfflineToast }                from './components/OfflineToast'
 import { AlertsPanel, useAlertsCount } from './components/AlertsPanel'
 import { RhModule } from './components/RhModule'
+import { AlohaModule } from './components/AlohaModule'
 import { api, setServerUrl, getServerUrl } from './api'
 
 export default function App() {
@@ -32,7 +33,8 @@ export default function App() {
 
   const [offlineToast,    setOfflineToast]    = useState(null)
   const [showAlertsPanel, setShowAlertsPanel] = useState(false)
-  const [showRh, setShowRh] = useState(false)
+  const [showRh,    setShowRh]    = useState(false)
+  const [showAloha, setShowAloha] = useState(false)
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
   const [alertsCount,     setAlertsCount]     = useAlertsCount()
 
@@ -275,6 +277,14 @@ export default function App() {
           </button>
 
           <button
+            className="pill-solo pill-solo-aloha"
+            onClick={() => setShowAloha(true)}
+            title="Módulo Aloha — Servidores BOH"
+          >
+            🍕 Aloha
+          </button>
+
+          <button
             className="bell-btn"
             onClick={() => { setShowAlertsPanel(v => !v); if (!showAlertsPanel) setAlertsCount(0) }}
             title="Alertas"
@@ -405,7 +415,8 @@ export default function App() {
           onClose={() => setShowAlertsPanel(false)}
         />
       )}
-      {showRh && <RhModule onClose={() => setShowRh(false)} />}
+      {showRh    && <RhModule    onClose={() => setShowRh(false)} />}
+      {showAloha && <AlohaModule onClose={() => setShowAloha(false)} machines={machines} />}
     </div>
   )
 }

@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { EventsTab } from './EventsTab'
 import { InsightsTab } from './InsightsTab'
-import { AlohaTab } from './AlohaTab'
 
 const STATUS_COLOR = { online: '#22c55e', offline: '#ef4444', unknown: '#6b7280' }
 const STATUS_LABEL = { online: 'Online', offline: 'Offline', unknown: 'Desconhecido' }
@@ -25,7 +24,6 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsLi
   const [eventsUnread,  setEventsUnread]  = useState(machine.winEventsUnread || 0)
   const [insightsUnread, setInsightsUnread] = useState(0)
 
-  const isBOH = machine.hostname?.toUpperCase().endsWith('BOH')
   const menuRef = useRef(null)
 
   useEffect(() => {
@@ -155,14 +153,6 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsLi
               ✨ Insights
               {insightsUnread > 0 && <span className="tab-badge">{insightsUnread}</span>}
             </button>
-            {isBOH && (
-              <button
-                className={`mc-tab ${activeTab === 'aloha' ? 'mc-tab-active' : ''}`}
-                onClick={() => setActiveTab('aloha')}
-              >
-                🍕 Aloha
-              </button>
-            )}
           </div>
 
           {activeTab === 'metrics' && (
@@ -300,12 +290,6 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsLi
             <InsightsTab
               machineId={machine.id}
               onRead={() => setInsightsUnread(0)}
-            />
-          )}
-          {activeTab === 'aloha' && isBOH && (
-            <AlohaTab
-              machineId={machine.id}
-              machineStatus={machine.status}
             />
           )}
         </div>
