@@ -40,7 +40,9 @@ function callClockProxy(path, body, method = 'POST') {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          resolve(res.statusCode === 202 ? { ...parsed, _statusCode: 202 } : parsed);
+          if (res.statusCode === 202) return resolve({ ...parsed, _statusCode: 202 });
+          if (res.statusCode >= 400) return reject(new Error(parsed.error || `clock-proxy HTTP ${res.statusCode}`));
+          resolve(parsed);
         }
         catch (_) { resolve({ error: data }); }
       });
