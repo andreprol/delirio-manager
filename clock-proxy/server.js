@@ -435,21 +435,29 @@ async function runEmployeesInBackground(targetIps) {
         const reach = await henry.checkReachable();
         if (!reach.reachable) {
           console.warn(`[/rh/employees] ${ip}: offline (${reach.error}) — pulando Playwright`);
-          const clockResult = { ip, success: false, employees: [], total: 0, message: 'Relógio offline' };
           const idx = _clockResults.findIndex(r => r.ip === ip);
-          if (idx >= 0) _clockResults[idx] = clockResult;
-          else          _clockResults.push(clockResult);
+          if (idx < 0) {
+            // Sem dados anteriores — registra a falha normalmente
+            _clockResults.push({ ip, success: false, employees: [], total: 0, message: 'Relógio offline' });
+          }
+          // Com dados anteriores (partial refresh): mantém os dados bons — não sobrescreve com offline temporário
           return;
         }
 
         console.log(`[${new Date().toISOString()}] Buscando funcionarios de ${ip}...`);
         const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.listEmployees()));
-        if (!result.success) console.warn(`[/rh/employees] ${ip}: falhou — ${result.message}`);
 
-        const clockResult = { ip, ...result };
         const idx = _clockResults.findIndex(r => r.ip === ip);
-        if (idx >= 0) _clockResults[idx] = clockResult;
-        else          _clockResults.push(clockResult);
+        if (result.success || idx < 0) {
+          // Sucesso: atualiza sempre. Falha sem dados anteriores: registra a falha.
+          if (idx >= 0) _clockResults[idx] = { ip, ...result };
+          else          _clockResults.push({ ip, ...result });
+        } else {
+          // Falha com dados anteriores (partial refresh pós-enroll): mantém dados bons.
+          // O firmware Henry Hexa fica estressado logo após uma sessão Playwright — manter o
+          // último resultado válido evita que a loja suma da tabela por falha transitória.
+          console.warn(`[/rh/employees] ${ip}: listEmployees falhou — mantendo dados anteriores (${result.message})`);
+        }
       }));
     }
 
