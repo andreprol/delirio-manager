@@ -4,6 +4,14 @@ All notable changes to Delirio Manager are documented here.
 
 ---
 
+## [1.0.27] — 2026-06-18
+
+### Fixed
+- **clock-proxy**: global Playwright semaphore (`withPlaywrightSlot`) — limita a 2 instâncias Chrome simultâneas em TODO o processo, independentemente de quantas operações (scan + enroll + offboard + card) estejam rodando ao mesmo tempo. Resolve definitivamente o "socket hang up" causado por OOM quando scan (SCAN_BATCH=3) e enroll do usuário se sobrepunham (até 4+ Chrome simultâneos → crash)
+- **clock-proxy**: todos os 9 call sites de `clockQueue.run(ip, () => henry.*)` agora passam pela semáforo global: `/clock/:ip/offboard`, `/clock/:ip/enroll`, `/clock/:ip/card`, `/clock/:ip/employees`, `/clock/:ip/employees/debug`, `/rh/offboard` (loop), `runEmployeesInBackground`, `/rh/enroll`, `/rh/employee`
+
+---
+
 ## [1.0.26] — 2026-06-18
 
 ### Fixed

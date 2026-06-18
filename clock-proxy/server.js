@@ -57,6 +57,28 @@ class ClockQueue {
 
 const clockQueue = new ClockQueue();
 
+// ─── GLOBAL PLAYWRIGHT SEMAPHORE ─────────────────────────────────────────────
+// Limits the TOTAL number of concurrent Chrome/Playwright instances across ALL
+// operations (scan + enroll + offboard + card update) to MAX_PW_SLOTS.
+// The ClockQueue above serializes per-IP; this semaphore caps the global total.
+// With MAX_PW_SLOTS=2: at most 2 Chrome processes = ~300MB RAM, safe on Servidor Skill.
+const MAX_PW_SLOTS = 2;
+let _pwSlots = MAX_PW_SLOTS;
+const _pwQueue = [];
+
+async function withPlaywrightSlot(fn) {
+  if (_pwSlots <= 0) {
+    await new Promise(resolve => _pwQueue.push(resolve));
+  }
+  _pwSlots--;
+  try {
+    return await fn();
+  } finally {
+    _pwSlots++;
+    if (_pwQueue.length > 0) _pwQueue.shift()();
+  }
+}
+
 function writeLgpdKit(summary) {
   try {
     const safeName = (summary.employeeName || 'DESCONHECIDO')
@@ -175,7 +197,7 @@ app.post('/clock/:ip/offboard', async (req, res) => {
   console.log(`[${new Date().toISOString()}] OFFBOARD ${cpf} (${employeeName}) em ${ip} — por ${triggeredBy}`);
 
   const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-  const result = await clockQueue.run(ip, () => henry.deleteEmployee(cpf));
+  const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.deleteEmployee(cpf)));
 
   console.log(`[${new Date().toISOString()}] OFFBOARD resultado: ${JSON.stringify(result)}`);
   res.json(result);
@@ -193,7 +215,7 @@ app.post('/clock/:ip/enroll', async (req, res) => {
   console.log(`[${new Date().toISOString()}] ENROLL ${cpf} (${name}) ref1=${ref1} em ${ip}`);
 
   const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-  const result = await clockQueue.run(ip, () => henry.enrollEmployee({ cpf, name, ref1, ref2, password }));
+  const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.enrollEmployee({ cpf, name, ref1, ref2, password })));
 
   console.log(`[${new Date().toISOString()}] ENROLL resultado: ${JSON.stringify(result)}`);
   res.json(result);
@@ -209,7 +231,7 @@ app.put('/clock/:ip/card', async (req, res) => {
   if (!cpf || !ref2) return res.status(400).json({ error: 'cpf e ref2 obrigatórios' });
 
   const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-  const result = await clockQueue.run(ip, () => henry.updateCardRef2(cpf, ref2));
+  const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.updateCardRef2(cpf, ref2)));
 
   res.json(result);
 });
@@ -220,7 +242,7 @@ app.get('/clock/:ip/employees', async (req, res) => {
   const { ip } = req.params;
 
   const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-  const result = await clockQueue.run(ip, () => henry.listEmployees());
+  const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.listEmployees()));
 
   res.json(result);
 });
@@ -231,7 +253,7 @@ app.get('/clock/:ip/employees/debug', async (req, res) => {
   const { ip } = req.params;
   if (!CLOCK_IPS.includes(ip)) return res.status(400).json({ error: 'IP nao configurado' });
   const henry  = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-  const result = await clockQueue.run(ip, () => henry.debugListEmployees());
+  const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.debugListEmployees()));
   res.json(result);
 });
 
@@ -253,7 +275,7 @@ app.post('/rh/offboard', async (req, res) => {
   const results = [];
   for (const ip of CLOCK_IPS) {
     const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-    const result = await clockQueue.run(ip, () => henry.deleteEmployee(cpf));
+    const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.deleteEmployee(cpf)));
     results.push({ clockIp: ip, ...result });
     console.log(`[${new Date().toISOString()}] ${ip}: ${result.success ? 'OK' : result.alreadyAbsent ? 'JA_AUSENTE' : 'FALHOU'}`);
   }
@@ -414,7 +436,7 @@ async function runEmployeesInBackground(targetIps) {
         }
 
         console.log(`[${new Date().toISOString()}] Buscando funcionarios de ${ip}...`);
-        const result = await clockQueue.run(ip, () => henry.listEmployees());
+        const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.listEmployees()));
         if (!result.success) console.warn(`[/rh/employees] ${ip}: falhou — ${result.message}`);
 
         const clockResult = { ip, ...result };
@@ -509,7 +531,7 @@ app.post('/rh/enroll', async (req, res) => {
         results.push({ clockIp: ip, success: false, offline: true, message: `Relógio offline: ${reach.error || 'sem resposta'}` });
         continue;
       }
-      const result = await clockQueue.run(ip, () => henry.enrollEmployee({ cpf, name, ref1, ref2, password }));
+      const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.enrollEmployee({ cpf, name, ref1, ref2, password })));
       results.push({ clockIp: ip, ...result });
     }
 
@@ -547,7 +569,7 @@ app.put('/rh/employee', async (req, res) => {
     const results = [];
     for (const ip of targets) {
       const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-      const result = await clockQueue.run(ip, () => henry.updateCardRef2(cpf, ref2));
+      const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.updateCardRef2(cpf, ref2)));
       results.push({ clockIp: ip, ...result });
     }
 
