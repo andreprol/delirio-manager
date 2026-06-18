@@ -26,6 +26,37 @@ const IP_TO_STORE = {
   '192.168.10.150': 'Niterói',
 };
 
+// ─── PER-IP OPERATION QUEUE ───────────────────────────────────────────────────
+// Serializes Playwright browser sessions per clock IP.
+// Prevents concurrent sessions from hitting the same clock simultaneously,
+// which caused race conditions and crashes under multi-user load.
+class ClockQueue {
+  constructor() {
+    this._tails   = {}; // ip → promise (tail of the chain — always resolves)
+    this._pending = {}; // ip → count of queued+running operations
+  }
+
+  run(ip, fn) {
+    const count = (this._pending[ip] = (this._pending[ip] || 0) + 1);
+    if (count > 1) {
+      console.log(`[ClockQueue] ${IP_TO_STORE[ip] || ip}: enfileirando (${count - 1} aguardando)`);
+    }
+    const prev = this._tails[ip] || Promise.resolve();
+    // Run fn() regardless of whether prev succeeded or failed
+    const tail = prev.then(() => fn(), () => fn());
+    // The stored tail always resolves so the next item always runs
+    this._tails[ip] = tail.then(() => {}, () => {});
+    tail.finally(() => { this._pending[ip]--; });
+    return tail;
+  }
+
+  pending(ip) {
+    return this._pending[ip] || 0;
+  }
+}
+
+const clockQueue = new ClockQueue();
+
 function writeLgpdKit(summary) {
   try {
     const safeName = (summary.employeeName || 'DESCONHECIDO')
@@ -144,7 +175,7 @@ app.post('/clock/:ip/offboard', async (req, res) => {
   console.log(`[${new Date().toISOString()}] OFFBOARD ${cpf} (${employeeName}) em ${ip} — por ${triggeredBy}`);
 
   const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-  const result = await henry.deleteEmployee(cpf);
+  const result = await clockQueue.run(ip, () => henry.deleteEmployee(cpf));
 
   console.log(`[${new Date().toISOString()}] OFFBOARD resultado: ${JSON.stringify(result)}`);
   res.json(result);
@@ -153,7 +184,6 @@ app.post('/clock/:ip/offboard', async (req, res) => {
 // ─── ONBOARDING ──────────────────────────────────────────────────────────────
 // Cadastra funcionário em um relógio específico
 // Body: { cpf, name, ref1, ref2, password }
-// ref1 (matrícula) é obrigatório pelo relógio — sem ele o save retorna "Parâmetros inválidos"
 app.post('/clock/:ip/enroll', async (req, res) => {
   const { ip } = req.params;
   const { cpf, name, ref1, ref2, password } = req.body;
@@ -163,7 +193,7 @@ app.post('/clock/:ip/enroll', async (req, res) => {
   console.log(`[${new Date().toISOString()}] ENROLL ${cpf} (${name}) ref1=${ref1} em ${ip}`);
 
   const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-  const result = await henry.enrollEmployee({ cpf, name, ref1, ref2, password });
+  const result = await clockQueue.run(ip, () => henry.enrollEmployee({ cpf, name, ref1, ref2, password }));
 
   console.log(`[${new Date().toISOString()}] ENROLL resultado: ${JSON.stringify(result)}`);
   res.json(result);
@@ -179,7 +209,7 @@ app.put('/clock/:ip/card', async (req, res) => {
   if (!cpf || !ref2) return res.status(400).json({ error: 'cpf e ref2 obrigatórios' });
 
   const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-  const result = await henry.updateCardRef2(cpf, ref2);
+  const result = await clockQueue.run(ip, () => henry.updateCardRef2(cpf, ref2));
 
   res.json(result);
 });
@@ -190,25 +220,23 @@ app.get('/clock/:ip/employees', async (req, res) => {
   const { ip } = req.params;
 
   const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-  const result = await henry.listEmployees();
+  const result = await clockQueue.run(ip, () => henry.listEmployees());
 
   res.json(result);
 });
 
 // ─── DEBUG — ESTRUTURA REAL DA TABELA ────────────────────────────────────────
 // Retorna dados brutos das primeiras 5 linhas para diagnóstico de colunas.
-// Usar para confirmar quantas colunas existem e o que cada uma contém.
 app.get('/clock/:ip/employees/debug', async (req, res) => {
   const { ip } = req.params;
   if (!CLOCK_IPS.includes(ip)) return res.status(400).json({ error: 'IP nao configurado' });
   const henry  = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-  const result = await henry.debugListEmployees();
+  const result = await clockQueue.run(ip, () => henry.debugListEmployees());
   res.json(result);
 });
 
 // ─── OFFBOARD LGPD — TODOS OS RELÓGIOS ───────────────────────────────────────
 // Chamado pelo Delirio Manager (Azure) no desligamento de funcionário.
-// Remove o funcionário de todos os relógios configurados em CLOCK_IPS.
 // Body: { cpf, employeeName, triggeredBy }
 app.post('/rh/offboard', async (req, res) => {
   const { cpf, employeeName, triggeredBy } = req.body;
@@ -225,7 +253,7 @@ app.post('/rh/offboard', async (req, res) => {
   const results = [];
   for (const ip of CLOCK_IPS) {
     const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-    const result = await henry.deleteEmployee(cpf);
+    const result = await clockQueue.run(ip, () => henry.deleteEmployee(cpf));
     results.push({ clockIp: ip, ...result });
     console.log(`[${new Date().toISOString()}] ${ip}: ${result.success ? 'OK' : result.alreadyAbsent ? 'JA_AUSENTE' : 'FALHOU'}`);
   }
@@ -286,10 +314,11 @@ app.get('/rh/clocks/status', async (req, res) => {
 // Assíncrono: inicia job em background, retorna 202 imediatamente.
 // Polling: chamar GET /rh/employees até receber 200 com dados.
 // Partial refresh: POST /rh/employees/refresh com { clockIps: [...] } atualiza IPs específicos.
-let _empJobState  = 'idle'; // 'idle' | 'running'
-let _empCache     = null;   // resultado completo ou { error: msg }
-let _empCacheAt   = 0;
-let _clockResults = [];     // dados brutos por relógio — persistidos para partial refresh
+let _empJobState       = 'idle'; // 'idle' | 'running'
+let _empCache          = null;   // resultado completo ou { error: msg }
+let _empCacheAt        = 0;
+let _clockResults      = [];     // dados brutos por relógio — persistidos para partial refresh
+let _pendingRefreshIps = null;   // IPs aguardando partial refresh enquanto job está rodando
 const EMP_CACHE_TTL = 10 * 60 * 1000;
 
 function buildMasterCache(clockResults) {
@@ -346,8 +375,18 @@ function buildMasterCache(clockResults) {
 }
 
 // targetIps: undefined = full refresh (todos CLOCK_IPS); array = partial refresh (só esses IPs)
+// Todos os IPs são processados em PARALELO, cada um na sua própria fila.
+// Isso reduz o tempo de scan de ~270s (sequencial) para ~30-60s (limitado pelo mais lento).
 async function runEmployeesInBackground(targetIps) {
   _empJobState = 'running';
+
+  // Partial refresh: garante que _clockResults terá dados de TODOS os CLOCK_IPS ao final.
+  if (targetIps) {
+    const cachedIps = new Set(_clockResults.map(r => r.ip));
+    const uncached  = CLOCK_IPS.filter(ip => !cachedIps.has(ip) && !targetIps.includes(ip));
+    if (uncached.length > 0) targetIps = [...targetIps, ...uncached];
+  }
+
   const ips          = targetIps || CLOCK_IPS;
   const isFullRefresh = !targetIps;
   if (isFullRefresh) _clockResults = [];
@@ -355,13 +394,13 @@ async function runEmployeesInBackground(targetIps) {
   try {
     if (CLOCK_IPS.length === 0) throw new Error('CLOCK_IPS nao configurado no .env');
 
-    let playwrightRan = false; // controla o intervalo de 10s entre sessões Playwright
-    for (let i = 0; i < ips.length; i++) {
-      const ip    = ips[i];
+    // Scan em paralelo: IPs independentes não precisam esperar uns pelos outros.
+    // A ClockQueue garante que, se outro usuário está operando um relógio, o scan
+    // aguarda na fila daquele IP sem bloquear os demais.
+    await Promise.allSettled(ips.map(async (ip) => {
       const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
 
       // Pré-verifica acessibilidade antes de abrir Playwright (5s timeout via HTTP simples)
-      // Relógios offline são marcados como falha e pulados — evita aguardar timeout por Playwright
       const reach = await henry.checkReachable();
       if (!reach.reachable) {
         console.warn(`[/rh/employees] ${ip}: offline (${reach.error}) — pulando Playwright`);
@@ -369,22 +408,18 @@ async function runEmployeesInBackground(targetIps) {
         const idx = _clockResults.findIndex(r => r.ip === ip);
         if (idx >= 0) _clockResults[idx] = clockResult;
         else          _clockResults.push(clockResult);
-        continue;
+        return;
       }
 
-      // Aguarda 10s entre sessões Playwright para não sobrecarregar o servidor embutido do relógio
-      if (playwrightRan) await new Promise(r => setTimeout(r, 10000));
-
       console.log(`[${new Date().toISOString()}] Buscando funcionarios de ${ip}...`);
-      const result = await henry.listEmployees();
-      playwrightRan = true;
+      const result = await clockQueue.run(ip, () => henry.listEmployees());
       if (!result.success) console.warn(`[/rh/employees] ${ip}: falhou — ${result.message}`);
 
       const clockResult = { ip, ...result };
       const idx = _clockResults.findIndex(r => r.ip === ip);
       if (idx >= 0) _clockResults[idx] = clockResult;
       else          _clockResults.push(clockResult);
-    }
+    }));
 
     _empCache   = buildMasterCache(_clockResults);
     _empCacheAt = Date.now();
@@ -395,6 +430,13 @@ async function runEmployeesInBackground(targetIps) {
     _empCacheAt = Date.now();
   } finally {
     _empJobState = 'idle';
+    // Se houve partial refresh acumulado durante este job, executa agora
+    const pending = _pendingRefreshIps;
+    _pendingRefreshIps = null;
+    if (pending && pending.length > 0) {
+      console.log(`[/rh/employees] Iniciando partial refresh pendente: ${pending.join(', ')}`);
+      setTimeout(() => runEmployeesInBackground(pending), 0);
+    }
   }
 }
 
@@ -422,7 +464,11 @@ app.post('/rh/employees/refresh', (req, res) => {
     return res.status(400).json({ error: `IPs nao permitidos: ${invalid.join(', ')}` });
   }
   if (_empJobState === 'running') {
-    return res.status(202).json({ status: 'running' });
+    // Acumula IPs — serão atualizados automaticamente quando o job atual terminar
+    _pendingRefreshIps = _pendingRefreshIps
+      ? [...new Set([..._pendingRefreshIps, ...clockIps])]
+      : [...clockIps];
+    return res.status(202).json({ status: 'running', queued: clockIps });
   }
   runEmployeesInBackground(clockIps);
   return res.status(202).json({ status: 'started', clockIps });
@@ -454,7 +500,7 @@ app.post('/rh/enroll', async (req, res) => {
     const results = [];
     for (const ip of targets) {
       const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-      const result = await henry.enrollEmployee({ cpf, name, ref1, ref2, password });
+      const result = await clockQueue.run(ip, () => henry.enrollEmployee({ cpf, name, ref1, ref2, password }));
       results.push({ clockIp: ip, ...result });
     }
 
@@ -492,7 +538,7 @@ app.put('/rh/employee', async (req, res) => {
     const results = [];
     for (const ip of targets) {
       const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-      const result = await henry.updateCardRef2(cpf, ref2);
+      const result = await clockQueue.run(ip, () => henry.updateCardRef2(cpf, ref2));
       results.push({ clockIp: ip, ...result });
     }
 

@@ -51,7 +51,19 @@ class HenryHexa {
     await page.locator('#lblLogin').fill(this.user);
     await page.locator('#lblPass').fill(this.password);
     await page.locator('a.button.primary', { hasText: 'Entrar' }).click();
-    await page.waitForSelector('text=Colaboradores', { timeout: 30000 });
+    try {
+      await page.waitForSelector('text=Colaboradores', { timeout: 30000 });
+    } catch {
+      const visibleText = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('div, span, h4, label, p, td, input'))
+          .filter(el => el.offsetWidth > 0 && el.offsetHeight > 0 && el.childElementCount === 0)
+          .map(el => (el.value || el.textContent || '').trim())
+          .filter(t => t.length > 2)
+          .slice(0, 10)
+          .join(' | ')
+      ).catch(() => 'não foi possível capturar texto');
+      throw new Error(`Login falhou — "Colaboradores" não apareceu após 30s. Tela após Entrar: "${visibleText}"`);
+    }
   }
 
   // Navega para a tela de lista de colaboradores (usado apenas pelo listEmployees)
@@ -81,7 +93,21 @@ class HenryHexa {
     // Busca por CPF único auto-navega para a página de detalhes do funcionário.
     // "Excluir" só aparece nessa página — sua presença confirma que o funcionário foi encontrado.
     const found = await page.locator('a:has-text("Excluir")').isVisible().catch(() => false);
-    return { found, formattedCpf };
+
+    // Captura texto da página quando não encontrado — ajuda a diagnosticar bugs de firmware
+    let pageText = '';
+    if (!found) {
+      pageText = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('td, div, span, h4, label'))
+          .filter(el => el.offsetWidth > 0 && el.offsetHeight > 0 && el.childElementCount === 0)
+          .map(el => el.textContent.trim())
+          .filter(t => t.length > 2)
+          .slice(0, 8)
+          .join(' | ')
+      ).catch(() => '');
+    }
+
+    return { found, formattedCpf, pageText };
   }
 
   // Remove funcionário do relógio (biometria + Ref1 + Ref2 + cadastro)
@@ -151,7 +177,9 @@ class HenryHexa {
         await page.waitForSelector('a:has-text("Inserir")', { timeout: 10000 });
 
         await page.locator('a:has-text("Inserir")').click();
-        await page.waitForSelector('text=Verificação de digital', { timeout: 10000 });
+        // Aguarda o campo Nome — presente em todos os firmwares do Hexa ADV
+        // (evita depender do texto "Verificação de digital" que varia por versão)
+        await page.waitForSelector('#lblName', { timeout: 15000 });
 
         await page.locator('#lblName').fill(name.toUpperCase().slice(0, 52));
 
@@ -192,8 +220,13 @@ class HenryHexa {
         );
 
         const saved      = pageTexts.some(t => t.includes('Sucesso ao salvar'));
-        const alreadyReg = pageTexts.some(t => t.includes('já cadastrado') || t.includes('já cadastrada'));
-        const errorMsg   = pageTexts.find(t => t.includes('inválidos') || t.includes('obrigatório'));
+        const alreadyReg = pageTexts.some(t =>
+          t.includes('já cadastrado') || t.includes('já cadastrada') ||
+          t.includes('já existe') || t.includes('duplicado') || t.includes('duplicada')
+        );
+        const errorMsg   = pageTexts.find(t =>
+          t.includes('inválidos') || t.includes('obrigatório') || t.includes('Parâmetros')
+        );
 
         if (alreadyReg) {
           return {
@@ -205,9 +238,32 @@ class HenryHexa {
         }
 
         if (!saved) {
+          const pageContext = pageTexts.filter(t => t.length > 3).slice(0, 6).join(' / ');
           return {
             success: false,
-            message: errorMsg || 'Salvar não confirmado — verifique os parâmetros enviados',
+            message: `${errorMsg || 'Salvar não confirmado'} — tela: "${pageContext}"`,
+            timestamp,
+            clockIp: this.ip,
+          };
+        }
+
+        // Verifica persistência: busca o CPF na lista após salvar.
+        // Alguns firmwares exibem "Sucesso ao salvar" mas não persistem o registro.
+        let verified = false;
+        let verifyPageText = '';
+        try {
+          const check = await this.navigateAndSearchByCPF(page, cpf);
+          verified      = check.found;
+          verifyPageText = check.pageText || '';
+        } catch {
+          verified = true; // erro na verificação → confia no "Sucesso ao salvar"
+        }
+
+        if (!verified) {
+          const detail = verifyPageText ? ` (pós-busca: "${verifyPageText}")` : '';
+          return {
+            success: false,
+            message: `Relógio exibiu "Sucesso ao salvar" mas CPF não encontrado${detail} — bug no firmware: reinicie o relógio e tente novamente`,
             timestamp,
             clockIp: this.ip,
           };

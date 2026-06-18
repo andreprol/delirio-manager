@@ -4,6 +4,18 @@ All notable changes to Delirio Manager are documented here.
 
 ---
 
+## [1.0.25] — 2026-06-18
+
+### Added
+- **clock-proxy**: `ClockQueue` — fila FIFO por IP que serializa sessões Playwright por relógio. Garante que nunca há dois browsers simultâneos no mesmo clock, mesmo com múltiplos usuários operando ao mesmo tempo
+- **clock-proxy**: scan em paralelo em `runEmployeesInBackground` — todos os relógios são processados simultaneamente (cada um na sua própria fila), reduzindo o tempo de varredura completa de ~270s para ~60s
+
+### Fixed
+- **clock-proxy**: mensagem de erro ao cadastrar em relógio com bug de firmware agora exibe o texto da tela pós-busca e instrui a reiniciar o relógio
+- **server/routes/rh.js**: timeout de `callClockProxy` aumentado de 90s para 300s para acomodar operações enfileiradas
+
+---
+
 ## [1.0.21] — 2026-06-18
 
 ### Fixed
