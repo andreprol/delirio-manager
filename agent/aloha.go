@@ -34,19 +34,15 @@ type AlohaNFCeSummary struct {
 type AlohaScanResult struct {
 	ScannedAt     string           `json:"scanned_at"`
 	BootdrvExists bool             `json:"bootdrv_exists"`
-	DatabaseFiles []AlohaFileInfo  `json:"database_files"` // .DBF em C:\Bootdrv (sem AlohaFiscal)
-	NFCe          AlohaNFCeSummary `json:"nfce"`           // XMLs em AlohaFiscal\ServerData\XML
+	NFCe          AlohaNFCeSummary `json:"nfce"` // XMLs em AlohaFiscal\ServerData\XML
 	Error         string           `json:"error,omitempty"`
 }
 
-// scanAloha realiza dois scans focados:
-//  1. Arquivos .DBF em C:\Bootdrv (banco de dados Aloha, ignora subdir AlohaFiscal)
-//  2. XMLs de NF-Ce em C:\Bootdrv\AlohaFiscal\ServerData\XML
+// scanAloha verifica XMLs de NF-Ce em C:\Bootdrv\AlohaFiscal\ServerData\XML.
 func scanAloha() AlohaScanResult {
 	result := AlohaScanResult{
-		ScannedAt:     time.Now().UTC().Format(time.RFC3339),
-		DatabaseFiles: []AlohaFileInfo{},
-		NFCe:          AlohaNFCeSummary{Recent: []AlohaFileInfo{}},
+		ScannedAt: time.Now().UTC().Format(time.RFC3339),
+		NFCe:      AlohaNFCeSummary{Recent: []AlohaFileInfo{}},
 	}
 
 	if _, err := os.Stat(alohaBootdrvPath); err != nil {
@@ -56,38 +52,7 @@ func scanAloha() AlohaScanResult {
 	}
 	result.BootdrvExists = true
 
-	// ── 1. Banco de dados: arquivos .DBF em C:\Bootdrv ──────────────────────
-	filepath.WalkDir(alohaBootdrvPath, func(path string, d os.DirEntry, werr error) error {
-		if werr != nil {
-			return nil
-		}
-		if d.IsDir() {
-			// Pula a árvore AlohaFiscal — contém milhares de XMLs, não DBFs
-			if strings.EqualFold(d.Name(), "AlohaFiscal") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.EqualFold(filepath.Ext(path), ".dbf") {
-			fi, err := d.Info()
-			if err != nil {
-				return nil
-			}
-			result.DatabaseFiles = append(result.DatabaseFiles, AlohaFileInfo{
-				Path:    filepath.Base(path),
-				SizeMB:  alohaRoundMB(fi.Size()),
-				ModTime: fi.ModTime().Format("2006-01-02T15:04:05Z"),
-			})
-		}
-		return nil
-	})
-
-	// Ordena por tamanho decrescente (arquivos mais importantes primeiro)
-	sort.Slice(result.DatabaseFiles, func(i, j int) bool {
-		return result.DatabaseFiles[i].SizeMB > result.DatabaseFiles[j].SizeMB
-	})
-
-	// ── 2. NF-Ce: XMLs em C:\Bootdrv\AlohaFiscal\ServerData\XML ────────────
+	// NF-Ce: XMLs em C:\Bootdrv\AlohaFiscal\ServerData\XML ────────────
 	if _, err := os.Stat(alohaNFCePath); err != nil {
 		result.NFCe.PathExists = false
 		return result

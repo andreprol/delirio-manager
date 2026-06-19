@@ -198,6 +198,7 @@ type NFCeIndexDayResult struct {
 
 // NFCeMonthInfo describes one month folder and its available day sub-folders.
 type NFCeMonthInfo struct {
+	Year  string   `json:"year"`  // e.g. "2026"
 	Month string   `json:"month"` // e.g. "06"
 	Days  []string `json:"days"`  // e.g. ["01","02",...]
 }
@@ -207,32 +208,42 @@ type NFCeListMonthsResult struct {
 	Months []NFCeMonthInfo `json:"months"`
 }
 
-// listNFCeMonths enumerates month and day subdirectories in alohaNFCePath.
+// listNFCeMonths enumerates year/month/day subdirectories in alohaNFCePath.
+// Estrutura real: XML\{YYYY}\{MM}\{DD}\NFCe\
 func listNFCeMonths() NFCeListMonthsResult {
 	result := NFCeListMonthsResult{Months: []NFCeMonthInfo{}}
-	entries, err := os.ReadDir(alohaNFCePath)
+	yearEntries, err := os.ReadDir(alohaNFCePath)
 	if err != nil {
 		return result
 	}
-	for _, entry := range entries {
-		if !entry.IsDir() || len(entry.Name()) != 2 {
+	for _, yearEntry := range yearEntries {
+		if !yearEntry.IsDir() || len(yearEntry.Name()) != 4 {
 			continue
 		}
-		info := NFCeMonthInfo{Month: entry.Name(), Days: []string{}}
-		dayEntries, err := os.ReadDir(filepath.Join(alohaNFCePath, entry.Name()))
-		if err == nil {
-			for _, d := range dayEntries {
-				if d.IsDir() && len(d.Name()) == 2 {
-					info.Days = append(info.Days, d.Name())
+		monthEntries, err := os.ReadDir(filepath.Join(alohaNFCePath, yearEntry.Name()))
+		if err != nil {
+			continue
+		}
+		for _, monthEntry := range monthEntries {
+			if !monthEntry.IsDir() || len(monthEntry.Name()) != 2 {
+				continue
+			}
+			info := NFCeMonthInfo{Year: yearEntry.Name(), Month: monthEntry.Name(), Days: []string{}}
+			dayEntries, err := os.ReadDir(filepath.Join(alohaNFCePath, yearEntry.Name(), monthEntry.Name()))
+			if err == nil {
+				for _, d := range dayEntries {
+					if d.IsDir() && len(d.Name()) == 2 {
+						info.Days = append(info.Days, d.Name())
+					}
 				}
 			}
+			result.Months = append(result.Months, info)
 		}
-		result.Months = append(result.Months, info)
 	}
 	return result
 }
 
-// indexNFCeDay scans C:\Bootdrv\AlohaFiscal\ServerData\XML\{MM}\{DD}\NFCe\ for XMLs.
+// indexNFCeDay scans C:\Bootdrv\AlohaFiscal\ServerData\XML\{YYYY}\{MM}\{DD}\NFCe\ for XMLs.
 func indexNFCeDay(month, day string) NFCeIndexDayResult {
 	result := NFCeIndexDayResult{
 		Month:   month,
@@ -240,11 +251,13 @@ func indexNFCeDay(month, day string) NFCeIndexDayResult {
 		Records: []NFCeRecord{},
 	}
 
+	yearPart := ""
 	monthPart := ""
 	if len(month) >= 7 {
+		yearPart = month[0:4]  // "2026" from "2026-06"
 		monthPart = month[5:7] // "06" from "2026-06"
 	}
-	dayPath := filepath.Join(alohaNFCePath, monthPart, day, "NFCe")
+	dayPath := filepath.Join(alohaNFCePath, yearPart, monthPart, day, "NFCe")
 	entries, err := os.ReadDir(dayPath)
 	if err != nil {
 		// Day folder may not exist — treat as empty, not an error

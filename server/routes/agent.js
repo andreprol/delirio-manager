@@ -165,10 +165,10 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
           if (months.length === 0) {
             console.warn(`[NFCe] ${req.machine.id}: aloha-list-nfce-months retornou 0 meses — pasta XML vazia ou caminho ausente em C:\\Bootdrv\\AlohaFiscal\\ServerData\\XML`);
           }
-          const year = new Date().getFullYear();
           let total = 0;
-          for (const { month: mm, days } of months) {
-            const monthKey = `${year}-${mm}`; // e.g. "2026-06"
+          for (const { month: mm, year: yy, days } of months) {
+            const yearStr = yy || String(new Date().getFullYear());
+            const monthKey = `${yearStr}-${mm}`; // e.g. "2026-06"
             for (const day of (days || [])) {
               db.createCommand(req.machine.id, 'aloha-index-nfce-day', { month: monthKey, day });
               total++;

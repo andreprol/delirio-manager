@@ -39,16 +39,14 @@ function ScanDetail({ scan }) {
     mono: { fontFamily: 'monospace', fontSize: '11px' },
   }
 
-  const dbCount   = scan.database_files?.length || 0
   const nfceTotal = scan.nfce?.total || 0
 
   return (
     <div>
       {/* Resumo */}
-      <div style={{ ...s.section, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '18px' }}>
+      <div style={{ ...s.section, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px', marginBottom: '18px' }}>
         {[
-          { label: 'Banco de dados',  value: `${dbCount} arquivo${dbCount !== 1 ? 's' : ''} DBF` },
-          { label: 'NF-Ce emitidas',  value: nfceTotal.toLocaleString('pt-BR') },
+          { label: 'NF-Ce emitidas',     value: nfceTotal.toLocaleString('pt-BR') },
           { label: 'NF-Ce mais recente', value: scan.nfce?.latest_date || '—' },
         ].map(({ label, value }) => (
           <div key={label} style={{
@@ -61,33 +59,6 @@ function ScanDetail({ scan }) {
             <div style={{ fontSize: '15px', fontWeight: 700 }}>{value}</div>
           </div>
         ))}
-      </div>
-
-      {/* Banco de Dados DBF */}
-      <div style={s.section}>
-        <div style={s.sectionTitle}>🗄️ Banco de Dados — {dbCount} arquivo{dbCount !== 1 ? 's' : ''} DBF</div>
-        {dbCount > 0 ? (
-          <table style={s.table}>
-            <thead>
-              <tr>
-                <th style={s.th}>Arquivo</th>
-                <th style={{ ...s.th, textAlign: 'right' }}>Tamanho</th>
-                <th style={s.th}>Modificado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {scan.database_files.map((f, i) => (
-                <tr key={i}>
-                  <td style={{ ...s.td, ...s.mono }}>{f.path}</td>
-                  <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>{fmtMB(f.size_mb)}</td>
-                  <td style={{ ...s.td, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{f.mod_time?.slice(0, 10)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>Nenhum arquivo DBF encontrado em C:\Bootdrv</span>
-        )}
       </div>
 
       {/* NF-Ce */}
@@ -168,10 +139,18 @@ function BohRow({ machine, expanded, onToggle }) {
         setAutoScanning(true)
         try {
           await api.aloha.scan(machine.id)
-          setTimeout(async () => {
-            await loadScan()
-            setAutoScanning(false)
-          }, 15000)
+          // Polling a cada 5s por até 60s (agente pode demorar até 1 ciclo de heartbeat)
+          let attempts = 0
+          const poll = async () => {
+            attempts++
+            const result = await loadScan()
+            if (result || attempts >= 12) {
+              setAutoScanning(false)
+            } else {
+              setTimeout(poll, 5000)
+            }
+          }
+          setTimeout(poll, 5000)
         } catch (e) {
           setError(e.message)
           setAutoScanning(false)
@@ -208,7 +187,7 @@ function BohRow({ machine, expanded, onToggle }) {
   }
 
   const scanMeta = scan
-    ? `${scan.database_files?.length || 0} DBF · ${(scan.nfce?.total || 0).toLocaleString('pt-BR')} NF-Ce · verificado ${fmtDate(scan.acked_at || scan.scanned_at)}`
+    ? `${(scan.nfce?.total || 0).toLocaleString('pt-BR')} NF-Ce · verificado ${fmtDate(scan.acked_at || scan.scanned_at)}`
     : null
 
   return (
