@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { api, getServerUrl } from '../api'
 
 function fmtDate(iso) {
@@ -211,8 +211,39 @@ export function AlohaDANFESearch({ bohMachines }) {
   const [indexMsg,      setIndexMsg]      = useState(null)
   const [histIndexing,  setHistIndexing]  = useState(false)
   const [histMsg,       setHistMsg]       = useState(null)
+  const [indexStatus,   setIndexStatus]   = useState(null)
+  const [polling,       setPolling]       = useState(false)
+  const pollRef = useRef(null)
 
   const LIMIT = 50
+
+  // Carrega status atual ao trocar de máquina; limpa polling da máquina anterior
+  useEffect(() => {
+    if (!machineId) return
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    setPolling(false)
+    setIndexStatus(null)
+    api.aloha.indexStatus(machineId).then(setIndexStatus).catch(() => {})
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
+  }, [machineId])
+
+  function startPolling(id) {
+    if (pollRef.current) clearInterval(pollRef.current)
+    setPolling(true)
+    let ticks = 0
+    pollRef.current = setInterval(async () => {
+      ticks++
+      try {
+        const status = await api.aloha.indexStatus(id || machineId)
+        setIndexStatus(status)
+        if (status.pendingDays === 0 || ticks >= 120) {
+          clearInterval(pollRef.current)
+          pollRef.current = null
+          setPolling(false)
+        }
+      } catch (_) {}
+    }, 8000)
+  }
 
   const doSearch = useCallback(async (newOffset = 0) => {
     if (!machineId) return
@@ -244,7 +275,8 @@ export function AlohaDANFESearch({ bohMachines }) {
     setIndexMsg(null)
     try {
       const r = await api.aloha.triggerIndex(machineId)
-      setIndexMsg(`${r.days} comandos enviados para ${r.month}. O agente processará em instantes.`)
+      setIndexMsg(`${r.days} comandos enviados para ${r.month}.`)
+      startPolling(machineId)
     } catch (e) {
       setIndexMsg('Erro: ' + e.message)
     } finally {
@@ -259,6 +291,7 @@ export function AlohaDANFESearch({ bohMachines }) {
     try {
       const r = await api.aloha.triggerHistory(machineId)
       setHistMsg(r.message || 'Indexação histórica iniciada.')
+      startPolling(machineId)
     } catch (e) {
       setHistMsg('Erro: ' + e.message)
     } finally {
@@ -341,7 +374,7 @@ export function AlohaDANFESearch({ bohMachines }) {
       </div>
 
       {/* Indexing controls */}
-      <div style={{ marginBottom: '14px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
+      <div style={{ marginBottom: '10px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
         <button
           className="btn btn-secondary"
           style={{ fontSize: '11px', padding: '4px 10px' }}
@@ -367,6 +400,59 @@ export function AlohaDANFESearch({ bohMachines }) {
           <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{histMsg}</span>
         )}
       </div>
+
+      {/* Status de indexação */}
+      {indexStatus && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap',
+          fontSize: '11px', padding: '7px 12px', marginBottom: '12px', borderRadius: '6px',
+          background: 'var(--card-bg, #1e2530)', border: '1px solid var(--border, #2d3748)',
+          color: indexStatus.pendingDays > 0 ? 'var(--yellow, #fbbf24)' : 'var(--text-muted, #94a3b8)',
+        }}>
+          {indexStatus.pendingDays > 0 ? (
+            <>
+              <span>⏳ Indexando{polling ? '…' : ' (pausado)'}</span>
+              <span style={{ opacity: 0.7 }}>|</span>
+              <span><strong style={{ color: 'var(--yellow, #fbbf24)' }}>{indexStatus.pendingDays}</strong> dias pendentes</span>
+              <span style={{ opacity: 0.7 }}>|</span>
+              <span><strong style={{ color: 'var(--text, #e2e8f0)' }}>{indexStatus.totalRecords.toLocaleString('pt-BR')}</strong> NF-Ces indexadas</span>
+              {indexStatus.listMonths?.status === 'acked' && (
+                <>
+                  <span style={{ opacity: 0.7 }}>|</span>
+                  <span style={{ color: 'var(--text-muted)' }}>Meses descobertos: OK</span>
+                </>
+              )}
+              {indexStatus.listMonths?.status === 'pending' && (
+                <>
+                  <span style={{ opacity: 0.7 }}>|</span>
+                  <span style={{ color: 'var(--yellow, #fbbf24)' }}>Aguardando agente descobrir meses…</span>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <span style={{ color: indexStatus.totalRecords > 0 ? 'var(--green, #4ade80)' : 'var(--text-muted)' }}>
+                {indexStatus.totalRecords > 0 ? '✅' : '⚪'}
+              </span>
+              <span>
+                <strong style={{ color: 'var(--text, #e2e8f0)' }}>{indexStatus.totalRecords.toLocaleString('pt-BR')}</strong>
+                {' '}NF-Ces indexadas
+                {indexStatus.months.length > 0 && ` em ${indexStatus.months.length} meses`}
+              </span>
+              {indexStatus.totalRecords === 0 && (
+                <>
+                  <span style={{ opacity: 0.7 }}>|</span>
+                  <span style={{ color: 'var(--red, #f87171)' }}>
+                    {indexStatus.listMonths?.status === 'acked'
+                      ? 'Agente executou mas encontrou 0 meses — verificar pasta XML no BOH'
+                      : 'Clique em "Indexar" para iniciar'}
+                  </span>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {error && (
         <div style={{ color: 'var(--red)', fontSize: '12px', marginBottom: '12px' }}>⚠ {error}</div>

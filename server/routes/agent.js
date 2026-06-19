@@ -162,6 +162,9 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
       try {
         const { months } = JSON.parse(message);
         if (Array.isArray(months)) {
+          if (months.length === 0) {
+            console.warn(`[NFCe] ${req.machine.id}: aloha-list-nfce-months retornou 0 meses — pasta XML vazia ou caminho ausente em C:\\Bootdrv\\AlohaFiscal\\ServerData\\XML`);
+          }
           const year = new Date().getFullYear();
           let total = 0;
           for (const { month: mm, days } of months) {

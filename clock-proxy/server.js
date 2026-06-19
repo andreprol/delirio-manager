@@ -449,7 +449,15 @@ async function runEmployeesInBackground(targetIps) {
 
         const idx = _clockResults.findIndex(r => r.ip === ip);
         if (result.success || idx < 0) {
-          // Sucesso: atualiza sempre. Falha sem dados anteriores: registra a falha.
+          // Sanity check para partial refresh: success com 0 funcionários quando havia dados
+          // significa que o firmware Henry Hexa devolveu página vazia (HTTP 200 sem dados)
+          // logo após uma sessão Playwright de enroll — não sobrescrever com lixo.
+          const prevCount = idx >= 0 ? (_clockResults[idx].employees?.length || 0) : 0;
+          const newCount  = result.employees?.length || 0;
+          if (targetIps && idx >= 0 && _clockResults[idx].success && prevCount > 0 && newCount === 0) {
+            console.warn(`[/rh/employees] ${ip}: listEmployees retornou 0 funcionários (tinha ${prevCount}) — página vazia pós-enroll, mantendo dados anteriores`);
+            return;
+          }
           if (idx >= 0) _clockResults[idx] = { ip, ...result };
           else          _clockResults.push({ ip, ...result });
         } else {

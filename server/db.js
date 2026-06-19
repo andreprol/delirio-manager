@@ -680,11 +680,25 @@ function getNFCeByChave(machineId, chave) {
 }
 
 function getNFCeIndexStatus(machineId) {
-  return getDb().prepare(`
+  const d = getDb();
+  const months = d.prepare(`
     SELECT month_year, COUNT(*) as total, MAX(indexed_at) as last_indexed
     FROM nfce_index WHERE machine_id = ?
     GROUP BY month_year ORDER BY month_year DESC LIMIT 12
   `).all(machineId);
+  const totalRow   = d.prepare(`SELECT COUNT(*) as c FROM nfce_index WHERE machine_id = ?`).get(machineId);
+  const pendingRow = d.prepare(
+    `SELECT COUNT(*) as c FROM commands WHERE machine_id = ? AND type = 'aloha-index-nfce-day' AND status = 'pending'`
+  ).get(machineId);
+  const listCmd = d.prepare(
+    `SELECT status, acked_at FROM commands WHERE machine_id = ? AND type = 'aloha-list-nfce-months' ORDER BY created_at DESC LIMIT 1`
+  ).get(machineId);
+  return {
+    months,
+    totalRecords: totalRow?.c   || 0,
+    pendingDays:  pendingRow?.c || 0,
+    listMonths:   listCmd       || null,
+  };
 }
 
 module.exports = {
