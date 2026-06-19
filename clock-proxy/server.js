@@ -459,8 +459,22 @@ async function runEmployeesInBackground(targetIps) {
           const prevCount = prevEntry?.employees?.length || 0;
           const newCount  = result.employees?.length || 0;
           if (prevEntry?.success && prevCount > 0 && newCount === 0) {
-            console.warn(`[/rh/employees] ${ip}: retornou 0 funcionários (tinha ${prevCount}) — suspeito, mantendo dados anteriores`);
-            if (isFullRefresh) _clockResults.push({ ...prevEntry }); // restaurar no full refresh
+            // Firmware Henry Hexa retorna página vazia logo após sessão Playwright.
+            // Em vez de preservar cache, aguarda 30s e tenta novamente para obter dado fresco.
+            console.warn(`[/rh/employees] ${ip}: retornou 0 funcionários (tinha ${prevCount}) — aguardando 30s e tentando novamente`);
+            await new Promise(r => setTimeout(r, 30000));
+            const retry      = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.listEmployees()));
+            const retryCount = retry.employees?.length || 0;
+            if (retry.success && retryCount > 0) {
+              console.log(`[/rh/employees] ${ip}: retry retornou ${retryCount} funcionários — dado fresco`);
+              const retryIdx = _clockResults.findIndex(r => r.ip === ip);
+              if (retryIdx >= 0) _clockResults[retryIdx] = { ip, ...retry };
+              else               _clockResults.push({ ip, ...retry });
+              return;
+            }
+            // Ainda 0 após retry — agora sim preserva dado anterior (falha genuína)
+            console.warn(`[/rh/employees] ${ip}: ainda 0 após retry — mantendo dados anteriores (${prevCount} funcionários)`);
+            if (isFullRefresh) _clockResults.push({ ...prevEntry });
             return;
           }
           if (idx >= 0) _clockResults[idx] = { ip, ...result };
