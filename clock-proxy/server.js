@@ -463,17 +463,20 @@ async function runEmployeesInBackground(targetIps) {
             // Em vez de preservar cache, aguarda 30s e tenta novamente para obter dado fresco.
             console.warn(`[/rh/employees] ${ip}: retornou 0 funcionários (tinha ${prevCount}) — aguardando 30s e tentando novamente`);
             await new Promise(r => setTimeout(r, 30000));
-            const retry      = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.listEmployees()));
-            const retryCount = retry.employees?.length || 0;
-            if (retry.success && retryCount > 0) {
-              console.log(`[/rh/employees] ${ip}: retry retornou ${retryCount} funcionários — dado fresco`);
-              const retryIdx = _clockResults.findIndex(r => r.ip === ip);
-              if (retryIdx >= 0) _clockResults[retryIdx] = { ip, ...retry };
-              else               _clockResults.push({ ip, ...retry });
-              return;
+            try {
+              const retry      = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.listEmployees()));
+              const retryCount = retry.employees?.length || 0;
+              if (retry.success && retryCount > 0) {
+                console.log(`[/rh/employees] ${ip}: retry retornou ${retryCount} funcionários — dado fresco`);
+                const retryIdx = _clockResults.findIndex(r => r.ip === ip);
+                if (retryIdx >= 0) _clockResults[retryIdx] = { ip, ...retry };
+                else               _clockResults.push({ ip, ...retry });
+                return;
+              }
+              console.warn(`[/rh/employees] ${ip}: ainda 0 após retry — mantendo dados anteriores (${prevCount} funcionários)`);
+            } catch (retryErr) {
+              console.warn(`[/rh/employees] ${ip}: retry falhou (${retryErr.message}) — mantendo dados anteriores`);
             }
-            // Ainda 0 após retry — agora sim preserva dado anterior (falha genuína)
-            console.warn(`[/rh/employees] ${ip}: ainda 0 após retry — mantendo dados anteriores (${prevCount} funcionários)`);
             if (isFullRefresh) _clockResults.push({ ...prevEntry });
             return;
           }
