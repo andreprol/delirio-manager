@@ -434,10 +434,18 @@ export function EmployeeTable() {
   }
 
   async function handleSyncAll() {
-    const toSync = (data?.employees || []).filter(
-      emp => (emp.absentIn ?? []).length > 0 && (emp.ref1 || '').trim()
-    )
-    if (!toSync.length) return
+    // Only target online clocks — offline clocks cause Playwright timeouts that block the queue
+    const onlineIps = new Set((data?.clocks || []).filter(c => c.success).map(c => c.ip))
+    const toSync = (data?.employees || [])
+      .map(emp => ({
+        ...emp,
+        targetIps: (emp.absentIn ?? []).filter(ip => onlineIps.has(ip)),
+      }))
+      .filter(emp => emp.targetIps.length > 0 && (emp.ref1 || '').trim())
+    if (!toSync.length) {
+      setOpStatus({ type: 'error', title: 'Nenhum funcionário com relógios online ausentes.', clocks: [] })
+      return
+    }
     setSyncAllRunning(true)
     setSyncAllProgress({ sent: 0, total: toSync.length })
     setOpStatus(null)
@@ -451,7 +459,7 @@ export function EmployeeTable() {
           emp.ref1.trim(),
           (emp.ref2 || '').trim(),
           '',
-          emp.absentIn,
+          emp.targetIps,
         )
       } catch { errors++ }
       setSyncAllProgress({ sent: i + 1, total: toSync.length })
@@ -459,9 +467,12 @@ export function EmployeeTable() {
     setSyncAllRunning(false)
     setSyncAllProgress(null)
     const ok = toSync.length - errors
+    const offlineSkipped = (data?.employees || []).filter(
+      emp => (emp.absentIn ?? []).length > 0 && (emp.absentIn ?? []).every(ip => !onlineIps.has(ip))
+    ).length
     setOpStatus({
-      type:   errors === 0 ? 'success' : ok > 0 ? 'partial' : 'error',
-      title:  `${ok}/${toSync.length} funcionários enfileirados no clock-proxy — processando em background. Atualize em ~30 min para ver os resultados.`,
+      type:  errors === 0 ? 'success' : ok > 0 ? 'partial' : 'error',
+      title: `${ok}/${toSync.length} funcionários enfileirados (somente relógios online).${offlineSkipped > 0 ? ` ${offlineSkipped} ignorados — ausentes apenas em relógios offline.` : ''} Atualize em ~30 min.`,
       clocks: [],
     })
   }
