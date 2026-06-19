@@ -385,6 +385,10 @@ export function EmployeeTable() {
   // Partial refresh of offline clocks
   const [refreshingOffline, setRefreshingOffline] = useState(false)
 
+  // Bulk sync all divergent employees
+  const [syncAllRunning, setSyncAllRunning]     = useState(false)
+  const [syncAllProgress, setSyncAllProgress]   = useState(null) // { sent, total }
+
   // New employee form
   const [newEmpMode, setNewEmpMode]     = useState(false)
   const [newEmpName, setNewEmpName]     = useState('')
@@ -427,6 +431,39 @@ export function EmployeeTable() {
     } finally {
       setRefreshingOffline(false)
     }
+  }
+
+  async function handleSyncAll() {
+    const toSync = (data?.employees || []).filter(
+      emp => (emp.absentIn ?? []).length > 0 && (emp.ref1 || '').trim()
+    )
+    if (!toSync.length) return
+    setSyncAllRunning(true)
+    setSyncAllProgress({ sent: 0, total: toSync.length })
+    setOpStatus(null)
+    let errors = 0
+    for (let i = 0; i < toSync.length; i++) {
+      const emp = toSync[i]
+      try {
+        await api.rh.enroll(
+          emp.cpf,
+          emp.name,
+          emp.ref1.trim(),
+          (emp.ref2 || '').trim(),
+          '',
+          emp.absentIn,
+        )
+      } catch { errors++ }
+      setSyncAllProgress({ sent: i + 1, total: toSync.length })
+    }
+    setSyncAllRunning(false)
+    setSyncAllProgress(null)
+    const ok = toSync.length - errors
+    setOpStatus({
+      type:   errors === 0 ? 'success' : ok > 0 ? 'partial' : 'error',
+      title:  `${ok}/${toSync.length} funcionários enfileirados no clock-proxy — processando em background. Atualize em ~30 min para ver os resultados.`,
+      clocks: [],
+    })
   }
 
   // Optimistic patch — immediately updates one employee's clock status in local state
@@ -1250,6 +1287,23 @@ export function EmployeeTable() {
           <span style={{ fontSize: '12px', color: 'var(--text-muted, #94a3b8)' }}>
             {filtered.length} exibidos
           </span>
+          {divergentCount > 0 && !enrollTarget && !editTarget && (
+            <button
+              style={{
+                ...styles.loadBtn,
+                background: syncAllRunning ? '#92400e' : '#d97706',
+                marginLeft: 'auto',
+                ...(syncAllRunning || loading ? styles.loadBtnDisabled : {}),
+              }}
+              onClick={handleSyncAll}
+              disabled={syncAllRunning || loading}
+              title={`Enfileira ${divergentCount} funcionário(s) no clock-proxy para cadastro em todos os relógios onde estão ausentes`}
+            >
+              {syncAllRunning
+                ? `Enviando ${syncAllProgress?.sent ?? 0}/${syncAllProgress?.total ?? divergentCount}…`
+                : `⚡ Sincronizar Todos (${divergentCount})`}
+            </button>
+          )}
         </div>
       )}
 
