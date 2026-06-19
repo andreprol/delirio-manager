@@ -416,8 +416,9 @@ async function runEmployeesInBackground(targetIps) {
     if (uncached.length > 0) targetIps = [...targetIps, ...uncached];
   }
 
-  const ips          = targetIps || CLOCK_IPS;
+  const ips           = targetIps || CLOCK_IPS;
   const isFullRefresh = !targetIps;
+  const prevResults   = [..._clockResults]; // snapshot pré-clear — usado no guard abaixo
   if (isFullRefresh) _clockResults = [];
 
   try {
@@ -449,13 +450,17 @@ async function runEmployeesInBackground(targetIps) {
 
         const idx = _clockResults.findIndex(r => r.ip === ip);
         if (result.success || idx < 0) {
-          // Sanity check para partial refresh: success com 0 funcionários quando havia dados
-          // significa que o firmware Henry Hexa devolveu página vazia (HTTP 200 sem dados)
-          // logo após uma sessão Playwright de enroll — não sobrescrever com lixo.
-          const prevCount = idx >= 0 ? (_clockResults[idx].employees?.length || 0) : 0;
+          // Guard: HTTP 200 com employees:[] quando o relógio tinha dados válidos =
+          // página vazia retornada pelo firmware Henry Hexa sob carga pós-Playwright.
+          // Aplica a partial E full refresh (no full, compara contra prevResults pré-clear).
+          const prevEntry = isFullRefresh
+            ? prevResults.find(r => r.ip === ip)
+            : (idx >= 0 ? _clockResults[idx] : undefined);
+          const prevCount = prevEntry?.employees?.length || 0;
           const newCount  = result.employees?.length || 0;
-          if (targetIps && idx >= 0 && _clockResults[idx].success && prevCount > 0 && newCount === 0) {
-            console.warn(`[/rh/employees] ${ip}: listEmployees retornou 0 funcionários (tinha ${prevCount}) — página vazia pós-enroll, mantendo dados anteriores`);
+          if (prevEntry?.success && prevCount > 0 && newCount === 0) {
+            console.warn(`[/rh/employees] ${ip}: retornou 0 funcionários (tinha ${prevCount}) — suspeito, mantendo dados anteriores`);
+            if (isFullRefresh) _clockResults.push({ ...prevEntry }); // restaurar no full refresh
             return;
           }
           if (idx >= 0) _clockResults[idx] = { ip, ...result };
