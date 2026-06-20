@@ -1,9 +1,36 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { api } from '../api'
 
-// Module-level cache — persists while the app is open, survives tab switches
+// Module-level cache and background poll — persists while the app is open, survives tab switches
 let _empCache     = null
 let _empCacheTime = null
+let _polling      = false
+const _listeners  = new Set()
+
+// Runs independently of any component — continues even when RH module is closed.
+// Subscribers (components) register via _listeners; they receive the result when the poll finishes.
+async function _startBackgroundPoll() {
+  if (_polling) return
+  _polling = true
+  try {
+    let attempts = 0
+    const MAX_ATTEMPTS = 80  // 80 × 5 s ≈ 6.5 min
+    while (attempts < MAX_ATTEMPTS) {
+      const result = await api.rh.getEmployees()
+      if (!result._pending) {
+        _empCache     = result
+        _empCacheTime = new Date()
+        _listeners.forEach(fn => fn({ ok: true, result }))
+        return
+      }
+      await new Promise(r => setTimeout(r, 5000))
+      attempts++
+    }
+    _listeners.forEach(fn => fn({ ok: false, error: 'Tempo excedido aguardando relógios (> 6 min)' }))
+  } finally {
+    _polling = false
+  }
+}
 
 const IP_TO_STORE = {
   '192.168.15.151': 'Gávea',
@@ -357,7 +384,7 @@ function isIncomplete(incompleteIn) {
 
 export function EmployeeTable() {
   const [data, setData]           = useState(_empCache)
-  const [loading, setLoading]     = useState(false)
+  const [loading, setLoading]     = useState(_polling)
   const [showWarning, setShowWarning] = useState(false)
 
   const [search, setSearch]       = useState('')
@@ -396,6 +423,17 @@ export function EmployeeTable() {
   const [newEmpRef1, setNewEmpRef1]     = useState('')
   const [newEmpRef2, setNewEmpRef2]     = useState('')
   const [newEnrolling, setNewEnrolling] = useState(false)
+
+  // Subscribe to background poll — delivers result even if user navigated away while loading
+  useEffect(() => {
+    function onPollDone({ ok, result, error }) {
+      if (ok) applyData(result)
+      else setOpStatus({ type: 'error', title: `Erro ao carregar: ${error}`, clocks: [] })
+      setLoading(false)
+    }
+    _listeners.add(onPollDone)
+    return () => _listeners.delete(onPollDone)
+  }, [])
 
   // Apply data after any load — sets cache and auto-selects only online clocks
   function applyData(result) {
@@ -512,31 +550,11 @@ export function EmployeeTable() {
     }
   }
 
-  async function loadEmployees() {
+  function loadEmployees() {
     setShowWarning(false)
-    setLoading(true)
     setOpStatus(null)
-    try {
-      let result
-      let attempts = 0
-      const MAX_ATTEMPTS = 80 // 80 × 5s = ~6.5 min
-      do {
-        result = await api.rh.getEmployees()
-        if (result._pending) {
-          await new Promise(r => setTimeout(r, 5000))
-          attempts++
-        }
-      } while (result._pending && attempts < MAX_ATTEMPTS)
-
-      if (result._pending) {
-        throw new Error('Tempo excedido aguardando relógios (> 6 min)')
-      }
-      applyData(result)
-    } catch (err) {
-      setOpStatus({ type: 'error', title: `Erro ao carregar: ${err.message}`, clocks: [] })
-    } finally {
-      setLoading(false)
-    }
+    setLoading(true)
+    _startBackgroundPoll()  // fire-and-forget — continues even if this module closes
   }
 
   function handleLoadClick() {
