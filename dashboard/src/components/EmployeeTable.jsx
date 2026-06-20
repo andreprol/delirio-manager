@@ -415,6 +415,7 @@ export function EmployeeTable() {
   // Bulk sync all divergent employees
   const [syncAllRunning, setSyncAllRunning]     = useState(false)
   const [syncAllProgress, setSyncAllProgress]   = useState(null) // { sent, total }
+  const [syncAllJobs, setSyncAllJobs]           = useState([])   // [{ cpf, name, targetIps, jobId, status, clocks, enrolled, failed }]
 
   // New employee form
   const [newEmpMode, setNewEmpMode]     = useState(false)
@@ -471,6 +472,24 @@ export function EmployeeTable() {
     }
   }
 
+  async function pollJob(jobIndex, jobId) {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await new Promise(r => setTimeout(r, 3000))
+      try {
+        const res = await api.rh.pollEnroll(jobId)
+        if (res.status === 'running') continue
+        setSyncAllJobs(prev => prev.map((j, i) => i !== jobIndex ? j : {
+          ...j, status: 'done',
+          clocks:   res.clocks   || [],
+          enrolled: res.enrolled ?? 0,
+          failed:   res.failed   ?? 0,
+        }))
+        return
+      } catch { /* keep polling */ }
+    }
+    setSyncAllJobs(prev => prev.map((j, i) => i !== jobIndex ? j : { ...j, status: 'timeout' }))
+  }
+
   async function handleSyncAll() {
     // Only target online clocks — offline clocks cause Playwright timeouts that block the queue
     const onlineIps = new Set((data?.clocks || []).filter(c => c.success).map(c => c.ip))
@@ -484,14 +503,17 @@ export function EmployeeTable() {
       setOpStatus({ type: 'error', title: 'Nenhum funcionário com relógios online ausentes.', clocks: [] })
       return
     }
+    setSyncAllJobs(toSync.map(emp => ({
+      cpf: emp.cpf, name: emp.name, targetIps: emp.targetIps,
+      jobId: null, status: 'pending', clocks: [], enrolled: 0, failed: 0,
+    })))
     setSyncAllRunning(true)
     setSyncAllProgress({ sent: 0, total: toSync.length })
     setOpStatus(null)
-    let errors = 0
     for (let i = 0; i < toSync.length; i++) {
       const emp = toSync[i]
       try {
-        await api.rh.enroll(
+        const res = await api.rh.enroll(
           emp.cpf,
           emp.name,
           emp.ref1.trim(),
@@ -499,20 +521,15 @@ export function EmployeeTable() {
           '',
           emp.targetIps,
         )
-      } catch { errors++ }
+        setSyncAllJobs(prev => prev.map((j, idx) => idx === i ? { ...j, jobId: res.jobId, status: 'polling' } : j))
+        pollJob(i, res.jobId)
+      } catch {
+        setSyncAllJobs(prev => prev.map((j, idx) => idx === i ? { ...j, status: 'error' } : j))
+      }
       setSyncAllProgress({ sent: i + 1, total: toSync.length })
     }
     setSyncAllRunning(false)
     setSyncAllProgress(null)
-    const ok = toSync.length - errors
-    const offlineSkipped = (data?.employees || []).filter(
-      emp => (emp.absentIn ?? []).length > 0 && (emp.absentIn ?? []).every(ip => !onlineIps.has(ip))
-    ).length
-    setOpStatus({
-      type:  errors === 0 ? 'success' : ok > 0 ? 'partial' : 'error',
-      title: `${ok}/${toSync.length} funcionários enfileirados (somente relógios online).${offlineSkipped > 0 ? ` ${offlineSkipped} ignorados — ausentes apenas em relógios offline.` : ''} Atualize em ~30 min.`,
-      clocks: [],
-    })
   }
 
   // Optimistic patch — immediately updates one employee's clock status in local state
@@ -1333,6 +1350,90 @@ export function EmployeeTable() {
                 : `⚡ Sincronizar Todos (${divergentCount})`}
             </button>
           )}
+        </div>
+      )}
+
+      {/* Sync progress panel */}
+      {syncAllJobs.length > 0 && (
+        <div style={{
+          margin: '8px 0',
+          background: 'var(--card-bg, #1e2530)',
+          border: '1px solid var(--border, #2d3748)',
+          borderRadius: '8px',
+          padding: '12px',
+          fontSize: '12px',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <span style={{ fontWeight: 700, fontSize: '13px', color: 'var(--text, #e2e8f0)' }}>
+              ⚡ Sincronizar Todos
+              {' — '}
+              {syncAllRunning
+                ? `enviando ${syncAllProgress?.sent ?? 0}/${syncAllProgress?.total ?? syncAllJobs.length}…`
+                : `${syncAllJobs.filter(j => j.status === 'done').length}/${syncAllJobs.length} concluídos`}
+            </span>
+            {!syncAllRunning && syncAllJobs.every(j => ['done','timeout','error'].includes(j.status)) && (
+              <button
+                onClick={() => setSyncAllJobs([])}
+                style={{ background: 'transparent', border: '1px solid var(--border, #2d3748)', borderRadius: '4px', color: 'var(--text-muted, #94a3b8)', cursor: 'pointer', padding: '2px 10px', fontSize: '11px' }}
+              >
+                Fechar
+              </button>
+            )}
+          </div>
+          <div style={{ maxHeight: '260px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {syncAllJobs.map((job, i) => {
+              const icon = job.status === 'pending' ? '⌛'
+                : job.status === 'polling'  ? '⏳'
+                : job.status === 'timeout'  ? '⏱️'
+                : job.status === 'error'    ? '❌'
+                : job.enrolled > 0 && job.failed === 0 ? '✅'
+                : job.enrolled > 0          ? '⚠️'
+                : '❌'
+              return (
+                <div key={job.cpf} style={{
+                  display: 'flex', alignItems: 'center', gap: '8px',
+                  padding: '4px 6px', borderRadius: '4px',
+                  background: job.status === 'pending' ? 'transparent' : 'rgba(255,255,255,0.03)',
+                }}>
+                  <span style={{ width: '18px', textAlign: 'center', flexShrink: 0 }}>{icon}</span>
+                  <span style={{ minWidth: '160px', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text, #e2e8f0)', fontWeight: 600 }}>
+                    {job.name}
+                  </span>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', flex: 1 }}>
+                    {(job.status === 'pending' || job.status === 'polling') && job.targetIps.map(ip => (
+                      <span key={ip} style={{
+                        padding: '1px 6px', borderRadius: '3px', fontSize: '11px',
+                        background: 'rgba(148,163,184,0.1)', color: 'var(--text-muted, #94a3b8)',
+                        border: '1px solid rgba(148,163,184,0.2)',
+                      }}>
+                        {job.status === 'polling' ? '⏳ ' : ''}{IP_TO_STORE[ip] || ip}
+                      </span>
+                    ))}
+                    {job.status === 'done' && job.clocks.map(c => (
+                      <span key={c.clockIp} title={c.message || undefined} style={{
+                        padding: '1px 6px', borderRadius: '3px', fontSize: '11px', fontWeight: 600,
+                        background: c.success ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)',
+                        color: c.success ? '#4ade80' : '#f87171',
+                        border: `1px solid ${c.success ? 'rgba(74,222,128,0.25)' : 'rgba(248,113,113,0.25)'}`,
+                      }}>
+                        {c.success ? '✓' : '✗'} {IP_TO_STORE[c.clockIp] || c.clockIp}
+                      </span>
+                    ))}
+                    {job.status === 'error' && (
+                      <span style={{ padding: '1px 6px', borderRadius: '3px', fontSize: '11px', background: 'rgba(248,113,113,0.12)', color: '#f87171', border: '1px solid rgba(248,113,113,0.25)' }}>
+                        Erro ao enfileirar
+                      </span>
+                    )}
+                    {job.status === 'timeout' && (
+                      <span style={{ padding: '1px 6px', borderRadius: '3px', fontSize: '11px', background: 'rgba(248,113,113,0.12)', color: '#f87171', border: '1px solid rgba(248,113,113,0.25)' }}>
+                        Timeout (3 min)
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 
