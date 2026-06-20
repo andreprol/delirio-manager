@@ -348,8 +348,30 @@ class HenryHexa {
     });
   }
 
-  // Lista todos os funcionários do relógio (percorre paginação)
-  // Colunas da tabela Henry Hexa ADV: Name | CPF | Ref1 | Ref2 | ...
+  // Aguarda a contagem de linhas ficar estável por `stableMs` consecutivos.
+  // Garante que o firmware terminou de renderizar a página antes de ler.
+  async _waitForStableRows(page, stableMs = 1000, maxWaitMs = 45000) {
+    const start    = Date.now();
+    let lastCount  = -1;
+    let stableSince = -1;
+
+    while (Date.now() - start < maxWaitMs) {
+      const count = await page.locator('tr.painted, tr.unpainted').count();
+      if (count > 0 && count === lastCount) {
+        if (stableSince < 0) stableSince = Date.now();
+        if (Date.now() - stableSince >= stableMs) return count;
+      } else {
+        lastCount   = count;
+        stableSince = count > 0 ? Date.now() : -1;
+      }
+      await page.waitForTimeout(300);
+    }
+    return lastCount > 0 ? lastCount : 0;
+  }
+
+  // Lista todos os funcionários do relógio (percorre paginação).
+  // Usa espera por contagem estável em cada página para garantir leitura completa,
+  // mesmo que o firmware do relógio seja lento para renderizar.
   async listEmployees() {
     return await this.withBrowser(async (page) => {
       try {
@@ -357,29 +379,32 @@ class HenryHexa {
         await this.navigateToColaborador(page);
 
         const employees = [];
-        const seenCpfs = new Set(); // deduplicação dentro do mesmo relógio
+        const seenCpfs  = new Set();
         let pageNum = 1;
 
         while (true) {
-          // Aguarda as linhas estarem presentes antes de ler.
-          // Timeout de 30s para BOHs com muitos funcionários (firmware lento).
-          // Se ainda assim retornar vazio: retry de 5s antes de falhar explicitamente.
-          await page.waitForSelector('tr.painted, tr.unpainted', { timeout: 30000 }).catch(() => {});
+          // Aguarda contagem estável — o método verifica a cada 300ms até o número
+          // de linhas não mudar por 1s consecutivo (ou timeout de 45s).
+          const stableCount = await this._waitForStableRows(page);
 
-          let rows = await page.locator('tr.painted, tr.unpainted').all();
-          if (rows.length === 0 && pageNum === 1) {
-            // Página 1 carregou vazia — firmware pode estar lento. Retry único.
-            await page.waitForTimeout(5000);
-            await page.waitForSelector('tr.painted, tr.unpainted', { timeout: 15000 }).catch(() => {});
-            rows = await page.locator('tr.painted, tr.unpainted').all();
-            if (rows.length === 0) {
-              // Ainda vazia após retry — falha explícita para acionar guard no server.js
-              return { success: false, message: 'Página de funcionários carregou vazia — possível lentidão do firmware', employees: [], total: 0, clockIp: this.ip };
+          if (stableCount === 0) {
+            if (pageNum === 1) {
+              // Página 1 vazia após 45s — falha explícita para acionar guard no server.js
+              return {
+                success: false,
+                message: 'Página de funcionários carregou vazia após 45s — possível lentidão do firmware',
+                employees: [],
+                total: 0,
+                clockIp: this.ip,
+              };
             }
+            // Páginas seguintes vazias = fim da paginação
+            break;
           }
 
+          const rows = await page.locator('tr.painted, tr.unpainted').all();
+
           // Captura texto da primeira linha ANTES de clicar próxima página
-          // (usado para detectar quando a página realmente mudou)
           const firstRowText = rows.length > 0
             ? (await rows[0].locator('td').first().textContent().catch(() => '')).trim()
             : '';
@@ -390,31 +415,26 @@ class HenryHexa {
             const name = (await cells[0].textContent() || '').trim();
             const cpf  = (await cells[1].textContent() || '').trim();
             if (!name || !cpf || seenCpfs.has(cpf)) continue;
-            // Henry Hexa ADV list: 3 colunas (Name, CPF, Refs).
-            // cells[2] contém Ref1 e Ref2 CONCATENADOS sem separador, cada um zero-padded
-            // até 20 chars → total 40 chars quando ambos preenchidos.
-            // Ex: "000000000028979833930000000000619978613" = Ref1(20) + Ref2(20)
-            const refsRaw = cells.length > 2 ? (await cells[2].textContent() || '').trim() : '';
+
+            // Henry Hexa ADV: cells[2] = Ref1+Ref2 concatenados (zero-padded 20+20 chars)
+            const refsRaw  = cells.length > 2 ? (await cells[2].textContent() || '').trim() : '';
             const stripped = refsRaw.replace(/\s/g, '');
             let ref1 = stripped, ref2 = '';
 
-            // Primary: 40-char concat Ref1(20)+Ref2(20) — split FIRST before any other check
             if (stripped.length > 20) {
               ref1 = stripped.slice(0, 20);
               ref2 = stripped.slice(20);
             }
-            // Fallback: "Ref1 / Ref2" slash-separated
             if (!ref2 && refsRaw.includes('/')) {
               const parts = refsRaw.split('/').map(s => s.replace(/\s/g, ''));
               ref1 = parts[0] || ref1;
               ref2 = parts[1] || '';
             }
-            // Last resort: separate Ref2 column (cells[3]) — only if numeric and 8+ chars
-            // to avoid fingerprint counts, dates, or other non-ref2 fields
             if (!ref2 && cells.length > 3) {
               const r = (await cells[3].textContent() || '').replace(/\s/g, '');
               if (r.length >= 8 && /^\d+$/.test(r)) ref2 = r;
             }
+
             seenCpfs.add(cpf);
             employees.push({ name, cpf, ref1, ref2 });
           }
@@ -425,24 +445,22 @@ class HenryHexa {
 
           await nextLink.click();
 
-          // Espera determinística: aguarda o conteúdo da primeira linha mudar,
-          // garantindo que o servidor do relógio terminou de renderizar a nova página.
+          // Aguarda a primeira linha ser diferente da página anterior (navegação confirmada)
           try {
             await page.waitForFunction(
               (prev) => {
-                const firstRow = document.querySelector('tr.painted, tr.unpainted');
+                const firstRow  = document.querySelector('tr.painted, tr.unpainted');
                 if (!firstRow) return false;
                 const firstCell = firstRow.querySelector('td');
                 return firstCell && firstCell.textContent.trim() !== prev;
               },
               firstRowText,
-              { timeout: 20000 }
+              { timeout: 25000 }
             );
           } catch {
-            // Timeout aguardando mudança de página — encerra paginação
-            break;
+            break; // timeout na mudança de página — encerra paginação
           }
-          await page.waitForTimeout(300); // buffer mínimo para restante do DOM renderizar
+          // Não usa buffer fixo — _waitForStableRows no início do próximo ciclo cobre isso
         }
 
         return { success: true, employees, total: employees.length, clockIp: this.ip };
