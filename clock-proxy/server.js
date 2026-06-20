@@ -602,14 +602,19 @@ app.post('/rh/enroll', (req, res) => {
     console.log(`[/rh/enroll] job ${jobId} — ${cpf} (${name}) em ${targets.length} relógio(s)`);
 
     // Todos os IPs em paralelo — semáforo garante máx 2 Chrome simultâneos
+    // checkReachable() dentro da clockQueue.run() garante que a verificação
+    // só ocorre quando nenhuma outra sessão Playwright está ativa no mesmo relógio,
+    // evitando falsos "offline" por sobrecarga do HTTP server do relógio.
     const settled = await Promise.allSettled(targets.map(async (ip) => {
       const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
-      const reach = await henry.checkReachable();
-      if (!reach.reachable) {
-        console.warn(`[/rh/enroll] ${ip}: offline — pulando`);
-        return { clockIp: ip, success: false, offline: true, message: `Relógio offline: ${reach.error || 'sem resposta'}` };
-      }
-      const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.enrollEmployee({ cpf, name, ref1, ref2, password })));
+      const result = await clockQueue.run(ip, async () => {
+        const reach = await henry.checkReachable();
+        if (!reach.reachable) {
+          console.warn(`[/rh/enroll] ${ip}: offline — pulando`);
+          return { clockIp: ip, success: false, offline: true, message: `Relógio offline: ${reach.error || 'sem resposta'}` };
+        }
+        return await withPlaywrightSlot(() => henry.enrollEmployee({ cpf, name, ref1, ref2, password }));
+      });
       return { clockIp: ip, ...result };
     }));
 
