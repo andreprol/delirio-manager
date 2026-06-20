@@ -36,8 +36,15 @@ router.post('/publish', express.raw({ type: 'application/octet-stream', limit: '
     return res.status(400).json({ error: 'Header X-Agent-Version obrigatorio' });
   }
 
-  if (!req.body || req.body.length < 1000) {
-    return res.status(400).json({ error: 'Binario muito pequeno ou vazio' });
+  if (!req.body || req.body.length < 1024 * 1024) {
+    return res.status(400).json({ error: 'Binario muito pequeno (minimo 1 MB) — verifique se o build foi para Windows (GOOS=windows)' });
+  }
+
+  // Valida magic bytes MZ — todo PE/EXE Windows começa com 0x4D 0x5A
+  if (req.body[0] !== 0x4D || req.body[1] !== 0x5A) {
+    return res.status(400).json({
+      error: `Binario invalido: magic bytes ${req.body[0].toString(16).toUpperCase()}${req.body[1].toString(16).toUpperCase()} (esperado 4D5A). Compile com GOOS=windows GOARCH=amd64.`
+    });
   }
 
   // Calcula SHA256 do binario recebido

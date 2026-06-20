@@ -12,6 +12,7 @@ import (
 
 var (
 	fileLogger  *log.Logger
+	logFile     *os.File // handle explícito para fechar antes de truncar
 	evLog       *eventlog.Log
 	logFilePath string
 )
@@ -22,6 +23,7 @@ func initLogger() {
 
 	f, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {
+		logFile = f
 		fileLogger = log.New(f, "", 0)
 	}
 
@@ -68,12 +70,22 @@ func trimLogIfNeeded() {
 	if err != nil || info.Size() < maxBytes {
 		return
 	}
-	// Rotaciona: apaga e recria (simples e suficiente)
-	os.Remove(logFilePath)
-	if f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-		fileLogger = log.New(f, "", 0)
-		logInfo("Log rotacionado (limite de 5MB atingido).")
+	// Fecha o handle antigo antes de truncar — obrigatório no Windows:
+	// os.Remove falha enquanto o arquivo tiver handles abertos, e O_CREATE
+	// sem O_TRUNC apenas reabre o mesmo arquivo gigante, causando loop infinito.
+	if logFile != nil {
+		logFile.Close()
+		logFile = nil
+		fileLogger = nil
 	}
+	f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return
+	}
+	logFile = f
+	fileLogger = log.New(f, "", 0)
+	// Escreve direto no arquivo — NÃO via logInfo() para evitar recursão em trimLogIfNeeded.
+	fmt.Fprintf(f, "[%s] INFO  Log rotacionado (limite de 5MB atingido).\n", timestamp())
 }
 
 func timestamp() string {
