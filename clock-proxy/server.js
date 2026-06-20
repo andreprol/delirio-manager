@@ -348,7 +348,19 @@ let _empCache          = null;   // resultado completo ou { error: msg }
 let _empCacheAt        = 0;
 let _clockResults      = [];     // dados brutos por relógio — persistidos para partial refresh
 let _pendingRefreshIps = null;   // IPs aguardando partial refresh enquanto job está rodando
-const EMP_CACHE_TTL = 10 * 60 * 1000;
+const EMP_CACHE_TTL    = 10 * 60 * 1000;
+const EMP_CACHE_FILE   = path.join(process.cwd(), 'employee-cache.json');
+
+// Carrega cache do disco na inicialização — garante que guard tem dados mesmo após restart/deploy
+try {
+  if (fs.existsSync(EMP_CACHE_FILE)) {
+    _clockResults = JSON.parse(fs.readFileSync(EMP_CACHE_FILE, 'utf8'));
+    console.log(`[dt-clock-proxy] Cache de funcionários carregado do disco: ${_clockResults.length} relógios`);
+  }
+} catch (e) {
+  console.warn(`[dt-clock-proxy] Falha ao carregar cache do disco: ${e.message}`);
+  _clockResults = [];
+}
 
 function buildMasterCache(clockResults) {
   const clockRef2Map = {};
@@ -418,8 +430,13 @@ async function runEmployeesInBackground(targetIps) {
 
   const ips           = targetIps || CLOCK_IPS;
   const isFullRefresh = !targetIps;
-  const prevResults   = [..._clockResults]; // snapshot pré-clear — usado no guard abaixo
-  if (isFullRefresh) _clockResults = [];
+
+  // Full refresh: remove apenas IPs que saíram do CLOCK_IPS — NÃO limpa todos os dados.
+  // Manter _clockResults populado garante que o guard sempre tem uma entrada anterior para comparar,
+  // inclusive após restart do processo (dados já foram recarregados do disco na inicialização).
+  if (isFullRefresh) {
+    _clockResults = _clockResults.filter(r => CLOCK_IPS.includes(r.ip));
+  }
 
   try {
     if (CLOCK_IPS.length === 0) throw new Error('CLOCK_IPS nao configurado no .env');
@@ -441,59 +458,69 @@ async function runEmployeesInBackground(targetIps) {
             // Sem dados anteriores — registra a falha normalmente
             _clockResults.push({ ip, success: false, employees: [], total: 0, message: 'Relógio offline' });
           }
-          // Com dados anteriores (partial refresh): mantém os dados bons — não sobrescreve com offline temporário
+          // Com dados anteriores: mantém os dados bons — não sobrescreve com offline temporário
           return;
         }
 
         console.log(`[${new Date().toISOString()}] Buscando funcionarios de ${ip}...`);
         const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.listEmployees()));
 
-        const idx = _clockResults.findIndex(r => r.ip === ip);
-        if (result.success || idx < 0) {
-          // Guard: HTTP 200 com employees:[] quando o relógio tinha dados válidos =
-          // página vazia retornada pelo firmware Henry Hexa sob carga pós-Playwright.
-          // Aplica a partial E full refresh (no full, compara contra prevResults pré-clear).
-          const prevEntry = isFullRefresh
-            ? prevResults.find(r => r.ip === ip)
-            : (idx >= 0 ? _clockResults[idx] : undefined);
-          const prevCount = prevEntry?.employees?.length || 0;
-          const newCount  = result.employees?.length || 0;
-          if (prevEntry?.success && prevCount > 0 && newCount === 0) {
-            // Firmware Henry Hexa retorna página vazia logo após sessão Playwright.
-            // Em vez de preservar cache, aguarda 30s e tenta novamente para obter dado fresco.
-            console.warn(`[/rh/employees] ${ip}: retornou 0 funcionários (tinha ${prevCount}) — aguardando 30s e tentando novamente`);
+        const idx      = _clockResults.findIndex(r => r.ip === ip);
+        // prevEntry agora é sempre _clockResults[idx] — não há mais distinção full/partial.
+        // _clockResults é preservado entre scans (nunca limpo) então o guard sempre tem base.
+        const prevEntry = idx >= 0 ? _clockResults[idx] : undefined;
+        const prevCount = prevEntry?.employees?.length || 0;
+        const newCount  = result.employees?.length     || 0;
+
+        // Guard: resultado suspeito = novo count < 50% do count anterior com dados válidos.
+        // Cobre tanto lista vazia (firmware bug) quanto fetch parcial (paginação truncada).
+        const isSuspicious = prevEntry?.success && prevCount > 0 && newCount < Math.ceil(prevCount * 0.5);
+
+        if (!result.success || isSuspicious) {
+          if (isSuspicious && result.success) {
+            // Firmware Henry Hexa retorna lista truncada/vazia sob carga pós-Playwright.
+            // Aguarda 30s e tenta novamente para obter dado fresco antes de preservar cache.
+            console.warn(`[/rh/employees] ${ip}: retornou ${newCount} funcionários (tinha ${prevCount}, <50%) — aguardando 30s e tentando novamente`);
             await new Promise(r => setTimeout(r, 30000));
             try {
               const retry      = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.listEmployees()));
               const retryCount = retry.employees?.length || 0;
-              if (retry.success && retryCount > 0) {
+              if (retry.success && retryCount >= Math.ceil(prevCount * 0.5)) {
                 console.log(`[/rh/employees] ${ip}: retry retornou ${retryCount} funcionários — dado fresco`);
-                const retryIdx = _clockResults.findIndex(r => r.ip === ip);
-                if (retryIdx >= 0) _clockResults[retryIdx] = { ip, ...retry };
-                else               _clockResults.push({ ip, ...retry });
+                if (idx >= 0) _clockResults[idx] = { ip, ...retry };
+                else          _clockResults.push({ ip, ...retry });
                 return;
               }
-              console.warn(`[/rh/employees] ${ip}: ainda 0 após retry — mantendo dados anteriores (${prevCount} funcionários)`);
+              console.warn(`[/rh/employees] ${ip}: ainda suspeito após retry (${retryCount}) — mantendo dados anteriores (${prevCount} funcionários)`);
             } catch (retryErr) {
               console.warn(`[/rh/employees] ${ip}: retry falhou (${retryErr.message}) — mantendo dados anteriores`);
             }
-            if (isFullRefresh) _clockResults.push({ ...prevEntry });
-            return;
+          } else {
+            // Falha explícita (success:false) com dados anteriores: mantém dados bons.
+            // O firmware Henry Hexa fica estressado logo após uma sessão Playwright.
+            console.warn(`[/rh/employees] ${ip}: listEmployees falhou (${result.message}) — mantendo dados anteriores (${prevCount} funcionários)`);
           }
-          if (idx >= 0) _clockResults[idx] = { ip, ...result };
-          else          _clockResults.push({ ip, ...result });
-        } else {
-          // Falha com dados anteriores (partial refresh pós-enroll): mantém dados bons.
-          // O firmware Henry Hexa fica estressado logo após uma sessão Playwright — manter o
-          // último resultado válido evita que a loja suma da tabela por falha transitória.
-          console.warn(`[/rh/employees] ${ip}: listEmployees falhou — mantendo dados anteriores (${result.message})`);
+          // Preserva dados anteriores (sem alterar _clockResults[idx])
+          if (idx < 0 && prevEntry) _clockResults.push({ ...prevEntry });
+          return;
         }
+
+        // Resultado normal — atualiza
+        if (idx >= 0) _clockResults[idx] = { ip, ...result };
+        else          _clockResults.push({ ip, ...result });
       }));
     }
 
     _empCache   = buildMasterCache(_clockResults);
     _empCacheAt = Date.now();
     console.log(`[/rh/employees] Job concluído — ${_empCache.total} funcionários, ${_empCache.divergent} divergentes, ${_empCache.incomplete} incompletos`);
+
+    // Persiste _clockResults em disco para sobreviver a restarts/deploys
+    try {
+      fs.writeFileSync(EMP_CACHE_FILE, JSON.stringify(_clockResults), 'utf8');
+    } catch (e) {
+      console.warn(`[/rh/employees] Falha ao salvar cache em disco: ${e.message}`);
+    }
   } catch (err) {
     console.error('[/rh/employees bg]', err.message);
     _empCache   = { error: err.message };

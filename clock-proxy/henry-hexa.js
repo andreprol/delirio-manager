@@ -361,10 +361,22 @@ class HenryHexa {
         let pageNum = 1;
 
         while (true) {
-          // Aguarda as linhas estarem presentes antes de ler
-          await page.waitForSelector('tr.painted, tr.unpainted', { timeout: 15000 }).catch(() => {});
+          // Aguarda as linhas estarem presentes antes de ler.
+          // Timeout de 30s para BOHs com muitos funcionários (firmware lento).
+          // Se ainda assim retornar vazio: retry de 5s antes de falhar explicitamente.
+          await page.waitForSelector('tr.painted, tr.unpainted', { timeout: 30000 }).catch(() => {});
 
-          const rows = await page.locator('tr.painted, tr.unpainted').all();
+          let rows = await page.locator('tr.painted, tr.unpainted').all();
+          if (rows.length === 0 && pageNum === 1) {
+            // Página 1 carregou vazia — firmware pode estar lento. Retry único.
+            await page.waitForTimeout(5000);
+            await page.waitForSelector('tr.painted, tr.unpainted', { timeout: 15000 }).catch(() => {});
+            rows = await page.locator('tr.painted, tr.unpainted').all();
+            if (rows.length === 0) {
+              // Ainda vazia após retry — falha explícita para acionar guard no server.js
+              return { success: false, message: 'Página de funcionários carregou vazia — possível lentidão do firmware', employees: [], total: 0, clockIp: this.ip };
+            }
+          }
 
           // Captura texto da primeira linha ANTES de clicar próxima página
           // (usado para detectar quando a página realmente mudou)

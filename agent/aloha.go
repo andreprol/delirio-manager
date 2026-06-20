@@ -4,9 +4,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 )
 
@@ -38,7 +35,10 @@ type AlohaScanResult struct {
 	Error         string           `json:"error,omitempty"`
 }
 
-// scanAloha verifica XMLs de NF-Ce em C:\Bootdrv\AlohaFiscal\ServerData\XML.
+// scanAloha verifica existência e estrutura de C:\Bootdrv\AlohaFiscal\ServerData\XML.
+// Usa apenas listNFCeMonths (leitura de diretórios, 3 níveis) — NÃO percorre arquivos
+// individuais, evitando walk de 100k+ XMLs que trava o agente por 1-3 minutos em BOHs
+// com histórico de anos.
 func scanAloha() AlohaScanResult {
 	result := AlohaScanResult{
 		ScannedAt: time.Now().UTC().Format(time.RFC3339),
@@ -52,44 +52,29 @@ func scanAloha() AlohaScanResult {
 	}
 	result.BootdrvExists = true
 
-	// NF-Ce: XMLs em C:\Bootdrv\AlohaFiscal\ServerData\XML ────────────
 	if _, err := os.Stat(alohaNFCePath); err != nil {
 		result.NFCe.PathExists = false
 		return result
 	}
 	result.NFCe.PathExists = true
 
-	var xmlFiles []AlohaFileInfo
-	filepath.WalkDir(alohaNFCePath, func(path string, d os.DirEntry, werr error) error {
-		if werr != nil || d.IsDir() {
-			return nil
+	// Usa listNFCeMonths para derivar resumo — só percorre pastas ano/mês/dia (rápido)
+	months := listNFCeMonths()
+	totalDays := 0
+	latestKey := ""
+	for _, m := range months.Months {
+		totalDays += len(m.Days)
+		for _, d := range m.Days {
+			key := m.Year + m.Month + d
+			if key > latestKey {
+				latestKey = key
+			}
 		}
-		if !strings.EqualFold(filepath.Ext(path), ".xml") {
-			return nil
-		}
-		fi, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		xmlFiles = append(xmlFiles, AlohaFileInfo{
-			Path:    filepath.Base(path),
-			SizeMB:  alohaRoundMB(fi.Size()),
-			ModTime: fi.ModTime().Format("2006-01-02T15:04:05Z"),
-		})
-		return nil
-	})
-
-	result.NFCe.Total = len(xmlFiles)
-	if len(xmlFiles) > 0 {
-		sort.Slice(xmlFiles, func(i, j int) bool {
-			return xmlFiles[i].ModTime > xmlFiles[j].ModTime
-		})
-		result.NFCe.LatestDate = xmlFiles[0].ModTime[:10]
-		n := 10
-		if len(xmlFiles) < n {
-			n = len(xmlFiles)
-		}
-		result.NFCe.Recent = xmlFiles[:n]
+	}
+	// Total aproximado: número de pastas de dia (cada pasta tem ~dezenas a centenas de XMLs)
+	result.NFCe.Total = totalDays
+	if latestKey != "" && len(latestKey) == 8 {
+		result.NFCe.LatestDate = latestKey[0:4] + "-" + latestKey[4:6] + "-" + latestKey[6:8]
 	}
 
 	return result
