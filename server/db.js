@@ -686,18 +686,41 @@ function getNFCeIndexStatus(machineId) {
     FROM nfce_index WHERE machine_id = ?
     GROUP BY month_year ORDER BY month_year DESC LIMIT 12
   `).all(machineId);
-  const totalRow   = d.prepare(`SELECT COUNT(*) as c FROM nfce_index WHERE machine_id = ?`).get(machineId);
-  const pendingRow = d.prepare(
-    `SELECT COUNT(*) as c FROM commands WHERE machine_id = ? AND type = 'aloha-index-nfce-day' AND status = 'pending'`
+  const totalRow = d.prepare(`SELECT COUNT(*) as c FROM nfce_index WHERE machine_id = ?`).get(machineId);
+  const listCmd  = d.prepare(
+    `SELECT status, acked_at, created_at FROM commands WHERE machine_id = ? AND type = 'aloha-list-nfce-months' ORDER BY created_at DESC LIMIT 1`
   ).get(machineId);
-  const listCmd = d.prepare(
-    `SELECT status, acked_at FROM commands WHERE machine_id = ? AND type = 'aloha-list-nfce-months' ORDER BY created_at DESC LIMIT 1`
-  ).get(machineId);
+
+  // Sessão atual: todos os aloha-index-nfce-day enfileirados desde o último aloha-list-nfce-months
+  let totalDays = 0, pendingDays = 0, processedDays = 0, sessionStartedAt = null;
+  if (listCmd) {
+    const sess = d.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+        MIN(created_at) as started_at
+      FROM commands
+      WHERE machine_id = ? AND type = 'aloha-index-nfce-day' AND created_at >= ?
+    `).get(machineId, listCmd.created_at);
+    totalDays       = sess?.total      || 0;
+    pendingDays     = sess?.pending    || 0;
+    processedDays   = totalDays - pendingDays;
+    sessionStartedAt = sess?.started_at || null;
+  } else {
+    const pendingRow = d.prepare(
+      `SELECT COUNT(*) as c FROM commands WHERE machine_id = ? AND type = 'aloha-index-nfce-day' AND status = 'pending'`
+    ).get(machineId);
+    pendingDays = pendingRow?.c || 0;
+  }
+
   return {
     months,
-    totalRecords: totalRow?.c   || 0,
-    pendingDays:  pendingRow?.c || 0,
-    listMonths:   listCmd       || null,
+    totalRecords:    totalRow?.c || 0,
+    pendingDays,
+    totalDays,
+    processedDays,
+    sessionStartedAt,
+    listMonths: listCmd || null,
   };
 }
 

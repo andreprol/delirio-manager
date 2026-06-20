@@ -1,6 +1,32 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { api, getServerUrl } from '../api'
 
+// ── Cache de módulo — sobrevive ao desmonte do componente ─────────────────────
+// Mantém último status conhecido por machineId e o poll global ativo
+const _cache    = {}   // { [machineId]: statusObj }
+let _pollId     = null // setInterval global
+let _pollMachine = null
+
+function _startGlobalPoll(machineId) {
+  if (_pollId) clearInterval(_pollId)
+  _pollMachine = machineId
+  _pollId = setInterval(async () => {
+    try {
+      const s = await api.aloha.indexStatus(machineId)
+      _cache[machineId] = s
+      // Emite evento customizado para componentes montados ouvirem
+      window.dispatchEvent(new CustomEvent('nfce-status', { detail: { machineId, status: s } }))
+      if (s.pendingDays === 0) {
+        clearInterval(_pollId)
+        _pollId      = null
+        _pollMachine = null
+      }
+    } catch (_) {}
+  }, 8000)
+}
+
+// ── Helpers de formatação ─────────────────────────────────────────────────────
+
 function fmtDate(iso) {
   if (!iso) return '—'
   try {
@@ -15,14 +41,116 @@ function fmtMoeda(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
+function calcETA(status) {
+  if (!status?.sessionStartedAt || !status?.processedDays || status.pendingDays === 0) return null
+  const elapsedMs = Date.now() - new Date(status.sessionStartedAt).getTime()
+  if (elapsedMs < 5000 || status.processedDays < 1) return null
+  const msPerDay  = elapsedMs / status.processedDays
+  const etaMin    = Math.ceil((status.pendingDays * msPerDay) / 60000)
+  return etaMin < 1 ? '< 1' : String(etaMin)
+}
+
+// ── Barra de progresso ────────────────────────────────────────────────────────
+
+function IndexProgressBar({ status }) {
+  if (!status) return null
+
+  const { pendingDays, totalDays, processedDays, totalRecords } = status
+  const isIndexing  = pendingDays > 0
+  const pct         = totalDays > 0 ? Math.round((processedDays / totalDays) * 100) : 0
+  const eta         = isIndexing ? calcETA(status) : null
+
+  return (
+    <div style={{
+      padding: '10px 14px', marginBottom: '12px', borderRadius: '7px',
+      background: 'var(--card-bg, #1e2530)', border: '1px solid var(--border, #2d3748)',
+      fontSize: '12px',
+    }}>
+      {/* Linha superior: contagem + ETA */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: isIndexing ? '8px' : '0', flexWrap: 'wrap', gap: '6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          {isIndexing ? (
+            <>
+              <span style={{ color: 'var(--yellow, #fbbf24)' }}>⏳ Indexando…</span>
+              <span style={{ color: 'var(--text-muted)' }}>|</span>
+              <span>
+                <strong style={{ color: 'var(--text)' }}>{processedDays.toLocaleString('pt-BR')}</strong>
+                <span style={{ color: 'var(--text-muted)' }}> / {totalDays.toLocaleString('pt-BR')} dias</span>
+                {totalDays > 0 && (
+                  <span style={{ color: 'var(--yellow, #fbbf24)', marginLeft: '4px' }}>({pct}%)</span>
+                )}
+              </span>
+              <span style={{ color: 'var(--text-muted)' }}>|</span>
+              <span>
+                <strong style={{ color: 'var(--text)' }}>{totalRecords.toLocaleString('pt-BR')}</strong>
+                <span style={{ color: 'var(--text-muted)' }}> NF-Ces indexadas</span>
+              </span>
+              {eta && (
+                <>
+                  <span style={{ color: 'var(--text-muted)' }}>|</span>
+                  <span style={{ color: 'var(--text-muted)' }}>~{eta} min restantes</span>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <span style={{ color: totalRecords > 0 ? 'var(--green, #4ade80)' : 'var(--text-muted)' }}>
+                {totalRecords > 0 ? '✅' : '⚪'}
+              </span>
+              <span>
+                <strong style={{ color: 'var(--text)' }}>{totalRecords.toLocaleString('pt-BR')}</strong>
+                <span style={{ color: 'var(--text-muted)' }}>
+                  {' '}NF-Ces indexadas{status.months?.length > 0 ? ` em ${status.months.length} meses` : ''}
+                </span>
+              </span>
+              {totalRecords === 0 && (
+                <>
+                  <span style={{ color: 'var(--text-muted)' }}>|</span>
+                  <span style={{ color: 'var(--red, #f87171)', fontSize: '11px' }}>
+                    {status.listMonths?.status === 'acked'
+                      ? 'Agente executou mas encontrou 0 meses — verificar pasta XML no BOH'
+                      : 'Clique em "Indexar" para iniciar'}
+                  </span>
+                </>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Aguardando agente descobrir meses */}
+        {status.listMonths?.status === 'pending' && (
+          <span style={{ fontSize: '11px', color: 'var(--yellow, #fbbf24)' }}>
+            Aguardando agente descobrir meses…
+          </span>
+        )}
+      </div>
+
+      {/* Barra de progresso visual */}
+      {isIndexing && totalDays > 0 && (
+        <div style={{
+          width: '100%', height: '5px', background: 'var(--border, #2d3748)',
+          borderRadius: '3px', overflow: 'hidden',
+        }}>
+          <div style={{
+            width: `${pct}%`, height: '100%',
+            background: 'var(--yellow, #fbbf24)',
+            borderRadius: '3px',
+            transition: 'width 1s ease',
+          }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Email modal ───────────────────────────────────────────────────────────────
 
 function EmailModal({ record, machineId, onClose }) {
-  const [toEmail,    setToEmail]    = useState('')
-  const [extraCCs,   setExtraCCs]   = useState('')
-  const [sending,    setSending]    = useState(false)
-  const [sent,       setSent]       = useState(false)
-  const [error,      setError]      = useState(null)
+  const [toEmail,  setToEmail]  = useState('')
+  const [extraCCs, setExtraCCs] = useState('')
+  const [sending,  setSending]  = useState(false)
+  const [sent,     setSent]     = useState(false)
+  const [error,    setError]    = useState(null)
 
   async function handleSend() {
     if (!toEmail.trim()) return
@@ -78,33 +206,24 @@ function EmailModal({ record, machineId, onClose }) {
             <div style={{ marginBottom: '14px' }}>
               <label style={s.label}>E-mail do cliente *</label>
               <input
-                type="email"
-                style={s.input}
-                placeholder="cliente@email.com"
-                value={toEmail}
-                onChange={e => setToEmail(e.target.value)}
-                autoFocus
+                type="email" style={s.input} placeholder="cliente@email.com"
+                value={toEmail} onChange={e => setToEmail(e.target.value)} autoFocus
               />
             </div>
             <div style={{ marginBottom: '16px' }}>
               <label style={s.label}>E-mails adicionais (separados por vírgula ou ponto-e-vírgula)</label>
               <input
-                type="text"
-                style={s.input}
+                type="text" style={s.input}
                 placeholder="gerente@loja.com, contador@escritorio.com"
-                value={extraCCs}
-                onChange={e => setExtraCCs(e.target.value)}
+                value={extraCCs} onChange={e => setExtraCCs(e.target.value)}
               />
             </div>
-
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '16px' }}>
               CC automático: <span style={{ color: 'var(--text)' }}>bruno@delirio.com.br, suporteti@delirio.com.br</span>
             </div>
-
             {error && (
               <div style={{ color: 'var(--red)', fontSize: '12px', marginBottom: '12px' }}>⚠ {error}</div>
             )}
-
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
               <button className="btn btn-secondary" onClick={onClose} disabled={sending}>Cancelar</button>
               <button className="btn btn-primary" onClick={handleSend} disabled={sending || !toEmail.trim()}>
@@ -121,8 +240,8 @@ function EmailModal({ record, machineId, onClose }) {
 // ── Result row ────────────────────────────────────────────────────────────────
 
 function ResultRow({ record, machineId }) {
-  const [emailOpen,    setEmailOpen]    = useState(false)
-  const [downloading,  setDownloading]  = useState(false)
+  const [emailOpen,   setEmailOpen]   = useState(false)
+  const [downloading, setDownloading] = useState(false)
 
   const products = (record.products_text || '').split(' | ').filter(Boolean).slice(0, 3)
 
@@ -132,9 +251,7 @@ function ResultRow({ record, machineId }) {
       const blob = await api.nfce.downloadDanfe(machineId, record.chave, record.n_nf)
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
-      a.href     = url
-      a.download = `DANFE-${record.n_nf}.pdf`
-      a.click()
+      a.href = url; a.download = `DANFE-${record.n_nf}.pdf`; a.click()
       URL.revokeObjectURL(url)
     } catch (e) {
       alert('Erro ao gerar DANFE: ' + e.message)
@@ -147,11 +264,8 @@ function ResultRow({ record, machineId }) {
     row: {
       display: 'grid',
       gridTemplateColumns: '80px 140px 90px 1fr 120px',
-      alignItems: 'center',
-      gap: '8px',
-      padding: '8px 12px',
-      borderBottom: '1px solid var(--border)',
-      fontSize: '12px',
+      alignItems: 'center', gap: '8px', padding: '8px 12px',
+      borderBottom: '1px solid var(--border)', fontSize: '12px',
     },
     actions: { display: 'flex', gap: '4px', justifyContent: 'flex-end' },
   }
@@ -166,26 +280,16 @@ function ResultRow({ record, machineId }) {
           {products.join(' · ') || '—'}
         </span>
         <div style={s.actions}>
-          <button
-            className="btn btn-secondary"
-            style={{ fontSize: '10px', padding: '3px 8px' }}
-            onClick={downloadPDF}
-            disabled={downloading}
-            title="Baixar DANFE em PDF"
-          >
+          <button className="btn btn-secondary" style={{ fontSize: '10px', padding: '3px 8px' }}
+            onClick={downloadPDF} disabled={downloading} title="Baixar DANFE em PDF">
             {downloading ? '⏳' : '⬇ PDF'}
           </button>
-          <button
-            className="btn btn-secondary"
-            style={{ fontSize: '10px', padding: '3px 8px' }}
-            onClick={() => setEmailOpen(true)}
-            title="Enviar DANFE por email"
-          >
+          <button className="btn btn-secondary" style={{ fontSize: '10px', padding: '3px 8px' }}
+            onClick={() => setEmailOpen(true)} title="Enviar DANFE por email">
             ✉ Email
           </button>
         </div>
       </div>
-
       {emailOpen && (
         <EmailModal record={record} machineId={machineId} onClose={() => setEmailOpen(false)} />
       )}
@@ -196,59 +300,57 @@ function ResultRow({ record, machineId }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function AlohaDANFESearch({ bohMachines }) {
-  const [machineId,  setMachineId]  = useState(bohMachines[0]?.id || '')
-  const [dateFrom,   setDateFrom]   = useState('')
-  const [dateTo,     setDateTo]     = useState('')
-  const [valueMin,   setValueMin]   = useState('')
-  const [valueMax,   setValueMax]   = useState('')
-  const [product,    setProduct]    = useState('')
-  const [results,    setResults]    = useState(null)
-  const [total,      setTotal]      = useState(0)
-  const [offset,     setOffset]     = useState(0)
-  const [loading,    setLoading]    = useState(false)
-  const [error,      setError]      = useState(null)
-  const [indexing,      setIndexing]      = useState(false)
-  const [indexMsg,      setIndexMsg]      = useState(null)
-  const [histIndexing,  setHistIndexing]  = useState(false)
-  const [histMsg,       setHistMsg]       = useState(null)
-  const [indexStatus,   setIndexStatus]   = useState(null)
-  const [polling,       setPolling]       = useState(false)
-  const pollRef = useRef(null)
+  const [machineId, setMachineId] = useState(bohMachines[0]?.id || '')
+  const [dateFrom,  setDateFrom]  = useState('')
+  const [dateTo,    setDateTo]    = useState('')
+  const [valueMin,  setValueMin]  = useState('')
+  const [valueMax,  setValueMax]  = useState('')
+  const [product,   setProduct]   = useState('')
+  const [results,   setResults]   = useState(null)
+  const [total,     setTotal]     = useState(0)
+  const [offset,    setOffset]    = useState(0)
+  const [loading,   setLoading]   = useState(false)
+  const [error,     setError]     = useState(null)
+
+  const [indexing,     setIndexing]     = useState(false)
+  const [indexMsg,     setIndexMsg]     = useState(null)
+  const [histIndexing, setHistIndexing] = useState(false)
+  const [histMsg,      setHistMsg]      = useState(null)
+
+  // indexStatus começa do cache (sem flash ao reabrir o módulo)
+  const [indexStatus, setIndexStatus] = useState(() => _cache[machineId] || null)
 
   const LIMIT = 50
 
-  // Carrega status atual ao trocar de máquina; limpa polling da máquina anterior
+  // Escuta eventos do poll global e atualiza estado local
   useEffect(() => {
-    if (!machineId) return
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-    setPolling(false)
-    setIndexStatus(null)
-    api.aloha.indexStatus(machineId).then(setIndexStatus).catch(() => {})
-    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
+    function onPollUpdate(e) {
+      if (e.detail.machineId === machineId) {
+        setIndexStatus(e.detail.status)
+      }
+    }
+    window.addEventListener('nfce-status', onPollUpdate)
+    return () => window.removeEventListener('nfce-status', onPollUpdate)
   }, [machineId])
 
-  function startPolling(id) {
-    if (pollRef.current) clearInterval(pollRef.current)
-    setPolling(true)
-    let ticks = 0
-    pollRef.current = setInterval(async () => {
-      ticks++
-      try {
-        const status = await api.aloha.indexStatus(id || machineId)
-        setIndexStatus(status)
-        if (status.pendingDays === 0 || ticks >= 120) {
-          clearInterval(pollRef.current)
-          pollRef.current = null
-          setPolling(false)
-        }
-      } catch (_) {}
-    }, 8000)
-  }
+  // Ao trocar de máquina: restaura cache imediatamente, busca status e garante poll ativo se indexando
+  useEffect(() => {
+    if (!machineId) return
+    setIndexStatus(_cache[machineId] || null)
+
+    api.aloha.indexStatus(machineId).then(s => {
+      _cache[machineId] = s
+      setIndexStatus(s)
+      // Se há indexação em andamento e o poll global não está cobrindo esta máquina, inicia
+      if (s.pendingDays > 0 && _pollMachine !== machineId) {
+        _startGlobalPoll(machineId)
+      }
+    }).catch(() => {})
+  }, [machineId])
 
   const doSearch = useCallback(async (newOffset = 0) => {
     if (!machineId) return
-    setLoading(true)
-    setError(null)
+    setLoading(true); setError(null)
     try {
       const data = await api.nfce.search(machineId, {
         dateFrom: dateFrom || undefined,
@@ -271,12 +373,11 @@ export function AlohaDANFESearch({ bohMachines }) {
 
   async function triggerIndex() {
     if (!machineId) return
-    setIndexing(true)
-    setIndexMsg(null)
+    setIndexing(true); setIndexMsg(null)
     try {
       const r = await api.aloha.triggerIndex(machineId)
       setIndexMsg(`${r.days} comandos enviados para ${r.month}.`)
-      startPolling(machineId)
+      _startGlobalPoll(machineId)
     } catch (e) {
       setIndexMsg('Erro: ' + e.message)
     } finally {
@@ -286,12 +387,11 @@ export function AlohaDANFESearch({ bohMachines }) {
 
   async function triggerHistory() {
     if (!machineId) return
-    setHistIndexing(true)
-    setHistMsg(null)
+    setHistIndexing(true); setHistMsg(null)
     try {
       const r = await api.aloha.triggerHistory(machineId)
-      setHistMsg(r.message || 'Indexação histórica iniciada.')
-      startPolling(machineId)
+      setHistMsg(r.message || 'Listagem de meses enviada ao agente. Indexação iniciará em instantes.')
+      _startGlobalPoll(machineId)
     } catch (e) {
       setHistMsg('Erro: ' + e.message)
     } finally {
@@ -300,47 +400,37 @@ export function AlohaDANFESearch({ bohMachines }) {
   }
 
   const s = {
-    wrap:     { padding: '16px 20px', overflowY: 'auto', flex: 1 },
-    form:     {
+    wrap:  { padding: '16px 20px', overflowY: 'auto', flex: 1 },
+    form:  {
       display: 'grid',
       gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-      gap: '10px',
-      marginBottom: '16px',
-      background: 'var(--card-bg)',
-      border: '1px solid var(--border)',
-      borderRadius: '8px',
-      padding: '14px',
+      gap: '10px', marginBottom: '16px',
+      background: 'var(--card-bg)', border: '1px solid var(--border)',
+      borderRadius: '8px', padding: '14px',
     },
-    label:    { fontSize: '11px', color: 'var(--text-muted)', marginBottom: '3px', display: 'block' },
-    input:    {
+    label: { fontSize: '11px', color: 'var(--text-muted)', marginBottom: '3px', display: 'block' },
+    input: {
       width: '100%', padding: '6px 8px',
       background: 'var(--bg)', border: '1px solid var(--border)',
       borderRadius: '5px', color: 'inherit', fontSize: '12px', boxSizing: 'border-box',
     },
     tableHead: {
-      display: 'grid',
-      gridTemplateColumns: '80px 140px 90px 1fr 120px',
-      gap: '8px',
-      padding: '6px 12px',
-      fontSize: '11px',
-      fontWeight: 700,
-      color: 'var(--text-muted)',
-      background: 'var(--card-bg)',
-      borderRadius: '6px 6px 0 0',
-      border: '1px solid var(--border)',
-      borderBottom: 'none',
+      display: 'grid', gridTemplateColumns: '80px 140px 90px 1fr 120px',
+      gap: '8px', padding: '6px 12px', fontSize: '11px', fontWeight: 700,
+      color: 'var(--text-muted)', background: 'var(--card-bg)',
+      borderRadius: '6px 6px 0 0', border: '1px solid var(--border)', borderBottom: 'none',
     },
   }
 
   return (
     <div style={s.wrap}>
-      {/* Search form */}
+      {/* Formulário de busca */}
       <div style={s.form}>
         <div>
           <label style={s.label}>Servidor BOH</label>
           <select style={s.input} value={machineId} onChange={e => setMachineId(e.target.value)}>
             {bohMachines.map(m => (
-              <option key={m.id} value={m.id}>{m.hostname} {m.location ? `— ${m.location}` : ''}</option>
+              <option key={m.id} value={m.id}>{m.hostname}{m.location ? ` — ${m.location}` : ''}</option>
             ))}
           </select>
         </div>
@@ -362,10 +452,10 @@ export function AlohaDANFESearch({ bohMachines }) {
         </div>
         <div>
           <label style={s.label}>Produto (texto)</label>
-          <input type="text" style={s.input} placeholder="pizza, refrigerante…" value={product} onChange={e => setProduct(e.target.value)}
+          <input type="text" style={s.input} placeholder="pizza, refrigerante…" value={product}
+            onChange={e => setProduct(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && doSearch(0)} />
         </div>
-
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: '6px' }}>
           <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => doSearch(0)} disabled={loading || !machineId}>
             {loading ? 'Buscando…' : '🔍 Buscar'}
@@ -373,92 +463,30 @@ export function AlohaDANFESearch({ bohMachines }) {
         </div>
       </div>
 
-      {/* Indexing controls */}
+      {/* Controles de indexação */}
       <div style={{ marginBottom: '10px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
-        <button
-          className="btn btn-secondary"
-          style={{ fontSize: '11px', padding: '4px 10px' }}
-          onClick={triggerIndex}
-          disabled={indexing || !machineId}
-          title="Solicita ao agente que indexe todas as NF-Ce do mês atual"
-        >
+        <button className="btn btn-secondary" style={{ fontSize: '11px', padding: '4px 10px' }}
+          onClick={triggerIndex} disabled={indexing || !machineId}
+          title="Solicita ao agente que indexe todas as NF-Ce do mês atual">
           {indexing ? '⏳ Aguardando…' : '⚙ Indexar mês atual'}
         </button>
-        <button
-          className="btn btn-secondary"
-          style={{ fontSize: '11px', padding: '4px 10px' }}
-          onClick={triggerHistory}
-          disabled={histIndexing || !machineId}
-          title="Indexa todo o histórico disponível nas pastas do servidor BOH"
-        >
+        <button className="btn btn-secondary" style={{ fontSize: '11px', padding: '4px 10px' }}
+          onClick={triggerHistory} disabled={histIndexing || !machineId}
+          title="Indexa todo o histórico disponível nas pastas do servidor BOH">
           {histIndexing ? '⏳ Descobrindo meses…' : '📦 Indexar histórico completo'}
         </button>
-        {indexMsg && (
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{indexMsg}</span>
-        )}
-        {histMsg && (
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{histMsg}</span>
-        )}
+        {indexMsg  && <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{indexMsg}</span>}
+        {histMsg   && <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{histMsg}</span>}
       </div>
 
-      {/* Status de indexação */}
-      {indexStatus && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap',
-          fontSize: '11px', padding: '7px 12px', marginBottom: '12px', borderRadius: '6px',
-          background: 'var(--card-bg, #1e2530)', border: '1px solid var(--border, #2d3748)',
-          color: indexStatus.pendingDays > 0 ? 'var(--yellow, #fbbf24)' : 'var(--text-muted, #94a3b8)',
-        }}>
-          {indexStatus.pendingDays > 0 ? (
-            <>
-              <span>⏳ Indexando{polling ? '…' : ' (pausado)'}</span>
-              <span style={{ opacity: 0.7 }}>|</span>
-              <span><strong style={{ color: 'var(--yellow, #fbbf24)' }}>{indexStatus.pendingDays}</strong> dias pendentes</span>
-              <span style={{ opacity: 0.7 }}>|</span>
-              <span><strong style={{ color: 'var(--text, #e2e8f0)' }}>{indexStatus.totalRecords.toLocaleString('pt-BR')}</strong> NF-Ces indexadas</span>
-              {indexStatus.listMonths?.status === 'acked' && (
-                <>
-                  <span style={{ opacity: 0.7 }}>|</span>
-                  <span style={{ color: 'var(--text-muted)' }}>Meses descobertos: OK</span>
-                </>
-              )}
-              {indexStatus.listMonths?.status === 'pending' && (
-                <>
-                  <span style={{ opacity: 0.7 }}>|</span>
-                  <span style={{ color: 'var(--yellow, #fbbf24)' }}>Aguardando agente descobrir meses…</span>
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              <span style={{ color: indexStatus.totalRecords > 0 ? 'var(--green, #4ade80)' : 'var(--text-muted)' }}>
-                {indexStatus.totalRecords > 0 ? '✅' : '⚪'}
-              </span>
-              <span>
-                <strong style={{ color: 'var(--text, #e2e8f0)' }}>{indexStatus.totalRecords.toLocaleString('pt-BR')}</strong>
-                {' '}NF-Ces indexadas
-                {indexStatus.months.length > 0 && ` em ${indexStatus.months.length} meses`}
-              </span>
-              {indexStatus.totalRecords === 0 && (
-                <>
-                  <span style={{ opacity: 0.7 }}>|</span>
-                  <span style={{ color: 'var(--red, #f87171)' }}>
-                    {indexStatus.listMonths?.status === 'acked'
-                      ? 'Agente executou mas encontrou 0 meses — verificar pasta XML no BOH'
-                      : 'Clique em "Indexar" para iniciar'}
-                  </span>
-                </>
-              )}
-            </>
-          )}
-        </div>
-      )}
+      {/* Barra de progresso de indexação — sempre visível se há status */}
+      <IndexProgressBar status={indexStatus} />
 
       {error && (
         <div style={{ color: 'var(--red)', fontSize: '12px', marginBottom: '12px' }}>⚠ {error}</div>
       )}
 
-      {/* Results */}
+      {/* Resultados */}
       {results === null && !loading && (
         <div style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', marginTop: '40px' }}>
           Use os filtros acima para buscar uma DANFE.<br />
@@ -474,7 +502,6 @@ export function AlohaDANFESearch({ bohMachines }) {
             {total} resultado{total !== 1 ? 's' : ''} encontrado{total !== 1 ? 's' : ''}
             {total > LIMIT && ` — exibindo ${offset + 1}–${Math.min(offset + LIMIT, total)}`}
           </div>
-
           {results.length > 0 && (
             <div style={{ border: '1px solid var(--border)', borderRadius: '6px', overflow: 'hidden' }}>
               <div style={s.tableHead}>
@@ -489,14 +516,11 @@ export function AlohaDANFESearch({ bohMachines }) {
               ))}
             </div>
           )}
-
           {results.length === 0 && (
             <div style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', marginTop: '24px' }}>
               Nenhuma NF-Ce encontrada com esses filtros.
             </div>
           )}
-
-          {/* Pagination */}
           {total > LIMIT && (
             <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', marginTop: '16px' }}>
               <button className="btn btn-secondary" disabled={offset === 0}
