@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api } from '../api'
 
 // Module-level cache and background poll — persists while the app is open, survives tab switches
@@ -416,6 +416,7 @@ export function EmployeeTable() {
   const [syncAllRunning, setSyncAllRunning]     = useState(false)
   const [syncAllProgress, setSyncAllProgress]   = useState(null) // { sent, total }
   const [syncAllJobs, setSyncAllJobs]           = useState([])   // [{ cpf, name, targetIps, jobId, status, clocks, enrolled, failed }]
+  const _syncRefreshTriggered                   = useRef(false)
 
   // New employee form
   const [newEmpMode, setNewEmpMode]     = useState(false)
@@ -435,6 +436,17 @@ export function EmployeeTable() {
     _listeners.add(onPollDone)
     return () => _listeners.delete(onPollDone)
   }, [])
+
+  // Auto-refresh after all sync jobs complete
+  useEffect(() => {
+    if (syncAllJobs.length === 0 || syncAllRunning) return
+    const allDone = syncAllJobs.every(j => ['done', 'timeout', 'error'].includes(j.status))
+    if (!allDone || _syncRefreshTriggered.current) return
+    _syncRefreshTriggered.current = true
+    const ips = [...new Set(syncAllJobs.flatMap(j => j.targetIps))]
+    setRefreshingOffline(true)
+    refreshTargetClocks(ips)
+  }, [syncAllJobs, syncAllRunning])
 
   // Apply data after any load — sets cache and auto-selects only online clocks
   function applyData(result) {
@@ -503,6 +515,7 @@ export function EmployeeTable() {
       setOpStatus({ type: 'error', title: 'Nenhum funcionário com relógios online ausentes.', clocks: [] })
       return
     }
+    _syncRefreshTriggered.current = false
     setSyncAllJobs(toSync.map(emp => ({
       cpf: emp.cpf, name: emp.name, targetIps: emp.targetIps,
       jobId: null, status: 'pending', clocks: [], enrolled: 0, failed: 0,
