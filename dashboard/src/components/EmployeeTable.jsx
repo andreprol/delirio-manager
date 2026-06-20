@@ -485,19 +485,27 @@ export function EmployeeTable() {
   }
 
   async function pollJob(jobIndex, jobId) {
-    for (let attempt = 0; attempt < 60; attempt++) {
-      await new Promise(r => setTimeout(r, 3000))
-      try {
-        const res = await api.rh.pollEnroll(jobId)
-        if (res.status === 'running') continue
-        setSyncAllJobs(prev => prev.map((j, i) => i !== jobIndex ? j : {
-          ...j, status: 'done',
-          clocks:   res.clocks   || [],
-          enrolled: res.enrolled ?? 0,
-          failed:   res.failed   ?? 0,
-        }))
-        return
-      } catch { /* keep polling */ }
+    // Fase 1: 40 × 3s = 2 min — jobs no início da fila respondem rápido
+    // Fase 2: 360 × 30s = 3h — jobs aguardando fila longa, sem spam de requests
+    const phases = [
+      { attempts: 40, interval: 3000 },
+      { attempts: 360, interval: 30000 },
+    ]
+    for (const { attempts, interval } of phases) {
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        await new Promise(r => setTimeout(r, interval))
+        try {
+          const res = await api.rh.pollEnroll(jobId)
+          if (res.status === 'running') continue
+          setSyncAllJobs(prev => prev.map((j, i) => i !== jobIndex ? j : {
+            ...j, status: 'done',
+            clocks:   res.clocks   || [],
+            enrolled: res.enrolled ?? 0,
+            failed:   res.failed   ?? 0,
+          }))
+          return
+        } catch { /* keep polling */ }
+      }
     }
     setSyncAllJobs(prev => prev.map((j, i) => i !== jobIndex ? j : { ...j, status: 'timeout' }))
   }
