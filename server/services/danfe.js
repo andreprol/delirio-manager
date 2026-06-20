@@ -1,6 +1,7 @@
 'use strict';
 
 const PDFDocument = require('pdfkit');
+const QRCode      = require('qrcode');
 
 const PAG_TYPES = {
   '01': 'Dinheiro',
@@ -50,7 +51,21 @@ function hLine(doc, y, left, width, color = '#cccccc') {
  * @param {object} danfe — NFCeDanfe payload from nfce_index.danfe_json
  * @returns {Promise<Buffer>}
  */
-function generateDanfePdf(danfe) {
+async function generateDanfePdf(danfe) {
+  // Gera QR code como PNG antes de abrir o documento (operação assíncrona)
+  const qrUrl = danfe.qrCode || danfe.urlChave || '';
+  let qrBuffer = null;
+  if (qrUrl) {
+    try {
+      qrBuffer = await QRCode.toBuffer(qrUrl, {
+        type:   'png',
+        width:  130,
+        margin: 1,
+        color:  { dark: '#000000', light: '#ffffff' },
+      });
+    } catch (_) { /* QR code opcional — prossegue sem ele se falhar */ }
+  }
+
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: 'A4',
@@ -173,7 +188,15 @@ function generateDanfePdf(danfe) {
     y += 10;
     doc.fontSize(6.5).font('Helvetica').fillColor('#000')
        .text(fmtChave(danfe.chave), L, y, { align: 'center', width: W });
-    y += 12;
+    y += 14;
+
+    // ── QR Code ──────────────────────────────────────────────────────────────
+    const QR_SIZE = 110;
+    if (qrBuffer) {
+      const qrX = L + (W - QR_SIZE) / 2;
+      doc.image(qrBuffer, qrX, y, { width: QR_SIZE, height: QR_SIZE });
+      y += QR_SIZE + 6;
+    }
 
     // ── Consulta ─────────────────────────────────────────────────────────────
     doc.fontSize(7).fillColor('#666')
