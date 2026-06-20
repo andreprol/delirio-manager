@@ -229,9 +229,27 @@ class HenryHexa {
         );
 
         if (alreadyReg) {
+          // "já cadastrado" pode ser conflito de Ref1 (não de CPF) — verifica se o CPF
+          // específico está realmente no relógio antes de declarar sucesso.
+          let cpfReally = false;
+          try {
+            const check = await this.navigateAndSearchByCPF(page, cpf);
+            cpfReally = check.found;
+          } catch { cpfReally = false; }
+
+          if (cpfReally) {
+            return {
+              success: true,
+              message: `Funcionário já cadastrado no relógio ${this.ip}`,
+              timestamp,
+              clockIp: this.ip,
+            };
+          }
+          // CPF ausente mas relógio diz "já cadastrado" → conflito de Ref1
           return {
-            success: true,
-            message: `Funcionário já cadastrado no relógio ${this.ip}`,
+            success: false,
+            ref1Conflict: true,
+            message: `Conflito de Ref1 (matrícula ${ref1?.replace(/^0+/, '') || '?'} já pertence a outro funcionário neste relógio) — altere o Ref1 deste funcionário`,
             timestamp,
             clockIp: this.ip,
           };
