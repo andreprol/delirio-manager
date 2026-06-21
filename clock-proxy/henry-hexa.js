@@ -368,7 +368,7 @@ class HenryHexa {
 
   // Aguarda a contagem de linhas ficar estável por `stableMs` consecutivos.
   // Garante que o firmware terminou de renderizar a página antes de ler.
-  async _waitForStableRows(page, stableMs = 1000, maxWaitMs = 45000) {
+  async _waitForStableRows(page, stableMs = 500, maxWaitMs = 15000) {
     const start    = Date.now();
     let lastCount  = -1;
     let stableSince = -1;
@@ -420,22 +420,29 @@ class HenryHexa {
             break;
           }
 
-          const rows = await page.locator('tr.painted, tr.unpainted').all();
+          // Extrai TODOS os dados da página em uma única chamada JS — elimina N round-trips CDP.
+          // Antes: ~4 chamadas CDP por linha × 20 linhas/pág = 80 chamadas/pág.
+          // Agora: 1 chamada por página independente do número de linhas.
+          const pageRows = await page.evaluate(() =>
+            Array.from(document.querySelectorAll('tr.painted, tr.unpainted')).map(row => {
+              const cells = Array.from(row.querySelectorAll('td'));
+              if (cells.length < 2) return null;
+              return [
+                (cells[0]?.textContent || '').trim(),                    // name
+                (cells[1]?.textContent || '').trim(),                    // cpf
+                (cells[2]?.textContent || '').trim(),                    // refs (raw para check de '/')
+                (cells[3]?.textContent || '').replace(/\s/g, ''),        // ref2 fallback (cells[3])
+              ];
+            }).filter(r => r !== null)
+          );
 
-          // Captura texto da primeira linha ANTES de clicar próxima página
-          const firstRowText = rows.length > 0
-            ? (await rows[0].locator('td').first().textContent().catch(() => '')).trim()
-            : '';
+          // Captura texto da primeira linha ANTES de clicar próxima página (para detecção de navegação)
+          const firstRowText = pageRows.length > 0 ? pageRows[0][0] : '';
 
-          for (const row of rows) {
-            const cells = await row.locator('td').all();
-            if (cells.length < 2) continue;
-            const name = (await cells[0].textContent() || '').trim();
-            const cpf  = (await cells[1].textContent() || '').trim();
+          for (const [name, cpf, refsRaw, ref2Cell3] of pageRows) {
             if (!name || !cpf || seenCpfs.has(cpf)) continue;
 
             // Henry Hexa ADV: cells[2] = Ref1+Ref2 concatenados (zero-padded 20+20 chars)
-            const refsRaw  = cells.length > 2 ? (await cells[2].textContent() || '').trim() : '';
             const stripped = refsRaw.replace(/\s/g, '');
             let ref1 = stripped, ref2 = '';
 
@@ -448,9 +455,8 @@ class HenryHexa {
               ref1 = parts[0] || ref1;
               ref2 = parts[1] || '';
             }
-            if (!ref2 && cells.length > 3) {
-              const r = (await cells[3].textContent() || '').replace(/\s/g, '');
-              if (r.length >= 8 && /^\d+$/.test(r)) ref2 = r;
+            if (!ref2 && ref2Cell3.length >= 8 && /^\d+$/.test(ref2Cell3)) {
+              ref2 = ref2Cell3;
             }
 
             seenCpfs.add(cpf);

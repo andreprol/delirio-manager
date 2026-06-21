@@ -61,8 +61,8 @@ const clockQueue = new ClockQueue();
 // Limits the TOTAL number of concurrent Chrome/Playwright instances across ALL
 // operations (scan + enroll + offboard + card update) to MAX_PW_SLOTS.
 // The ClockQueue above serializes per-IP; this semaphore caps the global total.
-// With MAX_PW_SLOTS=2: at most 2 Chrome processes = ~300MB RAM, safe on Servidor Skill.
-const MAX_PW_SLOTS = 2;
+// Servidor Skill tem 100GB RAM — 4 Chrome simultâneos (~600MB) é trivial.
+const MAX_PW_SLOTS = 4;
 let _pwSlots = MAX_PW_SLOTS;
 const _pwQueue = [];
 
@@ -441,9 +441,9 @@ async function runEmployeesInBackground(targetIps) {
   try {
     if (CLOCK_IPS.length === 0) throw new Error('CLOCK_IPS nao configurado no .env');
 
-    // Scan em lotes de 3 IPs por vez: limita Chromium simultâneos para evitar OOM.
+    // Scan em lotes de 5 IPs por vez. MAX_PW_SLOTS=4 garante no máximo 4 Chrome simultâneos.
     // A ClockQueue garante que operações de usuário aguardam na fila por IP sem bloquear os demais.
-    const SCAN_BATCH = 3;
+    const SCAN_BATCH = 5;
     for (let i = 0; i < ips.length; i += SCAN_BATCH) {
       const batch = ips.slice(i, i + SCAN_BATCH);
       await Promise.allSettled(batch.map(async (ip) => {
