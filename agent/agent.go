@@ -66,7 +66,7 @@ func newAgent() *Agent {
 		cfg:    cfg,
 		stopCh: make(chan struct{}),
 		client: &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout: 5 * time.Minute,
 		},
 	}
 }
@@ -259,7 +259,7 @@ func (a *Agent) pollCommands() {
 	}
 
 	for _, cmd := range cmdResp.Commands {
-		go a.handleCommand(cmd)
+		a.handleCommand(cmd)
 	}
 }
 
