@@ -51,9 +51,40 @@ class HenryHexa {
     await page.locator('#lblLogin').fill(this.user);
     await page.locator('#lblPass').fill(this.password);
     await page.locator('a.button.primary', { hasText: 'Entrar' }).click();
+
+    // Aguarda "Colaboradores" (sucesso) ou tela de sessão ativa (requer desconexão forçada)
+    let loggedIn = false;
     try {
-      await page.waitForSelector('text=Colaboradores', { timeout: 30000 });
+      await Promise.race([
+        page.waitForSelector('text=Colaboradores',     { timeout: 30000 }).then(() => { loggedIn = true; }),
+        page.waitForSelector('text=Outra conexão',     { timeout: 30000 }),
+        page.waitForSelector('text=outra conexão',     { timeout: 30000 }),
+        page.waitForSelector('text=conexão ativa',     { timeout: 30000 }),
+        page.waitForSelector('text=sessão ativa',      { timeout: 30000 }),
+      ]);
     } catch {
+      // nenhum dos seletores apareceu — captura estado atual
+    }
+
+    if (!loggedIn) {
+      // Verifica se é tela de "Outra conexão está ativa" e tenta forçar desconexão
+      const bodyText = await page.evaluate(() => document.body.innerText || '').catch(() => '');
+      const isSessionConflict = /outra conex|conex.*ativa|sess.*ativa/i.test(bodyText);
+
+      if (isSessionConflict) {
+        // Henry Hexa exibe botão "Continuar" ou "Desconectar" para forçar logout da sessão anterior
+        const forceBtn = page.locator('a, button').filter({
+          hasText: /Continuar|Desconectar|Forçar|Forcar|OK/i,
+        }).first();
+        if (await forceBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+          await forceBtn.click();
+          await page.waitForSelector('text=Colaboradores', { timeout: 30000 });
+          return; // login OK após forçar desconexão
+        }
+        throw new Error(`Outra conexão está ativa no relógio — não foi possível forçar desconexão (botão não encontrado)`);
+      }
+
+      // Falha genérica de login
       const visibleText = await page.evaluate(() =>
         Array.from(document.querySelectorAll('div, span, h4, label, p, td, input'))
           .filter(el => el.offsetWidth > 0 && el.offsetHeight > 0 && el.childElementCount === 0)
@@ -179,7 +210,7 @@ class HenryHexa {
         await page.locator('a:has-text("Inserir")').click();
         // Aguarda o campo Nome — presente em todos os firmwares do Hexa ADV
         // (evita depender do texto "Verificação de digital" que varia por versão)
-        await page.waitForSelector('#lblName', { timeout: 15000 });
+        await page.waitForSelector('#lblName', { timeout: 30000 });
 
         await page.locator('#lblName').fill(name.toUpperCase().slice(0, 52));
 
@@ -199,16 +230,18 @@ class HenryHexa {
 
         await page.locator('a:has-text("Salvar"), button:has-text("Salvar")').click();
 
-        // Aguarda a resposta real do relógio em vez de um wait fixo.
-        // waitForSelector falha silenciosamente (catch) se o seletor não aparecer em 10s —
-        // o código continua e avalia a página no estado em que estiver.
+        // Captura flag de sucesso imediatamente ao detectar o texto — antes de qualquer redirect.
+        // Henry Hexa pode exibir "Sucesso ao salvar" por <1s antes de navegar para formulário vazio,
+        // fazendo page.evaluate() posterior capturar página em branco.
+        let savedEarly = false;
         try {
           await Promise.race([
-            page.waitForSelector('text=Sucesso ao salvar',  { timeout: 10000 }),
-            page.waitForSelector('text=já cadastrado',      { timeout: 10000 }),
-            page.waitForSelector('text=já cadastrada',      { timeout: 10000 }),
-            page.waitForSelector('text=inválidos',          { timeout: 10000 }),
-            page.waitForSelector('text=obrigatório',        { timeout: 10000 }),
+            page.waitForSelector('text=Sucesso ao salvar', { timeout: 10000 })
+              .then(() => { savedEarly = true; }),
+            page.waitForSelector('text=já cadastrado',     { timeout: 10000 }),
+            page.waitForSelector('text=já cadastrada',     { timeout: 10000 }),
+            page.waitForSelector('text=inválidos',         { timeout: 10000 }),
+            page.waitForSelector('text=obrigatório',       { timeout: 10000 }),
           ]);
         } catch { /* timeout — avalia o estado atual da página */ }
 
@@ -219,7 +252,7 @@ class HenryHexa {
             .filter(t => t.length > 0)
         );
 
-        const saved      = pageTexts.some(t => t.includes('Sucesso ao salvar'));
+        const saved = savedEarly || pageTexts.some(t => t.includes('Sucesso ao salvar'));
         const alreadyReg = pageTexts.some(t =>
           t.includes('já cadastrado') || t.includes('já cadastrada') ||
           t.includes('já existe') || t.includes('duplicado') || t.includes('duplicada')
@@ -322,9 +355,11 @@ class HenryHexa {
         await page.locator('#lblRegistration2').fill(String(newRef2).slice(0, 20));
         await page.locator('a:has-text("Salvar"), button:has-text("Salvar")').click();
 
+        let savedEarly = false;
         try {
           await Promise.race([
-            page.waitForSelector('text=Sucesso ao salvar', { timeout: 10000 }),
+            page.waitForSelector('text=Sucesso ao salvar', { timeout: 10000 })
+              .then(() => { savedEarly = true; }),
             page.waitForSelector('text=inválidos',         { timeout: 10000 }),
             page.waitForSelector('text=obrigatório',       { timeout: 10000 }),
           ]);
@@ -336,7 +371,7 @@ class HenryHexa {
             .map(el => el.textContent.trim())
             .filter(t => t.length > 0)
         );
-        const saved    = pageTexts.some(t => t.includes('Sucesso ao salvar'));
+        const saved = savedEarly || pageTexts.some(t => t.includes('Sucesso ao salvar'));
         const errorMsg = pageTexts.find(t => t.includes('inválidos') || t.includes('obrigatório'));
 
         if (!saved) {
