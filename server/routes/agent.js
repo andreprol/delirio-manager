@@ -6,6 +6,7 @@ const db      = require('../db');
 const { agentAuth, agentAuthNoLimit } = require('../middleware/auth');
 const { broadcast } = require('../services/websocket');
 const { readVersionInfo } = require('./update');
+const { clearOfflineCooldown } = require('../services/alertEngine');
 
 // POST /api/register
 // Registra nova maquina ou atualiza existente. Retorna token.
@@ -46,6 +47,11 @@ router.post('/heartbeat', agentAuth, (req, res) => {
   const { metrics, hostname, agentVersion } = req.body;
 
   try {
+    // Se a máquina estava offline, reseta cooldown para que a próxima queda alerte imediatamente
+    if (machine.status === 'offline') {
+      clearOfflineCooldown(machine.id);
+    }
+
     // Atualiza status e last_seen
     db.setMachineStatus(machine.id, 'online');
 

@@ -8,7 +8,9 @@ const { broadcast } = require('./websocket');
 const { getBiosGuide } = require('./wolBiosGuide');
 
 const CHECK_INTERVAL_MS = 60 * 1000;
+const OFFLINE_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min entre alertas offline por máquina
 const cpuAlertStart = new Map();
+const offlineAlertCooldown = new Map(); // machineId → timestamp do último alerta offline
 let timer;
 
 function loadConfig() {
@@ -56,7 +58,7 @@ function checkOffline() {
     const displayName = machine.display_name || machine.hostname;
     const location    = machine.location || 'Sem localidade';
 
-    // 1. In-app via WebSocket
+    // 1. In-app via WebSocket (sempre — UI precisa saber)
     broadcast('machine:offline', {
       machineId:   machine.id,
       displayName,
@@ -66,18 +68,29 @@ function checkOffline() {
       lastMetrics,
     });
 
-    // 2. Email alert
-    sendOfflineEmail(displayName, location, machine.last_seen, lastMetrics);
+    // 2–3. Email + Teams: apenas se fora do cooldown de 30 min
+    const now       = Date.now();
+    const lastAlert = offlineAlertCooldown.get(machine.id) || 0;
+    const inCooldown = (now - lastAlert) < OFFLINE_ALERT_COOLDOWN_MS;
 
-    // 3. Teams webhook
-    sendOfflineTeams(displayName, location, machine.last_seen, lastMetrics);
+    if (!inCooldown) {
+      offlineAlertCooldown.set(machine.id, now);
+      sendOfflineEmail(displayName, location, machine.last_seen, lastMetrics);
+      sendOfflineTeams(displayName, location, machine.last_seen, lastMetrics);
+    }
 
-    // 4. Keep existing fireAlert for other alert rules
+    // 4. fireAlert in-app (sempre)
     fireAlert(machine.id, 'offline',
       `${displayName} ficou offline`);
 
-    console.log(`[AlertEngine] Offline: ${machine.id}`);
+    console.log(`[AlertEngine] Offline: ${machine.id}${inCooldown ? ' (email/Teams suprimido — cooldown 30min)' : ''}`);
   }
+}
+
+// Chamado quando a máquina volta online — reseta cooldown para que
+// uma nova queda gere alerta imediato, sem esperar os 30 min
+function clearOfflineCooldown(machineId) {
+  offlineAlertCooldown.delete(machineId);
 }
 
 // Verifica limiares de CPU, temperatura e disco
@@ -533,4 +546,4 @@ function fireAlert(machineId, type, message) {
   console.log(`[Alert] ${type} | ${machineId}: ${message}`);
 }
 
-module.exports = { start, stop, checkAll };
+module.exports = { start, stop, checkAll, clearOfflineCooldown };
