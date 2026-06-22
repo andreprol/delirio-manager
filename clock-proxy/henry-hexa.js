@@ -74,7 +74,7 @@ class HenryHexa {
       if (isSessionConflict) {
         // Henry Hexa exibe botão "Continuar" ou "Desconectar" para forçar logout da sessão anterior
         const forceBtn = page.locator('a, button').filter({
-          hasText: /Continuar|Desconectar|Forçar|Forcar|OK/i,
+          hasText: /Continuar|Desconectar|Forçar|Forcar/i,
         }).first();
         if (await forceBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
           await forceBtn.click();
