@@ -102,21 +102,25 @@ function ScanDetail({ scan }) {
   )
 }
 
+// ── Cache de módulo — sobrevive desmontagem/remontagem do AlohaModule ────────
+const _scanCache = {}
+
 // ── Linha de uma máquina BOH ─────────────────────────────────────────────────
 
 function BohRow({ machine, expanded, onToggle }) {
-  const [scan,          setScan]          = useState(null)
+  const [scan,          setScan]          = useState(_scanCache[machine.id] || null)
   const [loading,       setLoading]       = useState(false)
   const [autoScanning,  setAutoScanning]  = useState(false)
   const [error,         setError]         = useState(null)
-  const didLoadRef     = useRef(false)
-  const didAutoScanRef = useRef(false)
+  const didLoadRef     = useRef(!!_scanCache[machine.id])
+  const didAutoScanRef = useRef(!!_scanCache[machine.id])
 
   const loadScan = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
       const data = await api.aloha.getLatest(machine.id)
+      if (data) _scanCache[machine.id] = data
       setScan(data)
       return data
     } catch (e) {
