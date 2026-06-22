@@ -484,7 +484,7 @@ export function EmployeeTable() {
     }
   }
 
-  async function pollJob(jobIndex, jobId) {
+  async function pollJob(jobIndex, jobId, cpf) {
     // Fase 1: 40 × 3s = 2 min — jobs no início da fila respondem rápido
     // Fase 2: 360 × 30s = 3h — jobs aguardando fila longa, sem spam de requests
     const phases = [
@@ -503,6 +503,15 @@ export function EmployeeTable() {
             enrolled: res.enrolled ?? 0,
             failed:   res.failed   ?? 0,
           }))
+          // Atualiza o contador em tempo real — não espera o auto-rescan final
+          const enrolledIps = (res.clocks || []).filter(c => c.success).map(c => c.clockIp)
+          if (enrolledIps.length > 0 && cpf) {
+            patchEmployee(cpf, e => ({
+              ...e,
+              presentIn: [...e.presentIn, ...enrolledIps.filter(ip => !e.presentIn.includes(ip))],
+              absentIn:  e.absentIn.filter(ip => !enrolledIps.includes(ip)),
+            }))
+          }
           return
         } catch { /* keep polling */ }
       }
@@ -543,7 +552,7 @@ export function EmployeeTable() {
           emp.targetIps,
         )
         setSyncAllJobs(prev => prev.map((j, idx) => idx === i ? { ...j, jobId: res.jobId, status: 'polling' } : j))
-        pollJob(i, res.jobId)
+        pollJob(i, res.jobId, emp.cpf)
       } catch {
         setSyncAllJobs(prev => prev.map((j, idx) => idx === i ? { ...j, status: 'error' } : j))
       }

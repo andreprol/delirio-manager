@@ -44,8 +44,13 @@ class ClockQueue {
     const prev = this._tails[ip] || Promise.resolve();
     // Run fn() regardless of whether prev succeeded or failed
     const tail = prev.then(() => fn(), () => fn());
-    // The stored tail always resolves so the next item always runs
-    this._tails[ip] = tail.then(() => {}, () => {});
+    // After each Playwright session, wait INTER_JOB_COOLDOWN_MS before starting the next.
+    // Gives Henry Hexa ADV firmware time to recover — prevents "timeout" on checkReachable.
+    // The stored tail always resolves so the next item always runs.
+    this._tails[ip] = tail.then(
+      () => new Promise(r => setTimeout(r, INTER_JOB_COOLDOWN_MS)),
+      () => new Promise(r => setTimeout(r, INTER_JOB_COOLDOWN_MS)),
+    );
     tail.finally(() => { this._pending[ip]--; });
     return tail;
   }
@@ -63,6 +68,12 @@ const clockQueue = new ClockQueue();
 // The ClockQueue above serializes per-IP; this semaphore caps the global total.
 // Servidor Skill tem 100GB RAM — 4 Chrome simultâneos (~600MB) é trivial.
 const MAX_PW_SLOTS = 4;
+
+// Cooldown entre sessões Playwright consecutivas no mesmo relógio.
+// O firmware Henry Hexa ADV esgota o servidor HTTP embarcado após sessões seguidas —
+// o checkReachable (5s timeout) começa a falhar com "Relógio offline: timeout".
+// 5s de pausa permite ao firmware recuperar antes do próximo job.
+const INTER_JOB_COOLDOWN_MS = parseInt(process.env.INTER_JOB_COOLDOWN_MS || '5000');
 let _pwSlots = MAX_PW_SLOTS;
 const _pwQueue = [];
 
