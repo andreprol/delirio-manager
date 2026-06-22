@@ -205,7 +205,7 @@ class HenryHexa {
         await this.login(page);
 
         await page.getByText('Colaboradores').click();
-        await page.waitForSelector('a:has-text("Inserir")', { timeout: 10000 });
+        await page.waitForSelector('a:has-text("Inserir")', { timeout: 20000 });
 
         await page.locator('a:has-text("Inserir")').click();
         // Aguarda o campo Nome — presente em todos os firmwares do Hexa ADV
@@ -289,6 +289,20 @@ class HenryHexa {
         }
 
         if (!saved) {
+          // Firmware pode redirecionar silenciosamente sem exibir "Sucesso ao salvar".
+          // Verifica o CPF antes de declarar falha — se encontrado, o save ocorreu.
+          try {
+            const check = await this.navigateAndSearchByCPF(page, cpf);
+            if (check.found) {
+              return {
+                success: true,
+                message: `Funcionário cadastrado no relógio ${this.ip}`,
+                timestamp,
+                clockIp: this.ip,
+              };
+            }
+          } catch { /* ignora — cai no erro abaixo */ }
+
           const pageContext = pageTexts.filter(t => t.length > 3).slice(0, 6).join(' / ');
           return {
             success: false,
