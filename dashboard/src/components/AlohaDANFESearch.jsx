@@ -318,7 +318,9 @@ export function AlohaDANFESearch({ bohMachines }) {
   const [histMsg,      setHistMsg]      = useState(null)
 
   // indexStatus começa do cache (sem flash ao reabrir o módulo)
-  const [indexStatus, setIndexStatus] = useState(() => _cache[machineId] || null)
+  const [indexStatus,    setIndexStatus]    = useState(() => _cache[machineId] || null)
+  // loadingStatus: true enquanto o primeiro fetch está pendente (sem cache)
+  const [loadingStatus,  setLoadingStatus]  = useState(() => !_cache[machineId])
 
   const LIMIT = 50
 
@@ -336,16 +338,19 @@ export function AlohaDANFESearch({ bohMachines }) {
   // Ao trocar de máquina: restaura cache imediatamente, busca status e garante poll ativo se indexando
   useEffect(() => {
     if (!machineId) return
-    setIndexStatus(_cache[machineId] || null)
+    const cached = _cache[machineId] || null
+    setIndexStatus(cached)
+    setLoadingStatus(!cached)
 
     api.aloha.indexStatus(machineId).then(s => {
       _cache[machineId] = s
       setIndexStatus(s)
+      setLoadingStatus(false)
       // Se há indexação em andamento e o poll global não está cobrindo esta máquina, inicia
       if (s.pendingDays > 0 && _pollMachine !== machineId) {
         _startGlobalPoll(machineId)
       }
-    }).catch(() => {})
+    }).catch(() => { setLoadingStatus(false) })
   }, [machineId])
 
   const doSearch = useCallback(async (newOffset = 0) => {
@@ -466,12 +471,12 @@ export function AlohaDANFESearch({ bohMachines }) {
       {/* Controles de indexação */}
       <div style={{ marginBottom: '10px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
         <button className="btn btn-secondary" style={{ fontSize: '11px', padding: '4px 10px' }}
-          onClick={triggerIndex} disabled={indexing || !machineId}
+          onClick={triggerIndex} disabled={indexing || loadingStatus || !machineId}
           title="Solicita ao agente que indexe todas as NF-Ce do mês atual">
           {indexing ? '⏳ Aguardando…' : '⚙ Indexar mês atual'}
         </button>
         <button className="btn btn-secondary" style={{ fontSize: '11px', padding: '4px 10px' }}
-          onClick={triggerHistory} disabled={histIndexing || !machineId}
+          onClick={triggerHistory} disabled={histIndexing || loadingStatus || !machineId}
           title="Indexa todo o histórico disponível nas pastas do servidor BOH">
           {histIndexing ? '⏳ Descobrindo meses…' : '📦 Indexar histórico completo'}
         </button>
@@ -480,7 +485,12 @@ export function AlohaDANFESearch({ bohMachines }) {
       </div>
 
       {/* Barra de progresso de indexação — sempre visível se há status */}
-      <IndexProgressBar status={indexStatus} />
+      {loadingStatus
+        ? <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '10px' }}>
+            ⏳ Verificando notas sincronizadas…
+          </div>
+        : <IndexProgressBar status={indexStatus} />
+      }
 
       {error && (
         <div style={{ color: 'var(--red)', fontSize: '12px', marginBottom: '12px' }}>⚠ {error}</div>
