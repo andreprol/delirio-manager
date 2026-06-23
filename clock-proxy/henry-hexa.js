@@ -43,11 +43,13 @@ class HenryHexa {
 
   async login(page) {
     await page.goto(this.baseUrl, { waitUntil: 'load', timeout: 30000 });
-    // Aguarda o relógio buscar a chave RSA pública antes de enviar credenciais
+    // Aguarda chave RSA completa (n + e) — só n pode chegar antes de e em links com latência alta (ex: Tailscale)
     await page.waitForFunction(() => {
       const n = document.querySelector('form[name="rsa"] input[name="n"]');
-      return n && n.value.length > 0;
+      const e = document.querySelector('form[name="rsa"] input[name="e"]');
+      return n && n.value.length > 0 && e && e.value.length > 0;
     }, { timeout: 30000 });
+    await page.waitForTimeout(300); // margem extra para o JS de crypto inicializar
     await page.locator('#lblLogin').fill(this.user);
     await page.locator('#lblPass').fill(this.password);
     await page.locator('a.button.primary', { hasText: 'Entrar' }).click();

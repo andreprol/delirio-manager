@@ -196,6 +196,13 @@ function migrate(db) {
     `ALTER TABLE machines ADD COLUMN wol_status TEXT DEFAULT 'unknown'`,
     `ALTER TABLE machines ADD COLUMN wol_tested_at TEXT`,
     `ALTER TABLE machines ADD COLUMN motherboard TEXT DEFAULT ''`,
+    // Registro permanente de Ref1 já utilizados — garante que nenhum número seja reutilizado após remoção
+    `CREATE TABLE IF NOT EXISTS ref1_registry (
+      ref1       INTEGER PRIMARY KEY,
+      cpf        TEXT NOT NULL,
+      name       TEXT NOT NULL DEFAULT '',
+      assigned_at TEXT NOT NULL
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -724,6 +731,23 @@ function getNFCeIndexStatus(machineId) {
   };
 }
 
+// ── Ref1 Registry ─────────────────────────────────────────────────────────────
+
+function registerRef1({ ref1, cpf, name }) {
+  const n = parseInt(ref1, 10);
+  if (!n || n <= 0) return;
+  getDb().prepare(
+    `INSERT OR IGNORE INTO ref1_registry (ref1, cpf, name, assigned_at) VALUES (?, ?, ?, ?)`
+  ).run(n, cpf || '', name || '', new Date().toISOString());
+}
+
+function getMaxRef1() {
+  const row = getDb().prepare(`SELECT MAX(ref1) as max FROM ref1_registry`).get();
+  return row?.max || 0;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+
 module.exports = {
   getDb,
   // machines
@@ -751,4 +775,6 @@ module.exports = {
   logClockOperation, getClockOperationLog,
   // nfce index
   getCommandById, upsertNFCeRecords, searchNFCe, getNFCeByChave, getNFCeIndexStatus,
+  // ref1 registry
+  registerRef1, getMaxRef1,
 };

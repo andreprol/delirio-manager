@@ -137,5 +137,7 @@ export const api = {
       request('POST', '/api/rh/employees/refresh', { clockIps }),
     getLgpdInfo: () =>
       request('GET', '/api/rh/lgpd-info'),
+    nextRef1: () =>
+      request('GET', '/api/rh/next-ref1'),
   },
 }

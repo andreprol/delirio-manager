@@ -209,10 +209,25 @@ router.get('/enroll/:jobId', async (req, res) => {
         failedCount:  result.failed       || 0,
         detail:       result.clocks       || [],
       });
+      // Registra o Ref1 permanentemente — garante que não seja reutilizado mesmo após remoção
+      if (result.ref1) {
+        db.registerRef1({ ref1: result.ref1, cpf: result.cpf || '', name: result.name || '' });
+      }
     }
     res.json(result);
   } catch (err) {
     res.status(502).json({ error: 'Falha ao conectar com o clock-proxy', detail: err.message });
+  }
+});
+
+// GET /api/rh/next-ref1
+// Retorna o próximo Ref1 disponível, considerando todos que já foram utilizados (mesmo removidos).
+router.get('/next-ref1', (req, res) => {
+  try {
+    const maxFromRegistry = db.getMaxRef1();
+    res.json({ nextRef1: String(maxFromRegistry + 1) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

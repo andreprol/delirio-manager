@@ -9,6 +9,14 @@ const PORT       = process.env.PORT       || 4321;
 const API_TOKEN  = process.env.API_TOKEN;
 const CLOCK_USER = process.env.CLOCK_USER;
 const CLOCK_PASS = process.env.CLOCK_PASS;
+
+function getClockCredentials(ip) {
+  const suffix = ip.replace(/\./g, '_');
+  return {
+    user: process.env[`CLOCK_USER_${suffix}`] || CLOCK_USER,
+    pass: process.env[`CLOCK_PASS_${suffix}`] || CLOCK_PASS,
+  };
+}
 const CLOCK_IPS  = (process.env.CLOCK_IPS || '')
   .split(',').map(ip => ip.trim()).filter(Boolean);
 const LGPD_DIR           = process.env.LGPD_DIR           || 'G:\\CENTRAL\\LGPD\\06_Evidências_e_Registros\\Exclusoes_Biometria';
@@ -214,7 +222,7 @@ app.post('/clock/:ip/offboard', async (req, res) => {
 
   console.log(`[${new Date().toISOString()}] OFFBOARD ${cpf} (${employeeName}) em ${ip} — por ${triggeredBy}`);
 
-  const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+  const henry = new HenryHexa(ip, getClockCredentials(ip).user, getClockCredentials(ip).pass);
   const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.deleteEmployee(cpf)));
 
   console.log(`[${new Date().toISOString()}] OFFBOARD resultado: ${JSON.stringify(result)}`);
@@ -232,7 +240,7 @@ app.post('/clock/:ip/enroll', async (req, res) => {
 
   console.log(`[${new Date().toISOString()}] ENROLL ${cpf} (${name}) ref1=${ref1} em ${ip}`);
 
-  const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+  const henry = new HenryHexa(ip, getClockCredentials(ip).user, getClockCredentials(ip).pass);
   const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.enrollEmployee({ cpf, name, ref1, ref2, password })));
 
   console.log(`[${new Date().toISOString()}] ENROLL resultado: ${JSON.stringify(result)}`);
@@ -248,7 +256,7 @@ app.put('/clock/:ip/card', async (req, res) => {
 
   if (!cpf || !ref2) return res.status(400).json({ error: 'cpf e ref2 obrigatórios' });
 
-  const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+  const henry = new HenryHexa(ip, getClockCredentials(ip).user, getClockCredentials(ip).pass);
   const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.updateCardRef2(cpf, ref2)));
 
   res.json(result);
@@ -259,7 +267,7 @@ app.put('/clock/:ip/card', async (req, res) => {
 app.get('/clock/:ip/employees', async (req, res) => {
   const { ip } = req.params;
 
-  const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+  const henry = new HenryHexa(ip, getClockCredentials(ip).user, getClockCredentials(ip).pass);
   const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.listEmployees()));
 
   res.json(result);
@@ -270,7 +278,7 @@ app.get('/clock/:ip/employees', async (req, res) => {
 app.get('/clock/:ip/employees/debug', async (req, res) => {
   const { ip } = req.params;
   if (!CLOCK_IPS.includes(ip)) return res.status(400).json({ error: 'IP nao configurado' });
-  const henry  = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+  const henry  = new HenryHexa(ip, getClockCredentials(ip).user, getClockCredentials(ip).pass);
   const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.debugListEmployees()));
   res.json(result);
 });
@@ -292,7 +300,7 @@ app.post('/rh/offboard', async (req, res) => {
 
   const results = [];
   for (const ip of CLOCK_IPS) {
-    const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+    const henry = new HenryHexa(ip, getClockCredentials(ip).user, getClockCredentials(ip).pass);
     const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.deleteEmployee(cpf)));
     results.push({ clockIp: ip, ...result });
     console.log(`[${new Date().toISOString()}] ${ip}: ${result.success ? 'OK' : result.alreadyAbsent ? 'JA_AUSENTE' : 'FALHOU'}`);
@@ -331,7 +339,7 @@ app.get('/rh/clocks/status', async (req, res) => {
 
     const results = await Promise.all(
       CLOCK_IPS.map(async (ip) => {
-        const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+        const henry = new HenryHexa(ip, getClockCredentials(ip).user, getClockCredentials(ip).pass);
         const check = await henry.checkReachable();
         return { ip, ...check };
       })
@@ -458,7 +466,7 @@ async function runEmployeesInBackground(targetIps) {
     for (let i = 0; i < ips.length; i += SCAN_BATCH) {
       const batch = ips.slice(i, i + SCAN_BATCH);
       await Promise.allSettled(batch.map(async (ip) => {
-        const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+        const henry = new HenryHexa(ip, getClockCredentials(ip).user, getClockCredentials(ip).pass);
 
         // Pré-verifica acessibilidade antes de abrir Playwright (5s timeout via HTTP simples)
         const reach = await henry.checkReachable();
@@ -617,7 +625,7 @@ app.post('/rh/enroll', (req, res) => {
     // só ocorre quando nenhuma outra sessão Playwright está ativa no mesmo relógio,
     // evitando falsos "offline" por sobrecarga do HTTP server do relógio.
     const settled = await Promise.allSettled(targets.map(async (ip) => {
-      const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+      const henry = new HenryHexa(ip, getClockCredentials(ip).user, getClockCredentials(ip).pass);
       const result = await clockQueue.run(ip, async () => {
         const reach = await henry.checkReachable();
         if (!reach.reachable) {
@@ -683,7 +691,7 @@ app.put('/rh/employee', async (req, res) => {
     const timestamp = new Date().toISOString();
     const results = [];
     for (const ip of targets) {
-      const henry = new HenryHexa(ip, CLOCK_USER, CLOCK_PASS);
+      const henry = new HenryHexa(ip, getClockCredentials(ip).user, getClockCredentials(ip).pass);
       const result = await clockQueue.run(ip, () => withPlaywrightSlot(() => henry.updateCardRef2(cpf, ref2)));
       results.push({ clockIp: ip, ...result });
     }

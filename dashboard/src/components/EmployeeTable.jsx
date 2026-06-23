@@ -685,7 +685,7 @@ export function EmployeeTable() {
     }
   }
 
-  function openNewEmpForm() {
+  async function openNewEmpForm() {
     closeEnrollForm()
     closeEditForm()
     setNewEmpMode(true)
@@ -694,6 +694,23 @@ export function EmployeeTable() {
     setNewEmpRef1('')
     setNewEmpRef2('')
     setOpStatus(null)
+
+    const fromCache = (() => {
+      const employees = _empCache?.employees || []
+      const values = employees
+        .map(e => parseInt(e.ref1 || '0', 10))
+        .filter(n => n > 0 && n < 100000)
+      return values.length > 0 ? Math.max(...values) + 1 : 1
+    })()
+
+    try {
+      const { nextRef1 } = await api.rh.nextRef1()
+      // Garante que nunca gera número menor que o maior já visto localmente
+      // (cobre bootstrap com tabela ref1_registry vazia)
+      setNewEmpRef1(String(Math.max(parseInt(nextRef1, 10), fromCache)))
+    } catch (_) {
+      setNewEmpRef1(String(fromCache))
+    }
   }
 
   function closeNewEmpForm() {
