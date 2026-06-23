@@ -14,7 +14,8 @@ import (
 // Agent e o core do agente: gerencia heartbeat e polling de comandos.
 type Agent struct {
 	cfg         *Config
-	client      *http.Client
+	client      *http.Client   // cliente geral (5 min) — comandos longos, NF-Ce
+	hbClient    *http.Client   // cliente exclusivo do heartbeat (10 s) — falha rápido sob pressão de memória
 	stopCh      chan struct{}
 	wolEnabled  *bool  // cached após primeira verificação
 	motherboard string // cached após primeira verificação
@@ -67,6 +68,9 @@ func newAgent() *Agent {
 		stopCh: make(chan struct{}),
 		client: &http.Client{
 			Timeout: 5 * time.Minute,
+		},
+		hbClient: &http.Client{
+			Timeout: 10 * time.Second,
 		},
 	}
 }
@@ -195,7 +199,20 @@ func (a *Agent) sendHeartbeat() {
 		Motherboard: a.motherboard,
 	}
 
-	resp, err := a.post("/api/heartbeat", payload)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		logWarn(fmt.Sprintf("Heartbeat marshal falhou: %v", err))
+		return
+	}
+	req, err := http.NewRequest("POST", a.cfg.ServerURL+"/api/heartbeat", bytes.NewReader(data))
+	if err != nil {
+		logWarn(fmt.Sprintf("Heartbeat request falhou: %v", err))
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.cfg.Token)
+	req.Header.Set("X-Agent-Version", Version)
+	resp, err := a.hbClient.Do(req) // timeout 10s — falha rápido sob pressão de memória
 	if err != nil {
 		logWarn(fmt.Sprintf("Heartbeat falhou: %v", err))
 		return

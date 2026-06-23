@@ -41,12 +41,12 @@ function checkAll() {
 
 // Detecta maquinas que pararam de enviar heartbeat
 function checkOffline() {
-  const threshold = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+  const threshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const stale     = db.getMachinesStale(threshold);
 
   for (const machine of stale) {
     db.setMachineStatus(machine.id, 'offline');
-    db.addEvent(machine.id, 'offline', 'Sem heartbeat por mais de 3 minutos');
+    db.addEvent(machine.id, 'offline', 'Sem heartbeat por mais de 5 minutos');
 
     // Fetch last known health metrics
     let lastMetrics = null;
