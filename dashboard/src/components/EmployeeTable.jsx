@@ -372,6 +372,39 @@ const styles = {
   },
 }
 
+function exportToCSV() {
+  if (!_empCache?.employees) return
+  const allIps = _empCache.allClockIps ?? []
+  const clkMap = Object.fromEntries((_empCache.clocks ?? []).map(c => [c.ip, c.success]))
+  const header = ['Nome', 'CPF', 'Matrícula (Ref1)', 'Crachá NFC (Ref2)', 'Status']
+    .concat(allIps.map(ip => IP_TO_STORE[ip] || ip))
+  const rows = _empCache.employees.map(emp => {
+    let status = 'Sincronizado'
+    if ((emp.absentIn ?? []).length > 0)          status = 'Divergente'
+    else if ((emp.incompleteIn ?? []).length > 0) status = 'Incompleto'
+    const clocks = allIps.map(ip => {
+      if (!clkMap[ip])                       return 'Offline'
+      if (emp.presentIn?.includes(ip))       return emp.incompleteIn?.includes(ip) ? 'Presente s/ NFC' : 'Presente'
+      return 'Ausente'
+    })
+    return [emp.name, emp.cpf, emp.ref1 || '', emp.ref2 || '', status].concat(clocks)
+  })
+  const csvContent = [header, ...rows]
+    .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(';'))
+    .join('\r\n')
+  const bom  = '﻿'
+  const blob = new Blob([bom + csvContent], { type: 'text/csv;charset=utf-8;' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  const date = new Date().toISOString().slice(0, 10)
+  a.href     = url
+  a.download = `funcionarios-relogios-${date}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 function isDivergent(emp, absentIn, incompleteIn) {
   const a = absentIn     ?? emp.absentIn     ?? []
   const i = incompleteIn ?? emp.incompleteIn ?? []
@@ -1022,6 +1055,15 @@ export function EmployeeTable() {
           >
             + Novo Funcionário
           </button>
+          {data && !loading && (
+            <button
+              style={{ ...styles.loadBtn, background: '#1d4e2a' }}
+              onClick={exportToCSV}
+              title="Exportar lista completa de funcionários e relógios em CSV (Excel)"
+            >
+              📊 Exportar CSV
+            </button>
+          )}
           <button
             style={{ ...styles.loadBtn, ...(loading ? styles.loadBtnDisabled : {}) }}
             onClick={handleLoadClick}
