@@ -111,16 +111,26 @@ function writeLgpdKit(summary) {
       .replace(/[\\/:*?"<>|]/g, '_')
       .toUpperCase();
     const safeCpf    = summary.cpf.replace(/[\\/:*?"<>|]/g, '_');
-    const tsFolder   = summary.timestamp.replace(/:/g, '-').replace('T', '_').replace(/\..+$/, '');
-    const folderName = `${safeName}_${safeCpf}_${tsFolder}`;
+    // Pasta nomeada por NOME_CPF — sem timestamp — para ser idempotente.
+    // Segunda execução (re-offboard ou retry parcial) atualiza os arquivos
+    // dentro da mesma pasta em vez de criar uma duplicata.
+    const folderName = `${safeName}_${safeCpf}`;
     const folderPath = path.join(LGPD_DIR, folderName);
 
+    const isRerun = fs.existsSync(folderPath);
     fs.mkdirSync(folderPath, { recursive: true });
+    if (isRerun) {
+      console.log(`[LGPD] Pasta já existia — atualizando evidências: ${folderPath}`);
+    }
 
-    // log-remocao.json — registro estruturado completo
+    // log-remocao.json — registro estruturado (sem buffers binários)
+    const summaryForJson = {
+      ...summary,
+      clocks: summary.clocks.map(({ screenshotBuffer, ...rest }) => rest),
+    };
     fs.writeFileSync(
       path.join(folderPath, 'log-remocao.json'),
-      JSON.stringify(summary, null, 2),
+      JSON.stringify(summaryForJson, null, 2),
       'utf8',
     );
 
@@ -182,9 +192,26 @@ function writeLgpdKit(summary) {
       'utf8',
     );
 
+    // Screenshots por relógio — evidência visual da exclusão (ou ausência)
+    let screenshotsSaved = 0;
+    for (const c of summary.clocks) {
+      if (!c.screenshotBuffer) continue;
+      const store     = (IP_TO_STORE[c.clockIp] || c.clockIp).replace(/[\\/:*?"<>|]/g, '_');
+      const safeIp    = c.clockIp.replace(/\./g, '-');
+      const suffix    = c.success && !c.alreadyAbsent ? 'removido'
+                      : c.alreadyAbsent               ? 'ja_ausente'
+                      :                                  'falhou';
+      const shotName  = `screenshot_${store}_${safeIp}_${suffix}.png`;
+      const buf = Buffer.isBuffer(c.screenshotBuffer)
+        ? c.screenshotBuffer
+        : Buffer.from(c.screenshotBuffer.data ?? c.screenshotBuffer);
+      fs.writeFileSync(path.join(folderPath, shotName), buf);
+      screenshotsSaved++;
+    }
+
     const explorerPath = path.join(LGPD_EXPLORER_PATH, folderName);
-    console.log(`[LGPD] Kit salvo em: ${folderPath} | UNC: ${explorerPath}`);
-    return { lgpdExplorerPath: explorerPath, lgpdExplorerBase: LGPD_EXPLORER_PATH };
+    console.log(`[LGPD] Kit salvo em: ${folderPath} | screenshots: ${screenshotsSaved}/${summary.clocks.length} | UNC: ${explorerPath}`);
+    return { lgpdExplorerPath: explorerPath, lgpdExplorerBase: LGPD_EXPLORER_PATH, screenshotsSaved, isRerun };
   } catch (err) {
     console.error(`[LGPD] Erro ao salvar kit: ${err.message}`);
     return { lgpdError: err.message };
@@ -320,7 +347,12 @@ app.post('/rh/offboard', async (req, res) => {
   };
 
   const lgpdResult = writeLgpdKit(summary);
-  res.json({ ...summary, ...lgpdResult });
+  // Remove screenshotBuffers antes de serializar — os PNGs ficam salvos na pasta LGPD
+  const summaryForResponse = {
+    ...summary,
+    clocks: summary.clocks.map(({ screenshotBuffer, ...rest }) => rest),
+  };
+  res.json({ ...summaryForResponse, ...lgpdResult });
 });
 
 // ─── LGPD INFO ───────────────────────────────────────────────────────────────

@@ -153,12 +153,14 @@ class HenryHexa {
 
         const { found, formattedCpf } = await this.navigateAndSearchByCPF(page, cpf);
         if (!found) {
+          const screenshotBuffer = await page.screenshot({ fullPage: false }).catch(() => null);
           return {
             success: false,
             alreadyAbsent: true,
             message: `CPF ${cpf} não encontrado no relógio — pode já ter sido removido`,
             timestamp,
             clockIp: this.ip,
+            screenshotBuffer,
           };
         }
 
@@ -170,27 +172,33 @@ class HenryHexa {
         // Se "Excluir" ainda visível, a remoção falhou
         const stillOnDetail = await page.locator('a:has-text("Excluir")').isVisible().catch(() => false);
         if (stillOnDetail) {
+          const screenshotBuffer = await page.screenshot({ fullPage: false }).catch(() => null);
           return {
             success: false,
             message: 'Funcionário ainda presente após tentativa de exclusão',
             timestamp,
             clockIp: this.ip,
+            screenshotBuffer,
           };
         }
 
+        const screenshotBuffer = await page.screenshot({ fullPage: false }).catch(() => null);
         return {
           success: true,
           message: `Funcionário removido do relógio ${this.ip}`,
           timestamp,
           clockIp: this.ip,
+          screenshotBuffer,
         };
 
       } catch (err) {
+        const screenshotBuffer = await page.screenshot({ fullPage: false }).catch(() => null);
         return {
           success: false,
           message: `Erro Playwright: ${err.message}`,
           timestamp,
           clockIp: this.ip,
+          screenshotBuffer,
         };
       }
     });
