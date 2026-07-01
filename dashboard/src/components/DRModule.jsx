@@ -64,7 +64,7 @@ export function DRModule({ onClose }) {
             {[
               { label: 'Protegidas',   value: overview.total,                              color: '#22c55e' },
               { label: 'Backup < 24h', value: `${overview.okLast24h} / ${overview.total}`, color: '#3b82f6' },
-              { label: 'Total Azure',  value: `${(overview.totalGb || 0).toFixed(0)} GB`,  color: '#8b5cf6' },
+              { label: 'Total Azure',  value: `${(overview.totalGb || 0).toFixed(1)} GB`,  color: '#8b5cf6' },
               { label: 'Com falha',    value: overview.failing,                            color: '#ef4444' },
             ].map(card => (
               <div key={card.label} style={{ background: '#1a1a2a', borderRadius: 8, padding: '12px 16px', border: `1px solid ${card.color}33` }}>
