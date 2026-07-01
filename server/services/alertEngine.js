@@ -11,6 +11,8 @@ const CHECK_INTERVAL_MS = 60 * 1000;
 const OFFLINE_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min entre alertas offline por máquina
 const cpuAlertStart = new Map();
 const offlineAlertCooldown = new Map(); // machineId → timestamp do último alerta offline
+const drAlertCooldown      = new Map();
+const DR_COOLDOWN_MS       = 6 * 60 * 60 * 1000; // 6h
 let timer;
 
 function loadConfig() {
@@ -31,12 +33,74 @@ function stop() {
   if (timer) clearInterval(timer);
 }
 
+function checkDRBackups() {
+  const cfg = loadConfig();
+  const alertAfterHours = cfg.dr?.alert_after_hours || 24;
+  const threshold = new Date(Date.now() - alertAfterHours * 60 * 60 * 1000).toISOString();
+  const due = db.getMachinesDRDue(threshold);
+
+  for (const machine of due) {
+    const now       = Date.now();
+    const lastAlert = drAlertCooldown.get(machine.id) || 0;
+    if ((now - lastAlert) < DR_COOLDOWN_MS) continue;
+
+    drAlertCooldown.set(machine.id, now);
+    const displayName = machine.display_name || machine.hostname;
+    const location    = machine.location || 'Sem localidade';
+    const hoursAgo    = machine.dr_last_ok
+      ? Math.round((now - new Date(machine.dr_last_ok).getTime()) / 3600000)
+      : null;
+    const msg = hoursAgo
+      ? `${displayName}: backup DR atrasado (último há ${hoursAgo}h)`
+      : `${displayName}: backup DR nunca realizado`;
+
+    fireAlert(machine.id, 'dr_overdue', msg);
+    sendDROverdueEmail(displayName, location, hoursAgo, machine.dr_last_ok);
+    console.log(`[AlertEngine] DR overdue: ${machine.id}`);
+  }
+}
+
+async function sendDROverdueEmail(displayName, location, hoursAgo, lastOkISO) {
+  const cfg = loadConfig().alerts?.email;
+  if (!cfg?.enabled || !cfg.to?.length) return;
+
+  const transporter = nodemailer.createTransport({
+    host: cfg.smtp_host, port: cfg.smtp_port,
+    secure: cfg.smtp_port === 465,
+    auth: { user: cfg.user, pass: cfg.pass },
+  });
+
+  const when = lastOkISO
+    ? `há ${hoursAgo}h (${new Date(lastOkISO).toLocaleString('pt-BR')})`
+    : 'nunca';
+
+  try {
+    await transporter.sendMail({
+      from:    `"Delirio Manager" <${cfg.user}>`,
+      to:      cfg.to.join(', '),
+      subject: `⚠️ Backup DR Atrasado: ${displayName}`,
+      html: `
+        <h2 style="color:#f59e0b">⚠️ Backup DR Atrasado</h2>
+        <p><strong>Máquina:</strong> ${displayName}</p>
+        <p><strong>Localidade:</strong> ${location}</p>
+        <p><strong>Último backup OK:</strong> ${when}</p>
+        <p>Verifique o status do Veeam Agent nesta máquina no Dashboard.</p>
+        <hr><p style="color:#888;font-size:12px">Delirio Manager — Bare Metal Recovery</p>
+      `,
+    });
+    console.log(`[AlertEngine] Email DR overdue enviado: ${displayName}`);
+  } catch (err) {
+    console.error('[AlertEngine] Falha email DR overdue:', err.message);
+  }
+}
+
 function checkAll() {
   checkOffline();
   checkMetricThresholds();
   checkWolTests();
   checkWolAutoTests();
   checkAutoWake();
+  checkDRBackups();
 }
 
 // Detecta maquinas que pararam de enviar heartbeat
