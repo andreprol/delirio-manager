@@ -187,6 +187,19 @@ function migrate(db) {
 
     CREATE INDEX IF NOT EXISTS idx_nfce_dh_emi
       ON nfce_index(machine_id, dh_emi);
+
+    CREATE TABLE IF NOT EXISTS dr_backups (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      machine_id   TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      backed_at    TEXT NOT NULL,
+      status       TEXT NOT NULL,
+      storage_gb   REAL,
+      duration_min INTEGER,
+      error_msg    TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dr_backups_machine
+      ON dr_backups(machine_id, backed_at DESC);
   `);
 
   // Migrações incrementais — seguras para rodar múltiplas vezes
@@ -203,6 +216,10 @@ function migrate(db) {
       name       TEXT NOT NULL DEFAULT '',
       assigned_at TEXT NOT NULL
     )`,
+    `ALTER TABLE machines ADD COLUMN dr_setup TEXT DEFAULT 'not_installed'`,
+    `ALTER TABLE machines ADD COLUMN dr_last_ok TEXT`,
+    `ALTER TABLE machines ADD COLUMN dr_storage_gb REAL`,
+    `ALTER TABLE machines ADD COLUMN dr_version TEXT`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -746,6 +763,50 @@ function getMaxRef1() {
   return row?.max || 0;
 }
 
+// ── DR Backups ────────────────────────────────────────────────────────────────
+
+function updateMachineDRStatus(machineId, { setup, lastOk, storageGb, version } = {}) {
+  const d = getDb();
+  if (setup     !== undefined) d.prepare('UPDATE machines SET dr_setup=? WHERE id=?').run(setup, machineId);
+  if (lastOk    !== undefined) d.prepare('UPDATE machines SET dr_last_ok=? WHERE id=?').run(lastOk, machineId);
+  if (storageGb !== undefined) d.prepare('UPDATE machines SET dr_storage_gb=? WHERE id=?').run(storageGb, machineId);
+  if (version   !== undefined) d.prepare('UPDATE machines SET dr_version=? WHERE id=?').run(version, machineId);
+}
+
+function insertDRBackup(machineId, { backedAt, status, storageGb, durationMin, errorMsg } = {}) {
+  getDb().prepare(`
+    INSERT INTO dr_backups (machine_id, backed_at, status, storage_gb, duration_min, error_msg)
+    VALUES (?,?,?,?,?,?)
+  `).run(machineId, backedAt, status, storageGb || null, durationMin || null, errorMsg || null);
+}
+
+function getDRHistory(machineId, days = 28) {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  return getDb().prepare(`
+    SELECT * FROM dr_backups WHERE machine_id=? AND backed_at>=?
+    ORDER BY backed_at DESC
+  `).all(machineId, cutoff);
+}
+
+function getDROverview() {
+  const d = getDb();
+  const threshold24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  return {
+    total:     d.prepare(`SELECT COUNT(*) as c FROM machines WHERE dr_setup='configured'`).get().c,
+    okLast24h: d.prepare(`SELECT COUNT(*) as c FROM machines WHERE dr_setup='configured' AND dr_last_ok>=?`).get(threshold24h).c,
+    totalGb:   d.prepare(`SELECT COALESCE(SUM(dr_storage_gb),0) as s FROM machines WHERE dr_setup='configured'`).get().s,
+    failing:   d.prepare(`SELECT COUNT(*) as c FROM machines WHERE dr_setup='error'`).get().c,
+  };
+}
+
+function getMachinesDRDue(olderThanISO) {
+  return getDb().prepare(`
+    SELECT * FROM machines
+    WHERE dr_setup = 'configured'
+      AND (dr_last_ok IS NULL OR dr_last_ok < ?)
+  `).all(olderThanISO);
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -777,4 +838,6 @@ module.exports = {
   getCommandById, upsertNFCeRecords, searchNFCe, getNFCeByChave, getNFCeIndexStatus,
   // ref1 registry
   registerRef1, getMaxRef1,
+  // dr backups
+  updateMachineDRStatus, insertDRBackup, getDRHistory, getDROverview, getMachinesDRDue,
 };
