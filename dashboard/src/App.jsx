@@ -8,6 +8,7 @@ import { OfflineToast }                from './components/OfflineToast'
 import { AlertsPanel, useAlertsCount } from './components/AlertsPanel'
 import { RhModule } from './components/RhModule'
 import { AlohaModule } from './components/AlohaModule'
+import { DRModule } from './components/DRModule'
 import { api, setServerUrl, getServerUrl } from './api'
 
 export default function App() {
@@ -35,6 +36,7 @@ export default function App() {
   const [showAlertsPanel, setShowAlertsPanel] = useState(false)
   const [showRh,    setShowRh]    = useState(false)
   const [showAloha, setShowAloha] = useState(false)
+  const [showDR,    setShowDR]    = useState(false)
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
   const [alertsCount,     setAlertsCount]     = useAlertsCount()
 
@@ -284,6 +286,14 @@ export default function App() {
             🍕 Aloha
           </button>
 
+              <button
+                onClick={() => setShowDR(true)}
+                title="Bare Metal Recovery"
+                style={{ background: '#6366f111', border: '1px solid #6366f133', borderRadius: 6, padding: '3px 10px', color: '#818cf8', fontSize: '0.8em', cursor: 'pointer' }}
+              >
+                🔒 DR
+              </button>
+
           <button
             className="bell-btn"
             onClick={() => { setShowAlertsPanel(v => !v); if (!showAlertsPanel) setAlertsCount(0) }}
@@ -417,6 +427,7 @@ export default function App() {
       )}
       {showRh    && <RhModule    onClose={() => setShowRh(false)} />}
       {showAloha && <AlohaModule onClose={() => setShowAloha(false)} machines={machines} />}
+      {showDR && <DRModule onClose={() => setShowDR(false)} />}
     </div>
   )
 }
