@@ -20,6 +20,7 @@ const reportRoutes   = require('./routes/reports');
 const settingsRoutes = require('./routes/settings');
 const rhRoutes       = require('./routes/rh');
 const alohaRoutes    = require('./routes/aloha');
+const drRoutes       = require('./routes/dr');
 
 const PORT    = process.env.PORT    || 3847;
 const VERSION = '1.0.0';
@@ -72,6 +73,7 @@ app.use('/api/reports',  reportRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/rh',       rhRoutes);
 app.use('/api/aloha',    alohaRoutes);
+app.use('/api/dr',       drRoutes);
 
 // ── Servir o instalador e o binario do agente ─────────────────────────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -80,6 +82,11 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const DASHBOARD_UPDATES_DIR = path.join(PUBLIC_DIR, 'dashboard-updates');
 fs.mkdirSync(DASHBOARD_UPDATES_DIR, { recursive: true });
 app.use('/dashboard-updates', express.static(DASHBOARD_UPDATES_DIR));
+
+// Downloads gerais (VeeamAgentWindows.exe, etc.)
+const DOWNLOADS_DIR = path.join(PUBLIC_DIR, 'downloads');
+fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+app.use('/downloads', express.static(DOWNLOADS_DIR));
 
 // GET /downloads/dashboard — download do installer mais recente do dashboard
 app.get('/downloads/dashboard', (req, res) => {
