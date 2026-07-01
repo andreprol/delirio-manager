@@ -136,6 +136,52 @@ func (a *Agent) executeCommand(cmd Command) (string, error) {
 		}
 		return s, nil
 
+	case "dr-setup":
+		var creds DrCreds
+		if err := json.Unmarshal(cmd.Params, &creds); err != nil {
+			return "", fmt.Errorf("params dr-setup inválidos: %w", err)
+		}
+		if creds.AzureAccount == "" || creds.SASToken == "" {
+			return "", fmt.Errorf("dr-setup: azure_account e sas_token obrigatórios")
+		}
+		logInfo(fmt.Sprintf("DR-SETUP recebido (cmd %s). Instalando Veeam...", cmd.ID))
+		if err := installVeeam(a.cfg.ServerURL); err != nil {
+			invalidateDRCache()
+			return "", fmt.Errorf("installVeeam: %w", err)
+		}
+		logInfo("DR-SETUP: Veeam instalado. Configurando job...")
+		if err := configureJob(creds); err != nil {
+			invalidateDRCache()
+			return "", fmt.Errorf("configureJob: %w", err)
+		}
+		invalidateDRCache()
+		s := readStatus()
+		drStatusCache = &s
+		result, _ := json.Marshal(map[string]interface{}{
+			"veeam_version": s.VeeamVersion,
+			"setup_ok":      true,
+		})
+		return string(result), nil
+
+	case "dr-backup-now":
+		logInfo(fmt.Sprintf("DR-BACKUP-NOW recebido (cmd %s)", cmd.ID))
+		if err := triggerBackupNow(); err != nil {
+			return "", fmt.Errorf("triggerBackupNow: %w", err)
+		}
+		invalidateDRCache()
+		return `{"job_started":true}`, nil
+
+	case "dr-status":
+		logInfo(fmt.Sprintf("DR-STATUS recebido (cmd %s)", cmd.ID))
+		invalidateDRCache()
+		s := readStatus()
+		drStatusCache = &s
+		data, err := json.Marshal(s)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+
 	default:
 		return "", fmt.Errorf("tipo de comando desconhecido: %q", cmd.Type)
 	}

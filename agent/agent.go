@@ -28,8 +28,9 @@ type HeartbeatPayload struct {
 	Hostname    string   `json:"hostname"`
 	Version     string   `json:"agentVersion"`
 	Metrics     *Metrics `json:"metrics"`
-	WolEnabled  *bool    `json:"wolEnabled,omitempty"`
-	Motherboard string   `json:"motherboard,omitempty"`
+	WolEnabled  *bool     `json:"wolEnabled,omitempty"`
+	Motherboard string    `json:"motherboard,omitempty"`
+	DrStatus    *DRStatus `json:"dr_status,omitempty"`
 }
 
 // HeartbeatResponse e a resposta do servidor ao heartbeat.
@@ -197,6 +198,11 @@ func (a *Agent) sendHeartbeat() {
 		Metrics:     metrics,
 		WolEnabled:  a.wolEnabled,
 		Motherboard: a.motherboard,
+	}
+
+	if isVeeamInstalled() {
+		s := getCachedDRStatus()
+		payload.DrStatus = s
 	}
 
 	data, err := json.Marshal(payload)
