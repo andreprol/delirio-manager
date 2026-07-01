@@ -140,4 +140,12 @@ export const api = {
     nextRef1: () =>
       request('GET', '/api/rh/next-ref1'),
   },
+
+  // DR — Bare Metal Recovery
+  dr: {
+    setup:     (id)          => request('POST', `/api/dr/${id}/setup`),
+    backupNow: (id)          => request('POST', `/api/dr/${id}/backup-now`),
+    overview:  ()            => request('GET',  '/api/dr/overview'),
+    history:   (id, days=28) => request('GET',  `/api/dr/${id}/history?days=${days}`),
+  },
 }
