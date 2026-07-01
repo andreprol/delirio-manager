@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { EventsTab } from './EventsTab'
 import { InsightsTab } from './InsightsTab'
+import { api } from '../api'
 
 const STATUS_COLOR = { online: '#22c55e', offline: '#ef4444', unknown: '#6b7280' }
 const STATUS_LABEL = { online: 'Online', offline: 'Offline', unknown: 'Desconhecido' }
@@ -14,6 +15,13 @@ const WOL_BADGE = {
   bios_needed:     { color: '#f59e0b', label: 'WoL ⚠ BIOS', title: 'Driver OK mas BIOS precisa ser configurado. Verifique alertas.' },
 }
 
+const DR_BADGE = {
+  not_installed: null,
+  pending:    { color: '#f59e0b', label: 'DR ⏳', title: 'Configuração DR em andamento...' },
+  configured: { color: '#22c55e', label: 'DR ✓',  title: 'Bare metal recovery ativo' },
+  error:      { color: '#ef4444', label: 'DR ✗',  title: 'Erro no backup — verificar logs' },
+}
+
 export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsList = [] }) {
   const [expanded,    setExpanded]    = useState(false)
   const [confirmCmd,  setConfirmCmd]  = useState(null)
@@ -23,6 +31,8 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsLi
   const [activeTab,     setActiveTab]     = useState('metrics')
   const [eventsUnread,  setEventsUnread]  = useState(machine.winEventsUnread || 0)
   const [insightsUnread, setInsightsUnread] = useState(0)
+  const [drLoading, setDrLoading] = useState(false)
+  const [drMsg,     setDrMsg]     = useState(null)
 
   const menuRef = useRef(null)
 
@@ -79,6 +89,26 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsLi
     await execCommand(type)
   }
 
+  async function handleDRSetup() {
+    setDrLoading(true); setDrMsg(null)
+    try {
+      await api.dr.setup(machine.id)
+      setDrMsg('Configurando DR... aguarde o próximo heartbeat (~30s).')
+    } catch (e) {
+      setDrMsg('Erro: ' + (e.message || 'falhou'))
+    } finally { setDrLoading(false) }
+  }
+
+  async function handleBackupNow() {
+    setDrLoading(true); setDrMsg(null)
+    try {
+      await api.dr.backupNow(machine.id)
+      setDrMsg('Backup iniciado. Acompanhe o status no próximo heartbeat.')
+    } catch (e) {
+      setDrMsg('Erro: ' + (e.message || 'falhou'))
+    } finally { setDrLoading(false) }
+  }
+
   async function execCommand(type, confirmVal) {
     setLoading(true)
     try { await onCommand(machine.id, type, {}, confirmVal) }
@@ -126,6 +156,17 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsLi
             </span>
           )
         })()}
+        {DR_BADGE[machine.dr_setup] && (
+          <span
+            title={DR_BADGE[machine.dr_setup].title}
+            style={{
+              fontSize: '0.7em', padding: '1px 6px', borderRadius: 4, cursor: 'default',
+              background: DR_BADGE[machine.dr_setup].color + '22',
+              color: DR_BADGE[machine.dr_setup].color,
+              border: `1px solid ${DR_BADGE[machine.dr_setup].color}44`,
+            }}
+          >{DR_BADGE[machine.dr_setup].label}</span>
+        )}
         <span className="mc-status" style={{ color }}>{STATUS_LABEL[status]}</span>
       </div>
 
@@ -152,6 +193,10 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsLi
             >
               ✨ Insights
               {insightsUnread > 0 && <span className="tab-badge">{insightsUnread}</span>}
+            </button>
+            <button onClick={() => setActiveTab('dr')}
+              style={{ background: activeTab === 'dr' ? '#6366f120' : 'transparent', color: activeTab === 'dr' ? '#818cf8' : '#888', border: 'none', padding: '4px 10px', cursor: 'pointer', borderRadius: 4, fontSize: '0.8em' }}>
+              🔒 DR
             </button>
           </div>
 
@@ -291,6 +336,49 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsLi
               machineId={machine.id}
               onRead={() => setInsightsUnread(0)}
             />
+          )}
+          {activeTab === 'dr' && (
+            <div style={{ padding: '10px 0' }}>
+              <div style={{ marginBottom: 6, fontSize: '0.82em', color: '#aaa' }}>
+                <strong>Status:</strong>{' '}
+                <span style={{ color: DR_BADGE[machine.dr_setup]?.color || '#888' }}>
+                  {machine.dr_setup || 'not_installed'}
+                </span>
+                {machine.dr_version && (
+                  <span style={{ marginLeft: 8, color: '#555', fontSize: '0.9em' }}>
+                    Veeam {machine.dr_version}
+                  </span>
+                )}
+              </div>
+              {machine.dr_last_ok && (
+                <div style={{ marginBottom: 6, fontSize: '0.82em', color: '#aaa' }}>
+                  <strong>Último backup OK:</strong>{' '}
+                  {new Date(machine.dr_last_ok).toLocaleString('pt-BR')}
+                  {machine.dr_storage_gb && (
+                    <span style={{ marginLeft: 8, color: '#6ee7b7' }}>
+                      {machine.dr_storage_gb.toFixed(1)} GB
+                    </span>
+                  )}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                {(!machine.dr_setup || machine.dr_setup === 'not_installed') && (
+                  <button onClick={handleDRSetup} disabled={drLoading}
+                    style={{ background: '#6366f115', color: '#818cf8', border: '1px solid #6366f133', padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontSize: '0.8em' }}>
+                    {drLoading ? '⏳ Aguarde...' : '⚙️ Configurar DR'}
+                  </button>
+                )}
+                {machine.dr_setup === 'configured' && (
+                  <button onClick={handleBackupNow} disabled={drLoading}
+                    style={{ background: '#16a34a15', color: '#22c55e', border: '1px solid #16a34a33', padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontSize: '0.8em' }}>
+                    {drLoading ? '⏳...' : '▶ Forçar Backup'}
+                  </button>
+                )}
+              </div>
+              {drMsg && (
+                <div style={{ marginTop: 8, fontSize: '0.78em', color: '#f59e0b' }}>{drMsg}</div>
+              )}
+            </div>
           )}
         </div>
       )}
