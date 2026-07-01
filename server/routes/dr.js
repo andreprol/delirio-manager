@@ -26,14 +26,18 @@ router.post('/:id/setup', (req, res) => {
   const machine = db.getMachineById(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Máquina não encontrada' });
 
-  db.createCommand(machine.id, 'dr-setup', {
-    azure_account: drCfg.azure_account_name,
-    sas_token:     drCfg.sas_token,
-    schedule_hour: drCfg.schedule_hour || 23,
-  });
-  db.updateMachineDRStatus(machine.id, { setup: 'pending' });
-  broadcast('dr_update', { machineId: machine.id, drSetup: 'pending' });
-  return res.json({ ok: true, queued: 'dr-setup' });
+  try {
+    db.createCommand(machine.id, 'dr-setup', {
+      azure_account: drCfg.azure_account_name,
+      sas_token:     drCfg.sas_token,
+      schedule_hour: drCfg.schedule_hour || 23,
+    });
+    db.updateMachineDRStatus(machine.id, { setup: 'pending' });
+    broadcast('dr_update', { machineId: machine.id, drSetup: 'pending' });
+    return res.json({ ok: true, queued: 'dr-setup' });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/dr/:id/backup-now
@@ -43,8 +47,12 @@ router.post('/:id/backup-now', (req, res) => {
   if (machine.dr_setup !== 'configured') {
     return res.status(400).json({ error: 'DR não configurado nesta máquina' });
   }
-  db.createCommand(machine.id, 'dr-backup-now', {});
-  return res.json({ ok: true, queued: 'dr-backup-now' });
+  try {
+    db.createCommand(machine.id, 'dr-backup-now', {});
+    return res.json({ ok: true, queued: 'dr-backup-now' });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /api/dr/overview — MUST be before /:id/history to avoid Express treating "overview" as an ID
@@ -58,9 +66,9 @@ router.get('/overview', (req, res) => {
 
 // GET /api/dr/:id/history
 router.get('/:id/history', (req, res) => {
-  const days = parseInt(req.query.days) || 28;
+  const days = Math.max(1, Math.min(parseInt(req.query.days, 10) || 28, 90));
   try {
-    return res.json(db.getDRHistory(req.params.id, Math.min(days, 90)));
+    return res.json(db.getDRHistory(req.params.id, days));
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
