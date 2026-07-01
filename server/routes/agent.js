@@ -105,6 +105,40 @@ router.post('/heartbeat', agentAuth, (req, res) => {
       motherboard: machine.motherboard,
     });
 
+    // DR status — update machines table and insert backup record if new
+    const drStatus = req.body.dr_status;
+    if (drStatus) {
+      try {
+        const setup = drStatus.setup || 'not_installed';
+        const drUpdate = { setup };
+        if (drStatus.veeam_version) drUpdate.version = drStatus.veeam_version;
+        if (drStatus.storage_gb != null) drUpdate.storageGb = drStatus.storage_gb;
+
+        if (drStatus.last_backup_at && drStatus.last_backup_at !== machine.dr_last_ok) {
+          if (drStatus.last_backup_ok) {
+            drUpdate.lastOk = drStatus.last_backup_at;
+            db.insertDRBackup(machine.id, {
+              backedAt:    drStatus.last_backup_at,
+              status:      'ok',
+              storageGb:   drStatus.storage_gb,
+              durationMin: drStatus.duration_min,
+            });
+          } else {
+            db.insertDRBackup(machine.id, {
+              backedAt: drStatus.last_backup_at,
+              status:   'failed',
+              errorMsg: drStatus.error_msg,
+            });
+          }
+        }
+
+        db.updateMachineDRStatus(machine.id, drUpdate);
+        broadcast('dr_update', { machineId: machine.id, drStatus });
+      } catch (err) {
+        console.error('[heartbeat] DR status update error:', err.message);
+      }
+    }
+
     // Inclui versao mais recente do agente na resposta
     const versionInfo = readVersionInfo();
     return res.json({
