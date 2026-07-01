@@ -766,18 +766,25 @@ function getMaxRef1() {
 // ── DR Backups ────────────────────────────────────────────────────────────────
 
 function updateMachineDRStatus(machineId, { setup, lastOk, storageGb, version } = {}) {
-  const d = getDb();
-  if (setup     !== undefined) d.prepare('UPDATE machines SET dr_setup=? WHERE id=?').run(setup, machineId);
-  if (lastOk    !== undefined) d.prepare('UPDATE machines SET dr_last_ok=? WHERE id=?').run(lastOk, machineId);
-  if (storageGb !== undefined) d.prepare('UPDATE machines SET dr_storage_gb=? WHERE id=?').run(storageGb, machineId);
-  if (version   !== undefined) d.prepare('UPDATE machines SET dr_version=? WHERE id=?').run(version, machineId);
+  const map = {
+    dr_setup:      setup,
+    dr_last_ok:    lastOk,
+    dr_storage_gb: storageGb,
+    dr_version:    version,
+  };
+  const keys = Object.keys(map).filter(k => map[k] !== undefined);
+  if (!keys.length) return;
+  const set = keys.map(k => `${k}=?`).join(', ');
+  getDb()
+    .prepare(`UPDATE machines SET ${set} WHERE id=?`)
+    .run(...keys.map(k => map[k]), machineId);
 }
 
 function insertDRBackup(machineId, { backedAt, status, storageGb, durationMin, errorMsg } = {}) {
   getDb().prepare(`
     INSERT INTO dr_backups (machine_id, backed_at, status, storage_gb, duration_min, error_msg)
     VALUES (?,?,?,?,?,?)
-  `).run(machineId, backedAt, status, storageGb || null, durationMin || null, errorMsg || null);
+  `).run(machineId, backedAt, status, storageGb != null ? storageGb : null, durationMin != null ? durationMin : null, errorMsg || null);
 }
 
 function getDRHistory(machineId, days = 28) {
