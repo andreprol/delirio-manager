@@ -20,7 +20,16 @@ Novo módulo **Relatório** no Delirio Manager (Electron + React + Node.js) que 
 | Freshdesk API | Chamados TI da loja (cache 4h) | 🆕 Integração |
 | Zamak | Relatórios de segurança / tentativas de invasão | ⏳ Pendente (antes de jul/2026) |
 
-**Freshdesk — filtro TI:** incluir apenas chamados onde campo `Setor` OU `Grupo` = "TI". Campo `Nome de Loja` identifica a loja. Todos os status incluídos (aberto, pendente, fechado). Chamados sem classificação (Geral ou vazio) são ignorados.
+**Freshdesk — filtro TI:** incluir apenas chamados onde campo `Setor` OU `Grupo` = "TI". Campo `Nome de Loja` identifica a loja. Todos os status sincronizados. Chamados sem classificação (Geral ou vazio) são ignorados.
+
+**Regra de paridade Freshdesk ↔ Tópicos:**
+
+| Status Freshdesk | Equivalente em tópicos | Tratamento |
+|---|---|---|
+| Aberto / Pendente | Tópico aberto | Problema ativo — pesa no score, aparece na lista de incidentes |
+| Fechado | Tópico deletado | Histórico apenas — usado para detecção de padrões e insights da IA, não aparece como incidente ativo |
+
+Chamados fechados nunca contribuem diretamente para o score de risco, mas entram no prompt da IA como histórico de incidentes resolvidos — da mesma forma que tópicos resolvidos vão para `report_topics_history`.
 
 ---
 
@@ -194,14 +203,15 @@ dashboard/src/components/
 
 Uma única chamada por geração de relatório. O servidor monta um prompt com:
 
-1. Tópicos abertos da loja (com flag de máquina crítica)
-2. Tópicos resolvidos no mês (evidência de trabalho)
-3. Problemas recorrentes detectados via `report_topics_history` (mesmo problema em ≥2 meses)
-4. Chamados Freshdesk do mês (título, status, datas)
-5. Métricas DM: CPU média, RAM média, uso de disco, temperatura, tempo offline por máquina
-6. Alertas de OS: máquinas com Windows 10 / sem updates recentes
-7. **Últimos 3–5 feedbacks do gestor** para aquela loja (calibração progressiva)
-8. Regra crítica TERM*/BOH*
+1. Tópicos abertos da loja (com flag de máquina crítica) → **pesam no score**
+2. Chamados Freshdesk abertos/pendentes → **pesam no score** (tratados como tópicos ativos)
+3. Tópicos resolvidos no mês (`report_topics_history`) → histórico, evidência de trabalho
+4. Chamados Freshdesk fechados do mês → histórico, equivalente aos tópicos resolvidos
+5. Problemas recorrentes detectados via histórico combinado (tópicos + chamados fechados, ≥2 meses)
+6. Métricas DM: CPU média, RAM média, uso de disco, temperatura, tempo offline por máquina
+7. Alertas de OS: máquinas com Windows 10 / sem updates recentes
+8. **Últimos 3–5 feedbacks do gestor** para aquela loja (calibração progressiva)
+9. Regra crítica TERM*/BOH*
 
 **Resposta esperada (JSON):**
 ```json
