@@ -44,22 +44,26 @@ export default function App() {
   const [alertsCount,     setAlertsCount]     = useAlertsCount()
 
   // Garante que a janela Electron é larga o suficiente para o topbar.
-  // Quando novos botões são adicionados no futuro, a janela cresce automaticamente
-  // sem nenhuma intervenção manual — basta o ResizeObserver detectar o overflow.
+  // scrollWidth não funciona em flex com overflow:visible — usa getBoundingClientRect
+  // no topbar-right, que retorna a posição real renderizada mesmo além da janela.
   const topbarRef = useRef(null)
   useLayoutEffect(() => {
-    const el = topbarRef.current
-    if (!el || !window.electronAPI?.fitTopbar) return
-    const PADDING = 24 // folga para evitar scroll horizontal
-    const check = () => {
-      const needed = el.scrollWidth + PADDING
-      if (needed > window.innerWidth) {
-        window.electronAPI.fitTopbar(needed)
+    if (!window.electronAPI?.fitTopbar) return
+    const checkFit = () => {
+      const header = topbarRef.current
+      if (!header) return
+      const right = header.querySelector('.topbar-right')
+      if (!right) return
+      const rect = right.getBoundingClientRect()
+      if (rect.right > window.innerWidth) {
+        window.electronAPI.fitTopbar(Math.ceil(rect.right) + 8)
       }
     }
-    check()
-    const obs = new ResizeObserver(check)
-    obs.observe(el)
+    checkFit()
+    const right = topbarRef.current?.querySelector('.topbar-right')
+    if (!right) return
+    const obs = new ResizeObserver(checkFit)
+    obs.observe(right)
     return () => obs.disconnect()
   }, [])
 
