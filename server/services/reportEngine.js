@@ -36,13 +36,14 @@ function buildStoreContext(storeName, month) {
   // Métricas DM — últimos 30 dias
   const since = new Date();
   since.setDate(since.getDate() - 30);
-  const machines = db.getMachines().filter(m => m.location === storeName);
+  const machines = db.getAllMachines().filter(m => m.location === storeName);
+  const metricsStmt = db.getDb().prepare(
+    `SELECT AVG(cpu_pct) as avg_cpu, AVG((ram_total_mb - ram_free_mb)*100.0/ram_total_mb) as avg_ram,
+     AVG(disk_free_gb) as avg_disk_free, AVG(cpu_temp_c) as avg_temp
+     FROM metrics WHERE machine_id = ? AND ts >= ?`
+  );
   const machineData = machines.map(m => {
-    const recent = db.getDb().prepare(
-      `SELECT AVG(cpu_pct) as avg_cpu, AVG((ram_total_mb - ram_free_mb)*100.0/ram_total_mb) as avg_ram,
-       AVG(disk_free_gb) as avg_disk_free, AVG(cpu_temp_c) as avg_temp
-       FROM metrics WHERE machine_id = ? AND ts >= ?`
-    ).get(m.id, since.toISOString());
+    const recent = metricsStmt.get(m.id, since.toISOString());
     return {
       name:       m.hostname,
       isCritical: /^(TERM|BOH)/i.test(m.hostname),
@@ -136,8 +137,8 @@ async function callClaude(ctx) {
   }
   if (!apiKey) throw new Error('Claude API key não configurada em config.json (relatorio.claude_api_key)');
 
-  const Anthropic = require('@anthropic-ai/sdk');
-  const client = new Anthropic.default({ apiKey });
+  const { Anthropic } = require('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey });
 
   const prompt = buildPrompt(ctx);
 
