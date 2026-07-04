@@ -18,4 +18,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Janela cresce para acomodar o topbar quando necessário
   fitTopbar: (neededWidth) => ipcRenderer.invoke('window:fit-topbar', neededWidth),
+
+  // Verificação manual de atualização
+  checkForUpdates: () => ipcRenderer.invoke('updater:check-now'),
+  onUpdateNotAvailable: (cb) => {
+    const handler = () => cb()
+    ipcRenderer.on('update-not-available', handler)
+    return () => ipcRenderer.removeListener('update-not-available', handler)
+  },
+  onUpdateError: (cb) => {
+    const handler = (_, data) => cb(data)
+    ipcRenderer.on('update-error', handler)
+    return () => ipcRenderer.removeListener('update-error', handler)
+  },
 })

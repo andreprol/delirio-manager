@@ -69,25 +69,33 @@ function setupAutoUpdater(win) {
 
   autoUpdater.on('error', (err) => {
     process.stderr.write(`[autoUpdater] error: ${err?.message}\n`)
+    if (!win.isDestroyed()) win.webContents.send('update-error', { message: err?.message })
+  })
+  autoUpdater.on('update-not-available', () => {
+    if (!win.isDestroyed()) win.webContents.send('update-not-available')
   })
   autoUpdater.on('update-downloaded', (info) => {
     pendingUpdate = { version: info.version }
-    // Push para o renderer se já estiver montado (caso normal: download termina depois do mount)
-    if (!win.isDestroyed()) {
-      win.webContents.send('update-downloaded', { version: info.version })
-    }
+    if (!win.isDestroyed()) win.webContents.send('update-downloaded', { version: info.version })
   })
 
-  // Aguarda a página carregar antes de iniciar a verificação
+  // Verificação automática na abertura
   win.webContents.once('did-finish-load', () => {
     autoUpdater.checkForUpdates().catch((err) => {
       process.stderr.write(`[autoUpdater] checkForUpdates error: ${err?.message}\n`)
     })
   })
 
-  // Renderer puxa o update pendente via invoke após registrar o listener push
-  // (cobre o caso raro onde update-downloaded chega antes do useEffect registrar o listener)
   ipcMain.handle('updater:get-pending', () => pendingUpdate)
+
+  // Verificação manual sob demanda (botão "Verificar atualização")
+  ipcMain.handle('updater:check-now', () => {
+    if (!app.isPackaged) return { status: 'dev' }
+    autoUpdater.checkForUpdates().catch((err) => {
+      process.stderr.write(`[autoUpdater] manual check error: ${err?.message}\n`)
+    })
+    return { status: 'checking' }
+  })
 }
 
 app.whenReady().then(() => {

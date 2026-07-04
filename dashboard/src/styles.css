@@ -110,6 +110,18 @@ body {
 
 .logo { font-weight: 700; font-size: 15px; color: var(--text); white-space: nowrap; }
 
+.update-check-btn {
+  font-size: 11px; font-family: monospace; white-space: nowrap;
+  padding: 2px 8px; border-radius: 4px; cursor: pointer;
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-muted); transition: all 0.15s;
+}
+.update-check-btn:hover:not(:disabled) { border-color: #818cf8; color: #818cf8; }
+.update-check-btn:disabled { cursor: default; opacity: 0.7; }
+.update-check-btn--checking   { color: #facc15; border-color: #facc1566; }
+.update-check-btn--up-to-date { color: #4ade80; border-color: #4ade8066; }
+.update-check-btn--error      { color: var(--red); border-color: var(--red); }
+
 .conn-status { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .conn-dot {
   width: 8px; height: 8px; border-radius: 50%;

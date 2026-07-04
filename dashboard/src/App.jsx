@@ -24,6 +24,7 @@ export default function App() {
   const [autoWakeLoading, setAutoWakeLoading] = useState(false)
   const [generating,      setGenerating]      = useState(false)
   const [generateMsg,     setGenerateMsg]     = useState(null)
+  const [updateStatus,    setUpdateStatus]    = useState(null) // null | 'checking' | 'up-to-date' | 'error'
 
   const {
     machines, groupMap, groupsList,
@@ -73,6 +74,30 @@ export default function App() {
     setNewOfflineAlert(lastOffline)
     setAlertsCount(c => c + 1)
   }, [lastOffline])
+
+  useEffect(() => {
+    const cleanups = []
+    if (window.electronAPI?.onUpdateNotAvailable) {
+      cleanups.push(window.electronAPI.onUpdateNotAvailable(() => {
+        setUpdateStatus('up-to-date')
+        setTimeout(() => setUpdateStatus(null), 4000)
+      }))
+    }
+    if (window.electronAPI?.onUpdateError) {
+      cleanups.push(window.electronAPI.onUpdateError(() => {
+        setUpdateStatus('error')
+        setTimeout(() => setUpdateStatus(null), 4000)
+      }))
+    }
+    return () => cleanups.forEach(fn => fn?.())
+  }, [])
+
+  async function handleCheckForUpdates() {
+    if (!window.electronAPI?.checkForUpdates) return
+    setUpdateStatus('checking')
+    await window.electronAPI.checkForUpdates()
+    // resultado chega via eventos: update-not-available, update-downloaded, ou update-error
+  }
 
   const [newGroupName,      setNewGroupName]      = useState('')
   const [showNewGroupInput, setShowNewGroupInput] = useState(false)
@@ -210,6 +235,17 @@ export default function App() {
         <div className="topbar-left">
           <span className="logo">Delirio Manager</span>
           <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 6, fontFamily: 'monospace', letterSpacing: '0.02em' }}>v{pkg.version}</span>
+          <button
+            className={`update-check-btn${updateStatus ? ` update-check-btn--${updateStatus}` : ''}`}
+            onClick={handleCheckForUpdates}
+            disabled={updateStatus === 'checking'}
+            title="Verificar atualização"
+          >
+            {updateStatus === 'checking'   ? '⟳ Verificando…'      : null}
+            {updateStatus === 'up-to-date' ? '✓ Atualizado'         : null}
+            {updateStatus === 'error'      ? '✕ Falha'              : null}
+            {!updateStatus                 ? '⬆ Verificar update'   : null}
+          </button>
           <div className={`conn-status ${connected ? 'connected' : 'disconnected'}`}>
             <span className="conn-dot" />
             {connected ? 'API OK' : 'Sem conexao'}
