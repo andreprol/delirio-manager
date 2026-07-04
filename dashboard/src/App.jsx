@@ -9,6 +9,7 @@ import { AlertsPanel, useAlertsCount } from './components/AlertsPanel'
 import { RhModule } from './components/RhModule'
 import { AlohaModule } from './components/AlohaModule'
 import { DRModule } from './components/DRModule'
+import { ReportModule } from './components/ReportModule'
 import { api, setServerUrl, getServerUrl } from './api'
 
 export default function App() {
@@ -36,7 +37,8 @@ export default function App() {
   const [showAlertsPanel, setShowAlertsPanel] = useState(false)
   const [showRh,    setShowRh]    = useState(false)
   const [showAloha, setShowAloha] = useState(false)
-  const [showDR,    setShowDR]    = useState(false)
+  const [showDR,         setShowDR]         = useState(false)
+  const [showRelatorio,  setShowRelatorio]  = useState(false)
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
   const [alertsCount,     setAlertsCount]     = useAlertsCount()
 
@@ -294,6 +296,15 @@ export default function App() {
                 🔒 DR
               </button>
 
+              <button
+                className="pill-solo"
+                onClick={() => setShowRelatorio(true)}
+                title="Módulo Relatório — Score de risco por loja"
+                style={{ background: '#667eea22', border: '1px solid #667eea55', color: '#818cf8' }}
+              >
+                📊 Relatório
+              </button>
+
           <button
             className="bell-btn"
             onClick={() => { setShowAlertsPanel(v => !v); if (!showAlertsPanel) setAlertsCount(0) }}
@@ -428,6 +439,7 @@ export default function App() {
       {showRh    && <RhModule    onClose={() => setShowRh(false)} />}
       {showAloha && <AlohaModule onClose={() => setShowAloha(false)} machines={machines} />}
       {showDR && <DRModule onClose={() => setShowDR(false)} />}
+      {showRelatorio && <ReportModule onClose={() => setShowRelatorio(false)} />}
     </div>
   )
 }
