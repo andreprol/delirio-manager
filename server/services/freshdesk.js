@@ -15,18 +15,43 @@ function mapStatus(num) {
   return MAP[num] || 'open';
 }
 
-// Inclui ticket se tem loja associada (cf_nome_de_loja) ou se está classificado como TI
+// Normaliza nomes de loja: corrige acentos inconsistentes do Freshdesk
+const STORE_NAME_ALIASES = {
+  'Assembléia': 'Assembleia',
+  'assembléia': 'Assembleia',
+};
+
+function normalizeStoreName(name) {
+  if (!name) return null;
+  return STORE_NAME_ALIASES[name] || name;
+}
+
+// Inclui apenas tickets de TI com loja associada.
+// Exclui departamentos que usam cf_nome_de_loja mas não são lojas (ex: Manutenção).
+const NON_STORE_NAMES = new Set(['manutenção', 'manutencao', 'manutenção ']);
+
 function isTiTicket(ticket) {
-  const cf = ticket.custom_fields || {};
-  if (cf.cf_nome_de_loja) return true;
+  const cf    = ticket.custom_fields || {};
+  const loja  = (cf.cf_nome_de_loja || '').trim();
   const setor = (cf.cf_setor || '').toLowerCase();
-  const grupo  = (cf.cf_grupo  || '').toLowerCase();
-  return setor === 'ti' || grupo === 'ti';
+  const grupo = (cf.cf_grupo  || '').toLowerCase();
+
+  // Exclui departamentos que não são lojas físicas
+  if (NON_STORE_NAMES.has(loja.toLowerCase())) return false;
+  // Exclui se setor/grupo indica manutenção
+  if (setor.includes('manut') || grupo.includes('manut')) return false;
+
+  // Inclui se tem nome de loja real
+  if (loja) return true;
+
+  // Ou se explicitamente classificado como TI
+  return setor.includes('ti') || grupo.includes('ti');
 }
 
 function getStoreName(ticket) {
-  const cf = ticket.custom_fields || {};
-  return cf.cf_nome_de_loja || null;
+  const cf  = ticket.custom_fields || {};
+  const raw = (cf.cf_nome_de_loja || '').trim() || null;
+  return normalizeStoreName(raw);
 }
 
 function mapTicket(ticket) {
@@ -81,6 +106,12 @@ async function syncAll() {
 
   const tiTickets = allTickets.filter(isTiTicket).map(mapTicket);
   db.upsertFreshdeskTickets(tiTickets);
+
+  // Limpar registros antigos que não passam mais no filtro
+  const d = db.getDb();
+  d.prepare("DELETE FROM freshdesk_cache WHERE lower(store_name) IN ('manutenção','manutencao')").run();
+  d.prepare("UPDATE freshdesk_cache SET store_name = 'Assembleia' WHERE store_name = 'Assembléia'").run();
+
   return tiTickets.length;
 }
 
