@@ -16,7 +16,11 @@ router.get('/stores', (req, res) => {
     const { countMap, scoreMap } = db.getStoresOverview();
     // Pegar lista de lojas únicas de machines + topics
     const storeSet = new Set();
-    db.getAllMachines().forEach(m => { if (m.location) storeSet.add(m.location); });
+    // Normaliza nomes de localidades para coincidir com freshdesk_cache
+    const LOC_ALIASES = { 'Assembléia': 'Assembleia', 'assembléia': 'Assembleia' };
+    db.getAllMachines().forEach(m => {
+      if (m.location) storeSet.add(LOC_ALIASES[m.location] || m.location);
+    });
     db.getDb().prepare('SELECT DISTINCT store_name FROM report_topics').all()
       .forEach(r => storeSet.add(r.store_name));
     db.getDb().prepare('SELECT DISTINCT store_name FROM freshdesk_cache WHERE store_name IS NOT NULL').all()
