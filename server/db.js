@@ -220,6 +220,65 @@ function migrate(db) {
     `ALTER TABLE machines ADD COLUMN dr_last_ok TEXT`,
     `ALTER TABLE machines ADD COLUMN dr_storage_gb REAL`,
     `ALTER TABLE machines ADD COLUMN dr_version TEXT`,
+    // ── Módulo Relatório ──────────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS report_topics (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_name         TEXT NOT NULL,
+      description        TEXT NOT NULL,
+      severity           TEXT NOT NULL CHECK(severity IN ('baixa','media','alta','critica')),
+      machine_mention    TEXT,
+      is_critical_machine INTEGER DEFAULT 0,
+      photo_path         TEXT,
+      created_at         TEXT NOT NULL,
+      created_by         TEXT NOT NULL DEFAULT 'TI'
+    )`,
+    `CREATE TABLE IF NOT EXISTS report_topics_history (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      original_topic_id  INTEGER,
+      store_name         TEXT NOT NULL,
+      description        TEXT NOT NULL,
+      severity           TEXT NOT NULL,
+      machine_mention    TEXT,
+      is_critical_machine INTEGER DEFAULT 0,
+      photo_path         TEXT,
+      created_at         TEXT NOT NULL,
+      resolved_at        TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS freshdesk_cache (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id   INTEGER UNIQUE NOT NULL,
+      store_name  TEXT,
+      title       TEXT NOT NULL,
+      status      TEXT NOT NULL,
+      priority    TEXT,
+      created_at  TEXT,
+      resolved_at TEXT,
+      cached_at   TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS report_runs (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_name          TEXT NOT NULL,
+      month               TEXT NOT NULL,
+      generated_at        TEXT NOT NULL,
+      score_total         INTEGER,
+      score_hardware      INTEGER,
+      score_software      INTEGER,
+      score_connectivity  INTEGER,
+      score_security      INTEGER,
+      score_incidents     INTEGER,
+      ai_narrative        TEXT,
+      ai_recommendations  TEXT,
+      docx_path           TEXT,
+      pdf_path            TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS report_feedback (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      report_run_id  INTEGER,
+      store_name     TEXT NOT NULL,
+      month          TEXT NOT NULL,
+      feedback_text  TEXT NOT NULL,
+      created_at     TEXT NOT NULL
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -814,6 +873,144 @@ function getMachinesDRDue(olderThanISO) {
   `).all(olderThanISO);
 }
 
+// ── Módulo Relatório ──────────────────────────────────────────────────────────
+
+const CRITICAL_RE = /^(TERM|BOH)/i;
+
+function isCriticalMachine(mention) {
+  return mention ? CRITICAL_RE.test(mention.trim()) : false;
+}
+
+// Topics
+function getTopics(storeName) {
+  return getDb().prepare(
+    `SELECT * FROM report_topics WHERE store_name = ? ORDER BY
+     CASE severity WHEN 'critica' THEN 0 WHEN 'alta' THEN 1 WHEN 'media' THEN 2 ELSE 3 END, created_at DESC`
+  ).all(storeName);
+}
+
+function getAllStoresTopicCount() {
+  return getDb().prepare(
+    `SELECT store_name, COUNT(*) as count FROM report_topics GROUP BY store_name`
+  ).all();
+}
+
+function createTopic({ store_name, description, severity, machine_mention, photo_path, created_by }) {
+  const critical = isCriticalMachine(machine_mention);
+  const now = new Date().toISOString();
+  const info = getDb().prepare(
+    `INSERT INTO report_topics (store_name, description, severity, machine_mention, is_critical_machine, photo_path, created_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(store_name, description, severity, machine_mention || null, critical ? 1 : 0, photo_path || null, now, created_by || 'TI');
+  return getDb().prepare('SELECT * FROM report_topics WHERE id = ?').get(info.lastInsertRowid);
+}
+
+function resolveTopic(id) {
+  const topic = getDb().prepare('SELECT * FROM report_topics WHERE id = ?').get(id);
+  if (!topic) return null;
+  const now = new Date().toISOString();
+  getDb().prepare(
+    `INSERT INTO report_topics_history (original_topic_id, store_name, description, severity, machine_mention, is_critical_machine, photo_path, created_at, resolved_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(topic.id, topic.store_name, topic.description, topic.severity, topic.machine_mention, topic.is_critical_machine, topic.photo_path, topic.created_at, now);
+  getDb().prepare('DELETE FROM report_topics WHERE id = ?').run(id);
+  return { resolved: true };
+}
+
+function getTopicsHistory(storeName, months = 6) {
+  const since = new Date();
+  since.setMonth(since.getMonth() - months);
+  return getDb().prepare(
+    `SELECT * FROM report_topics_history WHERE store_name = ? AND resolved_at >= ? ORDER BY resolved_at DESC`
+  ).all(storeName, since.toISOString());
+}
+
+// Freshdesk cache
+function getFreshdeskCacheAge(storeName) {
+  const row = getDb().prepare(
+    `SELECT cached_at FROM freshdesk_cache WHERE store_name = ? ORDER BY cached_at DESC LIMIT 1`
+  ).get(storeName);
+  if (!row) return Infinity;
+  return (Date.now() - new Date(row.cached_at).getTime()) / 3600000; // hours
+}
+
+function upsertFreshdeskTickets(tickets) {
+  const stmt = getDb().prepare(
+    `INSERT OR REPLACE INTO freshdesk_cache (ticket_id, store_name, title, status, priority, created_at, resolved_at, cached_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const now = new Date().toISOString();
+  const insert = getDb().transaction((rows) => {
+    for (const t of rows) stmt.run(t.ticket_id, t.store_name, t.title, t.status, t.priority, t.created_at, t.resolved_at, now);
+  });
+  insert(tickets);
+}
+
+function getFreshdeskActive(storeName, month) {
+  // month = YYYY-MM
+  return getDb().prepare(
+    `SELECT * FROM freshdesk_cache
+     WHERE store_name = ? AND status IN ('open','pending')
+     AND substr(created_at, 1, 7) <= ? ORDER BY created_at DESC`
+  ).all(storeName, month);
+}
+
+function getFreshdeskClosed(storeName, month) {
+  return getDb().prepare(
+    `SELECT * FROM freshdesk_cache
+     WHERE store_name = ? AND status = 'closed'
+     AND substr(resolved_at, 1, 7) = ? ORDER BY resolved_at DESC`
+  ).all(storeName, month);
+}
+
+// Report runs
+function saveReportRun(data) {
+  const info = getDb().prepare(
+    `INSERT INTO report_runs (store_name, month, generated_at, score_total, score_hardware, score_software,
+     score_connectivity, score_security, score_incidents, ai_narrative, ai_recommendations, docx_path, pdf_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    data.store_name, data.month, new Date().toISOString(),
+    data.score_total, data.score_hardware, data.score_software,
+    data.score_connectivity, data.score_security, data.score_incidents,
+    data.ai_narrative, JSON.stringify(data.ai_recommendations || []),
+    data.docx_path || null, data.pdf_path || null
+  );
+  return info.lastInsertRowid;
+}
+
+function getReportHistory(storeName) {
+  return getDb().prepare(
+    `SELECT * FROM report_runs WHERE store_name = ? ORDER BY generated_at DESC LIMIT 12`
+  ).all(storeName);
+}
+
+// Feedback
+function saveFeedback({ store_name, month, feedback_text, report_run_id }) {
+  getDb().prepare(
+    `INSERT INTO report_feedback (report_run_id, store_name, month, feedback_text, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(report_run_id || null, store_name, month, feedback_text, new Date().toISOString());
+}
+
+function getRecentFeedback(storeName, limit = 5) {
+  return getDb().prepare(
+    `SELECT * FROM report_feedback WHERE store_name = ? ORDER BY created_at DESC LIMIT ?`
+  ).all(storeName, limit);
+}
+
+// Stores list with score + open topics
+function getStoresOverview() {
+  const topicCounts = getAllStoresTopicCount();
+  const runs = getDb().prepare(
+    `SELECT store_name, score_total, generated_at FROM report_runs r1
+     WHERE generated_at = (SELECT MAX(generated_at) FROM report_runs r2 WHERE r2.store_name = r1.store_name)`
+  ).all();
+  const countMap = Object.fromEntries(topicCounts.map(r => [r.store_name, r.count]));
+  const scoreMap = Object.fromEntries(runs.map(r => [r.store_name, { score: r.score_total, generatedAt: r.generated_at }]));
+  return { countMap, scoreMap };
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -847,4 +1044,14 @@ module.exports = {
   registerRef1, getMaxRef1,
   // dr backups
   updateMachineDRStatus, insertDRBackup, getDRHistory, getDROverview, getMachinesDRDue,
+  // relatório — topics
+  getTopics, getAllStoresTopicCount, createTopic, resolveTopic, getTopicsHistory,
+  // relatório — freshdesk cache
+  getFreshdeskCacheAge, upsertFreshdeskTickets, getFreshdeskActive, getFreshdeskClosed,
+  // relatório — report runs
+  saveReportRun, getReportHistory,
+  // relatório — feedback
+  saveFeedback, getRecentFeedback,
+  // relatório — overview
+  getStoresOverview,
 };
