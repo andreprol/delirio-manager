@@ -15,22 +15,28 @@ router.get('/stores', (req, res) => {
   try {
     const { countMap, scoreMap } = db.getStoresOverview();
     // Pegar lista de lojas únicas de machines + topics
-    const storeSet = new Set();
-    // Normaliza nomes de localidades para coincidir com freshdesk_cache
-    const LOC_ALIASES = { 'Assembléia': 'Assembleia', 'assembléia': 'Assembleia' };
+    // Mapa canônico: normalizado (sem acento, minúsculo) → nome de exibição
+    // Prioridade: freshdesk_cache > report_topics > machines
+    // Assim "Assembleia" (freshdesk) prevalece sobre "Assembléia" (machines)
+    const stripAccents = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+    const canonical = new Map();
     db.getAllMachines().forEach(m => {
-      if (m.location) storeSet.add(LOC_ALIASES[m.location] || m.location);
+      if (m.location) {
+        const k = stripAccents(m.location);
+        if (!canonical.has(k)) canonical.set(k, m.location);
+      }
     });
     db.getDb().prepare('SELECT DISTINCT store_name FROM report_topics').all()
-      .forEach(r => storeSet.add(r.store_name));
+      .forEach(r => {
+        const k = stripAccents(r.store_name);
+        if (!canonical.has(k)) canonical.set(k, r.store_name);
+      });
     db.getDb().prepare('SELECT DISTINCT store_name FROM freshdesk_cache WHERE store_name IS NOT NULL').all()
-      .forEach(r => storeSet.add(r.store_name));
+      .forEach(r => { canonical.set(stripAccents(r.store_name), r.store_name); }); // freshdesk tem prioridade
 
+    const storeSet = new Set(canonical.values());
     storeSet.delete('Temporário');
-
-    // Contagem de tickets Freshdesk por loja
-    // Normaliza removendo acentos para tolerar divergências entre dados de máquinas e Freshdesk
-    const stripAccents = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+    storeSet.delete('Temporario');
 
     const freshdeskRows = db.getDb().prepare(
       `SELECT store_name, COUNT(*) as n FROM freshdesk_cache WHERE store_name IS NOT NULL GROUP BY store_name`
