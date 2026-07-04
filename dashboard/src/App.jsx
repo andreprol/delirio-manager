@@ -5,6 +5,7 @@ import { LocationGroup } from './components/LocationGroup'
 import { SplitView } from './components/SplitView'
 import { UpdatePanel } from './components/UpdatePanel'
 import { OfflineToast }                from './components/OfflineToast'
+import { UpdateToast }                from './components/UpdateToast'
 import { AlertsPanel, useAlertsCount } from './components/AlertsPanel'
 import { RhModule } from './components/RhModule'
 import { AlohaModule } from './components/AlohaModule'
@@ -440,6 +441,7 @@ export default function App() {
       {showAloha && <AlohaModule onClose={() => setShowAloha(false)} machines={machines} />}
       {showDR && <DRModule onClose={() => setShowDR(false)} />}
       {showRelatorio && <ReportModule onClose={() => setShowRelatorio(false)} />}
+      <UpdateToast />
     </div>
   )
 }

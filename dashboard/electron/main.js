@@ -21,7 +21,7 @@ function saveConfig(cfg) {
 }
 
 function createWindow() {
-  const win = new BrowserWindow({
+  let win = new BrowserWindow({
     width:  1600,
     height: 900,
     minWidth:  1520,
@@ -49,22 +49,23 @@ function createWindow() {
     shell.openExternal(url)
     return { action: 'deny' }
   })
+
+  return win
 }
 
-function setupAutoUpdater() {
+function setupAutoUpdater(win) {
   // Só verifica updates em producao (app empacotado)
   if (!app.isPackaged) return
 
   const { autoUpdater } = require('electron-updater')
 
-  autoUpdater.logger               = null  // sem logs em producao
-  autoUpdater.autoDownload         = true  // baixa automaticamente
-  autoUpdater.autoInstallOnAppQuit = true  // instala ao fechar o app
+  autoUpdater.logger               = null
+  autoUpdater.autoDownload         = true
+  autoUpdater.autoInstallOnAppQuit = true
 
-  // Silencia todos os dialogos — update 100% transparente
   autoUpdater.on('error', () => {})
-  autoUpdater.on('update-downloaded', () => {
-    // Update baixado e pronto — sera instalado quando o usuario fechar o app
+  autoUpdater.on('update-downloaded', (info) => {
+    win.webContents.send('update-downloaded', { version: info.version })
   })
 
   autoUpdater.checkForUpdates().catch(() => {})
@@ -78,8 +79,14 @@ app.whenReady().then(() => {
   // IPC: abrir pasta no Windows Explorer
   ipcMain.handle('shell:openPath', (_, folderPath) => shell.openPath(folderPath))
 
-  createWindow()
-  setupAutoUpdater()
+  // IPC: instalar update e reiniciar
+  ipcMain.handle('updater:quit-and-install', () => {
+    const { autoUpdater } = require('electron-updater')
+    autoUpdater.quitAndInstall()
+  })
+
+  const win = createWindow()
+  setupAutoUpdater(win)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
