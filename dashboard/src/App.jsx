@@ -261,7 +261,7 @@ export default function App() {
               ↻
             </button>
             <button className="pill-btn" onClick={() => setShowUpdate(true)} title="Publicar nova versao do agente">
-              ⬆ Agentes
+              ⬆
             </button>
             <button
               className="pill-btn"
@@ -270,6 +270,15 @@ export default function App() {
               title="Gerar insights de IA agora (analisa logs das máquinas)"
             >
               {generating ? '⏳...' : generateMsg ? `✨ ${generateMsg}` : '✨ Insights'}
+            </button>
+          </div>
+
+          <div className="pill-group pill-group-modules">
+            <button className="pill-btn" onClick={() => setShowDR(true)} title="Bare Metal Recovery — Módulo de backup Veeam">
+              🔒 DR
+            </button>
+            <button className="pill-btn" onClick={() => setShowRelatorio(true)} title="Módulo Relatório — Score de risco por loja">
+              📊 Rel.
             </button>
           </div>
 
@@ -288,23 +297,6 @@ export default function App() {
           >
             🍕 Aloha
           </button>
-
-              <button
-                onClick={() => setShowDR(true)}
-                title="Bare Metal Recovery"
-                style={{ background: '#6366f111', border: '1px solid #6366f133', borderRadius: 6, padding: '3px 10px', color: '#818cf8', fontSize: '0.8em', cursor: 'pointer' }}
-              >
-                🔒 DR
-              </button>
-
-              <button
-                className="pill-solo"
-                onClick={() => setShowRelatorio(true)}
-                title="Módulo Relatório — Score de risco por loja"
-                style={{ background: '#667eea22', border: '1px solid #667eea55', color: '#818cf8' }}
-              >
-                📊 Relatório
-              </button>
 
           <button
             className="bell-btn"

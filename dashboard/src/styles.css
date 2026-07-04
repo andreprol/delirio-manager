@@ -100,6 +100,10 @@ body {
 }
 .pill-solo-aloha:hover { background: rgba(251,146,60,.28); color: #fdba74; }
 
+.pill-group-modules { border-color: #6366f133; }
+.pill-group-modules .pill-btn { color: #818cf8; }
+.pill-group-modules .pill-btn:hover { background: #6366f122; color: #a5b4fc; }
+
 .topbar-left  { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .topbar-center { display: flex; gap: 8px; flex: 1; min-width: 310px; max-width: 420px; justify-content: center; }
 .topbar-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
