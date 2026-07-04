@@ -36,16 +36,15 @@ function isTiTicket(ticket) {
   const setor = (cf.cf_setor || '').toLowerCase();
   const grupo = (cf.cf_grupo  || '').toLowerCase();
 
+  // Ticket sem loja associada é ignorado
+  if (!loja) return false;
+
   // Exclui departamentos que não são lojas físicas
   if (NON_STORE_NAMES.has(loja.toLowerCase())) return false;
   // Exclui se setor/grupo indica manutenção
   if (setor.includes('manut') || grupo.includes('manut')) return false;
 
-  // Inclui se tem nome de loja real
-  if (loja) return true;
-
-  // Ou se explicitamente classificado como TI
-  return setor.includes('ti') || grupo.includes('ti');
+  return true;
 }
 
 function getStoreName(ticket) {
