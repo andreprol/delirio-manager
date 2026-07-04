@@ -148,4 +148,20 @@ export const api = {
     overview:  ()            => request('GET',  '/api/dr/overview'),
     history:   (id, days=28) => request('GET',  `/api/dr/${id}/history?days=${days}`),
   },
+
+  // Relatório TI por loja
+  relatorio: {
+    getStores:    ()                           => request('GET',    '/api/relatorio/stores'),
+    getTopics:    (store)                      => request('GET',    `/api/relatorio/topics/${encodeURIComponent(store)}`),
+    createTopic:  (data)                       => request('POST',   '/api/relatorio/topics', data),
+    resolveTopic: (id)                         => request('DELETE', `/api/relatorio/topics/${id}`),
+    generate:     (store, month)               => request('POST',   '/api/relatorio/generate', { store, month }),
+    saveFeedback: (store, month, text, runId)  => request('POST',   '/api/relatorio/feedback', { store_name: store, month, feedback_text: text, report_run_id: runId }),
+    getHistory:   (store)                      => request('GET',    `/api/relatorio/history/${encodeURIComponent(store)}`),
+    downloadDocx: async (store, month) => {
+      const res = await fetch(`${serverUrl}/downloads/relatorios/relatorio_${encodeURIComponent(store.replace(/\s+/g,'_'))}_${month}.docx`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.blob()
+    },
+  },
 }
