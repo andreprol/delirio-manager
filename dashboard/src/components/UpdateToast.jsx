@@ -19,7 +19,7 @@ export function UpdateToast() {
       position: 'fixed', bottom: 24, right: 24,
       background: '#12122a', border: '1px solid #667eea88',
       borderRadius: 10, padding: '14px 16px',
-      zIndex: 9998, display: 'flex', flexDirection: 'column', gap: 10,
+      zIndex: 99999, display: 'flex', flexDirection: 'column', gap: 10,
       boxShadow: '0 4px 24px #667eea44', width: 280,
       fontFamily: 'monospace',
     }}>
