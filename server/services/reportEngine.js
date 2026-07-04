@@ -170,8 +170,7 @@ function parseClaudeScore(aiResult) {
 
 async function generateDocx(ctx, scores, month) {
   const { Document, Packer, Paragraph, Table, TableRow, TableCell, TextRun,
-          ImageRun, HeadingLevel, AlignmentType, BorderStyle, WidthType,
-          ShadingType } = require('docx');
+          ImageRun, HeadingLevel, AlignmentType, WidthType } = require('docx');
   const fs   = require('fs');
   const path = require('path');
 
@@ -205,7 +204,7 @@ async function generateDocx(ctx, scores, month) {
   // Capa
   if (logoData) {
     sections.push(new Paragraph({
-      children: [new ImageRun({ data: logoData, transformation: { width: 180, height: 60 } })],
+      children: [new ImageRun({ data: logoData, type: 'png', transformation: { width: 180, height: 60 } })],
       alignment: AlignmentType.CENTER,
     }));
   }
@@ -302,19 +301,22 @@ async function generateDocx(ctx, scores, month) {
   const doc = new Document({ sections: [{ children: sections }] });
   const DOWNLOADS = path.join(__dirname, '..', '..', 'downloads', 'relatorios');
   fs.mkdirSync(DOWNLOADS, { recursive: true });
-  const filename = `relatorio_${ctx.storeName.replace(/\s+/g, '_')}_${month}.docx`;
-  const filepath = path.join(DOWNLOADS, filename);
+  const safeName  = ctx.storeName.replace(/[^a-zA-Z0-9À-ÿ _-]/g, '').replace(/\s+/g, '_').slice(0, 60);
+  const safeMonth = month.replace(/[^0-9-]/g, '').slice(0, 7);
+  const filename  = `relatorio_${safeName}_${safeMonth}.docx`;
+  const filepath  = path.join(DOWNLOADS, filename);
+  if (!filepath.startsWith(DOWNLOADS)) throw new Error('invalid report path');
   const buffer = await Packer.toBuffer(doc);
   fs.writeFileSync(filepath, buffer);
   return filepath;
 }
 
 async function generatePdf(docxPath) {
-  const { execSync } = require('child_process');
+  const { execFileSync } = require('child_process');
   const path = require('path');
   const dir  = path.dirname(docxPath);
   try {
-    execSync(`soffice --headless --convert-to pdf --outdir "${dir}" "${docxPath}"`, { timeout: 30000 });
+    execFileSync('soffice', ['--headless', '--convert-to', 'pdf', '--outdir', dir, docxPath], { timeout: 30000 });
     return docxPath.replace(/\.docx$/, '.pdf');
   } catch (err) {
     console.error('[reportEngine] PDF conversion failed:', err.message);
