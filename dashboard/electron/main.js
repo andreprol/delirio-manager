@@ -74,6 +74,12 @@ function setupAutoUpdater(win) {
   autoUpdater.on('update-not-available', () => {
     if (!win.isDestroyed()) win.webContents.send('update-not-available')
   })
+  autoUpdater.on('update-available', (info) => {
+    if (!win.isDestroyed()) win.webContents.send('update-available', { version: info.version })
+  })
+  autoUpdater.on('download-progress', (prog) => {
+    if (!win.isDestroyed()) win.webContents.send('download-progress', { percent: Math.round(prog.percent) })
+  })
   autoUpdater.on('update-downloaded', (info) => {
     pendingUpdate = { version: info.version }
     if (!win.isDestroyed()) win.webContents.send('update-downloaded', { version: info.version })

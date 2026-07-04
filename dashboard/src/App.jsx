@@ -24,7 +24,8 @@ export default function App() {
   const [autoWakeLoading, setAutoWakeLoading] = useState(false)
   const [generating,      setGenerating]      = useState(false)
   const [generateMsg,     setGenerateMsg]     = useState(null)
-  const [updateStatus,    setUpdateStatus]    = useState(null) // null | 'checking' | 'up-to-date' | 'error'
+  const [updateStatus,    setUpdateStatus]    = useState(null) // null | 'checking' | 'downloading' | 'up-to-date' | 'error'
+  const [downloadPct,     setDownloadPct]     = useState(0)
 
   const {
     machines, groupMap, groupsList,
@@ -87,6 +88,23 @@ export default function App() {
       cleanups.push(window.electronAPI.onUpdateError(() => {
         setUpdateStatus('error')
         setTimeout(() => setUpdateStatus(null), 4000)
+      }))
+    }
+    if (window.electronAPI?.onUpdateAvailable) {
+      cleanups.push(window.electronAPI.onUpdateAvailable(() => {
+        setUpdateStatus('downloading')
+        setDownloadPct(0)
+      }))
+    }
+    if (window.electronAPI?.onDownloadProgress) {
+      cleanups.push(window.electronAPI.onDownloadProgress(({ percent }) => {
+        setDownloadPct(percent)
+      }))
+    }
+    if (window.electronAPI?.onUpdateDownloaded) {
+      cleanups.push(window.electronAPI.onUpdateDownloaded(() => {
+        setUpdateStatus(null)
+        setDownloadPct(0)
       }))
     }
     return () => cleanups.forEach(fn => fn?.())
@@ -238,13 +256,14 @@ export default function App() {
           <button
             className={`update-check-btn${updateStatus ? ` update-check-btn--${updateStatus}` : ''}`}
             onClick={handleCheckForUpdates}
-            disabled={updateStatus === 'checking'}
+            disabled={updateStatus === 'checking' || updateStatus === 'downloading'}
             title="Verificar atualização"
           >
-            {updateStatus === 'checking'   ? '⟳ Verificando…'      : null}
-            {updateStatus === 'up-to-date' ? '✓ Atualizado'         : null}
-            {updateStatus === 'error'      ? '✕ Falha'              : null}
-            {!updateStatus                 ? '⬆ Verificar update'   : null}
+            {updateStatus === 'checking'    ? '⟳ Verificando…'                        : null}
+            {updateStatus === 'downloading' ? `⬇ Baixando… ${downloadPct}%`           : null}
+            {updateStatus === 'up-to-date'  ? '✓ Atualizado'                          : null}
+            {updateStatus === 'error'       ? '✕ Falha'                               : null}
+            {!updateStatus                  ? '⬆ Verificar update'                    : null}
           </button>
           <div className={`conn-status ${connected ? 'connected' : 'disconnected'}`}>
             <span className="conn-dot" />
