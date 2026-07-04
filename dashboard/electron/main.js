@@ -72,6 +72,10 @@ function setupAutoUpdater(win) {
   })
   autoUpdater.on('update-downloaded', (info) => {
     pendingUpdate = { version: info.version }
+    // Push para o renderer se já estiver montado (caso normal: download termina depois do mount)
+    if (!win.isDestroyed()) {
+      win.webContents.send('update-downloaded', { version: info.version })
+    }
   })
 
   // Aguarda a página carregar antes de iniciar a verificação
@@ -82,6 +86,7 @@ function setupAutoUpdater(win) {
   })
 
   // Renderer puxa o update pendente via invoke após registrar o listener push
+  // (cobre o caso raro onde update-downloaded chega antes do useEffect registrar o listener)
   ipcMain.handle('updater:get-pending', () => pendingUpdate)
 }
 
@@ -90,11 +95,34 @@ app.whenReady().then(() => {
   ipcMain.handle('config:get', () => loadConfig())
   ipcMain.handle('config:set', (_, cfg) => { saveConfig(cfg); return true })
 
-  // IPC: abrir pasta no Windows Explorer — bloqueia UNC paths e não-http(s)
+  // IPC: abrir pasta no Windows Explorer — allowlist de roots permitidos
   ipcMain.handle('shell:openPath', (_, folderPath) => {
     if (typeof folderPath !== 'string') return
+    // Bloqueia UNC paths explícitos (\\server\share ou //server/share)
     if (folderPath.startsWith('\\\\') || folderPath.startsWith('//')) return
-    return shell.openPath(path.resolve(folderPath))
+
+    const resolved = path.resolve(folderPath)
+
+    // Roots confiáveis: userData do app + downloads + pasta LGPD configurada
+    const cfg = loadConfig()
+    const allowedRoots = [
+      app.getPath('userData'),
+      app.getPath('downloads'),
+      cfg.lgpdExplorerRoot,
+    ].filter(Boolean).map(r => path.resolve(r))
+
+    const withinRoot = allowedRoots.some(root => {
+      const prefix = root.endsWith(path.sep) ? root : root + path.sep
+      const norm   = resolved.toLowerCase()
+      return norm === root.toLowerCase() || norm.startsWith(prefix.toLowerCase())
+    })
+
+    if (!withinRoot) {
+      console.warn(`[security] shell:openPath bloqueado — fora do allowlist: ${resolved}`)
+      return
+    }
+
+    return shell.openPath(resolved)
   })
 
   // IPC: instalar update e reiniciar (só funciona em produção)
