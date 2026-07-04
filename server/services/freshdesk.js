@@ -15,9 +15,10 @@ function mapStatus(num) {
   return MAP[num] || 'open';
 }
 
-// Determina se um ticket é de TI baseado nos custom fields
+// Inclui ticket se tem loja associada (cf_nome_de_loja) ou se está classificado como TI
 function isTiTicket(ticket) {
   const cf = ticket.custom_fields || {};
+  if (cf.cf_nome_de_loja) return true;
   const setor = (cf.cf_setor || '').toLowerCase();
   const grupo  = (cf.cf_grupo  || '').toLowerCase();
   return setor === 'ti' || grupo === 'ti';
@@ -43,7 +44,7 @@ function mapTicket(ticket) {
 function fetchPage(domain, apiKey, page) {
   return new Promise((resolve, reject) => {
     const auth = Buffer.from(`${apiKey}:X`).toString('base64');
-    const path = `/api/v2/tickets?per_page=100&page=${page}&include=custom_fields&updated_since=2024-01-01T00:00:00Z`;
+    const path = `/api/v2/tickets?per_page=100&page=${page}&updated_since=2024-01-01T00:00:00Z`;
     const req = https.request({
       hostname: `${domain}.freshdesk.com`,
       path,

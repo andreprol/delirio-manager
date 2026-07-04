@@ -21,8 +21,18 @@ export function StoreList({ stores, selectedStore, onSelect }) {
               <div style={{ fontSize: '0.78rem', fontWeight: selectedStore === s.name ? 600 : 400, color: selectedStore === s.name ? '#e2e8f0' : '#a0aec0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {s.name}
               </div>
-              <div style={{ fontSize: '0.65rem', color: '#4a5568' }}>
-                {s.score !== null ? `Score ${s.score}` : 'Sem dados'}{s.openTopics > 0 ? ` · ${s.openTopics} tópico${s.openTopics > 1 ? 's' : ''}` : ''}
+              <div style={{ fontSize: '0.65rem', display: 'flex', flexDirection: 'column', gap: 1, marginTop: 1 }}>
+                {/* Score ou placeholder */}
+                <span style={{ color: '#4a5568' }}>
+                  {s.score !== null ? `Score ${s.score}` : 'Sem relatório'}{s.openTopics > 0 ? ` · ${s.openTopics} tópico${s.openTopics > 1 ? 's' : ''}` : ''}
+                </span>
+                {/* Freshdesk */}
+                {s.freshdeskCount > 0
+                  ? <span style={{ color: '#48bb78' }}>✓ {s.freshdeskCount} tickets sincronizados</span>
+                  : <span style={{ color: '#4a5568' }}>Freshdesk sem tickets</span>
+                }
+                {/* Zamak RMM */}
+                <span style={{ color: '#4a5568' }}>Zamak não sincronizada</span>
               </div>
             </div>
           </div>

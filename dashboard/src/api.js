@@ -158,6 +158,7 @@ export const api = {
     generate:     (store, month)               => request('POST',   '/api/relatorio/generate', { store, month }),
     saveFeedback: (store, month, text, runId)  => request('POST',   '/api/relatorio/feedback', { store_name: store, month, feedback_text: text, report_run_id: runId }),
     getHistory:   (store)                      => request('GET',    `/api/relatorio/history/${encodeURIComponent(store)}`),
+    getFreshdesk: (store)                      => request('GET',    `/api/relatorio/freshdesk/${encodeURIComponent(store)}`),
     downloadDocx: async (store, month) => {
       const res = await fetch(`${serverUrl}/downloads/relatorios/relatorio_${encodeURIComponent(store.replace(/\s+/g,'_'))}_${month}.docx`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

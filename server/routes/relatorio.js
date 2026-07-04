@@ -22,11 +22,21 @@ router.get('/stores', (req, res) => {
     db.getDb().prepare('SELECT DISTINCT store_name FROM freshdesk_cache WHERE store_name IS NOT NULL').all()
       .forEach(r => storeSet.add(r.store_name));
 
+    storeSet.delete('Temporário');
+
+    // Contagem de tickets Freshdesk por loja
+    const freshdeskRows = db.getDb().prepare(
+      `SELECT store_name, COUNT(*) as n FROM freshdesk_cache WHERE store_name IS NOT NULL GROUP BY store_name`
+    ).all();
+    const freshdeskMap = {};
+    freshdeskRows.forEach(r => { freshdeskMap[r.store_name] = r.n; });
+
     const stores = [...storeSet].sort().map(name => ({
       name,
-      openTopics: countMap[name] || 0,
-      score: scoreMap[name]?.score ?? null,
-      lastReport: scoreMap[name]?.generatedAt ?? null,
+      openTopics:     countMap[name] || 0,
+      score:          scoreMap[name]?.score ?? null,
+      lastReport:     scoreMap[name]?.generatedAt ?? null,
+      freshdeskCount: freshdeskMap[name] ?? 0,
     }));
     res.json(stores);
   } catch (err) {
@@ -129,11 +139,69 @@ router.post('/feedback', (req, res) => {
   }
 });
 
+// GET /api/relatorio/freshdesk/:store — tickets visíveis na UI
+router.get('/freshdesk/:store', async (req, res) => {
+  try {
+    const store = decodeURIComponent(req.params.store);
+    await freshdesk.syncIfStale(store).catch(() => {});
+    const active = db.getDb().prepare(
+      `SELECT ticket_id, title, status, priority, created_at
+       FROM freshdesk_cache
+       WHERE store_name = ? AND status IN ('open','pending')
+       ORDER BY created_at DESC`
+    ).all(store);
+    const closed = db.getDb().prepare(
+      `SELECT ticket_id, title, status, priority, created_at, resolved_at
+       FROM freshdesk_cache
+       WHERE store_name = ? AND status IN ('resolved','closed')
+       ORDER BY resolved_at DESC LIMIT 20`
+    ).all(store);
+    res.json({ active, closed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/relatorio/history/:store
 router.get('/history/:store', (req, res) => {
   try {
     const history = db.getReportHistory(decodeURIComponent(req.params.store));
     res.json(history);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/relatorio/freshdesk-debug
+// Diagnóstico: mostra config, cache atual e tenta sync forçado
+router.get('/freshdesk-debug', async (req, res) => {
+  try {
+    let cfg = {};
+    try { cfg = require('../config.json').freshdesk || {}; } catch {}
+
+    // Cache atual
+    const cached = db.getDb().prepare('SELECT COUNT(*) as total FROM freshdesk_cache').get();
+    const sample = db.getDb().prepare('SELECT * FROM freshdesk_cache LIMIT 5').all();
+
+    // Tentar sync forçado e capturar resultado bruto
+    let syncResult = null;
+    let syncError  = null;
+    try {
+      syncResult = await freshdesk.syncAll();
+    } catch (e) {
+      syncError = e.message;
+    }
+
+    // Após sync, ver o que ficou no cache
+    const afterSync = db.getDb().prepare('SELECT COUNT(*) as total FROM freshdesk_cache').get();
+    const afterSample = db.getDb().prepare('SELECT store_name, status, title FROM freshdesk_cache LIMIT 10').all();
+
+    res.json({
+      config: { domain: cfg.domain, api_key_set: !!cfg.api_key, api_key_length: (cfg.api_key || '').length },
+      cache_before: { total: cached.total, sample },
+      sync: syncResult !== null ? { count: syncResult } : { error: syncError },
+      cache_after: { total: afterSync.total, sample: afterSample },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

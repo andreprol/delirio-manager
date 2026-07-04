@@ -1,10 +1,11 @@
 // dashboard/src/components/report/StoreDashboard.jsx
 import { useState, useEffect } from 'react'
 import { api } from '../../api'
-import { ScoreWidget }   from './ScoreWidget'
-import { TopicList }     from './TopicList'
-import { TopicForm }     from './TopicForm'
-import { GenerateModal } from './GenerateModal'
+import { ScoreWidget }      from './ScoreWidget'
+import { TopicList }        from './TopicList'
+import { TopicForm }        from './TopicForm'
+import { GenerateModal }    from './GenerateModal'
+import { FreshdeskSection } from './FreshdeskSection'
 
 export function StoreDashboard({ storeName }) {
   const [topics,       setTopics]       = useState([])
@@ -83,6 +84,9 @@ export function StoreDashboard({ storeName }) {
           : <TopicList topics={topics} onResolve={handleResolve} />
         }
       </div>
+
+      {/* Freshdesk */}
+      <FreshdeskSection storeName={storeName} />
 
       {/* Modais */}
       {showForm && (
