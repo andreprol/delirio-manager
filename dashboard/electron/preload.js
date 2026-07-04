@@ -15,4 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   getPendingUpdate:   ()    => ipcRenderer.invoke('updater:get-pending'),
   quitAndInstall:     ()    => ipcRenderer.invoke('updater:quit-and-install'),
+
+  // Janela cresce para acomodar o topbar quando necessário
+  fitTopbar: (neededWidth) => ipcRenderer.invoke('window:fit-topbar', neededWidth),
 })

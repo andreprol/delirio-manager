@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useLayoutEffect } from 'react'
 import pkg from '../package.json'
 import { useMachines } from './hooks/useMachines'
 import { LocationGroup } from './components/LocationGroup'
@@ -42,6 +42,26 @@ export default function App() {
   const [showRelatorio,  setShowRelatorio]  = useState(false)
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
   const [alertsCount,     setAlertsCount]     = useAlertsCount()
+
+  // Garante que a janela Electron é larga o suficiente para o topbar.
+  // Quando novos botões são adicionados no futuro, a janela cresce automaticamente
+  // sem nenhuma intervenção manual — basta o ResizeObserver detectar o overflow.
+  const topbarRef = useRef(null)
+  useLayoutEffect(() => {
+    const el = topbarRef.current
+    if (!el || !window.electronAPI?.fitTopbar) return
+    const PADDING = 24 // folga para evitar scroll horizontal
+    const check = () => {
+      const needed = el.scrollWidth + PADDING
+      if (needed > window.innerWidth) {
+        window.electronAPI.fitTopbar(needed)
+      }
+    }
+    check()
+    const obs = new ResizeObserver(check)
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
 
   useEffect(() => {
     if (!lastOffline) return
@@ -182,7 +202,7 @@ export default function App() {
   return (
     <div className="app">
       {/* Topbar */}
-      <header className="topbar">
+      <header className="topbar" ref={topbarRef}>
         <div className="topbar-left">
           <span className="logo">Delirio Manager</span>
           <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 6, fontFamily: 'monospace', letterSpacing: '0.02em' }}>v{pkg.version}</span>

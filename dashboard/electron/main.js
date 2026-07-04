@@ -132,6 +132,20 @@ app.whenReady().then(() => {
     autoUpdater.quitAndInstall()
   })
 
+  // IPC: cresce a janela para acomodar o topbar quando necessário.
+  // Só aumenta — nunca encolhe. Garante que qualquer novo botão
+  // adicionado no futuro não fica escondido além da borda direita.
+  ipcMain.handle('window:fit-topbar', (_, neededWidth) => {
+    if (!win || win.isDestroyed()) return
+    if (typeof neededWidth !== 'number' || neededWidth <= 0) return
+    const [currentW, currentH] = win.getSize()
+    const [currentMinW, currentMinH] = win.getMinimumSize()
+    const newW    = Math.max(currentW,    Math.ceil(neededWidth))
+    const newMinW = Math.max(currentMinW, Math.ceil(neededWidth))
+    if (newMinW !== currentMinW) win.setMinimumSize(newMinW, currentMinH)
+    if (newW    !== currentW)    win.setSize(newW, currentH, true) // true = animate
+  })
+
   const win = createWindow()
   setupAutoUpdater(win)
 
