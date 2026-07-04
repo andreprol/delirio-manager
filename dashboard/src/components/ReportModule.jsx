@@ -25,7 +25,7 @@ export function ReportModule({ onClose }) {
   useEffect(() => { loadStores() }, [])
 
   return (
-    <div style={{ position: 'fixed', top: 56, left: 0, right: 0, bottom: 0, background: '#0f0f19f0', zIndex: 9999, display: 'flex', flexDirection: 'column', fontFamily: 'monospace' }}>
+    <div style={{ position: 'fixed', top: 56, left: 0, right: 0, bottom: 0, background: '#0f0f19', zIndex: 9999, display: 'flex', flexDirection: 'column', fontFamily: 'monospace' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 24px', borderBottom: '1px solid #1e1e30' }}>
         <div>

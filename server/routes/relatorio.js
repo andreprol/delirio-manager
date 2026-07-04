@@ -25,18 +25,21 @@ router.get('/stores', (req, res) => {
     storeSet.delete('Temporário');
 
     // Contagem de tickets Freshdesk por loja
+    // Normaliza removendo acentos para tolerar divergências entre dados de máquinas e Freshdesk
+    const stripAccents = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+
     const freshdeskRows = db.getDb().prepare(
       `SELECT store_name, COUNT(*) as n FROM freshdesk_cache WHERE store_name IS NOT NULL GROUP BY store_name`
     ).all();
     const freshdeskMap = {};
-    freshdeskRows.forEach(r => { freshdeskMap[r.store_name] = r.n; });
+    freshdeskRows.forEach(r => { freshdeskMap[stripAccents(r.store_name)] = r.n; });
 
     const stores = [...storeSet].sort().map(name => ({
       name,
       openTopics:     countMap[name] || 0,
       score:          scoreMap[name]?.score ?? null,
       lastReport:     scoreMap[name]?.generatedAt ?? null,
-      freshdeskCount: freshdeskMap[name] ?? 0,
+      freshdeskCount: freshdeskMap[stripAccents(name)] ?? 0,
     }));
     res.json(stores);
   } catch (err) {
