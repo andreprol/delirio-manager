@@ -5,7 +5,11 @@ export function UpdateToast() {
 
   useEffect(() => {
     if (!window.electronAPI?.onUpdateDownloaded) return
-    window.electronAPI.onUpdateDownloaded((data) => setUpdate(data))
+    // Registra listener push (updates que chegarem depois que o componente montou)
+    const cleanup = window.electronAPI.onUpdateDownloaded((data) => setUpdate(data))
+    // Pull: busca update que já estava bufferizado antes do componente montar
+    window.electronAPI.getPendingUpdate?.().then((data) => { if (data) setUpdate(data) })
+    return cleanup
   }, [])
 
   if (!update) return null

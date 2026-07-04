@@ -46,7 +46,7 @@ function createWindow() {
   }
 
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    if (/^https?:\/\//.test(url)) shell.openExternal(url)
     return { action: 'deny' }
   })
 
@@ -63,12 +63,26 @@ function setupAutoUpdater(win) {
   autoUpdater.autoDownload         = true
   autoUpdater.autoInstallOnAppQuit = true
 
-  autoUpdater.on('error', () => {})
+  // Buffer: sempre armazena o update; o renderer puxa via getPendingUpdate após montar
+  // (isLoading() não é guarda confiável para SPA — HTML termina antes do React montar)
+  let pendingUpdate = null
+
+  autoUpdater.on('error', (err) => {
+    process.stderr.write(`[autoUpdater] error: ${err?.message}\n`)
+  })
   autoUpdater.on('update-downloaded', (info) => {
-    win.webContents.send('update-downloaded', { version: info.version })
+    pendingUpdate = { version: info.version }
   })
 
-  autoUpdater.checkForUpdates().catch(() => {})
+  // Aguarda a página carregar antes de iniciar a verificação
+  win.webContents.once('did-finish-load', () => {
+    autoUpdater.checkForUpdates().catch((err) => {
+      process.stderr.write(`[autoUpdater] checkForUpdates error: ${err?.message}\n`)
+    })
+  })
+
+  // Renderer puxa o update pendente via invoke após registrar o listener push
+  ipcMain.handle('updater:get-pending', () => pendingUpdate)
 }
 
 app.whenReady().then(() => {
@@ -76,11 +90,16 @@ app.whenReady().then(() => {
   ipcMain.handle('config:get', () => loadConfig())
   ipcMain.handle('config:set', (_, cfg) => { saveConfig(cfg); return true })
 
-  // IPC: abrir pasta no Windows Explorer
-  ipcMain.handle('shell:openPath', (_, folderPath) => shell.openPath(folderPath))
+  // IPC: abrir pasta no Windows Explorer — bloqueia UNC paths e não-http(s)
+  ipcMain.handle('shell:openPath', (_, folderPath) => {
+    if (typeof folderPath !== 'string') return
+    if (folderPath.startsWith('\\\\') || folderPath.startsWith('//')) return
+    return shell.openPath(path.resolve(folderPath))
+  })
 
-  // IPC: instalar update e reiniciar
+  // IPC: instalar update e reiniciar (só funciona em produção)
   ipcMain.handle('updater:quit-and-install', () => {
+    if (!app.isPackaged) return
     const { autoUpdater } = require('electron-updater')
     autoUpdater.quitAndInstall()
   })
