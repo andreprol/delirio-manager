@@ -30,9 +30,15 @@ function parsePhotoPaths(raw) {
 }
 
 // POST /api/relatorio/photos — upload de uma foto, retorna URL pública
-router.post('/photos', upload.single('photo'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
-  res.json({ url: `/relatorio-photos/${req.file.filename}` });
+router.post('/photos', (req, res) => {
+  upload.single('photo')(req, res, (err) => {
+    if (err) {
+      console.error('[relatorio/photos] multer error:', err.message);
+      return res.status(400).json({ error: err.message || 'Erro no upload' });
+    }
+    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+    res.json({ url: `/relatorio-photos/${req.file.filename}` });
+  });
 });
 
 // GET /api/relatorio/stores

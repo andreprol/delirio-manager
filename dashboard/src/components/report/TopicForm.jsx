@@ -28,17 +28,22 @@ export function TopicForm({ storeName, onCreated, onSaved, onCancel, initialTopi
 
   const isCritical = /^(TERM|BOH)/i.test(machineMention.trim())
 
-  // Faz upload de um File e adiciona ao array de fotos
-  const uploadFile = useCallback(async (file) => {
+  // Faz upload de um File e adiciona (ou atualiza) no array de fotos
+  const uploadFile = useCallback(async (file, existingId = null) => {
     if (!file || !file.type.startsWith('image/')) return
-    const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`
+    const id = existingId ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`
     const localPreview = URL.createObjectURL(file)
-    setPhotos(prev => [...prev, { id, url: null, localPreview, name: file.name || 'imagem.png', uploading: true, error: null }])
+    if (existingId) {
+      // Retry: atualiza entrada existente
+      setPhotos(prev => prev.map(p => p.id === id ? { ...p, localPreview, uploading: true, error: null, _file: file } : p))
+    } else {
+      setPhotos(prev => [...prev, { id, url: null, localPreview, name: file.name || 'imagem.png', uploading: true, error: null, _file: file }])
+    }
     try {
       const { url } = await api.relatorio.uploadPhoto(file)
-      setPhotos(prev => prev.map(p => p.id === id ? { ...p, url, uploading: false } : p))
+      setPhotos(prev => prev.map(p => p.id === id ? { ...p, url, uploading: false, error: null } : p))
     } catch (e) {
-      setPhotos(prev => prev.map(p => p.id === id ? { ...p, uploading: false, error: e.message } : p))
+      setPhotos(prev => prev.map(p => p.id === id ? { ...p, uploading: false, error: e.message || 'Erro de rede' } : p))
     }
   }, [])
 
@@ -72,6 +77,8 @@ export function TopicForm({ storeName, onCreated, onSaved, onCancel, initialTopi
     e.preventDefault()
     if (!description.trim()) return
     if (photos.some(p => p.uploading)) { setError('Aguarde o upload das fotos terminar.'); return }
+    const failedCount = photos.filter(p => p.error).length
+    if (failedCount > 0 && !window.confirm(`${failedCount} foto(s) falharam no upload e não serão salvas. Continuar mesmo assim?`)) return
     setSaving(true); setError(null)
     try {
       const photo_paths = photos.filter(p => p.url).map(p => p.url)
@@ -145,13 +152,18 @@ export function TopicForm({ storeName, onCreated, onSaved, onCancel, initialTopi
                     style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: p.uploading ? 0.4 : 1 }}
                   />
                   {p.uploading && (
-                    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0007' }}>
                       <span style={{ fontSize: '1.2rem' }}>⏳</span>
                     </div>
                   )}
                   {p.error && (
-                    <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: '#c53030cc', color: '#fff', fontSize: '0.6rem', padding: '2px 4px', textAlign: 'center' }}>
-                      Falhou
+                    <div
+                      onClick={() => p._file && uploadFile(p._file, p.id)}
+                      title={p.error}
+                      style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#c530308f', cursor: p._file ? 'pointer' : 'default', gap: 2 }}>
+                      <span style={{ fontSize: '0.9rem' }}>⚠️</span>
+                      <span style={{ fontSize: '0.55rem', color: '#fff', fontWeight: 700 }}>Upload falhou</span>
+                      {p._file && <span style={{ fontSize: '0.5rem', color: '#ffd', textDecoration: 'underline' }}>clique p/ tentar novamente</span>}
                     </div>
                   )}
                   <button
