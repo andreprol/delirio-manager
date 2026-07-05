@@ -907,9 +907,17 @@ function createTopic({ store_name, description, severity, machine_mention, photo
 
 function updateTopic(id, { description, severity, machine_mention, photo_path }) {
   const critical = isCriticalMachine(machine_mention);
-  getDb().prepare(
-    `UPDATE report_topics SET description=?, severity=?, machine_mention=?, is_critical_machine=?, photo_path=? WHERE id=?`
-  ).run(description, severity, machine_mention || null, critical ? 1 : 0, photo_path || null, id);
+  // photo_path === undefined → não alterar (preservar o que está no DB)
+  // photo_path === null      → limpar fotos explicitamente
+  if (photo_path !== undefined) {
+    getDb().prepare(
+      `UPDATE report_topics SET description=?, severity=?, machine_mention=?, is_critical_machine=?, photo_path=? WHERE id=?`
+    ).run(description, severity, machine_mention || null, critical ? 1 : 0, photo_path, id);
+  } else {
+    getDb().prepare(
+      `UPDATE report_topics SET description=?, severity=?, machine_mention=?, is_critical_machine=? WHERE id=?`
+    ).run(description, severity, machine_mention || null, critical ? 1 : 0, id);
+  }
   return getDb().prepare('SELECT * FROM report_topics WHERE id = ?').get(id);
 }
 

@@ -122,14 +122,19 @@ router.post('/topics', (req, res) => {
 // PUT /api/relatorio/topics/:id — editar tópico existente
 router.put('/topics/:id', (req, res) => {
   try {
-    const { description, severity, machine_mention, photo_paths } = req.body;
+    const { description, severity, machine_mention } = req.body;
     if (!description || !severity) {
       return res.status(400).json({ error: 'description e severity são obrigatórios' });
     }
-    const photo_path = photo_paths && photo_paths.length ? JSON.stringify(photo_paths) : null;
+    // photo_path só é calculado se photo_paths vier no body; undefined = preserva DB
+    let photo_path;
+    if ('photo_paths' in req.body) {
+      const pp = req.body.photo_paths;
+      photo_path = pp && pp.length ? JSON.stringify(pp) : null;
+    }
     const topic = db.updateTopic(Number(req.params.id), { description, severity, machine_mention, photo_path });
     if (!topic) return res.status(404).json({ error: 'Tópico não encontrado' });
-    res.json({ ...topic, photo_paths: photo_paths || [] });
+    res.json({ ...topic, photo_paths: parsePhotoPaths(topic.photo_path) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

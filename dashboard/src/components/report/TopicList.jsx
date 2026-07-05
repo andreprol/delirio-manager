@@ -64,11 +64,11 @@ export function TopicList({ topics, onResolve, onEdit }) {
               {t.machine_mention && !t.is_critical_machine ? <span style={{ fontSize: '0.65rem', color: '#718096' }}>{t.machine_mention}</span> : null}
               <span style={{ fontSize: '0.65rem', color: '#4a5568' }}>{t.created_at?.slice(0, 10)}</span>
               <button onClick={() => onEdit?.(t)}
-                style={{ background: 'none', border: 'none', color: '#718096', cursor: 'pointer', fontSize: '0.8rem', padding: '0 2px', lineHeight: 1 }}
-                title="Editar tópico">✏️</button>
+                style={{ background: '#2d3748', border: '1px solid #4a5568', borderRadius: 4, color: '#a0aec0', cursor: 'pointer', fontSize: '0.65rem', padding: '2px 7px', lineHeight: 1.4, whiteSpace: 'nowrap' }}
+                title="Editar tópico">✏️ Editar</button>
               <button onClick={() => onResolve(t.id)}
-                style={{ background: 'none', border: 'none', color: '#4a5568', cursor: 'pointer', fontSize: '0.85rem', padding: '0 2px', lineHeight: 1 }}
-                title="Excluir tópico">🗑</button>
+                style={{ background: '#2d1f1f', border: '1px solid #742a2a', borderRadius: 4, color: '#fc8181', cursor: 'pointer', fontSize: '0.65rem', padding: '2px 7px', lineHeight: 1.4, whiteSpace: 'nowrap' }}
+                title="Excluir tópico">✕ Excluir</button>
             </div>
           </div>
         )
