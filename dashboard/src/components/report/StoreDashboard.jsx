@@ -98,8 +98,8 @@ export function StoreDashboard({ storeName, onStoreListRefresh }) {
       )}
       {showGenerate && (
         <GenerateModal storeName={storeName}
-          onClose={() => setShowGenerate(false)}
-          onGenerated={() => { load(); onStoreListRefresh?.() }}
+          onClose={() => { setShowGenerate(false); load(); onStoreListRefresh?.() }}
+          onGenerated={() => {}}
         />
       )}
       {editingTopic && (
