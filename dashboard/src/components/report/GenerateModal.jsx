@@ -1,6 +1,6 @@
 // dashboard/src/components/report/GenerateModal.jsx
 import { useState } from 'react'
-import { api } from '../../api'
+import { api, getServerUrl } from '../../api'
 
 export function GenerateModal({ storeName, onClose, onGenerated }) {
   const now     = new Date()
@@ -15,7 +15,7 @@ export function GenerateModal({ storeName, onClose, onGenerated }) {
   const [dlDone,     setDlDone]     = useState(null) // filename do último download concluído
 
   function downloadFile(relativeUrl, filename) {
-    const url = `${api.getServerUrl?.() || ''}${relativeUrl}`
+    const url = `${getServerUrl()}${relativeUrl}`
     if (window.electronAPI?.downloadFile) {
       window.electronAPI.downloadFile(url)
       // Ouve conclusão do download via IPC (only once per click)
@@ -51,7 +51,7 @@ export function GenerateModal({ storeName, onClose, onGenerated }) {
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#000a', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-      onClick={e => e.target === e.currentTarget && onClose()}>
+      onClick={e => { if (!generating && e.target === e.currentTarget) onClose() }}>
       <div style={{ background: '#1a202c', border: '1px solid #2d3748', borderRadius: 10, padding: 24, width: 480, display: 'flex', flexDirection: 'column', gap: 14 }}>
         <h3 style={{ margin: 0, color: '#e2e8f0' }}>📄 Gerar Relatório — {storeName}</h3>
 
@@ -65,10 +65,13 @@ export function GenerateModal({ storeName, onClose, onGenerated }) {
             </div>
             {error && <div style={{ color: '#fc8181', fontSize: '0.78rem' }}>{error}</div>}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button onClick={onClose} style={{ background: 'none', border: '1px solid #4a5568', borderRadius: 6, color: '#a0aec0', padding: '7px 14px', cursor: 'pointer', fontSize: '0.8rem' }}>Cancelar</button>
+              <button onClick={onClose} disabled={generating}
+                style={{ background: 'none', border: '1px solid #4a5568', borderRadius: 6, color: generating ? '#4a5568' : '#a0aec0', padding: '7px 14px', cursor: generating ? 'not-allowed' : 'pointer', fontSize: '0.8rem' }}>
+                Cancelar
+              </button>
               <button onClick={handleGenerate} disabled={generating}
                 style={{ background: '#667eea', border: 'none', borderRadius: 6, color: 'white', padding: '7px 16px', cursor: generating ? 'wait' : 'pointer', fontSize: '0.8rem', opacity: generating ? 0.7 : 1 }}>
-                {generating ? '⏳ Gerando... (pode levar 15s)' : '📄 Gerar Relatório'}
+                {generating ? '⏳ Gerando... aguarde até 1 min' : '📄 Gerar Relatório'}
               </button>
             </div>
           </>
