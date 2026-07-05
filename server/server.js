@@ -93,6 +93,8 @@ app.use('/downloads', express.static(DOWNLOADS_DIR));
 // Relatórios TI gerados (downloads/relatorios/)
 const RELATORIOS_DIR = path.join(__dirname, '..', 'downloads', 'relatorios');
 fs.mkdirSync(RELATORIOS_DIR, { recursive: true });
+try { fs.chmodSync(path.join(__dirname, '..', 'downloads'), 0o777); } catch (_) {}
+try { fs.chmodSync(RELATORIOS_DIR, 0o777); } catch (_) {}
 app.use('/downloads/relatorios', express.static(RELATORIOS_DIR));
 
 // Fotos de tópicos do Módulo Relatório
