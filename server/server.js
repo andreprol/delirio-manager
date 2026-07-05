@@ -98,6 +98,7 @@ app.use('/downloads/relatorios', express.static(RELATORIOS_DIR));
 // Fotos de tópicos do Módulo Relatório
 const RELATORIO_PHOTOS_DIR = path.join(PUBLIC_DIR, 'relatorio-photos');
 fs.mkdirSync(RELATORIO_PHOTOS_DIR, { recursive: true });
+try { fs.chmodSync(RELATORIO_PHOTOS_DIR, 0o777); } catch (_) {}
 app.use('/relatorio-photos', express.static(RELATORIO_PHOTOS_DIR));
 
 // GET /downloads/dashboard — download do installer mais recente do dashboard
