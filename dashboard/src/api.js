@@ -154,6 +154,7 @@ export const api = {
     getStores:    ()                           => request('GET',    '/api/relatorio/stores'),
     getTopics:    (store)                      => request('GET',    `/api/relatorio/topics/${encodeURIComponent(store)}`),
     createTopic:  (data)                       => request('POST',   '/api/relatorio/topics', data),
+    updateTopic:  (id, data)                   => request('PUT',    `/api/relatorio/topics/${id}`, data),
     resolveTopic: (id)                         => request('DELETE', `/api/relatorio/topics/${id}`),
     generate:     (store, month)               => request('POST',   '/api/relatorio/generate', { store, month }),
     saveFeedback: (store, month, text, runId)  => request('POST',   '/api/relatorio/feedback', { store_name: store, month, feedback_text: text, report_run_id: runId }),

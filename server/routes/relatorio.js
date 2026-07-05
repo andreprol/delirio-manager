@@ -113,6 +113,22 @@ router.post('/topics', (req, res) => {
   }
 });
 
+// PUT /api/relatorio/topics/:id — editar tópico existente
+router.put('/topics/:id', (req, res) => {
+  try {
+    const { description, severity, machine_mention, photo_paths } = req.body;
+    if (!description || !severity) {
+      return res.status(400).json({ error: 'description e severity são obrigatórios' });
+    }
+    const photo_path = photo_paths && photo_paths.length ? JSON.stringify(photo_paths) : null;
+    const topic = db.updateTopic(Number(req.params.id), { description, severity, machine_mention, photo_path });
+    if (!topic) return res.status(404).json({ error: 'Tópico não encontrado' });
+    res.json({ ...topic, photo_paths: photo_paths || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE /api/relatorio/topics/:id  — soft delete → history
 router.delete('/topics/:id', (req, res) => {
   try {

@@ -41,7 +41,7 @@ function PhotoStrip({ urls }) {
   )
 }
 
-export function TopicList({ topics, onResolve }) {
+export function TopicList({ topics, onResolve, onEdit }) {
   if (!topics.length) {
     return <p style={{ color: '#4a5568', fontSize: '0.8rem' }}>Nenhum tópico aberto nesta loja.</p>
   }
@@ -63,9 +63,12 @@ export function TopicList({ topics, onResolve }) {
               {t.is_critical_machine ? <span style={{ fontSize: '0.65rem', color: '#e53e3e', fontWeight: 700 }}>🔴 BOH/TERM</span> : null}
               {t.machine_mention && !t.is_critical_machine ? <span style={{ fontSize: '0.65rem', color: '#718096' }}>{t.machine_mention}</span> : null}
               <span style={{ fontSize: '0.65rem', color: '#4a5568' }}>{t.created_at?.slice(0, 10)}</span>
+              <button onClick={() => onEdit?.(t)}
+                style={{ background: 'none', border: 'none', color: '#718096', cursor: 'pointer', fontSize: '0.8rem', padding: '0 2px', lineHeight: 1 }}
+                title="Editar tópico">✏️</button>
               <button onClick={() => onResolve(t.id)}
-                style={{ background: 'none', border: 'none', color: '#4a5568', cursor: 'pointer', fontSize: '0.85rem', padding: 0 }}
-                title="Marcar como resolvido">🗑</button>
+                style={{ background: 'none', border: 'none', color: '#4a5568', cursor: 'pointer', fontSize: '0.85rem', padding: '0 2px', lineHeight: 1 }}
+                title="Excluir tópico">🗑</button>
             </div>
           </div>
         )

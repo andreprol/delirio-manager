@@ -1,19 +1,29 @@
 // dashboard/src/components/report/TopicForm.jsx
 import { useState, useRef, useCallback } from 'react'
-import { api } from '../../api'
+import { api, getServerUrl } from '../../api'
 
 const SEVERITIES = ['baixa', 'media', 'alta', 'critica']
 const SEV_COLOR  = { baixa: '#4299e1', media: '#ed8936', alta: '#e53e3e', critica: '#9f7aea' }
 
-export function TopicForm({ storeName, onCreated, onCancel }) {
-  const [description,    setDescription]    = useState('')
-  const [severity,       setSeverity]        = useState('media')
-  const [machineMention, setMachineMention]  = useState('')
+// initialTopic: tópico existente para edição (undefined = criação)
+export function TopicForm({ storeName, onCreated, onSaved, onCancel, initialTopic }) {
+  const isEditing = !!initialTopic
+
+  const [description,    setDescription]    = useState(initialTopic?.description   ?? '')
+  const [severity,       setSeverity]        = useState(initialTopic?.severity      ?? 'media')
+  const [machineMention, setMachineMention]  = useState(initialTopic?.machine_mention ?? '')
   const [saving,         setSaving]          = useState(false)
   const [error,          setError]           = useState(null)
 
+  // Fotos existentes do tópico (modo edição) → já têm URL, sem upload pendente
+  const serverUrl = getServerUrl()
+  const existingPhotos = (initialTopic?.photo_paths ?? []).map(url => ({
+    id: url, url, localPreview: url.startsWith('http') ? url : `${serverUrl}${url}`,
+    name: url.split('/').pop(), uploading: false, error: null,
+  }))
+
   // photos: [{ id, url, localPreview, name, uploading, error }]
-  const [photos, setPhotos] = useState([])
+  const [photos, setPhotos] = useState(existingPhotos)
   const fileInputRef = useRef(null)
 
   const isCritical = /^(TERM|BOH)/i.test(machineMention.trim())
@@ -61,20 +71,24 @@ export function TopicForm({ storeName, onCreated, onCancel }) {
   async function handleSubmit(e) {
     e.preventDefault()
     if (!description.trim()) return
-    const pending = photos.filter(p => p.uploading)
-    if (pending.length > 0) { setError('Aguarde o upload das fotos terminar.'); return }
+    if (photos.some(p => p.uploading)) { setError('Aguarde o upload das fotos terminar.'); return }
     setSaving(true); setError(null)
     try {
       const photo_paths = photos.filter(p => p.url).map(p => p.url)
-      const topic = await api.relatorio.createTopic({
-        store_name:      storeName,
+      const payload = {
         description:     description.trim(),
         severity:        isCritical ? 'critica' : severity,
         machine_mention: machineMention.trim() || null,
         photo_paths:     photo_paths.length ? photo_paths : undefined,
-        created_by:      'TI',
-      })
-      onCreated(topic)
+      }
+      let topic
+      if (isEditing) {
+        topic = await api.relatorio.updateTopic(initialTopic.id, payload)
+        onSaved?.(topic)
+      } else {
+        topic = await api.relatorio.createTopic({ ...payload, store_name: storeName, created_by: 'TI' })
+        onCreated?.(topic)
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -91,7 +105,9 @@ export function TopicForm({ storeName, onCreated, onCancel }) {
         onSubmit={handleSubmit}
         style={{ background: '#1a202c', border: '1px solid #2d3748', borderRadius: 10, padding: 24, width: 500, maxHeight: '90vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}
       >
-        <h3 style={{ margin: 0, color: '#e2e8f0', fontSize: '0.95rem' }}>Novo Tópico — {storeName}</h3>
+        <h3 style={{ margin: 0, color: '#e2e8f0', fontSize: '0.95rem' }}>
+          {isEditing ? `Editar Tópico — ${storeName}` : `Novo Tópico — ${storeName}`}
+        </h3>
 
         {/* Descrição */}
         <div>
@@ -198,7 +214,7 @@ export function TopicForm({ storeName, onCreated, onCancel }) {
           </button>
           <button type="submit" disabled={saving || !description.trim() || photos.some(p => p.uploading)}
             style={{ background: '#667eea', border: 'none', borderRadius: 6, color: 'white', padding: '7px 16px', cursor: (saving || photos.some(p => p.uploading)) ? 'wait' : 'pointer', fontSize: '0.8rem', opacity: (saving || photos.some(p => p.uploading)) ? 0.7 : 1 }}>
-            {saving ? 'Salvando...' : photos.some(p => p.uploading) ? 'Aguardando upload...' : 'Registrar Tópico'}
+            {saving ? 'Salvando...' : photos.some(p => p.uploading) ? 'Aguardando upload...' : isEditing ? 'Salvar Alterações' : 'Registrar Tópico'}
           </button>
         </div>
       </form>

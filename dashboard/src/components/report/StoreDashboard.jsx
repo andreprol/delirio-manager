@@ -8,11 +8,12 @@ import { GenerateModal }    from './GenerateModal'
 import { FreshdeskSection } from './FreshdeskSection'
 
 export function StoreDashboard({ storeName }) {
-  const [topics,       setTopics]       = useState([])
-  const [latestRun,    setLatestRun]    = useState(null)
-  const [loading,      setLoading]      = useState(true)
-  const [showForm,     setShowForm]     = useState(false)
-  const [showGenerate, setShowGenerate] = useState(false)
+  const [topics,        setTopics]       = useState([])
+  const [latestRun,     setLatestRun]    = useState(null)
+  const [loading,       setLoading]      = useState(true)
+  const [showForm,      setShowForm]     = useState(false)
+  const [showGenerate,  setShowGenerate] = useState(false)
+  const [editingTopic,  setEditingTopic] = useState(null)
 
   async function load() {
     setLoading(true)
@@ -81,7 +82,7 @@ export function StoreDashboard({ storeName }) {
         </div>
         {loading
           ? <p style={{ color: '#4a5568', fontSize: '0.78rem' }}>Carregando...</p>
-          : <TopicList topics={topics} onResolve={handleResolve} />
+          : <TopicList topics={topics} onResolve={handleResolve} onEdit={t => setEditingTopic(t)} />
         }
       </div>
 
@@ -99,6 +100,17 @@ export function StoreDashboard({ storeName }) {
         <GenerateModal storeName={storeName}
           onClose={() => setShowGenerate(false)}
           onGenerated={() => load()}
+        />
+      )}
+      {editingTopic && (
+        <TopicForm
+          storeName={storeName}
+          initialTopic={editingTopic}
+          onSaved={updated => {
+            setTopics(prev => prev.map(t => t.id === updated.id ? updated : t))
+            setEditingTopic(null)
+          }}
+          onCancel={() => setEditingTopic(null)}
         />
       )}
     </div>

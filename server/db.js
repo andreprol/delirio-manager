@@ -905,6 +905,14 @@ function createTopic({ store_name, description, severity, machine_mention, photo
   return getDb().prepare('SELECT * FROM report_topics WHERE id = ?').get(info.lastInsertRowid);
 }
 
+function updateTopic(id, { description, severity, machine_mention, photo_path }) {
+  const critical = isCriticalMachine(machine_mention);
+  getDb().prepare(
+    `UPDATE report_topics SET description=?, severity=?, machine_mention=?, is_critical_machine=?, photo_path=? WHERE id=?`
+  ).run(description, severity, machine_mention || null, critical ? 1 : 0, photo_path || null, id);
+  return getDb().prepare('SELECT * FROM report_topics WHERE id = ?').get(id);
+}
+
 function resolveTopic(id) {
   const topic = getDb().prepare('SELECT * FROM report_topics WHERE id = ?').get(id);
   if (!topic) return null;
@@ -1045,7 +1053,7 @@ module.exports = {
   // dr backups
   updateMachineDRStatus, insertDRBackup, getDRHistory, getDROverview, getMachinesDRDue,
   // relatório — topics
-  getTopics, getAllStoresTopicCount, createTopic, resolveTopic, getTopicsHistory,
+  getTopics, getAllStoresTopicCount, createTopic, updateTopic, resolveTopic, getTopicsHistory,
   // relatório — freshdesk cache
   getFreshdeskCacheAge, upsertFreshdeskTickets, getFreshdeskActive, getFreshdeskClosed,
   // relatório — report runs
