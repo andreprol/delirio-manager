@@ -7,7 +7,7 @@ import { TopicForm }        from './TopicForm'
 import { GenerateModal }    from './GenerateModal'
 import { FreshdeskSection } from './FreshdeskSection'
 
-export function StoreDashboard({ storeName }) {
+export function StoreDashboard({ storeName, onStoreListRefresh }) {
   const [topics,        setTopics]       = useState([])
   const [latestRun,     setLatestRun]    = useState(null)
   const [loading,       setLoading]      = useState(true)
@@ -99,7 +99,7 @@ export function StoreDashboard({ storeName }) {
       {showGenerate && (
         <GenerateModal storeName={storeName}
           onClose={() => setShowGenerate(false)}
-          onGenerated={() => load()}
+          onGenerated={() => { load(); onStoreListRefresh?.() }}
         />
       )}
       {editingTopic && (

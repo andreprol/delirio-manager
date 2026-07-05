@@ -52,7 +52,7 @@ export function ReportModule({ onClose }) {
                 onSelect={setSelectedStore}
               />
               {selectedStore
-                ? <StoreDashboard key={selectedStore} storeName={selectedStore} />
+                ? <StoreDashboard key={selectedStore} storeName={selectedStore} onStoreListRefresh={loadStores} />
                 : <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4a5568' }}>Selecione uma loja</div>
               }
             </>
