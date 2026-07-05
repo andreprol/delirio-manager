@@ -35,6 +35,17 @@ function createWindow() {
     },
   })
 
+  // Intercepta todos os downloads → salva direto na pasta Downloads do usuário (sem dialog)
+  win.webContents.session.on('will-download', (event, item) => {
+    const savePath = path.join(app.getPath('downloads'), item.getFilename())
+    item.setSavePath(savePath)
+    item.on('done', (e, state) => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('download-done', { state, filename: item.getFilename(), savePath })
+      }
+    })
+  })
+
   // Remove menu bar em producao
   if (!IS_DEV) win.setMenuBarVisibility(false)
 
@@ -137,6 +148,13 @@ app.whenReady().then(() => {
     }
 
     return shell.openPath(resolved)
+  })
+
+  // IPC: download de arquivo para a pasta Downloads do usuário (sem dialog)
+  ipcMain.handle('download-file', (_, { url }) => {
+    if (!win || win.isDestroyed()) return false
+    win.webContents.downloadURL(url)
+    return true
   })
 
   // IPC: instalar update e reiniciar (só funciona em produção)

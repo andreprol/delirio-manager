@@ -19,6 +19,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Janela cresce para acomodar o topbar quando necessário
   fitTopbar: (neededWidth) => ipcRenderer.invoke('window:fit-topbar', neededWidth),
 
+  // Download de arquivo → salva direto na pasta Downloads (sem dialog do Windows Explorer)
+  downloadFile: (url) => ipcRenderer.invoke('download-file', { url }),
+  onDownloadDone: (cb) => {
+    const handler = (_, data) => cb(data)
+    ipcRenderer.on('download-done', handler)
+    return () => ipcRenderer.removeListener('download-done', handler)
+  },
+
   // Verificação manual de atualização
   checkForUpdates: () => ipcRenderer.invoke('updater:check-now'),
   onUpdateNotAvailable: (cb) => {
