@@ -37,6 +37,8 @@ router.get('/stores', (req, res) => {
     const storeSet = new Set(canonical.values());
     storeSet.delete('Temporário');
     storeSet.delete('Temporario');
+    storeSet.delete('Manutenção');
+    storeSet.delete('Manutencao');
 
     const freshdeskRows = db.getDb().prepare(
       `SELECT store_name, COUNT(*) as n FROM freshdesk_cache WHERE store_name IS NOT NULL GROUP BY store_name`
