@@ -4,10 +4,36 @@
 const express  = require('express');
 const path     = require('path');
 const fs       = require('fs');
+const multer   = require('multer');
 const router   = express.Router();
 const db       = require('../db');
 const freshdesk = require('../services/freshdesk');
 const { buildStoreContext, callClaude, parseClaudeScore, generateDocx, generatePdf } = require('../services/reportEngine');
+
+// Multer: salva fotos em public/relatorio-photos/ com nome único
+const PHOTOS_DIR = path.join(__dirname, '..', 'public', 'relatorio-photos');
+fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, PHOTOS_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.png';
+    cb(null, `photo_${Date.now()}_${Math.random().toString(36).slice(2,7)}${ext}`);
+  },
+});
+const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } }); // 10 MB
+
+// Parseia o campo photo_path (legado: null | URL única | JSON array)
+function parsePhotoPaths(raw) {
+  if (!raw) return [];
+  if (raw.startsWith('[')) { try { return JSON.parse(raw); } catch { return []; } }
+  return [raw]; // URL única legada
+}
+
+// POST /api/relatorio/photos — upload de uma foto, retorna URL pública
+router.post('/photos', upload.single('photo'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+  res.json({ url: `/relatorio-photos/${req.file.filename}` });
+});
 
 // GET /api/relatorio/stores
 // Retorna todas as lojas com score mais recente e contagem de tópicos abertos
@@ -63,7 +89,9 @@ router.get('/stores', (req, res) => {
 router.get('/topics/:store', (req, res) => {
   try {
     const topics = db.getTopics(decodeURIComponent(req.params.store));
-    res.json(topics);
+    // Parsear photo_path como JSON array (pode ser null, string URL única ou JSON array)
+    const parsed = topics.map(t => ({ ...t, photo_paths: parsePhotoPaths(t.photo_path) }));
+    res.json(parsed);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -72,12 +100,14 @@ router.get('/topics/:store', (req, res) => {
 // POST /api/relatorio/topics
 router.post('/topics', (req, res) => {
   try {
-    const { store_name, description, severity, machine_mention, photo_path, created_by } = req.body;
+    const { store_name, description, severity, machine_mention, photo_paths, created_by } = req.body;
     if (!store_name || !description || !severity) {
       return res.status(400).json({ error: 'store_name, description e severity são obrigatórios' });
     }
+    // Guardar array de URLs como JSON string no campo photo_path
+    const photo_path = photo_paths && photo_paths.length ? JSON.stringify(photo_paths) : null;
     const topic = db.createTopic({ store_name, description, severity, machine_mention, photo_path, created_by });
-    res.status(201).json(topic);
+    res.status(201).json({ ...topic, photo_paths: photo_paths || [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

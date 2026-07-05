@@ -164,5 +164,15 @@ export const api = {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return res.blob()
     },
+    uploadPhoto: async (file) => {
+      const fd = new FormData()
+      fd.append('photo', file)
+      const res = await fetch(`${serverUrl}/api/relatorio/photos`, { method: 'POST', body: fd })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Upload falhou' }))
+        throw new Error(err.error || 'Upload falhou')
+      }
+      return res.json() // { url }
+    },
   },
 }
