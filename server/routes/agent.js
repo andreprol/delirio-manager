@@ -17,6 +17,10 @@ router.post('/register', (req, res) => {
     return res.status(400).json({ error: 'machineId e hostname sao obrigatorios' });
   }
 
+  if (db.isDeletedMachine(machineId)) {
+    return res.status(403).json({ error: 'Maquina removida do sistema pelo administrador' });
+  }
+
   try {
     const token = db.registerMachine({
       machineId,

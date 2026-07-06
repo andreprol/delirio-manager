@@ -1,6 +1,6 @@
 {
   "name": "delirio-manager-dashboard",
-  "version": "1.0.66",
+  "version": "1.0.67",
   "description": "Delirio Manager - Dashboard de Monitoramento",
   "main": "electron/main.js",
   "scripts": {

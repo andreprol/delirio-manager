@@ -279,6 +279,11 @@ function migrate(db) {
       feedback_text  TEXT NOT NULL,
       created_at     TEXT NOT NULL
     )`,
+    // Blocklist de máquinas excluídas — impede re-registro automático pelo agente
+    `CREATE TABLE IF NOT EXISTS deleted_machines (
+      id         TEXT PRIMARY KEY,
+      deleted_at TEXT NOT NULL
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -333,11 +338,18 @@ function getAllMachines() {
 
 function deleteMachine(id) {
   const db = getDb();
+  const now = new Date().toISOString();
   // win_events, insights, nfce_index, dr_backups têm ON DELETE CASCADE
   db.prepare('DELETE FROM metrics  WHERE machine_id=?').run(id);
   db.prepare('DELETE FROM commands WHERE machine_id=?').run(id);
   db.prepare('DELETE FROM events   WHERE machine_id=?').run(id);
   db.prepare('DELETE FROM machines WHERE id=?').run(id);
+  // Bloqueia re-registro pelo agente
+  db.prepare('INSERT OR REPLACE INTO deleted_machines (id, deleted_at) VALUES (?, ?)').run(id, now);
+}
+
+function isDeletedMachine(id) {
+  return !!getDb().prepare('SELECT 1 FROM deleted_machines WHERE id = ?').get(id);
 }
 
 function updateMachine(id, fields) {
@@ -1041,7 +1053,7 @@ function getStoresOverview() {
 module.exports = {
   getDb,
   // machines
-  registerMachine, getMachineByToken, getMachineById,
+  registerMachine, getMachineByToken, getMachineById, isDeletedMachine,
   getAllMachines, updateMachine, deleteMachine, setMachineStatus, getMachinesStale,
   setWolStatus, getMachinesWolTesting,
   getMachinesBiosNeeded, getMachinesOfflineForWake, getMachinesAutoWolTesting,
