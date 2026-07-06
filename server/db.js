@@ -349,7 +349,10 @@ function deleteMachine(id) {
 }
 
 function isDeletedMachine(id) {
-  return !!getDb().prepare('SELECT 1 FROM deleted_machines WHERE id = ?').get(id);
+  const row = getDb().prepare('SELECT deleted_at FROM deleted_machines WHERE id = ?').get(id);
+  if (!row) return false;
+  // Bloqueia re-registro por 10 minutos; após isso, reinstalação manual funciona normalmente
+  return (Date.now() - new Date(row.deleted_at).getTime()) < 10 * 60 * 1000;
 }
 
 function updateMachine(id, fields) {
