@@ -36,7 +36,8 @@ export const api = {
   getMachine:  (id)       => request('GET',  `/api/machines/${id}`),
   getMetrics:  (id, h=24) => request('GET',  `/api/machines/${id}/metrics?hours=${h}`),
   getEvents:   (id)       => request('GET',  `/api/machines/${id}/events`),
-  updateMachine: (id, data) => request('PUT', `/api/machines/${id}`, data),
+  updateMachine:  (id, data) => request('PUT',    `/api/machines/${id}`, data),
+  deleteMachine:  (id)       => request('DELETE', `/api/machines/${id}`),
 
   // Commands
   sendCommand: (id, type, params, confirm) =>

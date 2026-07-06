@@ -22,7 +22,7 @@ const DR_BADGE = {
   error:      { color: '#ef4444', label: 'DR ✗',  title: 'Erro no backup — verificar logs' },
 }
 
-export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsList = [] }) {
+export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDeleteMachine, groupsList = [] }) {
   const [expanded,    setExpanded]    = useState(false)
   const [confirmCmd,  setConfirmCmd]  = useState(null)
   const [confirmText, setConfirmText] = useState('')
@@ -398,12 +398,15 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, groupsLi
             {machine.location === g.name && '✓ '}{g.name}
           </button>
         ))}
-        {machine.location && (
-          <button className="ctx-item ctx-remove"
-            onClick={() => { onMoveToGroup(machine.id, ''); setContextMenu(null) }}>
-            Remover do grupo
-          </button>
-        )}
+        <button className="ctx-item ctx-remove"
+          onClick={() => {
+            if (window.confirm(`Excluir "${machine.displayName || machine.id}" do sistema?\n\nEsta ação remove a máquina permanentemente.`)) {
+              onDeleteMachine?.(machine.id)
+              setContextMenu(null)
+            }
+          }}>
+          ✕ Excluir máquina
+        </button>
       </div>
     )}
     </>

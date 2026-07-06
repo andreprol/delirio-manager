@@ -31,7 +31,7 @@ export default function App() {
     machines, groupMap, groupsList,
     connected, wsConnected, lastUpdate, alerts,
     lastOffline,
-    sendCommand, wolMachine, moveMachineToGroup,
+    sendCommand, wolMachine, moveMachineToGroup, deleteMachine,
     createGroup, renameGroup, deleteGroup,
     refresh, insightVersion,
   } = useMachines()
@@ -443,6 +443,7 @@ export default function App() {
                 onCommand={sendCommand}
                 onWol={wolMachine}
                 onMoveToGroup={moveMachineToGroup}
+                onDeleteMachine={deleteMachine}
                 onRename={(old, novo) => renameGroup(old, novo)}
                 onDelete={() => deleteGroup(loc)}
                 groupsList={groupsList}
@@ -471,6 +472,7 @@ export default function App() {
           onCommand={sendCommand}
           onWol={wolMachine}
           onMoveToGroup={moveMachineToGroup}
+          onDeleteMachine={deleteMachine}
           onRename={renameGroup}
           onDelete={deleteGroup}
           selectedGroup={selectedGroup}

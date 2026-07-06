@@ -141,6 +141,14 @@ router.put('/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// DELETE /api/machines/:id
+router.delete('/:id', (req, res) => {
+  const machine = db.getMachineById(req.params.id);
+  if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
+  db.deleteMachine(req.params.id);
+  res.json({ ok: true });
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function parseMachine(m) {

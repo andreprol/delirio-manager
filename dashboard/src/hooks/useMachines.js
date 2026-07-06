@@ -148,6 +148,11 @@ export function useMachines() {
     ))
   }, [])
 
+  const deleteMachine = useCallback(async (machineId) => {
+    await api.deleteMachine(machineId)
+    setMachines(prev => prev.filter(m => m.id !== machineId))
+  }, [])
+
   const createGroup = useCallback(async (name) => {
     await api.createGroup(name)
     await fetchGroups()
@@ -186,7 +191,7 @@ export function useMachines() {
     machines, groupMap, groupsList: groups,
     connected: httpOk, wsConnected,
     lastUpdate, alerts, lastOffline,
-    sendCommand, wolMachine, moveMachineToGroup,
+    sendCommand, wolMachine, moveMachineToGroup, deleteMachine,
     createGroup, renameGroup, deleteGroup,
     refresh: fetchAll,
     insightVersion,

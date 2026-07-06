@@ -331,6 +331,15 @@ function getAllMachines() {
   `).all();
 }
 
+function deleteMachine(id) {
+  const db = getDb();
+  // win_events, insights, nfce_index, dr_backups têm ON DELETE CASCADE
+  db.prepare('DELETE FROM metrics  WHERE machine_id=?').run(id);
+  db.prepare('DELETE FROM commands WHERE machine_id=?').run(id);
+  db.prepare('DELETE FROM events   WHERE machine_id=?').run(id);
+  db.prepare('DELETE FROM machines WHERE id=?').run(id);
+}
+
 function updateMachine(id, fields) {
   const allowed = ['display_name', 'location', 'critica', 'subnet', 'ip_interno', 'mac', 'agent_version', 'motherboard'];
   const keys    = Object.keys(fields).filter(k => allowed.includes(k));
@@ -1033,7 +1042,7 @@ module.exports = {
   getDb,
   // machines
   registerMachine, getMachineByToken, getMachineById,
-  getAllMachines, updateMachine, setMachineStatus, getMachinesStale,
+  getAllMachines, updateMachine, deleteMachine, setMachineStatus, getMachinesStale,
   setWolStatus, getMachinesWolTesting,
   getMachinesBiosNeeded, getMachinesOfflineForWake, getMachinesAutoWolTesting,
   // metrics
