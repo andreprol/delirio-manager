@@ -132,7 +132,7 @@ router.put('/:id', (req, res) => {
   const fields = {};
 
   if (displayName !== undefined) fields.display_name = displayName;
-  if (location    !== undefined) fields.location      = location;
+  if (location    !== undefined) fields.location      = location || 'Temporário';
   if (critica     !== undefined) fields.critica        = critica ? 1 : 0;
   if (subnet      !== undefined) fields.subnet         = subnet;
   if (mac         !== undefined) fields.mac            = mac;

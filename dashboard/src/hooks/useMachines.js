@@ -164,7 +164,7 @@ export function useMachines() {
   const deleteGroup = useCallback(async (name) => {
     await api.deleteGroup(name)
     setMachines(prev => prev.map(m =>
-      m.location === name ? { ...m, location: '' } : m
+      m.location === name ? { ...m, location: 'Temporário' } : m
     ))
     await fetchGroups()
   }, [fetchGroups])
