@@ -20,7 +20,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fitTopbar: (neededWidth) => ipcRenderer.invoke('window:fit-topbar', neededWidth),
 
   // Download de arquivo → salva direto na pasta Downloads (sem dialog do Windows Explorer)
-  downloadFile: (url) => ipcRenderer.invoke('download-file', { url }),
+  downloadFile:    (url)  => ipcRenderer.invoke('download-file', { url }),
+  showInFolder:    (p)    => ipcRenderer.invoke('shell:showItemInFolder', p),
   onDownloadDone: (cb) => {
     const handler = (_, data) => cb(data)
     ipcRenderer.on('download-done', handler)

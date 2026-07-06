@@ -42,7 +42,8 @@ export default function App() {
   const [showAloha, setShowAloha] = useState(false)
   const [showDR,         setShowDR]         = useState(false)
   const [showRelatorio,  setShowRelatorio]  = useState(false)
-  const [biosState, setBiosState] = useState(null) // null | 'loading' | 'done' | 'error'
+  const [biosState,    setBiosState]    = useState(null) // null | 'loading' | 'done' | 'error'
+  const [biosSavePath, setBiosSavePath] = useState(null)
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
   const [alertsCount,     setAlertsCount]     = useAlertsCount()
 
@@ -200,21 +201,30 @@ export default function App() {
 
   function handleBiosReport() {
     if (biosState === 'loading') return
+    if (biosState === 'done' && biosSavePath) {
+      window.electronAPI?.showInFolder?.(biosSavePath)
+      return
+    }
     setBiosState('loading')
+    setBiosSavePath(null)
     const url = `${getServerUrl()}/api/reports/bios/pdf`
     if (window.electronAPI?.downloadFile) {
-      const unsub = window.electronAPI.onDownloadDone(({ state, filename }) => {
+      const unsub = window.electronAPI.onDownloadDone(({ state, filename, savePath }) => {
         if (!filename?.startsWith('relatorio-bios-')) return
         unsub()
-        setBiosState(state === 'completed' ? 'done' : 'error')
-        setTimeout(() => setBiosState(null), 4000)
+        if (state === 'completed') {
+          setBiosState('done')
+          setBiosSavePath(savePath || null)
+        } else {
+          setBiosState('error')
+        }
+        setTimeout(() => { setBiosState(null); setBiosSavePath(null) }, 8000)
       })
       window.electronAPI.downloadFile(url)
-      // timeout de segurança — se download-done nunca chegar
       setTimeout(() => {
         unsub()
         setBiosState(prev => prev === 'loading' ? 'error' : prev)
-        setTimeout(() => setBiosState(null), 4000)
+        setTimeout(() => { setBiosState(null); setBiosSavePath(null) }, 4000)
       }, 30000)
     } else {
       const a = document.createElement('a')
@@ -333,10 +343,14 @@ export default function App() {
             className="pill-solo"
             onClick={handleBiosReport}
             disabled={biosState === 'loading'}
-            title="Gerar PDF com máquinas aguardando configuração de BIOS"
+            title={
+              biosState === 'done' && biosSavePath
+                ? `Clique para abrir: ${biosSavePath}`
+                : 'Gerar PDF com máquinas aguardando configuração de BIOS'
+            }
           >
             {biosState === 'loading' ? '⏳ Gerando…'
-              : biosState === 'done'  ? '✅ Salvo!'
+              : biosState === 'done'  ? '✅ Salvo — 📂 Mostrar'
               : biosState === 'error' ? '✕ Erro'
               : '📋 Rel. BIOS'}
           </button>

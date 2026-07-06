@@ -150,6 +150,17 @@ app.whenReady().then(() => {
     return shell.openPath(resolved)
   })
 
+  // IPC: abre o File Explorer com o arquivo selecionado (highlight)
+  ipcMain.handle('shell:showItemInFolder', (_, filePath) => {
+    if (typeof filePath !== 'string') return
+    const resolved = path.resolve(filePath)
+    const downloadsRoot = path.resolve(app.getPath('downloads'))
+    const norm = resolved.toLowerCase()
+    const prefix = downloadsRoot.toLowerCase() + path.sep
+    if (norm !== downloadsRoot.toLowerCase() && !norm.startsWith(prefix)) return
+    shell.showItemInFolder(resolved)
+  })
+
   // IPC: download de arquivo para a pasta Downloads do usuário (sem dialog)
   ipcMain.handle('download-file', (_, { url }) => {
     if (!win || win.isDestroyed()) return false
