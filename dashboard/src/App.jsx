@@ -42,6 +42,7 @@ export default function App() {
   const [showAloha, setShowAloha] = useState(false)
   const [showDR,         setShowDR]         = useState(false)
   const [showRelatorio,  setShowRelatorio]  = useState(false)
+  const [biosState, setBiosState] = useState(null) // null | 'loading' | 'done' | 'error'
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
   const [alertsCount,     setAlertsCount]     = useAlertsCount()
 
@@ -198,15 +199,29 @@ export default function App() {
   }
 
   function handleBiosReport() {
+    if (biosState === 'loading') return
+    setBiosState('loading')
     const url = `${getServerUrl()}/api/reports/bios/pdf`
     if (window.electronAPI?.downloadFile) {
+      const unsub = window.electronAPI.onDownloadDone(({ state, filename }) => {
+        if (!filename?.startsWith('relatorio-bios-')) return
+        unsub()
+        setBiosState(state === 'completed' ? 'done' : 'error')
+        setTimeout(() => setBiosState(null), 4000)
+      })
       window.electronAPI.downloadFile(url)
+      // timeout de segurança — se download-done nunca chegar
+      setTimeout(() => {
+        unsub()
+        setBiosState(prev => prev === 'loading' ? 'error' : prev)
+        setTimeout(() => setBiosState(null), 4000)
+      }, 30000)
     } else {
-      // fallback browser
       const a = document.createElement('a')
       a.href = url
       a.download = `relatorio-bios-${new Date().toISOString().split('T')[0]}.pdf`
       a.click()
+      setBiosState(null)
     }
   }
 
@@ -317,9 +332,13 @@ export default function App() {
           <button
             className="pill-solo"
             onClick={handleBiosReport}
+            disabled={biosState === 'loading'}
             title="Gerar PDF com máquinas aguardando configuração de BIOS"
           >
-            📋 Rel. BIOS
+            {biosState === 'loading' ? '⏳ Gerando…'
+              : biosState === 'done'  ? '✅ Salvo!'
+              : biosState === 'error' ? '✕ Erro'
+              : '📋 Rel. BIOS'}
           </button>
 
           <button
