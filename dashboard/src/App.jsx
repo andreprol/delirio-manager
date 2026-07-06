@@ -231,7 +231,8 @@ export default function App() {
       a.href = url
       a.download = `relatorio-bios-${new Date().toISOString().split('T')[0]}.pdf`
       a.click()
-      setBiosState(null)
+      setBiosState('done')
+      setTimeout(() => { setBiosState(null); setBiosSavePath(null) }, 5000)
     }
   }
 
