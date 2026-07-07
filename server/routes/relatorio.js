@@ -201,9 +201,15 @@ router.post('/generate', async (req, res) => {
   <tr><td><strong>Descrição</strong></td><td>${descricao}</td></tr>
 </table>
 <p>Por favor, edite o tópico no Delirio Manager com mais detalhes para que possa ser avaliado corretamente no próximo relatório.</p>`;
-        console.log(`[relatorio] enviando email inconclusivo — topico ID ${topicId} para suporteti@delirio.com.br`);
+        const INCONCLUSIVO_RECIPIENTS = [
+          'andre@delirio.com.br',
+          'thais@delirio.com.br',
+          'italo@delirio.com.br',
+          'rodrigorosa@delirio.com.br',
+        ];
+        console.log(`[relatorio] enviando email inconclusivo — topico ID ${topicId} para ${INCONCLUSIVO_RECIPIENTS.join(', ')}`);
         sendSimpleEmail(
-          'suporteti@delirio.com.br',
+          INCONCLUSIVO_RECIPIENTS,
           `[Delirio Manager] Tópico inconclusivo — ${store}`,
           html
         ).then(() => console.log(`[relatorio] email inconclusivo enviado OK — topico ID ${topicId}`))

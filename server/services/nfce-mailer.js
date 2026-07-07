@@ -216,10 +216,11 @@ async function sendDanfeEmail({ danfe, pdfBuffer, toEmail, extraCCs = [] }) {
 
 async function sendSimpleEmail(to, subject, bodyHtml) {
   const token = await getAccessToken();
+  const toList = Array.isArray(to) ? to : [to];
   const message = {
     subject,
     body:         { contentType: 'HTML', content: bodyHtml },
-    toRecipients: [{ emailAddress: { address: to } }],
+    toRecipients: toList.map(addr => ({ emailAddress: { address: addr } })),
   };
   const res = await fetch(
     `https://graph.microsoft.com/v1.0/users/${GRAPH_FROM}/sendMail`,
