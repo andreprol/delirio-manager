@@ -74,7 +74,7 @@ function buildPrompt(ctx) {
   const { storeName, month, openTopics, history, recurrences, fdActive, fdClosed, machineData, win10Machines, recentFeedback } = ctx;
 
   const fmtTopic = t =>
-    `  [${t.severity.toUpperCase()}${t.is_critical_machine ? ' 🔴BOH/TERM' : ''}] ${t.description}`;
+    `  [ID:${t.id}][${t.severity.toUpperCase()}${t.is_critical_machine ? ' 🔴BOH/TERM' : ''}] ${t.description}`;
 
   const fmtTicket = t =>
     `  [${t.status}] ${t.title}${t.resolved_at ? ` (resolvido: ${t.resolved_at.slice(0,10)})` : ''}`;
@@ -91,7 +91,9 @@ LOJA: ${storeName} | MÊS: ${month}
 
 REGRA CRÍTICA: Qualquer problema em máquina TERM* (terminal Aloha) ou BOH* (servidor Aloha) = severidade máxima. Essas máquinas geram o faturamento da loja.
 
-TÓPICOS ABERTOS (problemas ativos — pesam no score):
+REGRA NOTA 30: Se não houver dados relevantes para uma dimensão (hardware, software, conectividade, segurança, incidentes ou operacional), atribua nota 30. Isso representa risco baixo e gerenciável — não ausência de informação.
+
+TÓPICOS ABERTOS — PROBLEMAS ATIVOS (pesam no score de todas as dimensões e na dimensão Operacional):
 ${openTopics.length ? openTopics.map(fmtTopic).join('\n') : '  Nenhum'}
 
 CHAMADOS FRESHDESK ATIVOS (abertos/pendentes — pesam no score):
@@ -115,6 +117,8 @@ ${win10Machines.length ? win10Machines.join(', ') : '  Nenhuma'}
 FEEDBACK HISTÓRICO DO GESTOR (calibre seu julgamento com base nisto):
 ${recentFeedback.length ? recentFeedback.map(fmtFeedback).join('\n') : '  Nenhum feedback anterior'}
 
+DIMENSÃO OPERACIONAL: Avalie exclusivamente os tópicos abertos inseridos pela equipe (listados acima com ID:). Esta dimensão mede o impacto operacional percebido pela equipe local. Se um tópico não fornecer informação suficiente para qualquer avaliação (ex.: texto de teste, imagem irrelevante, descrição vazia ou sem contexto), inclua o ID desse tópico no campo "inconclusivos". Tópicos inconclusivos não contribuem para o score operacional.
+
 Retorne JSON com este formato exato:
 {
   "score": <0-100>,
@@ -123,8 +127,10 @@ Retorne JSON com este formato exato:
   "conectividade": <0-100>,
   "seguranca": <0-100>,
   "incidentes": <0-100>,
+  "operacional": <0-100>,
   "narrativa": "<2-3 parágrafos explicando o risco>",
-  "recomendacoes": ["<ação 1>", "<ação 2>", "<ação 3>"]
+  "recomendacoes": ["<ação 1>", "<ação 2>", "<ação 3>"],
+  "inconclusivos": [<id1>, <id2>]
 }`;
 }
 
@@ -155,16 +161,20 @@ async function callClaude(ctx) {
   return JSON.parse(jsonMatch[0]);
 }
 
+const clamp = (v, def = 30) => Math.min(100, Math.max(0, Math.round(v != null ? v : def)));
+
 function parseClaudeScore(aiResult) {
   return {
-    score_total:       Math.min(100, Math.max(0, Math.round(aiResult.score        || 0))),
-    score_hardware:    Math.min(100, Math.max(0, Math.round(aiResult.hardware     || 0))),
-    score_software:    Math.min(100, Math.max(0, Math.round(aiResult.software     || 0))),
-    score_connectivity:Math.min(100, Math.max(0, Math.round(aiResult.conectividade|| 0))),
-    score_security:    Math.min(100, Math.max(0, Math.round(aiResult.seguranca    || 0))),
-    score_incidents:   Math.min(100, Math.max(0, Math.round(aiResult.incidentes   || 0))),
-    ai_narrative:      aiResult.narrativa || '',
+    score_total:        clamp(aiResult.score,          0),
+    score_hardware:     clamp(aiResult.hardware),
+    score_software:     clamp(aiResult.software),
+    score_connectivity: clamp(aiResult.conectividade),
+    score_security:     clamp(aiResult.seguranca),
+    score_incidents:    clamp(aiResult.incidentes),
+    score_operational:  clamp(aiResult.operacional),
+    ai_narrative:       aiResult.narrativa || '',
     ai_recommendations: Array.isArray(aiResult.recomendacoes) ? aiResult.recomendacoes : [],
+    inconclusivos:      Array.isArray(aiResult.inconclusivos)  ? aiResult.inconclusivos  : [],
   };
 }
 
@@ -221,6 +231,7 @@ async function generateDocx(ctx, scores, month) {
     dim('Conectividade',   scores.score_connectivity),
     dim('Segurança',       scores.score_security),
     dim('Incidentes',      scores.score_incidents),
+    dim('Operacional',     scores.score_operational),
     dim('TOTAL',           scores.score_total),
   ], width: { size: 60, type: WidthType.PERCENTAGE } }));
   sections.push(new Paragraph(''));

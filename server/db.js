@@ -284,6 +284,7 @@ function migrate(db) {
       id         TEXT PRIMARY KEY,
       deleted_at TEXT NOT NULL
     )`,
+    `ALTER TABLE report_runs ADD COLUMN score_operational INTEGER`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -1007,12 +1008,12 @@ function getFreshdeskClosed(storeName, month) {
 function saveReportRun(data) {
   const info = getDb().prepare(
     `INSERT INTO report_runs (store_name, month, generated_at, score_total, score_hardware, score_software,
-     score_connectivity, score_security, score_incidents, ai_narrative, ai_recommendations, docx_path, pdf_path)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     score_connectivity, score_security, score_incidents, score_operational, ai_narrative, ai_recommendations, docx_path, pdf_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     data.store_name, data.month, new Date().toISOString(),
     data.score_total, data.score_hardware, data.score_software,
-    data.score_connectivity, data.score_security, data.score_incidents,
+    data.score_connectivity, data.score_security, data.score_incidents, data.score_operational,
     data.ai_narrative, JSON.stringify(data.ai_recommendations || []),
     data.docx_path || null, data.pdf_path || null
   );

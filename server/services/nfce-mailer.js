@@ -214,4 +214,25 @@ async function sendDanfeEmail({ danfe, pdfBuffer, toEmail, extraCCs = [] }) {
   }
 }
 
-module.exports = { sendDanfeEmail };
+async function sendSimpleEmail(to, subject, bodyHtml) {
+  const token = await getAccessToken();
+  const message = {
+    subject,
+    body:         { contentType: 'HTML', content: bodyHtml },
+    toRecipients: [{ emailAddress: { address: to } }],
+  };
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${GRAPH_FROM}/sendMail`,
+    {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ message, saveToSentItems: true }),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Erro ao enviar email via Graph: ${err.slice(0, 400)}`);
+  }
+}
+
+module.exports = { sendDanfeEmail, sendSimpleEmail };

@@ -9,6 +9,7 @@ const router   = express.Router();
 const db       = require('../db');
 const freshdesk = require('../services/freshdesk');
 const { buildStoreContext, callClaude, parseClaudeScore, generateDocx, generatePdf } = require('../services/reportEngine');
+const { sendSimpleEmail } = require('../services/nfce-mailer');
 
 // Multer: salva fotos em public/relatorio-photos/ com nome único
 const PHOTOS_DIR = path.join(__dirname, '..', 'public', 'relatorio-photos');
@@ -184,7 +185,30 @@ router.post('/generate', async (req, res) => {
       pdf_path:  pdfPath,
     });
 
-    // 6. Responder com URLs de download
+    // 6. Alertar sobre tópicos inconclusivos
+    if (scores.inconclusivos && scores.inconclusivos.length > 0) {
+      const topicById = {};
+      ctx.openTopics.forEach(t => { topicById[t.id] = t; });
+      for (const topicId of scores.inconclusivos) {
+        const topic = topicById[topicId];
+        const descricao = topic ? topic.description : `ID ${topicId}`;
+        const html = `<p>O tópico abaixo inserido para a loja <strong>${store}</strong> foi considerado <strong>inconclusivo</strong> pela análise de IA e não pôde contribuir para nenhuma dimensão do relatório.</p>
+<table border="1" cellpadding="6" style="border-collapse:collapse;font-family:Arial,sans-serif">
+  <tr><td><strong>Loja</strong></td><td>${store}</td></tr>
+  <tr><td><strong>Mês</strong></td><td>${month}</td></tr>
+  <tr><td><strong>Tópico ID</strong></td><td>${topicId}</td></tr>
+  <tr><td><strong>Descrição</strong></td><td>${descricao}</td></tr>
+</table>
+<p>Por favor, edite o tópico no Delirio Manager com mais detalhes para que possa ser avaliado corretamente no próximo relatório.</p>`;
+        sendSimpleEmail(
+          'suporteti@delirio.com.br',
+          `[Delirio Manager] Tópico inconclusivo — ${store}`,
+          html
+        ).catch(e => console.warn('[relatorio] falha ao enviar alerta inconclusivo:', e.message));
+      }
+    }
+
+    // 7. Responder com URLs de download
     const base = '/downloads/relatorios';
     res.json({
       runId,
