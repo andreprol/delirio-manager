@@ -186,6 +186,7 @@ router.post('/generate', async (req, res) => {
     });
 
     // 6. Alertar sobre tópicos inconclusivos
+    console.log(`[relatorio] ${store} ${month} — inconclusivos: ${JSON.stringify(scores.inconclusivos)}`);
     if (scores.inconclusivos && scores.inconclusivos.length > 0) {
       const topicById = {};
       ctx.openTopics.forEach(t => { topicById[t.id] = t; });
@@ -200,11 +201,13 @@ router.post('/generate', async (req, res) => {
   <tr><td><strong>Descrição</strong></td><td>${descricao}</td></tr>
 </table>
 <p>Por favor, edite o tópico no Delirio Manager com mais detalhes para que possa ser avaliado corretamente no próximo relatório.</p>`;
+        console.log(`[relatorio] enviando email inconclusivo — topico ID ${topicId} para suporteti@delirio.com.br`);
         sendSimpleEmail(
           'suporteti@delirio.com.br',
           `[Delirio Manager] Tópico inconclusivo — ${store}`,
           html
-        ).catch(e => console.warn('[relatorio] falha ao enviar alerta inconclusivo:', e.message));
+        ).then(() => console.log(`[relatorio] email inconclusivo enviado OK — topico ID ${topicId}`))
+         .catch(e => console.error('[relatorio] FALHA email inconclusivo:', e.message));
       }
     }
 

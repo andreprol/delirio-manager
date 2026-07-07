@@ -119,9 +119,8 @@ ${recentFeedback.length ? recentFeedback.map(fmtFeedback).join('\n') : '  Nenhum
 
 DIMENSÃO OPERACIONAL: Avalie exclusivamente os tópicos abertos inseridos pela equipe (listados acima com ID:). Esta dimensão mede o impacto operacional percebido pela equipe local. Se um tópico não fornecer informação suficiente para qualquer avaliação (ex.: texto de teste, imagem irrelevante, descrição vazia ou sem contexto), inclua o ID desse tópico no campo "inconclusivos". Tópicos inconclusivos não contribuem para o score operacional. Se todos os tópicos forem inconclusivos ou não houver tópicos abertos, aplique a REGRA NOTA 30: atribua exatamente 30 ao campo "operacional".
 
-Retorne JSON com este formato exato:
+Retorne JSON com este formato exato (sem campos extras, sem explicações fora do JSON):
 {
-  "score": <0-100>,
   "hardware": <0-100>,
   "software": <0-100>,
   "conectividade": <0-100>,
@@ -130,8 +129,10 @@ Retorne JSON com este formato exato:
   "operacional": <0-100>,
   "narrativa": "<2-3 parágrafos explicando o risco>",
   "recomendacoes": ["<ação 1>", "<ação 2>", "<ação 3>"],
-  "inconclusivos": [<id1>, <id2>]
-}`;
+  "inconclusivos": [<id_numerico_do_topico>, ...]
+}
+
+IMPORTANTE sobre "inconclusivos": liste aqui o ID numérico de CADA tópico aberto que não forneceu informação suficiente para avaliação. Se o tópico de texto for genérico, de teste, sem contexto técnico real ou sem descrição de problema concreto, ele É inconclusivo — coloque seu ID aqui. Array vazio [] apenas se TODOS os tópicos foram avaliáveis.`;
 }
 
 async function callClaude(ctx) {
@@ -163,15 +164,36 @@ async function callClaude(ctx) {
 
 const clamp = (v, def = 30) => Math.min(100, Math.max(0, Math.round(v != null ? v : def)));
 
+// Pesos das dimensões para cálculo do score total
+const WEIGHTS = {
+  score_hardware:     0.20,
+  score_software:     0.15,
+  score_connectivity: 0.15,
+  score_security:     0.20,
+  score_incidents:    0.20,
+  score_operational:  0.10,
+};
+
 function parseClaudeScore(aiResult) {
+  const score_hardware     = clamp(aiResult.hardware);
+  const score_software     = clamp(aiResult.software);
+  const score_connectivity = clamp(aiResult.conectividade);
+  const score_security     = clamp(aiResult.seguranca);
+  const score_incidents    = clamp(aiResult.incidentes);
+  const score_operational  = clamp(aiResult.operacional);
+
+  const score_total = Math.round(
+    score_hardware     * WEIGHTS.score_hardware     +
+    score_software     * WEIGHTS.score_software     +
+    score_connectivity * WEIGHTS.score_connectivity +
+    score_security     * WEIGHTS.score_security     +
+    score_incidents    * WEIGHTS.score_incidents    +
+    score_operational  * WEIGHTS.score_operational
+  );
+
   return {
-    score_total:        clamp(aiResult.score,          0),
-    score_hardware:     clamp(aiResult.hardware),
-    score_software:     clamp(aiResult.software),
-    score_connectivity: clamp(aiResult.conectividade),
-    score_security:     clamp(aiResult.seguranca),
-    score_incidents:    clamp(aiResult.incidentes),
-    score_operational:  clamp(aiResult.operacional),
+    score_total, score_hardware, score_software, score_connectivity,
+    score_security, score_incidents, score_operational,
     ai_narrative:       aiResult.narrativa || '',
     ai_recommendations: Array.isArray(aiResult.recomendacoes) ? aiResult.recomendacoes : [],
     inconclusivos:      Array.isArray(aiResult.inconclusivos)  ? aiResult.inconclusivos  : [],
