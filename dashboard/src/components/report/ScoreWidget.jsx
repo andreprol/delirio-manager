@@ -11,14 +11,14 @@ const DIMS = [
 ]
 
 function scoreColor(s) {
-  if (s >= 60) return '#e53e3e'
-  if (s >= 30) return '#ed8936'
+  if (s > 50) return '#e53e3e'
+  if (s > 30) return '#ed8936'
   return '#48bb78'
 }
 
 function scoreLabel(s) {
-  if (s >= 60) return 'RISCO ALTO'
-  if (s >= 30) return 'RISCO MÉDIO'
+  if (s > 50) return 'RISCO ALTO'
+  if (s > 30) return 'RISCO MÉDIO'
   return 'RISCO BAIXO'
 }
 

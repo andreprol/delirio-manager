@@ -117,7 +117,7 @@ ${win10Machines.length ? win10Machines.join(', ') : '  Nenhuma'}
 FEEDBACK HISTÓRICO DO GESTOR (calibre seu julgamento com base nisto):
 ${recentFeedback.length ? recentFeedback.map(fmtFeedback).join('\n') : '  Nenhum feedback anterior'}
 
-DIMENSÃO OPERACIONAL: Avalie exclusivamente os tópicos abertos inseridos pela equipe (listados acima com ID:). Esta dimensão mede o impacto operacional percebido pela equipe local. Se um tópico não fornecer informação suficiente para qualquer avaliação (ex.: texto de teste, imagem irrelevante, descrição vazia ou sem contexto), inclua o ID desse tópico no campo "inconclusivos". Tópicos inconclusivos não contribuem para o score operacional.
+DIMENSÃO OPERACIONAL: Avalie exclusivamente os tópicos abertos inseridos pela equipe (listados acima com ID:). Esta dimensão mede o impacto operacional percebido pela equipe local. Se um tópico não fornecer informação suficiente para qualquer avaliação (ex.: texto de teste, imagem irrelevante, descrição vazia ou sem contexto), inclua o ID desse tópico no campo "inconclusivos". Tópicos inconclusivos não contribuem para o score operacional. Se todos os tópicos forem inconclusivos ou não houver tópicos abertos, aplique a REGRA NOTA 30: atribua exatamente 30 ao campo "operacional".
 
 Retorne JSON com este formato exato:
 {
