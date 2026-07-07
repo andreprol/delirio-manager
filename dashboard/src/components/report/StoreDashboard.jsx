@@ -43,6 +43,7 @@ export function StoreDashboard({ storeName, onStoreListRefresh }) {
     score_connectivity: latestRun.score_connectivity,
     score_security:     latestRun.score_security,
     score_incidents:    latestRun.score_incidents,
+    score_operational:  latestRun.score_operational,
   } : null
 
   const lastSync = latestRun ? `Último relatório: ${latestRun.generated_at?.slice(0,10)}` : 'Sem relatório gerado ainda'

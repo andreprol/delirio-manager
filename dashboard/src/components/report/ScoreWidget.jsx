@@ -7,6 +7,7 @@ const DIMS = [
   { key: 'score_connectivity', label: 'Conectividade' },
   { key: 'score_security',     label: 'Segurança' },
   { key: 'score_incidents',    label: 'Incidentes' },
+  { key: 'score_operational',  label: 'Operacional' },
 ]
 
 function scoreColor(s) {
