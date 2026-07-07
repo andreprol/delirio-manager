@@ -9,10 +9,10 @@ export function ReportModule({ onClose }) {
   const [selectedStore, setSelectedStore] = useState(null)
   const [loading,       setLoading]       = useState(true)
 
-  async function loadStores() {
+  async function loadStores(force = false) {
     setLoading(true)
     try {
-      const s = await api.relatorio.getStores()
+      const s = await api.relatorio.getStores(force)
       setStores(s)
       if (s.length && !selectedStore) setSelectedStore(s[0].name)
     } catch (e) {
@@ -33,8 +33,8 @@ export function ReportModule({ onClose }) {
           <p style={{ margin: '2px 0 0', fontSize: '0.78em', color: '#555' }}>Tópicos · Freshdesk · Score de Risco · Geração .docx + .pdf</p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button onClick={loadStores} disabled={loading} style={{ background: 'none', border: '1px solid #2d3748', borderRadius: 5, color: '#667eea', fontSize: '0.78em', padding: '4px 10px', cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.5 : 1 }}>
-            {loading ? '...' : '↻ Atualizar'}
+          <button onClick={() => loadStores(true)} disabled={loading} style={{ background: 'none', border: '1px solid #2d3748', borderRadius: 5, color: '#667eea', fontSize: '0.78em', padding: '4px 10px', cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.5 : 1 }}>
+            {loading ? '⏳ Sincronizando…' : '↻ Atualizar'}
           </button>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: '1.3em', cursor: 'pointer' }}>✕</button>
         </div>

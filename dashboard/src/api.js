@@ -152,7 +152,7 @@ export const api = {
 
   // Relatório TI por loja
   relatorio: {
-    getStores:    ()                           => request('GET',    '/api/relatorio/stores'),
+    getStores:    (force = false)               => request('GET',    `/api/relatorio/stores${force ? '?force=true' : ''}`),
     getTopics:    (store)                      => request('GET',    `/api/relatorio/topics/${encodeURIComponent(store)}`),
     createTopic:  (data)                       => request('POST',   '/api/relatorio/topics', data),
     updateTopic:  (id, data)                   => request('PUT',    `/api/relatorio/topics/${id}`, data),

@@ -43,8 +43,12 @@ router.post('/photos', (req, res) => {
 
 // GET /api/relatorio/stores
 // Retorna todas as lojas com score mais recente e contagem de tópicos abertos
-router.get('/stores', (req, res) => {
+// ?force=true → força sync Freshdesk antes de retornar
+router.get('/stores', async (req, res) => {
   try {
+    if (req.query.force === 'true') {
+      await freshdesk.syncAll().catch(e => console.warn('[stores] Freshdesk sync failed:', e.message));
+    }
     const { countMap, scoreMap } = db.getStoresOverview();
     // Pegar lista de lojas únicas de machines + topics
     // Mapa canônico: normalizado (sem acento, minúsculo) → nome de exibição
