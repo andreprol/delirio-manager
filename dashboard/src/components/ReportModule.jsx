@@ -1,13 +1,15 @@
 // dashboard/src/components/ReportModule.jsx
-import { useState, useEffect } from 'react'
-import { api }             from '../api'
-import { StoreList }       from './report/StoreList'
-import { StoreDashboard }  from './report/StoreDashboard'
+import { useState, useEffect }           from 'react'
+import { api }                           from '../api'
+import { StoreList }                     from './report/StoreList'
+import { StoreDashboard }                from './report/StoreDashboard'
+import { ZamakDiscrepanciesModal }       from './ZamakDiscrepanciesModal'
 
 export function ReportModule({ onClose }) {
-  const [stores,        setStores]        = useState([])
-  const [selectedStore, setSelectedStore] = useState(null)
-  const [loading,       setLoading]       = useState(true)
+  const [stores,             setStores]             = useState([])
+  const [selectedStore,      setSelectedStore]      = useState(null)
+  const [loading,            setLoading]            = useState(true)
+  const [showDiscrepancies,  setShowDiscrepancies]  = useState(false)
 
   async function loadStores(force = false) {
     setLoading(true)
@@ -33,12 +35,17 @@ export function ReportModule({ onClose }) {
           <p style={{ margin: '2px 0 0', fontSize: '0.78em', color: '#555' }}>Tópicos · Freshdesk · Score de Risco · Geração .docx + .pdf</p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button onClick={() => setShowDiscrepancies(true)} style={{ background: 'none', border: '1px solid #ed8936', borderRadius: 5, color: '#ed8936', fontSize: '0.78em', padding: '4px 10px', cursor: 'pointer' }}>
+            🔀 Discrepâncias
+          </button>
           <button onClick={() => loadStores(true)} disabled={loading} style={{ background: 'none', border: '1px solid #2d3748', borderRadius: 5, color: '#667eea', fontSize: '0.78em', padding: '4px 10px', cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.5 : 1 }}>
             {loading ? '⏳ Sincronizando…' : '↻ Atualizar'}
           </button>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', fontSize: '1.3em', cursor: 'pointer' }}>✕</button>
         </div>
       </div>
+
+      {showDiscrepancies && <ZamakDiscrepanciesModal onClose={() => setShowDiscrepancies(false)} />}
 
       {/* Body */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>

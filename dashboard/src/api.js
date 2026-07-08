@@ -150,6 +150,13 @@ export const api = {
     history:   (id, days=28) => request('GET',  `/api/dr/${id}/history?days=${days}`),
   },
 
+  // Zamak RMM (N-able N-sight)
+  zamak: {
+    getStatus:        () => request('GET',  '/api/zamak/status'),
+    getDiscrepancies: () => request('GET',  '/api/zamak/discrepancies'),
+    triggerSync:      () => request('POST', '/api/zamak/sync'),
+  },
+
   // Relatório TI por loja
   relatorio: {
     getStores:    (force = false)               => request('GET',    `/api/relatorio/stores${force ? `?force=true&_t=${Date.now()}` : ''}`),
