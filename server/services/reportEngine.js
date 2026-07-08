@@ -143,35 +143,49 @@ function buildPrompt(ctx) {
   const fmtMachine  = m => `  ${m.name}${m.isCritical ? ' [CRITICA]' : ''} — CPU ${m.avg_cpu ?? '?'}% RAM ${m.avg_ram ?? '?'}% Temp ${m.avg_temp ?? '?'}C DiskFree ${m.disk_free ?? '?'}GB status:${m.status}`;
   const fmtFeedback = f => `  [${f.month}] "${f.feedback_text}"`;
 
-  return `Voce e um analista de TI da Delirio Tropical. Avalie o risco da loja e retorne SOMENTE um objeto JSON valido, sem texto adicional.
+  return `Voce e um analista de TI senior da Delirio Tropical, empresa de food service com lojas no Rio de Janeiro. Seu relatorio sera lido pelo gerente de TI e pela diretoria. Avalie o risco da loja e retorne SOMENTE um objeto JSON valido, sem texto adicional.
 
 LOJA: ${storeName} | MES: ${month}
 
-REGRA CRITICA: Qualquer problema em maquina TERM* ou BOH* = severidade maxima (terminais de faturamento).
+═══════════════════════════════════════
+REGRAS CRITICAS — LEIA ANTES DE AVALIAR
+═══════════════════════════════════════
+
+REGRA MAQUINAS CRITICAS: Qualquer problema em maquina cujo hostname comeca com TERM* ou BOH* = severidade maxima automatica. Sao os terminais de faturamento (PDV) e servidores Aloha — se caem, a loja para de vender.
+
+REGRA ESPECIFICIDADE OBRIGATORIA: Cada narrativa DEVE citar os nomes reais das maquinas afetadas, os valores numericos exatos (ex: "TERMCIT1 operando com CPU media de 84%"), os IDs dos chamados Freshdesk (ex: "Chamado #3847 — impressora de cozinha offline ha 3 dias") e os IDs dos topicos (ex: "Topico #12 — nobreak apitando"). Proibido escrever de forma generica como "alguns equipamentos" ou "varios chamados". Se nao ha dados especificos → dizer isso claramente.
+
+REGRA HUMANIZACAO: O texto deve soar como escrito por um analista experiente, nao por um bot. Use frases naturais, conecte os problemas a impactos reais na operacao da loja, demonstre raciocinio tecnico. Evite listas secas; prefira paragrafos fluidos com dados embutidos.
+
 REGRA NOTA 30: Sem dados relevantes para uma dimensao → atribua exatamente 30.
-DIMENSAO OPERACIONAL: Avalie apenas topicos abertos inseridos pela equipe. Topico sem contexto tecnico real (texto de teste, generico, sem descricao de problema) = inconclusivo. Se todos inconclusivos ou nenhum topico → campo "operacional" = exatamente 30.
+
+REGRA OPERACIONAL: Avalie apenas topicos abertos inseridos pela equipe. Topico sem contexto tecnico real (texto de teste, generico, sem descricao de problema) = inconclusivo. Se todos inconclusivos ou nenhum topico → campo "operacional" = exatamente 30.
+
+═══════════════════════════════════
+DADOS DA LOJA
+═══════════════════════════════════
 
 TOPICOS ABERTOS (pesam em TODAS as dimensoes + operacional):
-${openTopics.length ? openTopics.map(fmtTopic).join('\n') : '  Nenhum'}
+${openTopics.length ? openTopics.map(fmtTopic).join('\n') : '  Nenhum topico aberto'}
 
-CHAMADOS FRESHDESK ATIVOS (${fdActive.length} abertos/pendentes — pesam no score):
-${fdActive.slice(0, 20).map(fmtTicket).join('\n') || '  Nenhum'}
+CHAMADOS FRESHDESK ATIVOS (${fdActive.length} abertos/pendentes):
+${fdActive.slice(0, 20).map(fmtTicket).join('\n') || '  Nenhum chamado ativo'}
 
-TOPICOS RESOLVIDOS NO MES (historico — nao pesam):
+TOPICOS RESOLVIDOS NO MES (historico — nao pesam no score):
 ${history.filter(h => h.resolved_at?.slice(0,7) === month).slice(0,10).map(t => `  [resolvido] ${t.description}`).join('\n') || '  Nenhum'}
 
-PROBLEMAS RECORRENTES:
-${recurrences.length ? recurrences.map(r => '  ' + r).join('\n') : '  Nenhum'}
+PROBLEMAS RECORRENTES (apareceram em mais de 1 relatorio):
+${recurrences.length ? recurrences.map(r => '  ' + r).join('\n') : '  Nenhum recorrente identificado'}
 
-SAUDE DAS MAQUINAS (media 30 dias):
-${machineData.length ? machineData.map(fmtMachine).join('\n') : '  Sem dados'}
+SAUDE DAS MAQUINAS — media dos ultimos 30 dias (CPU% / RAM% / Temp°C / DiskLivreGB / status):
+${machineData.length ? machineData.map(fmtMachine).join('\n') : '  Sem dados de saude de maquinas para este periodo'}
 
-MAQUINAS WINDOWS 10 — SO fora de suporte (Microsoft EOL out/2025):
+MAQUINAS WINDOWS 10 — SO sem suporte de seguranca (Microsoft EOL out/2025):
   Criticas TERM/BOH: ${win10CriticalMachines.length ? win10CriticalMachines.join(', ') : 'Nenhuma'}
   Normais: ${win10NormalMachines.length ? win10NormalMachines.join(', ') : 'Nenhuma'}
 REGRA WIN10: Maquinas TERM/BOH com Win10 = severidade maxima em Software/OS e Seguranca.
 
-ZAMAK RMM — SEGURANCA E PATCHES (${zamakSynced ? 'dados atuais' : 'SEM DADOS — Zamak nao sincronizada'}):
+ZAMAK RMM — SEGURANCA E PATCHES (${zamakSynced ? 'dados atuais — ultima sincronizacao valida' : 'SEM DADOS — Zamak nao sincronizada recentemente'}):
 ${zamakSynced && zamak.total_devices > 0 ? `  Dispositivos monitorados: ${zamak.total_devices}
   Patches criticos pendentes: ${zamak.patch_critical}
   Patches high pendentes: ${zamak.patch_high}
@@ -179,12 +193,15 @@ ${zamakSynced && zamak.total_devices > 0 ? `  Dispositivos monitorados: ${zamak.
   Ameacas MAV ativas: ${zamak.threats_active}
   Checks com falha: ${zamak.failing_checks}
   Devices offline (Zamak): ${zamak.devices_offline}
-REGRA ZAMAK: Patches criticos = severidade maxima em seguranca. Ameacas MAV ativas = emergencia de seguranca.` : '  Sem dados Zamak — desconsiderar dimensao seguranca baseada em patches'}
+REGRA ZAMAK: Patches criticos pendentes = risco maximo em seguranca. Ameacas MAV ativas = emergencia — acoes imediatas requeridas.` : '  Sem dados Zamak — desconsiderar avaliacao de patches e antivirus neste relatorio'}
 
-FEEDBACK HISTORICO DO GESTOR:
-${recentFeedback.length ? recentFeedback.map(fmtFeedback).join('\n') : '  Nenhum'}
+FEEDBACK HISTORICO DO GESTOR (use para calibrar tom e prioridades):
+${recentFeedback.length ? recentFeedback.map(fmtFeedback).join('\n') : '  Nenhum feedback anterior registrado'}
 
-Retorne JSON exato com este formato (sem campos extras, sem explicacoes fora do JSON):
+═══════════════════════════════════
+FORMATO DE SAIDA (JSON puro, sem texto fora do JSON)
+═══════════════════════════════════
+
 {
   "hardware": <0-100>,
   "software": <0-100>,
@@ -192,18 +209,18 @@ Retorne JSON exato com este formato (sem campos extras, sem explicacoes fora do 
   "seguranca": <0-100>,
   "incidentes": <0-100>,
   "operacional": <0-100>,
-  "resumo": "<1 paragrafo de resumo executivo geral da situacao da loja>",
-  "narrativa_hardware": "<2-3 frases sobre hardware, temperatura, CPU, RAM e disco das maquinas>",
-  "narrativa_software": "<2-3 frases sobre software, sistema operacional e atualizacoes>",
-  "narrativa_conectividade": "<2-3 frases sobre conectividade e rede>",
-  "narrativa_seguranca": "<2-3 frases sobre seguranca, vulnerabilidades e acesso>",
-  "narrativa_incidentes": "<2-3 frases sobre incidentes, chamados Freshdesk e recorrencias>",
-  "narrativa_operacional": "<2-3 frases sobre os topicos abertos pela equipe e impacto operacional>",
-  "recomendacoes": ["<acao prioritaria 1>", "<acao prioritaria 2>", "<acao prioritaria 3>"],
-  "inconclusivos": [<id_numerico_do_topico>, ...]
+  "resumo": "<Paragrafo de resumo executivo da situacao geral da loja — mencione as maquinas mais criticas pelo nome, o problema mais grave e o impacto operacional real. Tom direto, como um briefing para o diretor.>",
+  "narrativa_hardware": "<2-4 frases sobre hardware fisico e saude das maquinas. Inclui: CPU/RAM/temperatura/disco de cada maquina pelo nome (ex: TERMCITTA1 operando com CPU 72%), equipamentos fisicos com problema como nobreaks, terminais, impressoras, quando citados em topicos ou chamados. Conecte leituras altas a riscos reais (ex: CPU 84% no TERMBSHOP2 causa lentidao no fechamento de vendas).>",
+  "narrativa_software": "<2-3 frases sobre sistemas operacionais, versoes de software, atualizacoes pendentes. Cite maquinas Windows 10 pelo nome se houver. Mencione risco de EOL.>",
+  "narrativa_conectividade": "<2-3 frases sobre rede, internet, VPN, quedas de conectividade. Cite topicos ou chamados de rede especificos se houver.>",
+  "narrativa_seguranca": "<2-4 frases sobre seguranca: patches pendentes (cite quantos criticos), ameacas MAV, maquinas sem antivirus atualizado, acessos nao autorizados. Se dados Zamak disponiveis, mencione numeros exatos.>",
+  "narrativa_incidentes": "<2-4 frases sobre chamados Freshdesk ativos (cite titulos ou IDs dos mais criticos), topicos recorrentes (cite o padrao), tempo medio de abertura dos chamados ativos. Demonstre pattern recognition.>",
+  "narrativa_operacional": "<2-3 frases sobre os topicos abertos pela equipe (cite IDs e descricoes), seu impacto na operacao diaria da loja, quais estao pendentes ha mais tempo.>",
+  "recomendacoes": ["<acao especifica e prioritaria 1 — cite maquina ou sistema alvo>", "<acao especifica 2>", "<acao especifica 3>"],
+  "inconclusivos": [<id_numerico_do_topico_sem_contexto_real>, ...]
 }
 
-IMPORTANTE sobre "inconclusivos": liste o ID de CADA topico sem contexto tecnico real. Array vazio [] se TODOS foram avaliáveis.`;
+LEMBRETE FINAL: Cada narrativa deve ter dados especificos. Um relatorio que diz "alguns equipamentos apresentam problemas" e reprovado. Um relatorio que diz "TERMCITTA1 e TERMCITTA3 operam com CPU acima de 75% nas ultimas 3 semanas, elevando o risco de lentidao no PDV durante o pico de vendas do almoco" e aprovado.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -520,7 +537,7 @@ async function generateDocx(ctx, scores, month) {
   function dimNarrative(text) {
     if (!text) return [];
     return [
-      new Paragraph({ children: [new TextRun({ text, size: 20 })] }),
+      new Paragraph({ children: [new TextRun({ text, size: 20 })], alignment: AlignmentType.JUSTIFIED }),
       new Paragraph(''),
     ];
   }
@@ -671,7 +688,7 @@ async function generateDocx(ctx, scores, month) {
   // Resumo Executivo
   if (scores.dim_resumo) {
     children.push(new Paragraph({ text: 'Resumo Executivo', heading: HeadingLevel.HEADING_2 }));
-    children.push(new Paragraph({ children: [new TextRun({ text: scores.dim_resumo, size: 20 })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: scores.dim_resumo, size: 20 })], alignment: AlignmentType.JUSTIFIED }));
     children.push(new Paragraph(''));
   }
 
@@ -690,10 +707,11 @@ async function generateDocx(ctx, scores, month) {
         text: `⚠️ Máquinas com Windows 10 (sem suporte de segurança): ${ctx.win10Machines.join(', ')}`,
         color: 'E53E3E', bold: true, size: 20,
       })],
+      alignment: AlignmentType.JUSTIFIED,
     }));
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Recomendação: agendar upgrade para Windows 11 com urgência.', size: 20 })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: 'Recomendação: agendar upgrade para Windows 11 com urgência.', size: 20 })], alignment: AlignmentType.JUSTIFIED }));
   } else {
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Nenhuma máquina com OS fora de suporte detectada.', size: 20 })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: 'Nenhuma máquina com OS fora de suporte detectada.', size: 20 })], alignment: AlignmentType.JUSTIFIED }));
   }
   children.push(new Paragraph(''));
 
@@ -705,12 +723,6 @@ async function generateDocx(ctx, scores, month) {
   // ── 4. Segurança ─────────────────────────────────────────────────────────
   children.push(...dimHeader(4, 'Segurança', scores.score_security));
   children.push(...dimNarrative(scores.dim_seguranca));
-  children.push(new Paragraph({
-    children: [new TextRun({
-      text: '[Zamak RMM — integração em andamento. Relatório de endpoints e tentativas de acesso não autorizado será incluído em breve.]',
-      color: '888888', size: 18,
-    })],
-  }));
   children.push(new Paragraph(''));
 
   // ── 5. Incidentes ────────────────────────────────────────────────────────
@@ -728,7 +740,7 @@ async function generateDocx(ctx, scores, month) {
   // ── 7. Recomendações ─────────────────────────────────────────────────────
   children.push(new Paragraph({ text: '7. Recomendações e Próximos Passos', heading: HeadingLevel.HEADING_2 }));
   for (const rec of (scores.ai_recommendations || [])) {
-    children.push(new Paragraph({ children: [new TextRun({ text: `• ${rec}`, size: 20 })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: `• ${rec}`, size: 20 })], alignment: AlignmentType.JUSTIFIED }));
   }
 
   // ── Write file ────────────────────────────────────────────────────────────
