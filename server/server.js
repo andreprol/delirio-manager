@@ -63,6 +63,12 @@ app.get('/health', (req, res) => {
   });
 });
 
+// ── Status integrações ────────────────────────────────────────────────────────
+app.get('/api/status/integrations', (req, res) => {
+  const { getIntegrationsStatus } = require('./db');
+  res.json(getIntegrationsStatus());
+});
+
 // ── Rotas ─────────────────────────────────────────────────────────────────────
 app.use('/api', agentRoutes);
 app.use('/api', winEventsRoutes);

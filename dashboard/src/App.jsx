@@ -13,6 +13,23 @@ import { DRModule } from './components/DRModule'
 import { ReportModule } from './components/ReportModule'
 import { api, setServerUrl, getServerUrl } from './api'
 
+function fmtAge(min) {
+  if (min == null) return 'Nunca sincronizado'
+  if (min < 60) return `${Math.round(min)}min atrás`
+  return `${Math.floor(min / 60)}h${Math.round(min % 60).toString().padStart(2, '0')}min atrás`
+}
+
+function IntSyncPill({ label, ok, ageMinutes }) {
+  const color = ok ? 'var(--green)' : (ageMinutes == null ? '#718096' : '#e53e3e')
+  return (
+    <div className="conn-status" title={`Último sync: ${fmtAge(ageMinutes)}`}
+         style={{ color, gap: 4 }}>
+      <span className="conn-dot" style={{ width: 6, height: 6, background: color, flexShrink: 0 }} />
+      {label}
+    </div>
+  )
+}
+
 export default function App() {
   const [serverUrl, setServerUrlState] = useState('https://dt-manager.brazilsouth.cloudapp.azure.com')
   const [showSettings, setShowSettings] = useState(false)
@@ -46,6 +63,7 @@ export default function App() {
   const [biosSavePath, setBiosSavePath] = useState(null)
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
   const [alertsCount,     setAlertsCount]     = useAlertsCount()
+  const [intStatus,       setIntStatus]       = useState(null)
 
   // Garante que a janela Electron é larga o suficiente para o topbar.
   // scrollWidth não funciona em flex com overflow:visible — usa getBoundingClientRect
@@ -69,6 +87,13 @@ export default function App() {
     const obs = new ResizeObserver(checkFit)
     obs.observe(right)
     return () => obs.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const fetchInt = () => api.getIntegrationsStatus().then(setIntStatus).catch(() => {})
+    fetchInt()
+    const id = setInterval(fetchInt, 60000)
+    return () => clearInterval(id)
   }, [])
 
   useEffect(() => {
@@ -299,6 +324,10 @@ export default function App() {
             <span className="conn-dot" style={{ width: 6, height: 6, background: wsConnected ? 'var(--green)' : '#4b5563' }} />
             {wsConnected ? 'Tempo real' : '30s sync'}
           </div>
+          {intStatus && <>
+            <IntSyncPill label="Zamak"     ok={intStatus.zamak.ok}     ageMinutes={intStatus.zamak.ageMinutes} />
+            <IntSyncPill label="Freshdesk" ok={intStatus.freshdesk.ok} ageMinutes={intStatus.freshdesk.ageMinutes} />
+          </>}
         </div>
 
         <div className="topbar-center">

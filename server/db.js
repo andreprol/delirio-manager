@@ -1256,6 +1256,29 @@ function replaceZamakDiscrepancies(rows) {
   insert(rows);
 }
 
+// Status consolidado de ambas as integrações (Zamak + Freshdesk)
+function getIntegrationsStatus() {
+  const now = Date.now();
+  let zamakLast = null, freshdeskLast = null;
+  try {
+    const r = getDb().prepare(`SELECT MAX(cached_at) as t FROM zamak_device_cache`).get();
+    zamakLast = r?.t || null;
+  } catch (_) {}
+  try {
+    const r = getDb().prepare(`SELECT MAX(cached_at) as t FROM freshdesk_cache`).get();
+    freshdeskLast = r?.t || null;
+  } catch (_) {}
+
+  const ageMin = (ts) => ts ? (now - new Date(ts).getTime()) / 60000 : null;
+  const zamakAge = ageMin(zamakLast);
+  const freshdeskAge = ageMin(freshdeskLast);
+
+  return {
+    zamak:     { lastSync: zamakLast,     ageMinutes: zamakAge,     ok: zamakAge     !== null && zamakAge     < 360 },
+    freshdesk: { lastSync: freshdeskLast, ageMinutes: freshdeskAge, ok: freshdeskAge !== null && freshdeskAge < 240 },
+  };
+}
+
 // Retorna quantas horas desde o último sync (Infinity se nunca sincronizou)
 function getZamakCacheAge() {
   const row = getDb().prepare(
@@ -1417,6 +1440,8 @@ module.exports = {
   insertMetricsHourly, getWeightedMetricsForStore,
   // eventos offline
   insertOfflineEvent, getOfflineEventsForStore,
+  // status integrações
+  getIntegrationsStatus,
   // zamak / N-able
   upsertZamakDevices, replaceZamakDiscrepancies, getZamakCacheAge,
   getZamakSummaryForStore, getZamakDiscrepancies,

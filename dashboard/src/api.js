@@ -103,6 +103,7 @@ export const api = {
 
   // Health
   health: () => request('GET', '/health'),
+  getIntegrationsStatus: () => request('GET', '/api/status/integrations'),
 
   // Reports
   getBiosReport:   ()     => request('GET', '/api/reports/bios'),
