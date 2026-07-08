@@ -1212,6 +1212,39 @@ function getOfflineEventsForStore(location, month) {
   return row?.total_events ?? 0;
 }
 
+// Máquinas sem medição horária no mês (offline total ou agente desatualizado)
+function getMachinesWithoutMetrics(storeName, month) {
+  const [year, mon] = month.split('-').map(Number);
+  const monthStart = Math.floor(new Date(year, mon - 1, 1).getTime() / 1000);
+  const monthEnd   = Math.floor(new Date(year, mon,     1).getTime() / 1000);
+
+  return getDb().prepare(`
+    SELECT m.id, m.hostname, m.status
+    FROM machines m
+    WHERE m.location = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM machine_metrics_hourly h
+        WHERE h.machine_id = m.id
+          AND h.snapshot_ts >= ? AND h.snapshot_ts < ?
+      )
+    ORDER BY m.hostname
+  `).all(storeName, monthStart, monthEnd);
+}
+
+// Resumo de medições das últimas 24h — para email diário de verificação do agente
+function getDailyMetricsSummary() {
+  const since = Math.floor(Date.now() / 1000) - 86400;
+  return getDb().prepare(`
+    SELECT m.id, m.hostname, m.location, m.status,
+           COUNT(h.id) as readings_24h
+    FROM machines m
+    LEFT JOIN machine_metrics_hourly h
+      ON h.machine_id = m.id AND h.snapshot_ts >= ?
+    GROUP BY m.id
+    ORDER BY m.location, readings_24h ASC, m.hostname
+  `).all(since);
+}
+
 // ── Zamak / N-able N-sight cache ──────────────────────────────────────────────
 
 function upsertZamakDevices(rows) {
@@ -1445,6 +1478,7 @@ module.exports = {
   getStoresOverview,
   // métricas horárias
   insertMetricsHourly, getWeightedMetricsForStore,
+  getMachinesWithoutMetrics, getDailyMetricsSummary,
   // eventos offline
   insertOfflineEvent, getOfflineEventsForStore,
   // status integrações

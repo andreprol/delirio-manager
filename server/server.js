@@ -9,6 +9,7 @@ const { initWebSocket } = require('./services/websocket');
 const alertEngine       = require('./services/alertEngine');
 const insightEngine     = require('./services/insightEngine');
 const zamakService      = require('./services/zamak');
+const metricsEmail      = require('./services/metricsEmailReport');
 
 const agentRoutes    = require('./routes/agent');
 const machineRoutes  = require('./routes/machines');
@@ -278,6 +279,7 @@ server.listen(PORT, () => {
   alertEngine.start();
   insightEngine.start();
   zamakService.scheduleDailySync();
+  metricsEmail.scheduleDailyMetricsEmail();
 });
 
 // ── NF-Ce indexer — dispara diariamente às 23:00 para servidores BOH ─────────

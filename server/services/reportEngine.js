@@ -113,6 +113,8 @@ function buildStoreContext(storeName, month) {
   const weightedMetrics  = db.getWeightedMetricsForStore(storeName, month);
   // Eventos offline do mês do relatório
   const offlineEventCount = db.getOfflineEventsForStore(storeName, month);
+  // Máquinas sem nenhuma medição horária no mês (offline total ou agente v1.5.12)
+  const machinesWithoutMetrics = db.getMachinesWithoutMetrics(storeName, month);
 
   // Dados Zamak / N-able (cache, pode estar vazio se nunca sincronizado)
   const zamak = db.getZamakSummaryForStore(storeName);
@@ -124,7 +126,7 @@ function buildStoreContext(storeName, month) {
     openTopics, history: history.slice(0, 20), recurrences,
     fdActive, fdClosed, fdTotal,
     machineData, win10Machines, win10CriticalMachines, win10NormalMachines, recentFeedback,
-    weightedMetrics, offlineEventCount,
+    weightedMetrics, offlineEventCount, machinesWithoutMetrics,
     zamak, zamakSynced,
   };
 }
@@ -136,7 +138,8 @@ function buildStoreContext(storeName, month) {
 function buildPrompt(ctx) {
   const { storeName, month, openTopics, history, recurrences,
           fdActive, machineData, win10Machines, win10CriticalMachines,
-          win10NormalMachines, recentFeedback, zamak, zamakSynced } = ctx;
+          win10NormalMachines, recentFeedback, zamak, zamakSynced,
+          machinesWithoutMetrics } = ctx;
 
   const fmtTopic    = t => `  [ID:${t.id}][${t.severity.toUpperCase()}${t.is_critical_machine ? ' BOH/TERM' : ''}] ${t.description}`;
   const fmtTicket   = t => `  [${t.status}] ${t.title}`;
@@ -179,6 +182,12 @@ ${recurrences.length ? recurrences.map(r => '  ' + r).join('\n') : '  Nenhum rec
 
 SAUDE DAS MAQUINAS — media dos ultimos 30 dias (CPU% / RAM% / Temp°C / DiskLivreGB / status):
 ${machineData.length ? machineData.map(fmtMachine).join('\n') : '  Sem dados de saude de maquinas para este periodo'}
+
+MAQUINAS SEM MEDICAO HORARIA NO MES (offline ou agente desatualizado — nao enviaram snapshots):
+${machinesWithoutMetrics && machinesWithoutMetrics.length
+  ? machinesWithoutMetrics.map(m => `  ${m.hostname} (status: ${m.status})`).join('\n')
+  : '  Nenhuma — todas as maquinas enviando medicoes horarias regularmente'}
+REGRA MEDICAO: Maquinas sem medicao horaria = estado de hardware desconhecido + patches nao monitorados = risco elevado em Hardware e Software.
 
 MAQUINAS WINDOWS 10 — SO sem suporte de seguranca (Microsoft EOL out/2025):
   Criticas TERM/BOH: ${win10CriticalMachines.length ? win10CriticalMachines.join(', ') : 'Nenhuma'}
@@ -340,6 +349,24 @@ function parseClaudeScore(aiResult, ctx) {
       `máquinas offline não executam aplicações, patches de SO ou atualizações de segurança.`;
   }
 
+  // ── Penalidade por máquinas sem medição horária (offline total / agente v1.5.12) ─
+  const noMetricsMachines = ctx?.machinesWithoutMetrics ?? [];
+  const noMetricsCount    = noMetricsMachines.length;
+  let   noMetricsAdendo   = '';
+  if (noMetricsCount > 0) {
+    let pen;
+    if (noMetricsCount >= 6)      pen = { hw: 25, sw: 30, nivel: 'CRÍTICO' };
+    else if (noMetricsCount >= 3) pen = { hw: 18, sw: 22, nivel: 'ALTO' };
+    else                          pen = { hw: 10, sw: 12, nivel: 'MÉDIO' };
+
+    score_hardware = Math.min(100, score_hardware + pen.hw);
+    score_software = Math.min(100, score_software + pen.sw);
+
+    const lista = noMetricsMachines.map(m => m.hostname).join(', ');
+    noMetricsAdendo = `${noMetricsCount} máquina(s) sem medição horária no mês [${pen.nivel}]: ${lista}. ` +
+      `Estado de hardware desconhecido e entrega de patches não monitorada.`;
+  }
+
   const score_total = Math.round(
     score_hardware     * WEIGHTS.score_hardware     +
     score_software     * WEIGHTS.score_software     +
@@ -353,7 +380,7 @@ function parseClaudeScore(aiResult, ctx) {
   const hwAdendoText = hwAdendos.length
     ? `MÉTRICAS DE HARDWARE (média ponderada mensal): ${hwAdendos.join('; ')}.`
     : '';
-  const narrativaSoftware  = [aiResult.narrativa_software  || '', win10Adendo].filter(Boolean).join(' ');
+  const narrativaSoftware  = [aiResult.narrativa_software  || '', win10Adendo, noMetricsAdendo].filter(Boolean).join(' ');
   const narrativaSeguranca = [aiResult.narrativa_seguranca || '', win10Adendo, offlineAdendo].filter(Boolean).join(' ');
 
   // Adiciona recomendação explícita de upgrade se Win10 crítico
@@ -382,6 +409,12 @@ function parseClaudeScore(aiResult, ctx) {
   if (offlineCount > 5)  recomendacoes.unshift(`URGENTE: ${offlineCount} quedas offline no mês — investigar estabilidade da rede e nobreaks`);
   else if (offlineCount > 0) recomendacoes.push(`${offlineCount} queda(s) offline registrada(s) — verificar estabilidade de rede e nobreaks`);
 
+  if (noMetricsCount >= 3) {
+    recomendacoes.unshift(`URGENTE: ${noMetricsCount} máquinas sem medição horária (${noMetricsMachines.map(m => m.hostname).join(', ')}) — atualizar agente para v1.5.13 ou verificar conectividade`);
+  } else if (noMetricsCount > 0) {
+    recomendacoes.push(`Atualizar agente para v1.5.13 nas máquinas sem medição: ${noMetricsMachines.map(m => m.hostname).join(', ')}`);
+  }
+
   return {
     // DB fields (used by saveReportRun via explicit columns)
     score_total, score_hardware, score_software, score_connectivity,
@@ -391,7 +424,7 @@ function parseClaudeScore(aiResult, ctx) {
     inconclusivos:      Array.isArray(aiResult.inconclusivos) ? aiResult.inconclusivos : [],
     // Per-dimension narratives for docx (not persisted to DB — saveReportRun uses explicit cols)
     dim_resumo:        aiResult.resumo       || '',
-    dim_hardware:      [aiResult.narrativa_hardware || '', hwAdendoText].filter(Boolean).join(' '),
+    dim_hardware:      [aiResult.narrativa_hardware || '', hwAdendoText, noMetricsAdendo].filter(Boolean).join(' '),
     dim_software:      narrativaSoftware,
     dim_conectividade: aiResult.narrativa_conectividade || '',
     dim_seguranca:     narrativaSeguranca,
@@ -400,6 +433,7 @@ function parseClaudeScore(aiResult, ctx) {
     win10Adendo,
     hwAdendoText,
     offlineAdendo,
+    noMetricsAdendo,
   };
 }
 
