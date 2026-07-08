@@ -16,9 +16,13 @@ function parseFlatXmlList(xml, itemTag) {
   const itemRe = new RegExp(`<${itemTag}[\\s>][\\s\\S]*?<\\/${itemTag}>`, 'gi');
   for (const match of xml.matchAll(itemRe)) {
     const item = {};
-    const fieldRe = /<([a-zA-Z_][a-zA-Z0-9_]*)(?:\s[^>]*)?>([^<]*)<\/\1>/g;
+    // Captura CDATA ou texto simples
+    const fieldRe = /<([a-zA-Z_][a-zA-Z0-9_]*)(?:\s[^>]*)?>(<!\[CDATA\[[\s\S]*?\]\]>|[^<]*)<\/\1>/g;
     for (const field of match[0].matchAll(fieldRe)) {
-      item[field[1]] = field[2].trim();
+      let val = field[2].trim();
+      const cdata = val.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/);
+      if (cdata) val = cdata[1].trim();
+      item[field[1]] = val;
     }
     if (Object.keys(item).length > 0) items.push(item);
   }
@@ -53,9 +57,11 @@ function fetchNsight(server, apiKey, service, params = {}) {
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
 
     const req = https.request(url.toString(), { method: 'GET' }, (res) => {
-      let data = '';
-      res.on('data', c => { data += c; });
+      const chunks = [];
+      res.on('data', c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
       res.on('end', () => {
+        // N-sight retorna XML em ISO-8859-1; decodificar como latin1 para preservar acentos
+        const data = Buffer.concat(chunks).toString('latin1');
         if (res.statusCode !== 200) {
           return reject(new Error(`N-sight ${service}: HTTP ${res.statusCode} — ${data.slice(0, 200)}`));
         }
@@ -104,41 +110,71 @@ const DEFAULT_STORE_MAP = {
   'barra':              'Barra Shopping',
   'metropolitano':      'Metropolitano',
   'metro':              'Metropolitano',
-  'città':              'Città',
   'citta':              'Città',
-  'gávea':              'Gávea',
   'gavea':              'Gávea',
   'ipanema':            'Ipanema',
   'rio sul':            'Rio Sul',
-  'niterói plaza':      'Niterói Plaza',
-  'niterói':            'Niterói Plaza',
+  'niteroi plaza':      'Niterói Plaza',
   'niteroi':            'Niterói Plaza',
   'assembleia':         'Assembleia',
-  'assembléia':         'Assembleia',
   'tijuca':             'Tijuca',
-  'escritório central': 'Escritório Central',
   'escritorio central': 'Escritório Central',
+  'escritorio':         'Escritório Central',
   'central':            'Escritório Central',
 };
 
+// Normaliza acentos para comparação robusta (independente de encoding)
+function stripAccents(s) {
+  return (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+}
+
 function resolveStoreName(nsightSiteName, customMap = {}) {
   if (!nsightSiteName) return null;
-  const key = nsightSiteName.toLowerCase().trim();
+  const key = stripAccents(nsightSiteName);
 
-  // Config customizado tem prioridade (chaves também são comparadas por substring lowercase)
   for (const [k, v] of Object.entries(customMap)) {
-    if (key.includes(k.toLowerCase())) return v;
+    if (key.includes(stripAccents(k))) return v;
   }
-  // Mapa padrão
   for (const [k, v] of Object.entries(DEFAULT_STORE_MAP)) {
     if (key.includes(k)) return v;
   }
   return null;
 }
 
+// ─── Parser hierárquico para list_devices_at_client ──────────────────────────
+// Resposta: <client> → <site id=X name=Y> → <workstation>/<server>
+// O parser flat não captura o siteid do elemento pai.
+function parseDevicesWithSite(xml, deviceTag) {
+  const result = [];
+  const siteRe = /<site[\s>][\s\S]*?<\/site>/gi;
+  for (const sm of xml.matchAll(siteRe)) {
+    const siteXml = sm[0];
+    const siteId   = (siteXml.match(/<id>(\d+)<\/id>/) || [])[1] || null;
+    const snCdata  = siteXml.match(/<name><!\[CDATA\[([\s\S]*?)\]\]><\/name>/);
+    const snPlain  = siteXml.match(/<name>([^<]*)<\/name>/);
+    const siteName = (snCdata ? snCdata[1] : snPlain ? snPlain[1] : '').trim();
+
+    const devRe = new RegExp(`<${deviceTag}[\\s>][\\s\\S]*?<\\/${deviceTag}>`, 'gi');
+    for (const dm of siteXml.matchAll(devRe)) {
+      const item = {};
+      const fieldRe = /<([a-zA-Z_][a-zA-Z0-9_]*)(?:\s[^>]*)?>(<!\[CDATA\[[\s\S]*?\]\]>|[^<]*)<\/\1>/g;
+      for (const f of dm[0].matchAll(fieldRe)) {
+        let val = f[2].trim();
+        const cdata = val.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/);
+        if (cdata) val = cdata[1].trim();
+        item[f[1]] = val;
+      }
+      item._siteid   = siteId;
+      item._sitename = siteName;
+      if (Object.keys(item).length > 1) result.push(item);
+    }
+  }
+  return result;
+}
+
 // ─── Helpers para extrair campos independente de variação de tag ───────────────
 function deviceId(d) {
-  return d.workstationid || d.serverid || d.deviceid || d.id || '';
+  return d.id || d.workstationid || d.serverid || d.deviceid || '';
 }
 function deviceName(d) {
   return d.name || d.workstationname || d.servername || d.devicename || '';
@@ -168,8 +204,7 @@ async function syncAll() {
   if (!clients) clients = parseFlatXmlList(clientsXml, 'client');
 
   const delirio = clients.find(c => {
-    const name = (c.name || c.clientname || '').toLowerCase();
-    return name.includes('delirio') || name.includes('delírio');
+    return stripAccents(c.name || c.clientname || '').includes('delirio');
   });
   if (!delirio) {
     const names = clients.map(c => c.name || c.clientname || '?').join(', ');
@@ -198,25 +233,20 @@ async function syncAll() {
     }
   }
 
-  // 3. Listar todos os dispositivos do cliente (1 chamada por tipo)
+  // 3. Listar todos os dispositivos — resposta hierárquica: <site> → <workstation>/<server>
   await throttle();
   const wsXml = await fetchNsight(server, apiKey, 'list_devices_at_client', {
     clientid: clientId, devicetype: 'workstation',
   });
-  let workstations = parseJsonList(wsXml, 'workstation', 'device', 'devices');
-  if (!workstations) workstations = parseFlatXmlList(wsXml, 'workstation');
+  const workstations = parseDevicesWithSite(wsXml, 'workstation').map(d => ({ ...d, _type: 'workstation' }));
 
   await throttle();
   const srvXml = await fetchNsight(server, apiKey, 'list_devices_at_client', {
     clientid: clientId, devicetype: 'server',
   });
-  let servers = parseJsonList(srvXml, 'server', 'device', 'devices');
-  if (!servers) servers = parseFlatXmlList(srvXml, 'server');
+  const servers = parseDevicesWithSite(srvXml, 'server').map(d => ({ ...d, _type: 'server' }));
 
-  const allDevices = [
-    ...workstations.map(d => ({ ...d, _type: 'workstation' })),
-    ...servers.map(d => ({ ...d, _type: 'server' })),
-  ];
+  const allDevices = [...workstations, ...servers];
   log.push(`Dispositivos: ${allDevices.length} (${workstations.length} workstations + ${servers.length} servidores)`);
 
   // 4. Failing checks globais (1 chamada)
@@ -237,10 +267,16 @@ async function syncAll() {
   const rows = [];
 
   for (const device of allDevices) {
-    const did  = deviceId(device);
-    const name = deviceName(device);
-    const siteId = device.siteid;
-    const { siteName = '?', storeName = null } = siteToStore[siteId] || {};
+    const did      = deviceId(device);
+    const name     = deviceName(device);
+    const siteId   = device._siteid;
+    const siteName = device._sitename || '?';
+    const storeName = resolveStoreName(siteName, customStoreMap);
+
+    if (!storeName && siteName !== '?' && !unmappedSites.find(u => u.siteId === siteId)) {
+      unmappedSites.push({ siteId, siteName });
+      log.push(`⚠️ Site sem mapeamento: "${siteName}" (siteId=${siteId})`);
+    }
 
     // Match com máquina do DM por hostname (case-insensitive)
     const dmMatch = allDmMachines.find(m =>
