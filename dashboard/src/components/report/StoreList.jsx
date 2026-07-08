@@ -45,8 +45,8 @@ export function StoreList({ stores, selectedStore, onSelect, zamakByStore = {} }
                   ? <span style={{ color: '#48bb78' }}>✓ {s.freshdeskCount} tickets sincronizados</span>
                   : <span style={{ color: '#4a5568' }}>Freshdesk sem tickets</span>
                 }
-                {/* Zamak RMM */}
-                {zamakLine(zamakByStore[s.name])}
+                {/* Zamak RMM — lookup com fallback accent-insensitive */}
+                {zamakLine(zamakByStore[s.name] ?? zamakByStore[(s.name||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase()])}
               </div>
             </div>
           </div>

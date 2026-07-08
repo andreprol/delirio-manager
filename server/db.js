@@ -334,6 +334,16 @@ function migrate(db) {
       dm_hostname        TEXT,
       cached_at          TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS zamak_threats (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id   TEXT NOT NULL,
+      device_name TEXT NOT NULL,
+      store_name  TEXT,
+      threat_name TEXT,
+      category    TEXT,
+      last_status TEXT,
+      cached_at   TEXT NOT NULL
+    )`,
     `CREATE TABLE IF NOT EXISTS zamak_discrepancies (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
       type            TEXT NOT NULL,
@@ -1256,6 +1266,30 @@ function getZamakDiscrepancies() {
   ).all();
 }
 
+function replaceZamakThreats(rows) {
+  const d = getDb();
+  d.prepare('DELETE FROM zamak_threats').run();
+  if (!rows.length) return;
+  const stmt = d.prepare(`
+    INSERT INTO zamak_threats (device_id, device_name, store_name, threat_name, category, last_status, cached_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insert = d.transaction((items) => {
+    for (const r of items) {
+      stmt.run(r.device_id, r.device_name, r.store_name, r.threat_name, r.category, r.last_status, r.cached_at);
+    }
+  });
+  insert(rows);
+}
+
+function getZamakThreats(storeName) {
+  const d = getDb();
+  const sql = storeName
+    ? `SELECT * FROM zamak_threats WHERE store_name = ? ORDER BY device_name, threat_name`
+    : `SELECT * FROM zamak_threats ORDER BY store_name, device_name, threat_name`;
+  return storeName ? d.prepare(sql).all(storeName) : d.prepare(sql).all();
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -1306,4 +1340,5 @@ module.exports = {
   // zamak / N-able
   upsertZamakDevices, replaceZamakDiscrepancies, getZamakCacheAge,
   getZamakSummaryForStore, getZamakDiscrepancies,
+  replaceZamakThreats, getZamakThreats,
 };

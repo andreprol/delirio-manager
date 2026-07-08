@@ -152,9 +152,10 @@ export const api = {
 
   // Zamak RMM (N-able N-sight)
   zamak: {
-    getStatus:        () => request('GET',  '/api/zamak/status'),
-    getDiscrepancies: () => request('GET',  '/api/zamak/discrepancies'),
-    triggerSync:      () => request('POST', '/api/zamak/sync'),
+    getStatus:        ()      => request('GET',  '/api/zamak/status'),
+    getDiscrepancies: ()      => request('GET',  '/api/zamak/discrepancies'),
+    getThreats:       (store) => request('GET',  `/api/zamak/threats${store ? `?store=${encodeURIComponent(store)}` : ''}`),
+    triggerSync:      ()      => request('POST', '/api/zamak/sync'),
   },
 
   // Relatório TI por loja

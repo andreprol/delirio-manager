@@ -29,8 +29,14 @@ export function ReportModule({ onClose }) {
     loadStores()
     api.zamak.getStatus()
       .then(s => {
+        // Índice duplo: chave exata + chave normalizada (sem acentos, lowercase)
+        // para absorver divergências de encoding entre Zamak e DM
+        const strip = v => (v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
         const map = {}
-        for (const row of (s.byStore || [])) map[row.store_name] = row
+        for (const row of (s.byStore || [])) {
+          map[row.store_name]         = row   // chave exata
+          map[strip(row.store_name)]  = row   // chave normalizada
+        }
         setZamakByStore(map)
       })
       .catch(() => {})

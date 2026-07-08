@@ -71,6 +71,16 @@ router.get('/discrepancies', (req, res) => {
   }
 });
 
+// GET /api/zamak/threats?store=X — lista ameaças MAV individuais
+router.get('/threats', (req, res) => {
+  try {
+    const rows = db.getZamakThreats(req.query.store || null);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/zamak/discrepancies/report — gera DOCX de discrepâncias
 router.get('/discrepancies/report', async (req, res) => {
   try {

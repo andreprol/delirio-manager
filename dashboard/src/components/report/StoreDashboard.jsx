@@ -5,7 +5,8 @@ import { ScoreWidget }      from './ScoreWidget'
 import { TopicList }        from './TopicList'
 import { TopicForm }        from './TopicForm'
 import { GenerateModal }    from './GenerateModal'
-import { FreshdeskSection } from './FreshdeskSection'
+import { FreshdeskSection }     from './FreshdeskSection'
+import { ZamakThreatsSection } from './ZamakThreatsSection'
 
 export function StoreDashboard({ storeName, onStoreListRefresh }) {
   const [topics,        setTopics]       = useState([])
@@ -89,6 +90,9 @@ export function StoreDashboard({ storeName, onStoreListRefresh }) {
 
       {/* Freshdesk */}
       <FreshdeskSection storeName={storeName} />
+
+      {/* Zamak MAV Threats */}
+      <ZamakThreatsSection storeName={storeName} />
 
       {/* Modais */}
       {showForm && (

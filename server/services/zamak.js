@@ -265,6 +265,7 @@ async function syncAll() {
   // 5. Por dispositivo: patches + ameaças MAV
   const allDmMachines = db.getAllMachines();
   const rows = [];
+  const threatRows = [];
 
   for (const device of allDevices) {
     const did      = deviceId(device);
@@ -305,18 +306,32 @@ async function syncAll() {
 
     // MAV threats
     let threatsActive = 0;
+    let activeThreats = [];
     if (did) {
       try {
         await throttle();
         const mXml = await fetchNsight(server, apiKey, 'list_mav_threats', { deviceid: did });
         let threats = parseJsonList(mXml, 'threat', 'threats');
         if (!threats) threats = parseFlatXmlList(mXml, 'threat');
-        threatsActive = threats.filter(t =>
+        activeThreats = threats.filter(t =>
           (t.last_status || t.status || '').toLowerCase() !== 'cleaned'
-        ).length;
+        );
+        threatsActive = activeThreats.length;
       } catch (e) {
         log.push(`MAV ${name}: ${e.message}`);
       }
+    }
+
+    for (const t of activeThreats) {
+      threatRows.push({
+        device_id:   did,
+        device_name: name,
+        store_name:  storeName,
+        threat_name: t.name || t.threat_name || t.filename || 'Desconhecida',
+        category:    t.category || t.infotype || '',
+        last_status: t.last_status || t.status || '',
+        cached_at:   now,
+      });
     }
 
     rows.push({
@@ -344,6 +359,7 @@ async function syncAll() {
 
   // 6. Salvar no banco
   db.upsertZamakDevices(rows);
+  db.replaceZamakThreats(threatRows);
 
   // 7. Discrepâncias
   const discrepancies = [];
