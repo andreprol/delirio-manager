@@ -1,251 +1,398 @@
-# Plano de Correção — Módulo RH / clock-proxy / alertas
-**Data:** 2026-06-22  
-**Contexto:** Sessão de diagnóstico revelou erros na sincronização em massa (Sincronizar Todos), spam de alertas offline e instabilidade no clock-proxy.
+# Plano: NCR Monitor — Check de Encomendas
+**Data:** 2026-07-08
+
+## Objetivo
+Monitorar `andre@delirio.com.br` a cada 2 min por emails `TEST NCR` (remetente `delirio@i9vando.com.br`). Para cada novo email: identificar loja → enviar comando ao agente BOH → verificar se NFC-e foi gerada → enviar email de resultado com XML em anexo (encontrada) ou alerta (não encontrada).
 
 ---
 
-## Estado Atual (pré-plano)
+## O que já existe (não alterar)
 
-### O que já foi corrigido e deployado nesta sessão
-| Fix | Arquivo | Deploy |
-|-----|---------|--------|
-| Cooldown 30min alertas offline (TERMIPA5) | `alertEngine.js` | ✅ Azure VM |
-| Reset cooldown no heartbeat | `agent.js` | ✅ Azure VM |
-
-### O que foi codificado mas NÃO deployado ainda
-| Fix | Arquivo | Commit |
-|-----|---------|--------|
-| `login()`: detecta "Outra conexão" + força desconexão | `henry-hexa.js` | `23cc0b5` |
-| `enrollEmployee()`: timeout `#lblName` 15s → 30s | `henry-hexa.js` | `23cc0b5` |
-| `enrollEmployee()` + `updateCardRef2()`: flag `savedEarly` | `henry-hexa.js` | `23cc0b5` |
-
-**Atenção:** clock-proxy está rodando no Servidor Skill mas foi iniciado **manualmente** (não via PM2). O PM2 não está gerenciando o processo atual.
+| Componente | Relevante |
+|---|---|
+| `agent/nfce.go` | `parseNFCeFile()`, `indexNFCeDay()`, todos os structs XML — reutilizar sem tocar |
+| `agent/commands.go` | switch `executeCommand` — adicionar 1 case novo |
+| `server/db.js` | `createCommand()`, `getCommandById()`, `ackCommand()` — reutilizar |
+| `server/routes/agent.js` | ACK handler `POST /commands/ack` — adicionar post-process para 1 type novo |
+| `server/services/metricsEmailReport.js` | `getAccessToken()` — copiar para ncrMonitor (não extrair shared) |
+| `server/server.js` | Padrão de import + start de serviço |
 
 ---
 
-## Inventário Completo de Erros Observados
-
-| # | Erro | Tipo | Status |
-|---|------|------|--------|
-| 1 | Spam de alertas offline — TERMIPA5 | Bug de código | ✅ Corrigido + deployado |
-| 2 | clock-proxy indisponível (Temp dir ausente) | Configuração | ✅ Resolvido no Servidor Skill |
-| 3 | `browserType.launch: ENOENT mkdtemp` | Configuração | ✅ Resolvido (pasta Temp\1\ criada) |
-| 4 | "Outra conexão está ativa" | Bug de código | ✅ Codificado — aguarda deploy |
-| 5 | Timeout 15000ms `#lblName` | Bug de código | ✅ Codificado — aguarda deploy |
-| 6 | "Salvar não confirmado — tela: ''" | Bug de código | ✅ Codificado — aguarda deploy |
-| 7 | "Login falhou — tela: LOGIN \| Usuário: \| Senha:" | A investigar | ⚠️ Provável: credencial diferente em 1 relógio |
-| 8 | Conflito de Ref1 (matrícula duplicada) | Dado / RH | ❌ Não corrigível em código |
-| 9 | PM2 não está gerenciando o processo | Operacional | ❌ Precisa restauração |
-
----
-
-## Riscos Identificados no Código Atual (commit 23cc0b5)
-
-### Risco 1 — `forceBtn` locator muito amplo
-```javascript
-const forceBtn = page.locator('a, button').filter({
-  hasText: /Continuar|Desconectar|Forçar|Forcar|OK/i,
-}).first();
-```
-`OK` pode coincidir com outros botões na página (confirmações de dialog, alertas). Se Henry Hexa tiver qualquer botão com texto "OK" em tela de erro diferente, o código clicaria no lugar errado.
-
-**Mitigação:** Remover `OK` do regex. Os textos mais prováveis para força-desconexão no Hexa ADV são `Continuar` e `Desconectar`. Podemos adicionar outros à medida que descobrirmos.
-
-### Risco 2 — `Promise.race` com `loggedIn` mutation em `.then()`
-```javascript
-await Promise.race([
-  page.waitForSelector('text=Colaboradores', { timeout: 30000 }).then(() => { loggedIn = true; }),
-  page.waitForSelector('text=Outra conexão', ...),
-  ...
-]);
-```
-Se o `Promise.race` resolver via "Outra conexão" e **depois** "Colaboradores" aparecer (ex: force disconnect trabalhou e a página navegou), `loggedIn` pode ser setado após o `if (!loggedIn)` já ter executado.
-
-**Análise:** Na prática, o fluxo entra em `if (!loggedIn)`, detecta session conflict, clica forceBtn, aguarda "Colaboradores" com `waitForSelector`. Se isso funcionar, a função retorna `return`. A mutation tardia de `loggedIn` não causa problema neste fluxo. Risco baixo.
-
-### Risco 3 — Niterói: "Login falhou — tela: LOGIN | Usuário: | Senha:"
-Este erro **não é "Outra conexão"** — é o servidor do relógio rejeitando as credenciais (página retorna ao formulário de login). O novo código trata corretamente (throws com mensagem clara), mas **não resolve a causa raiz**.
-
-Causas possíveis:
-- Niterói tem senha diferente de `111111`
-- Race condition na criptografia RSA (chave carregada mas timing diferente)
-- Throttle do firmware após múltiplas tentativas rápidas
-
-**Precisa investigação antes de qualquer fix de código.**
-
----
-
-## Arquitetura de Dependências
+## Grafo de Dependências
 
 ```
-Servidor Skill (192.168.17.252)
-  └── dt-clock-proxy (Node.js PM2)
-        ├── server.js          — Express, filas, endpoints
-        └── henry-hexa.js      — Playwright, automação web
-              └── Chrome.exe   — Headless, controla UI relógio
-                    └── Henry Hexa ADV (192.168.x.151)
-                          └── Firmware web (RSA login, CRUD colaboradores)
+[A] nfce.go: findNFCeForOrder()
+    └─ reutiliza: parseNFCeFile(), indexNFCeDay() (já existem, SEM modificação)
 
-Azure VM → [IPsec → Metro pfSense → IPsec → EC pfSense] → Servidor Skill
-  └── dt-manager (Node.js PM2)
-        └── routes/rh.js       — Proxy para clock-proxy
-              └── alertEngine.js — Alertas offline com cooldown
+[B] commands.go: case "aloha-find-nfce"
+    └─ depende de: A
+
+[C] Build binário Go + upload via /api/update/publish
+    └─ depende de: A + B
+
+[D] db.js: migration + 5 funções NCR
+    └─ independente
+
+[E] ncrMonitor.js: serviço principal
+    └─ depende de: D (tabela ncr_monitor_emails)
+    └─ chama: db.createCommand() → fluxo ACK existente
+
+[F] agent.js: post-process ACK "aloha-find-nfce"
+    └─ depende de: D
+    └─ chama: ncrMonitor.sendNcrResultEmail()
+
+[G] server.js: wire-up do monitor
+    └─ depende de: E
 ```
 
----
-
-## Plano de Tarefas
-
-### Fase 1 — Deploy e Restauração do PM2
-**Objetivo:** Colocar o clock-proxy em estado estável com o código mais recente e gerenciado por PM2.
-
-#### Tarefa 1.1 — Corrigir `forceBtn` antes do deploy
-**Descrição:** Remover `OK` do regex do `forceBtn` locator para evitar click acidental.
-
-**Aceitação:**
-- [ ] Regex em `login()` não contém `OK`
-- [ ] Mantém `Continuar`, `Desconectar`, `Forçar`, `Forcar`
-
-**Arquivos:** `F:\RichClub\clock-proxy\henry-hexa.js` (linha ~77)  
-**Escopo:** XS — 1 linha
+**Ordem de deploy obrigatória:** C (agente) → D+E+F+G (JS) → PM2 restart
 
 ---
 
-#### Tarefa 1.2 — Deploy do `henry-hexa.js` via RDP + restaurar PM2
-**Descrição:** Copiar arquivo atualizado para o Servidor Skill e reiniciar via PM2 (não Start-Process manual).
+## Decisões de Design
 
-**Sequência exata (via RDP no Servidor Skill):**
+### Match de NFC-e
+- **Valor**: `Math.abs(record.VNF - targetTotal) <= 0.02`
+- **Data**: `dateCreated` UTC → BRT (UTC-3, fixo — sem DST desde 2019) → YYYY/MM/DD para path
+- Se múltiplos XMLs com valor igual: retornar o primeiro match (NFC-e gerada no intervalo)
+
+### Retry (event-driven, não polling)
+- Tentativa 0: imediata ao chegar email
+- Tentativa 1: 5 minutos após ACK negativo
+- Tentativa 2: 15 minutos após ACK negativo
+- Após 3 falhas: enviar email de alerta e setar `notified_at`
+- ACK chegando após `notified_at` preenchido: ignorar (não duplicar email)
+
+### Tabela `ncr_monitor_emails`
+```
+message_id       TEXT UNIQUE  — dedup de emails
+received_at      TEXT         — quando chegou
+order_ref        TEXT         — número do pedido (ex: "311")
+enterprise_unit_id TEXT       — ID da loja do email JSON
+store_name       TEXT         — nome legível da loja
+boh_hostname     TEXT         — ex: TIJUCABOH
+machine_id       TEXT         — FK para tabela machines
+total_value      REAL         — valor Net do pedido
+date_brt         TEXT         — data BRT (YYYY-MM-DD) para busca NFC-e
+products_json    TEXT         — JSON array de descrições
+command_id       TEXT         — link para última tentativa em commands
+retry_count      INTEGER      — 0, 1, 2
+next_retry_at    TEXT         — quando re-enviar comando
+danfe_found      INTEGER      — NULL=pendente, 1=encontrada, 0=não encontrada
+danfe_chave      TEXT         — chave de acesso NFC-e (quando found)
+xml_b64          TEXT         — XML em base64 (quando found)
+notified_at      TEXT         — timestamp do email de resultado enviado
+created_at       TEXT         — auto datetime('now')
+```
+
+### Mapeamento enterpriseUnitId → BOH
+```js
+const UNIT_TO_BOH = {
+  '5106287247014b1d82f07eacb9ce6b94': 'TIJUCABOH',
+  '961508b0b4434c8fbc69800fea190502': 'BSHOPBOH',
+  '01202dac19534f59addff2945c49450e': 'RSULBOH',
+  '9debb4dc0abb4b61b2e33b1c74f48460': 'IPANEMABOH',
+  '3f72f66c92ef4029b575b01c5fdab9a0': 'ASSBOH',
+  '0eef4431966744f9911b75d5ce1cb39c': 'METROBOH',
+  'aa75a7efad3e467ba666d5a48c9f8ccb': 'GAVEABOH',
+  // PLAZABOH, CITTABOH: fallback via texto da storeName
+}
+const STORE_NAME_TO_BOH = {
+  'niteroi plaza': 'PLAZABOH',
+  'niterói plaza': 'PLAZABOH',
+  'citta': 'CITTABOH',
+  'città': 'CITTABOH',
+}
+```
+
+### Parse do email (body HTML → JSON)
+1. `msg.body.content` (HTML) → strip tags → decode HTML entities
+2. Regex `\{"channel":.*?\}` — extrair JSON blob
+3. `JSON.parse(match)` → `{dateCreated, totals[{type:"Net",value}], orderLines[{description}], enterpriseUnitId, referenceId}`
+4. Total: `payload.totals.find(t => t.type === 'Net')?.value`
+5. Produtos: `payload.orderLines.map(l => l.description)`
+6. Data BRT: `new Date(dateCreated) - 3h` → `YYYY-MM-DD`
+
+### Token MS Graph
+- `ncrMonitor.js` tem `getAccessToken()` própria (copiada de `metricsEmailReport.js`)
+- Scope adicional: `Mail.ReadWrite` (para ler emails)
+- Token atual em config.json já tem `Mail.ReadWrite` (confirmado em sessão anterior)
+
+---
+
+## TAREFA 1: Go — `findNFCeForOrder` + case `aloha-find-nfce`
+
+### 1a — `agent/nfce.go` — adicionar função + structs
+
+```go
+type FindNFCeParams struct {
+    Date     string   `json:"date"`     // "2026-07-06" (BRT)
+    Total    float64  `json:"total"`
+    Products []string `json:"products"`
+}
+
+type FindNFCeResult struct {
+    Found  bool    `json:"found"`
+    Chave  string  `json:"chave,omitempty"`
+    XMLB64 string  `json:"xml_b64,omitempty"`
+    DhEmi  string  `json:"dh_emi,omitempty"`
+    VNF    float64 `json:"v_nf,omitempty"`
+}
+
+func findNFCeForOrder(params FindNFCeParams) FindNFCeResult
+```
+
+Lógica:
+1. Parse `params.Date` → `yyyy`, `mm`, `dd`
+2. `dayPath = alohaNFCePath + "\" + yyyy + "\" + mm + "\" + dd + "\NFCe\"`
+3. `os.ReadDir(dayPath)` → listar `.xml`
+4. Para cada arquivo: `parseNFCeFile(xmlPath, dd)` → checar `math.Abs(rec.VNF - params.Total) <= 0.02`
+5. Se match: ler bytes raw → `base64.StdEncoding.EncodeToString` → retornar `{Found:true,...}`
+6. Sem match: `{Found:false}`
+7. Erro de pasta não encontrada: `{Found:false}` (sem panic)
+
+### 1b — `agent/commands.go` — adicionar case
+
+```go
+case "aloha-find-nfce":
+    var params FindNFCeParams
+    if err := json.Unmarshal([]byte(cmd.Params), &params); err != nil {
+        return "", fmt.Errorf("params inválidos: %w", err)
+    }
+    result := findNFCeForOrder(params)
+    data, _ := json.Marshal(result)
+    return string(data), nil
+```
+
+**Critérios de aceitação:**
+- [ ] `go build ./...` sem erros
+- [ ] Retorna `{found:false}` para data/valor inexistentes
+- [ ] Retorna `{found:true, chave:"...", xml_b64:"..."}` para match real
+- [ ] base64 decoded = XML válido
+
+---
+
+## TAREFA 2: Build + Deploy do Agente
+
 ```powershell
-# 1. Copiar arquivo do PC local (via redirecionamento de drive RDP)
-Copy-Item "\\tsclient\F\RichClub\clock-proxy\henry-hexa.js" "C:\DtClockProxy\henry-hexa.js" -Force
-
-# 2. Matar processos node manualmente iniciados
-Stop-Process -Name node -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 3
-
-# 3. Restaurar via PM2 (inicia daemon + ressurge processos salvos)
-pm2 resurrect
-
-# 4. Verificar saúde
-Start-Sleep -Seconds 3
-pm2 list
-Invoke-RestMethod http://localhost:4321/health
+cd F:\RichClub\agent
+$env:GOOS="windows"; $env:GOARCH="amd64"
+go build -ldflags="-s -w" -o ..\delirio-agent.exe .
 ```
 
-**Aceitação:**
-- [ ] `pm2 list` mostra `dt-clock-proxy` com status `online`
-- [ ] `http://localhost:4321/health` retorna `{ ok: true }`
-- [ ] Apenas 1 processo node rodando para o clock-proxy
+Upload via endpoint existente `/api/update/publish` (multipart ou raw bytes conforme implementação atual em `routes/update.js`).
 
-**Escopo:** XS — operacional
-
----
-
-### Checkpoint 1
-- [ ] `pm2 list` online
-- [ ] `/health` respondendo
-- [ ] Apenas 1 node process
+**Critérios de aceitação:**
+- [ ] Upload OK, versão bump confirmado
+- [ ] BOHs online auto-atualizam em < 2 min (heartbeat 30s)
+- [ ] Logs VM: `[Update] HOSTNAME updated to vX.X.XX`
 
 ---
 
-### Fase 2 — Verificação dos Fixes Deployados
-**Objetivo:** Confirmar que os 3 fixes de código funcionam em produção.
+## TAREFA 3: DB migration + funções (`server/db.js`)
 
-#### Tarefa 2.1 — Testar "Outra conexão" (erro 4)
-**Descrição:** Abrir o relógio que teve sessão presa (Metro 192.168.14.151 ou Niterói) num browser manualmente, deixar logado, então tentar enroll via dashboard.
+Adicionar na função de init (após todas as outras tabelas CREATE TABLE IF NOT EXISTS):
 
-**Verificação:**
-- [ ] Dashboard não mostra mais "Erro Playwright: Login falhou — Outra conexão está ativa"
-- [ ] OU mostra "Outra conexão está ativa no relógio — não foi possível forçar desconexão (botão não encontrado)" se Henry Hexa não tiver botão Continuar/Desconectar (nesse caso, precisamos capturar o texto real do botão)
-
-**Observação:** Se o teste revelar que o botão tem nome diferente (ex: "Sim", "Prosseguir"), atualizar o regex na Tarefa 1.1 e fazer redeploy.
-
----
-
-#### Tarefa 2.2 — Testar "Salvar não confirmado — tela: ''" (erro 6)
-**Descrição:** Executar Sincronizar Todos e verificar se o erro de tela vazia persiste.
-
-**Verificação:**
-- [ ] Não aparece mais "Salvar não confirmado — tela: ''"
-- [ ] Jobs completam com ✅ ou com erros significativos (não erro de captura de tela vazia)
-
----
-
-### Fase 3 — Investigação do Login Niterói (erro 7)
-**Objetivo:** Determinar causa raiz do "Login falhou — tela: LOGIN | Usuário: | Senha:" antes de qualquer fix de código.
-
-#### Tarefa 3.1 — Teste manual de credenciais em Niterói
-**Descrição:** Acessar `http://192.168.10.150` via browser no Servidor Skill e tentar login com `teste fabrica` / `111111`.
-
-**Verificação:**
-- [ ] Login funciona manualmente → causa é timing/throttle de firmware (fix: retry com delay)
-- [ ] Login falha manualmente → causa é credencial diferente (ação: reset de senha físico no relógio)
-
-**Condição de saída:** Só prosseguir para fix de código SE login manual funcionar (descarta problema de credencial).
-
----
-
-#### Tarefa 3.2 — (Condicional) Fix de retry no login
-**Só executar se Tarefa 3.1 confirmar que credenciais estão certas.**
-
-**Descrição:** Adicionar retry no `login()` quando detectar retorno à tela de login (credentials rejected), com delay de 5s entre tentativas.
-
-**Aceitação:**
-- [ ] Até 2 retentativas automáticas
-- [ ] Mensagem de erro inclui número de tentativas
-- [ ] Não afeta fluxo normal (login na 1ª tentativa)
-
-**Arquivos:** `henry-hexa.js`, método `login()`  
-**Escopo:** S — ~20 linhas
-
----
-
-### Fase 4 — Dados: Conflito de Ref1 (erro 8)
-**Objetivo:** Documentar e comunicar os 8 pares de funcionários com Ref1 duplicada para ação do RH.
-
-#### Tarefa 4.1 — Levantar lista completa de conflitos
-**Descrição:** Os conflitos de Ref1 já são conhecidos (mapeados na memória do projeto): 8 pares/trios com matrículas 693, 903, 909, 922, 923, 924, 926, 936. Não é bug de código — é dado.
-
-**Ação requerida (fora do escopo de código):**
-- RH/SAP deve atribuir matrículas únicas a cada funcionário
-- Após correção dos dados, re-sincronizar os afetados
-
-**Aceitação:**
-- [ ] Lista dos 8 pares comunicada ao RH
-- [ ] Dashboard exibe mensagem clara de "Conflito de Ref1" (já funciona ✅)
-
----
-
-### Checkpoint Final
-- [ ] PM2 gerenciando clock-proxy
-- [ ] "Outra conexão" tratada automaticamente ou com erro claro
-- [ ] "Salvar não confirmado — tela: ''" eliminado
-- [ ] Niterói: causa raiz identificada
-- [ ] Ref1 conflicts: RH notificado
-
----
-
-## Riscos e Mitigações
-
-| Risco | Impacto | Mitigação |
-|-------|---------|-----------|
-| PM2 `dump.pm2` corrompido/ausente | Médio | Fallback: `pm2 start server.js --name dt-clock-proxy` em `C:\DtClockProxy` |
-| `forceBtn` "Continuar" não existe no Hexa ADV | Médio | Tarefa 2.1 confirma; se falhar, capturar screenshot para identificar botão real |
-| Niterói tem senha diferente | Alto | Requer acesso físico ao relógio para reset de fábrica |
-| `savedEarly` verdadeiro mas relógio não persistiu | Baixo | Verificação pós-save via `navigateAndSearchByCPF` já cobre esse caso |
-
----
-
-## Ordem de Execução
-
-```
-1.1 → 1.2 → [Checkpoint 1] → 2.1 → 2.2 → [Checkpoint 2] → 3.1 → (3.2 se necessário) → 4.1
+```sql
+CREATE TABLE IF NOT EXISTS ncr_monitor_emails (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id         TEXT UNIQUE NOT NULL,
+  received_at        TEXT NOT NULL,
+  order_ref          TEXT,
+  enterprise_unit_id TEXT,
+  store_name         TEXT,
+  boh_hostname       TEXT,
+  machine_id         TEXT,
+  total_value        REAL,
+  date_brt           TEXT,
+  products_json      TEXT,
+  command_id         TEXT,
+  retry_count        INTEGER DEFAULT 0,
+  next_retry_at      TEXT,
+  danfe_found        INTEGER,
+  danfe_chave        TEXT,
+  xml_b64            TEXT,
+  notified_at        TEXT,
+  created_at         TEXT DEFAULT (datetime('now'))
+)
 ```
 
+Funções a adicionar e exportar:
+```js
+db.ncrInsertEmail(row)          // INSERT OR IGNORE, retorna changes
+db.ncrGetByMessageId(msgId)     // SELECT * WHERE message_id=?
+db.ncrGetByCommandId(cmdId)     // SELECT * WHERE command_id=?
+db.ncrUpdate(id, fields)        // UPDATE por campos dinâmicos (usar Object.keys)
+db.ncrGetPendingRetries()       // WHERE danfe_found IS NULL AND retry_count < 3
+                                //   AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
+```
+
+**Critérios de aceitação:**
+- [ ] Tabela criada ao reiniciar PM2 (verificar via `sqlite3`)
+- [ ] `ncrInsertEmail` idempotente (mesmo message_id → 0 changes na segunda chamada)
+- [ ] `ncrGetPendingRetries` retorna rows com `next_retry_at` vencido
+
 ---
 
-## Fora do Escopo (deferidos)
+## TAREFA 4: `server/services/ncrMonitor.js` — serviço principal (CRIAR)
 
-- Trocar senhas de fábrica `111111` nos 10 relógios (LGPD Art. 46)
-- Corrigir bug de encoding no `deploy-remote.ps1`
-- Relógios Città e Tijuca (problemas de hardware físico)
+```
+Responsabilidades:
+  getAccessToken(cfg)          — cópia local, scope Mail.ReadWrite offline_access Mail.Send
+  fetchNewNcrEmails(token)     — Graph $search="subject:NCR", filtrar from
+  parseNcrEmail(msg)           — decode entities, extrair JSON, retornar campos
+  dispatchNcrCheck(emailRow)   — db.createCommand + db.ncrUpdate
+  sendNcrResultEmail(row, res) — Graph sendMail com ou sem attachment
+  processRetries()             — db.ncrGetPendingRetries + dispatchNcrCheck
+  tick()                       — fetch + processRetries, cada 2min
+  start()                      — setInterval(tick, 120000) + tick() imediato
+```
+
+Email de resultado:
+- Encontrada: `✅ NFC-e confirmada — Pedido #311 | Tijuca`
+  - HTML com loja, valor, data, chave
+  - Attachment: `{chave}-nfce.xml` base64
+- Não encontrada: `⚠️ NFC-e NÃO gerada — Pedido #311 | Tijuca`
+  - HTML com detalhes do pedido + timestamps das tentativas
+
+Attachment MS Graph:
+```json
+{
+  "@odata.type": "#microsoft.graph.fileAttachment",
+  "name": "{chave}-nfce.xml",
+  "contentType": "application/xml",
+  "contentBytes": "<base64>"
+}
+```
+
+**Critérios de aceitação:**
+- [ ] `tick()` não lança exceção com emails malformados (try/catch por email)
+- [ ] Email com `message_id` já em DB é ignorado
+- [ ] `parseNcrEmail` extrai `orderRef`, `totalValue`, `dateBRT`, `products` do email de teste
+- [ ] `dispatchNcrCheck` cria command na tabela `commands` e atualiza `ncr_monitor_emails.command_id`
+- [ ] Emails de resultado chegam em `andre@delirio.com.br` (fase de teste)
+
+---
+
+## TAREFA 5: `server/routes/agent.js` — ACK handler `aloha-find-nfce`
+
+Adicionar no bloco post-process do `POST /commands/ack` (após handlers existentes):
+
+```js
+if (cmd && cmd.type === 'aloha-find-nfce' && message) {
+  try {
+    const result = JSON.parse(message);
+    const emailRow = db.ncrGetByCommandId(commandId);
+    if (emailRow && !emailRow.notified_at) {
+      if (result.found) {
+        db.ncrUpdate(emailRow.id, { danfe_found: 1, danfe_chave: result.chave, xml_b64: result.xml_b64 });
+        ncrMonitor.sendNcrResultEmail(emailRow, result).catch(e =>
+          console.error('[NCR] Falha ao enviar email confirmação:', e.message)
+        );
+      } else {
+        const retryDelays = [5, 15];
+        if (emailRow.retry_count < 2) {
+          const nextAt = new Date(Date.now() + retryDelays[emailRow.retry_count] * 60000).toISOString();
+          db.ncrUpdate(emailRow.id, { retry_count: emailRow.retry_count + 1, next_retry_at: nextAt });
+        } else {
+          db.ncrUpdate(emailRow.id, { danfe_found: 0 });
+          ncrMonitor.sendNcrResultEmail(emailRow, result).catch(e =>
+            console.error('[NCR] Falha ao enviar alerta:', e.message)
+          );
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[NCR] Falha ao processar ACK aloha-find-nfce:', e.message);
+  }
+}
+```
+
+Requer `const ncrMonitor = require('../services/ncrMonitor')` no topo do arquivo.
+
+**Critérios de aceitação:**
+- [ ] ACK `found:true` → `danfe_found=1` + email com XML
+- [ ] ACK `found:false` (retry_count < 2) → agenda retry, sem email
+- [ ] ACK `found:false` (retry_count == 2) → `danfe_found=0` + email alerta
+- [ ] ACK com `notified_at` preenchido → ignorado silenciosamente
+
+---
+
+## TAREFA 6: `server/server.js` — wire-up + deploy final
+
+```js
+// Adicionar import (junto com outros requires no topo)
+const ncrMonitor = require('./services/ncrMonitor');
+
+// Adicionar no server.listen callback (após metricsEmail.scheduleDailyMetricsEmail())
+ncrMonitor.start();
+console.log('[NCR] Monitor de encomendas iniciado (intervalo: 2min)');
+```
+
+### Sequência de deploy (ordem obrigatória)
+
+1. Deploy agente Go (Tarefa 2) — BOHs auto-atualizam
+2. Deploy JS em bundle:
+   - `db.js` (migration + funções)
+   - `services/ncrMonitor.js` (novo arquivo)
+   - `routes/agent.js` (ACK handler)
+   - `server.js` (wire-up)
+3. PM2 restart seguindo padrão `ecosystem.config.js` (não `pm2 restart` simples — risco de perder DB_PATH)
+
+**Critérios de aceitação:**
+- [ ] `pm2 logs dt-manager` mostra `[NCR] Monitor de encomendas iniciado`
+- [ ] Logs mostram `[NCR] tick:` a cada 2 min
+- [ ] Nenhuma exceção no boot
+
+---
+
+## Checkpoints
+
+### Checkpoint A — Agente deployado
+- Testar via sqlite3: `INSERT INTO commands (id,machine_id,type,params,status) VALUES (...,'TIJUCABOH','aloha-find-nfce','{"date":"2026-07-08","total":0.01,"products":["Teste"]}','pending')`
+- Verificar ACK com `{found:false}` em < 60s
+
+### Checkpoint B — Monitor rodando
+- `ncrMonitor.start()` sem erros
+- Logs mostram tick a cada 2 min
+- Email TEST NCR manual enviado de `delirio@i9vando.com.br` → verificar linha em `ncr_monitor_emails`
+
+### Checkpoint C — Fluxo completo ponta a ponta
+- Email chega → agente recebe comando → ACK → email de resultado em `andre@delirio.com.br`
+- Verificar subject e XML attachment (quando found=true)
+
+---
+
+## Armadilhas Conhecidas
+
+1. **UTC-3 no Go**: `time.LoadLocation("America/Sao_Paulo")` pode falhar no Windows (sem tzdata). Usar `t.UTC().Add(-3 * time.Hour)` fixo — Brasil sem DST desde 2019.
+
+2. **XML base64 no ACK**: campo `result` em `commands` é TEXT. NFC-e típica: 5-30 KB → base64: 7-40 KB. Dentro do limite SQLite TEXT (1 GB). OK.
+
+3. **`$search` Graph não suporta AND com outros campos**: filtrar `from === 'delirio@i9vando.com.br'` no código JS após receber resultados.
+
+4. **`getMachineByHostname` pode não existir em db.js**: verificar antes de implementar Tarefa 3. Se não existir, adicionar junto.
+
+5. **BOH offline**: comando fica em `pending`. Se BOH voltar após `notified_at` preenchido → ACK handler tem guard `!emailRow.notified_at`. OK.
+
+6. **Emails duplicados de teste**: `UNIQUE` em `message_id` garante cada email processado só uma vez, mesmo com múltiplos emails com mesmo `orderRef`.
+
+7. **Double-encode no ACK**: `message` na tabela `commands` é o resultado JSON do agente Go. Verificar se `JSON.parse(message)` funciona diretamente (sem double-escape).
+
+8. **`cmd.Params` no Go**: verificar se é `[]byte` ou `string` na struct `Command`. O `json.Unmarshal` aceita `[]byte`; se for `string`, converter com `[]byte(cmd.Params)`.
+
+---
+
+## Resumo de Arquivos
+
+| Ação | Arquivo | Estimativa |
+|---|---|---|
+| MODIFY | `agent/nfce.go` | +55 linhas |
+| MODIFY | `agent/commands.go` | +12 linhas |
+| MODIFY | `server/db.js` | +85 linhas (migration + 5 funções) |
+| CREATE | `server/services/ncrMonitor.js` | ~210 linhas |
+| MODIFY | `server/routes/agent.js` | +32 linhas |
+| MODIFY | `server/server.js` | +3 linhas |
+
+Total: ~397 linhas novas/modificadas.

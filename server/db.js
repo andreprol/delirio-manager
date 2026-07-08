@@ -379,6 +379,27 @@ function migrate(db) {
       check_description TEXT,
       cached_at         TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS ncr_monitor_emails (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id         TEXT UNIQUE NOT NULL,
+      received_at        TEXT NOT NULL,
+      order_ref          TEXT,
+      enterprise_unit_id TEXT,
+      store_name         TEXT,
+      boh_hostname       TEXT,
+      machine_id         TEXT,
+      total_value        REAL,
+      date_brt           TEXT,
+      products_json      TEXT,
+      command_id         TEXT,
+      retry_count        INTEGER DEFAULT 0,
+      next_retry_at      TEXT,
+      danfe_found        INTEGER,
+      danfe_chave        TEXT,
+      xml_b64            TEXT,
+      notified_at        TEXT,
+      created_at         TEXT DEFAULT (datetime('now'))
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -416,6 +437,10 @@ function getMachineByToken(token) {
 
 function getMachineById(id) {
   return getDb().prepare('SELECT * FROM machines WHERE id = ?').get(id);
+}
+
+function getMachineByHostname(hostname) {
+  return getDb().prepare('SELECT * FROM machines WHERE UPPER(hostname) = UPPER(?)').get(hostname);
 }
 
 function getAllMachines() {
@@ -1433,12 +1458,58 @@ function getZamakOutages(storeName) {
   return storeName ? d.prepare(sql).all(storeName) : d.prepare(sql).all();
 }
 
+// ── NCR Monitor — Check de Encomendas ────────────────────────────────────────
+
+function ncrInsertEmail(row) {
+  const r = getDb().prepare(`
+    INSERT OR IGNORE INTO ncr_monitor_emails
+      (message_id, received_at, order_ref, enterprise_unit_id, store_name,
+       boh_hostname, machine_id, total_value, date_brt, products_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    row.message_id, row.received_at, row.order_ref || null,
+    row.enterprise_unit_id || null, row.store_name || null,
+    row.boh_hostname || null, row.machine_id || null,
+    row.total_value != null ? row.total_value : null,
+    row.date_brt || null,
+    row.products_json || null
+  );
+  return r.changes;
+}
+
+function ncrGetByMessageId(messageId) {
+  return getDb().prepare('SELECT * FROM ncr_monitor_emails WHERE message_id = ?').get(messageId);
+}
+
+function ncrGetByCommandId(commandId) {
+  return getDb().prepare('SELECT * FROM ncr_monitor_emails WHERE command_id = ?').get(commandId);
+}
+
+function ncrUpdate(id, fields) {
+  const keys = Object.keys(fields);
+  if (!keys.length) return;
+  const set = keys.map(k => `${k}=?`).join(', ');
+  getDb().prepare(`UPDATE ncr_monitor_emails SET ${set} WHERE id=?`)
+         .run(...keys.map(k => fields[k]), id);
+}
+
+function ncrGetPendingRetries() {
+  return getDb().prepare(`
+    SELECT * FROM ncr_monitor_emails
+    WHERE danfe_found IS NULL
+      AND retry_count < 3
+      AND machine_id IS NOT NULL
+      AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
+      AND command_id IS NOT NULL
+  `).all();
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
   getDb,
   // machines
-  registerMachine, getMachineByToken, getMachineById, isDeletedMachine,
+  registerMachine, getMachineByToken, getMachineById, getMachineByHostname, isDeletedMachine,
   getAllMachines, updateMachine, deleteMachine, setMachineStatus, getMachinesStale,
   setWolStatus, getMachinesWolTesting,
   getMachinesBiosNeeded, getMachinesOfflineForWake, getMachinesAutoWolTesting,
@@ -1489,4 +1560,6 @@ module.exports = {
   replaceZamakThreats, getZamakThreats,
   replaceZamakPerformance, getZamakPerformance,
   replaceZamakOutages, getZamakOutages,
+  // ncr monitor
+  ncrInsertEmail, ncrGetByMessageId, ncrGetByCommandId, ncrUpdate, ncrGetPendingRetries,
 };

@@ -136,6 +136,22 @@ func (a *Agent) executeCommand(cmd Command) (string, error) {
 		}
 		return s, nil
 
+	case "aloha-find-nfce":
+		var params FindNFCeParams
+		if err := json.Unmarshal(cmd.Params, &params); err != nil {
+			return "", fmt.Errorf("params aloha-find-nfce invalidos: %w", err)
+		}
+		if params.Date == "" {
+			return "", fmt.Errorf("aloha-find-nfce: date obrigatorio")
+		}
+		logInfo(fmt.Sprintf("Comando ALOHA-FIND-NFCE: date=%s total=%.2f", params.Date, params.Total))
+		result := findNFCeForOrder(params)
+		data, err := json.Marshal(result)
+		if err != nil {
+			return "", fmt.Errorf("erro ao serializar resultado find-nfce: %w", err)
+		}
+		return string(data), nil
+
 	case "dr-setup":
 		var creds DrCreds
 		if err := json.Unmarshal(cmd.Params, &creds); err != nil {

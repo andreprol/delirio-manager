@@ -22,7 +22,7 @@ async function getAccessToken(cfg) {
     client_id:     cfg.clientId,
     client_secret: cfg.clientSecret,
     refresh_token: cfg.refreshToken,
-    scope:         'offline_access https://graph.microsoft.com/Mail.Send',
+    scope:         'offline_access https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send',
   });
   const res = await fetch(
     `https://login.microsoftonline.com/${cfg.tenantId}/oauth2/v2.0/token`,

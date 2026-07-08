@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -388,4 +390,65 @@ func nfceRecordToJSON(r NFCeIndexDayResult) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// ── NCR Order check ───────────────────────────────────────────────────────────
+
+// FindNFCeParams are the search parameters sent by the server for aloha-find-nfce.
+type FindNFCeParams struct {
+	Date     string   `json:"date"`     // "YYYY-MM-DD" in BRT
+	Total    float64  `json:"total"`
+	Products []string `json:"products"`
+}
+
+// FindNFCeResult is the response for aloha-find-nfce.
+type FindNFCeResult struct {
+	Found  bool    `json:"found"`
+	Chave  string  `json:"chave,omitempty"`
+	XMLB64 string  `json:"xml_b64,omitempty"`
+	DhEmi  string  `json:"dh_emi,omitempty"`
+	VNF    float64 `json:"v_nf,omitempty"`
+}
+
+// findNFCeForOrder searches the NFC-e folder for a sale matching the given total value.
+// Date must be "YYYY-MM-DD" in BRT (files are stored by local date, UTC-3).
+func findNFCeForOrder(params FindNFCeParams) FindNFCeResult {
+	if len(params.Date) < 10 {
+		return FindNFCeResult{Found: false}
+	}
+	yyyy := params.Date[0:4]
+	mm := params.Date[5:7]
+	dd := params.Date[8:10]
+	dayPath := filepath.Join(alohaNFCePath, yyyy, mm, dd, "NFCe")
+
+	entries, err := os.ReadDir(dayPath)
+	if err != nil {
+		// Folder may not exist yet (NFC-e still being generated)
+		return FindNFCeResult{Found: false}
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".xml") {
+			continue
+		}
+		xmlPath := filepath.Join(dayPath, entry.Name())
+		rec, err := parseNFCeFile(xmlPath, dd)
+		if err != nil || rec.Chave == "" {
+			continue
+		}
+		if math.Abs(rec.VNF-params.Total) <= 0.02 {
+			raw, err := os.ReadFile(xmlPath)
+			if err != nil {
+				continue
+			}
+			return FindNFCeResult{
+				Found:  true,
+				Chave:  rec.Chave,
+				XMLB64: base64.StdEncoding.EncodeToString(raw),
+				DhEmi:  rec.DhEmi,
+				VNF:    rec.VNF,
+			}
+		}
+	}
+	return FindNFCeResult{Found: false}
 }

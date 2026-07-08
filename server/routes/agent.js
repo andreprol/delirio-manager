@@ -8,6 +8,7 @@ const { insertMetricsHourly, insertOfflineEvent } = require('../db');
 const { broadcast } = require('../services/websocket');
 const { readVersionInfo } = require('./update');
 const { clearOfflineCooldown } = require('../services/alertEngine');
+const ncrMonitor = require('../services/ncrMonitor');
 
 // POST /api/register
 // Registra nova maquina ou atualiza existente. Retorna token.
@@ -240,6 +241,41 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
         }
       } catch (e) {
         console.error('[NFCe] Falha ao indexar registros:', e.message);
+      }
+    }
+
+    // Post-process: verificar NFC-e para pedidos NCR
+    if (cmd && cmd.type === 'aloha-find-nfce') {
+      try {
+        const emailRow = db.ncrGetByCommandId(commandId);
+        if (emailRow && !emailRow.notified_at) {
+          let found = false;
+          let result = { found: false };
+          if (success !== false && message) {
+            try { result = JSON.parse(message); found = !!result.found; } catch (_) {}
+          }
+
+          if (found) {
+            db.ncrUpdate(emailRow.id, { danfe_found: 1, danfe_chave: result.chave, xml_b64: result.xml_b64 });
+            ncrMonitor.sendNcrResultEmail(emailRow, result).catch(e =>
+              console.error('[NCR] Falha ao enviar email confirmação:', e.message)
+            );
+          } else {
+            const retryDelays = [5, 15];
+            if (emailRow.retry_count < 2) {
+              const nextAt = new Date(Date.now() + retryDelays[emailRow.retry_count] * 60000).toISOString();
+              db.ncrUpdate(emailRow.id, { retry_count: emailRow.retry_count + 1, next_retry_at: nextAt });
+              console.log(`[NCR] Pedido #${emailRow.order_ref} — retry ${emailRow.retry_count + 1} agendado em ${retryDelays[emailRow.retry_count]}min`);
+            } else {
+              db.ncrUpdate(emailRow.id, { danfe_found: 0 });
+              ncrMonitor.sendNcrResultEmail(emailRow, { found: false }).catch(e =>
+                console.error('[NCR] Falha ao enviar alerta:', e.message)
+              );
+            }
+          }
+        }
+      } catch (e) {
+        console.error('[NCR] Falha ao processar ACK aloha-find-nfce:', e.message);
       }
     }
 

@@ -10,6 +10,7 @@ const alertEngine       = require('./services/alertEngine');
 const insightEngine     = require('./services/insightEngine');
 const zamakService      = require('./services/zamak');
 const metricsEmail      = require('./services/metricsEmailReport');
+const ncrMonitor        = require('./services/ncrMonitor');
 
 const agentRoutes    = require('./routes/agent');
 const machineRoutes  = require('./routes/machines');
@@ -280,6 +281,8 @@ server.listen(PORT, () => {
   insightEngine.start();
   zamakService.scheduleDailySync();
   metricsEmail.scheduleDailyMetricsEmail();
+  ncrMonitor.start();
+  console.log('[NCR] Monitor de encomendas iniciado (intervalo: 2min)');
 });
 
 // ── NF-Ce indexer — dispara diariamente às 23:00 para servidores BOH ─────────

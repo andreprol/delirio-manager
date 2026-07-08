@@ -1,34 +1,54 @@
-# TODO — Módulo RH / clock-proxy
-**Data:** 2026-06-22
+# TODO — NCR Monitor (Check de Encomendas)
+**Data:** 2026-07-08
 
-## Fase 1 — Deploy e PM2
+## Fase 1 — Agente Go
 
-- [x] **1.1** Remover `OK` do regex `forceBtn` em `henry-hexa.js:~77` (XS)
-- [x] **1.2** Deploy via RDP: copiar `henry-hexa.js` → matar node → `pm2 resurrect` → verificar `/health`
+- [ ] **1a** `agent/nfce.go`: adicionar structs `FindNFCeParams`, `FindNFCeResult` + função `findNFCeForOrder()`
+- [ ] **1b** `agent/commands.go`: adicionar `case "aloha-find-nfce":` no switch `executeCommand`
+- [ ] **1c** Build: `GOOS=windows GOARCH=amd64 go build -o delirio-agent.exe` sem erros
+- [ ] **1d** Upload binário via `/api/update/publish` + confirmar versão nos BOHs online
 
-### Checkpoint 1
-- [x] `pm2 list` mostra `dt-clock-proxy` online
-- [x] `http://localhost:4321/health` OK
-- [x] Apenas 1 processo node (PM2 gerenciando)
+### Checkpoint A
+- [ ] Inserir command manual no sqlite3 → BOH responde ACK `{found:false}` em < 60s
 
-## Fase 2 — Verificação em produção
+## Fase 2 — DB (`server/db.js`)
 
-- [ ] **2.1** Testar tratamento de "Outra conexão": abrir relógio no browser manualmente → tentar sync
-- [ ] **2.2** Rodar Sincronizar Todos e confirmar que "Salvar não confirmado — tela: ''" sumiu
+- [ ] **2a** Adicionar `CREATE TABLE IF NOT EXISTS ncr_monitor_emails (...)` na inicialização do DB
+- [ ] **2b** Adicionar e exportar: `ncrInsertEmail`, `ncrGetByMessageId`, `ncrGetByCommandId`, `ncrUpdate`, `ncrGetPendingRetries`
+- [ ] **2c** Verificar se `getMachineByHostname` existe; se não, adicionar
 
-## Fase 3 — Investigação Niterói
+## Fase 3 — Serviço (`server/services/ncrMonitor.js`)
 
-- [ ] **3.1** Acessar `http://192.168.10.150` via browser no Servidor Skill → testar login `teste fabrica` / `111111`
-- [ ] **3.2** (Condicional) Se credenciais OK → implementar retry com delay no `login()`
+- [ ] **3a** Criar arquivo com `getAccessToken()` (scope Mail.ReadWrite)
+- [ ] **3b** Implementar `fetchNewNcrEmails()` via Graph `$search="subject:NCR"`
+- [ ] **3c** Implementar `parseNcrEmail()` — strip HTML, decode entities, extrair JSON, converter UTC→BRT
+- [ ] **3d** Implementar `dispatchNcrCheck()` — `createCommand` + `ncrUpdate(command_id)`
+- [ ] **3e** Implementar `sendNcrResultEmail()` — Graph sendMail, attachment XML quando found
+- [ ] **3f** Implementar `processRetries()` — `ncrGetPendingRetries` + re-dispatch
+- [ ] **3g** Implementar `tick()` + `start()` com `setInterval(tick, 120000)`
+- [ ] **3h** Exportar: `{ start, sendNcrResultEmail }`
 
-## Fase 4 — Dados
+## Fase 4 — ACK Handler (`server/routes/agent.js`)
 
-- [ ] **4.1** Comunicar ao RH: 8 pares com Ref1 duplicada (693, 903, 909, 922, 923, 924, 926, 936) — precisam de matrículas únicas no SAP
+- [ ] **4a** Adicionar `const ncrMonitor = require('../services/ncrMonitor')` no topo
+- [ ] **4b** Adicionar bloco `if (cmd.type === 'aloha-find-nfce')` no post-process do `/commands/ack`
 
-## Concluídos nesta sessão
+## Fase 5 — Wire-up + Deploy (`server/server.js`)
 
-- [x] Fix cooldown 30min alertas offline (alertEngine.js) — deployado Azure VM
-- [x] Reset cooldown no heartbeat (agent.js) — deployado Azure VM  
-- [x] Pasta `C:\Users\Administrator\AppData\Local\Temp\1\` criada no Servidor Skill
-- [x] node reiniciado no Servidor Skill (ainda não via PM2)
-- [x] Código dos 3 fixes henry-hexa.js commitado (23cc0b5) — aguarda deploy
+- [ ] **5a** Adicionar `const ncrMonitor = require('./services/ncrMonitor')` no topo
+- [ ] **5b** Adicionar `ncrMonitor.start()` no callback do `server.listen`
+- [ ] **5c** Deploy todos os JS para Azure VM (base64 patch via run-command)
+- [ ] **5d** PM2 restart com ecosystem.config.js (não `pm2 restart` simples)
+
+### Checkpoint B
+- [ ] `pm2 logs dt-manager` mostra `[NCR] Monitor de encomendas iniciado`
+- [ ] Logs mostram `[NCR] tick:` a cada 2 min
+
+### Checkpoint C — Fluxo ponta a ponta
+- [ ] Email TEST NCR chega → agente recebe comando → ACK → email resultado em `andre@delirio.com.br`
+- [ ] Email com XML attachment quando `found:true`
+- [ ] Email de alerta quando 3 tentativas falharam
+
+## Descoberto durante implementação
+
+_(anotar armadilhas e ajustes aqui)_
