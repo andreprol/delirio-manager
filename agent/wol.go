@@ -153,13 +153,17 @@ try {
 }
 
 // getWindowsVersion retorna a versão do SO no formato "Windows 11 Pro 23H2".
-// Lê HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion via PowerShell.
+// ProductName no registro do Windows 11 ainda diz "Windows 10" — a distinção
+// correta é pelo CurrentBuildNumber: >= 22000 = Windows 11.
 func getWindowsVersion() string {
 	script := `
 try {
   $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
-  $n = (Get-ItemProperty $k).ProductName
-  $d = (Get-ItemProperty $k).DisplayVersion
+  $p = Get-ItemProperty $k
+  $n = $p.ProductName
+  $d = $p.DisplayVersion
+  $b = [int]$p.CurrentBuildNumber
+  if ($b -ge 22000) { $n = $n -replace 'Windows 10', 'Windows 11' }
   if ($d) { "$n $d" } else { $n }
 } catch { "" }
 `
