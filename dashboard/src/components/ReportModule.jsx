@@ -10,6 +10,7 @@ export function ReportModule({ onClose }) {
   const [selectedStore,      setSelectedStore]      = useState(null)
   const [loading,            setLoading]            = useState(true)
   const [showDiscrepancies,  setShowDiscrepancies]  = useState(false)
+  const [zamakByStore,       setZamakByStore]       = useState({})
 
   async function loadStores(force = false) {
     setLoading(true)
@@ -24,7 +25,16 @@ export function ReportModule({ onClose }) {
     }
   }
 
-  useEffect(() => { loadStores() }, [])
+  useEffect(() => {
+    loadStores()
+    api.zamak.getStatus()
+      .then(s => {
+        const map = {}
+        for (const row of (s.byStore || [])) map[row.store_name] = row
+        setZamakByStore(map)
+      })
+      .catch(() => {})
+  }, [])
 
   return (
     <div style={{ position: 'fixed', top: 56, left: 0, right: 0, bottom: 0, background: '#0f0f19', zIndex: 9999, display: 'flex', flexDirection: 'column', fontFamily: 'monospace' }}>
@@ -57,6 +67,7 @@ export function ReportModule({ onClose }) {
                 stores={stores}
                 selectedStore={selectedStore}
                 onSelect={setSelectedStore}
+                zamakByStore={zamakByStore}
               />
               {selectedStore
                 ? <StoreDashboard key={selectedStore} storeName={selectedStore} onStoreListRefresh={loadStores} />

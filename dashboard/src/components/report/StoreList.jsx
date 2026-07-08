@@ -7,7 +7,21 @@ function dotColor(score) {
   return '#48bb78'
 }
 
-export function StoreList({ stores, selectedStore, onSelect }) {
+function zamakLine(z) {
+  if (!z) return <span style={{ color: '#4a5568' }}>Zamak não sincronizada</span>
+  const parts = []
+  if (z.devices_offline > 0) parts.push(`${z.devices_offline} offline`)
+  if (z.patch_critical  > 0) parts.push(`${z.patch_critical} críticos`)
+  if (z.threats_active  > 0) parts.push(`${z.threats_active} ameaças`)
+  const bad = parts.length > 0
+  return (
+    <span style={{ color: bad ? '#ed8936' : '#48bb78' }}>
+      {bad ? `⚠ ${parts.join(' · ')}` : `✓ Zamak ${z.total_devices}d OK`}
+    </span>
+  )
+}
+
+export function StoreList({ stores, selectedStore, onSelect, zamakByStore = {} }) {
   return (
     <div style={{ width: 220, borderRight: '1px solid #2d3748', padding: 12, flexShrink: 0, background: '#131720', overflowY: 'auto' }}>
       <div style={{ fontSize: '0.7rem', color: '#4a5568', fontWeight: 700, letterSpacing: '.08em', marginBottom: 8 }}>LOJAS</div>
@@ -32,7 +46,7 @@ export function StoreList({ stores, selectedStore, onSelect }) {
                   : <span style={{ color: '#4a5568' }}>Freshdesk sem tickets</span>
                 }
                 {/* Zamak RMM */}
-                <span style={{ color: '#4a5568' }}>Zamak não sincronizada</span>
+                {zamakLine(zamakByStore[s.name])}
               </div>
             </div>
           </div>
