@@ -66,14 +66,14 @@ export function ZamakOutagesSection({ storeName }) {
   const count   = outages.length
 
   return (
-    <div style={{ borderTop: '1px solid #1e2a3a', marginTop: 2 }}>
+    <div style={{ background: '#171e2e', borderRadius: 8, border: '1px solid #2d3748', marginTop: 8 }}>
       <button
         onClick={() => setOpen(o => !o)}
         style={{ width: '100%', background: 'none', border: 'none', cursor: 'pointer',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '8px 0', color: '#a0aec0' }}>
+          padding: '10px 12px', color: '#a0aec0' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: '0.65rem', fontWeight: 700, letterSpacing: '.08em', color: '#4a5568' }}>
+          <span style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '.06em' }}>
             ZAMAK — OUTAGES (61 DIAS)
           </span>
           {!loading && count > 0 && (
@@ -90,7 +90,7 @@ export function ZamakOutagesSection({ storeName }) {
       </button>
 
       {open && (
-        <div style={{ paddingBottom: 8 }}>
+        <div style={{ padding: '0 12px 10px' }}>
           {loading && <p style={{ fontSize: '0.7rem', color: '#4a5568', margin: 0 }}>Carregando...</p>}
           {!loading && count === 0 && (
             <p style={{ fontSize: '0.7rem', color: '#48bb78', margin: 0 }}>Nenhum outage nos últimos 61 dias.</p>
