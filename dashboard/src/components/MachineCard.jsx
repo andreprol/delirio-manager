@@ -265,7 +265,7 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
                 <div className="mc-temps">
                   {m.cpuTempC > 0 && (
                     <span className="mc-temp-item">
-                      CPU <span style={{ color: m.cpuTempC > 80 ? 'var(--red)' : 'var(--text)' }}>
+                      CPU <span style={{ color: m.cpuTempC > 60 ? 'var(--red)' : m.cpuTempC >= 50 ? 'var(--yellow)' : 'var(--green)' }}>
                         {Math.round(m.cpuTempC)}°C
                       </span>
                     </span>
@@ -424,7 +424,7 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
 }
 
 function MetricBar({ label, pct }) {
-  const color = pct > 85 ? '#ef4444' : pct > 65 ? '#f59e0b' : '#3b82f6'
+  const color = pct > 60 ? '#ef4444' : pct > 30 ? '#f59e0b' : '#48bb78'
   return (
     <div className="mc-bar-row">
       <span className="mc-bar-label">{label}</span>
