@@ -354,6 +354,31 @@ function migrate(db) {
       detail          TEXT,
       detected_at     TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS zamak_performance (
+      device_id     TEXT PRIMARY KEY,
+      device_name   TEXT NOT NULL,
+      store_name    TEXT,
+      cpu_avg       REAL,
+      cpu_peak      REAL,
+      ram_total_mb  REAL,
+      ram_avail_avg REAL,
+      disk_time_avg REAL,
+      cached_at     TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS zamak_outages (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      outage_id         TEXT UNIQUE,
+      device_id         TEXT NOT NULL,
+      device_name       TEXT NOT NULL,
+      store_name        TEXT,
+      reason            TEXT,
+      state             TEXT,
+      utc_start         TEXT,
+      utc_end           TEXT,
+      duration_min      REAL,
+      check_description TEXT,
+      cached_at         TEXT NOT NULL
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -1290,6 +1315,61 @@ function getZamakThreats(storeName) {
   return storeName ? d.prepare(sql).all(storeName) : d.prepare(sql).all();
 }
 
+function replaceZamakPerformance(rows) {
+  const d = getDb();
+  d.prepare('DELETE FROM zamak_performance').run();
+  if (!rows.length) return;
+  const stmt = d.prepare(`
+    INSERT INTO zamak_performance
+      (device_id, device_name, store_name, cpu_avg, cpu_peak, ram_total_mb, ram_avail_avg, disk_time_avg, cached_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insert = d.transaction((items) => {
+    for (const r of items) {
+      stmt.run(r.device_id, r.device_name, r.store_name,
+        r.cpu_avg ?? null, r.cpu_peak ?? null,
+        r.ram_total_mb ?? null, r.ram_avail_avg ?? null,
+        r.disk_time_avg ?? null, r.cached_at);
+    }
+  });
+  insert(rows);
+}
+
+function getZamakPerformance(storeName) {
+  const d = getDb();
+  const sql = storeName
+    ? `SELECT * FROM zamak_performance WHERE store_name = ? ORDER BY device_name`
+    : `SELECT * FROM zamak_performance ORDER BY store_name, device_name`;
+  return storeName ? d.prepare(sql).all(storeName) : d.prepare(sql).all();
+}
+
+function replaceZamakOutages(rows) {
+  const d = getDb();
+  d.prepare('DELETE FROM zamak_outages').run();
+  if (!rows.length) return;
+  const stmt = d.prepare(`
+    INSERT OR IGNORE INTO zamak_outages
+      (outage_id, device_id, device_name, store_name, reason, state, utc_start, utc_end, duration_min, check_description, cached_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insert = d.transaction((items) => {
+    for (const r of items) {
+      stmt.run(r.outage_id, r.device_id, r.device_name, r.store_name,
+        r.reason, r.state, r.utc_start, r.utc_end ?? null,
+        r.duration_min ?? null, r.check_description ?? null, r.cached_at);
+    }
+  });
+  insert(rows);
+}
+
+function getZamakOutages(storeName) {
+  const d = getDb();
+  const sql = storeName
+    ? `SELECT * FROM zamak_outages WHERE store_name = ? ORDER BY utc_start DESC`
+    : `SELECT * FROM zamak_outages ORDER BY utc_start DESC`;
+  return storeName ? d.prepare(sql).all(storeName) : d.prepare(sql).all();
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -1341,4 +1421,6 @@ module.exports = {
   upsertZamakDevices, replaceZamakDiscrepancies, getZamakCacheAge,
   getZamakSummaryForStore, getZamakDiscrepancies,
   replaceZamakThreats, getZamakThreats,
+  replaceZamakPerformance, getZamakPerformance,
+  replaceZamakOutages, getZamakOutages,
 };

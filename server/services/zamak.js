@@ -262,10 +262,12 @@ async function syncAll() {
     if (did) failingByDevice[did] = (failingByDevice[did] || 0) + 1;
   }
 
-  // 5. Por dispositivo: patches + ameaças MAV
+  // 5. Por dispositivo: patches + ameaças MAV + performance + outages
   const allDmMachines = db.getAllMachines();
   const rows = [];
   const threatRows = [];
+  const perfRows = [];
+  const outageRows = [];
 
   for (const device of allDevices) {
     const did      = deviceId(device);
@@ -334,6 +336,69 @@ async function syncAll() {
       });
     }
 
+    // Performance history (interval=60 → até 8 dias)
+    if (did) {
+      try {
+        await throttle();
+        const phXml = await fetchNsight(server, apiKey, 'list_performance_history', {
+          deviceid: did, interval: 60,
+        });
+        function firstFloat(tag) {
+          const m = phXml.match(new RegExp(`<${tag}[^>]*>([\\d.]+)</${tag}>`));
+          return m ? parseFloat(m[1]) : null;
+        }
+        const cpuAvg  = firstFloat('load_average');
+        const cpuPeak = firstFloat('load_max');
+        const ramTot  = firstFloat('total');
+        const ramAvail= firstFloat('available_average');
+        const diskTime= firstFloat('disk_time_average');
+        perfRows.push({
+          device_id:    did,
+          device_name:  name,
+          store_name:   storeName,
+          cpu_avg:      cpuAvg,
+          cpu_peak:     cpuPeak,
+          ram_total_mb: ramTot,
+          ram_avail_avg:ramAvail,
+          disk_time_avg:diskTime,
+          cached_at:    now,
+        });
+      } catch (e) {
+        log.push(`Perf ${name}: ${e.message}`);
+        perfRows.push({ device_id: did, device_name: name, store_name: storeName, cached_at: now });
+      }
+    }
+
+    // Outages (últimos 61 dias)
+    if (did) {
+      try {
+        await throttle();
+        const oXml = await fetchNsight(server, apiKey, 'list_outages_arsenal', { deviceid: did });
+        const outages = parseFlatXmlList(oXml, 'outage');
+        for (const o of outages) {
+          let durationMin = null;
+          if (o.utc_start && o.utc_end) {
+            durationMin = Math.round((new Date(o.utc_end) - new Date(o.utc_start)) / 60000);
+          }
+          outageRows.push({
+            outage_id:        o.outage_id || null,
+            device_id:        did,
+            device_name:      name,
+            store_name:       storeName,
+            reason:           o.reason || '',
+            state:            o.state || '',
+            utc_start:        o.utc_start || null,
+            utc_end:          o.utc_end || null,
+            duration_min:     durationMin,
+            check_description:o.check_description || null,
+            cached_at:        now,
+          });
+        }
+      } catch (e) {
+        log.push(`Outages ${name}: ${e.message}`);
+      }
+    }
+
     rows.push({
       device_id:          did,
       site_id:            siteId || '',
@@ -360,6 +425,8 @@ async function syncAll() {
   // 6. Salvar no banco
   db.upsertZamakDevices(rows);
   db.replaceZamakThreats(threatRows);
+  db.replaceZamakPerformance(perfRows);
+  db.replaceZamakOutages(outageRows);
 
   // 7. Discrepâncias
   const discrepancies = [];

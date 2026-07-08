@@ -155,6 +155,8 @@ export const api = {
     getStatus:        ()      => request('GET',  '/api/zamak/status'),
     getDiscrepancies: ()      => request('GET',  '/api/zamak/discrepancies'),
     getThreats:       (store) => request('GET',  `/api/zamak/threats${store ? `?store=${encodeURIComponent(store)}` : ''}`),
+    getPerformance:   (store) => request('GET',  `/api/zamak/performance${store ? `?store=${encodeURIComponent(store)}` : ''}`),
+    getOutages:       (store) => request('GET',  `/api/zamak/outages${store ? `?store=${encodeURIComponent(store)}` : ''}`),
     triggerSync:      ()      => request('POST', '/api/zamak/sync'),
   },
 

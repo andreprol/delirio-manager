@@ -81,6 +81,26 @@ router.get('/threats', (req, res) => {
   }
 });
 
+// GET /api/zamak/performance?store=X
+router.get('/performance', (req, res) => {
+  try {
+    const rows = db.getZamakPerformance(req.query.store || null);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/zamak/outages?store=X
+router.get('/outages', (req, res) => {
+  try {
+    const rows = db.getZamakOutages(req.query.store || null);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/zamak/discrepancies/report — gera DOCX de discrepâncias
 router.get('/discrepancies/report', async (req, res) => {
   try {

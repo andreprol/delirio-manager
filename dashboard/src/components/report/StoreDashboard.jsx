@@ -5,8 +5,10 @@ import { ScoreWidget }      from './ScoreWidget'
 import { TopicList }        from './TopicList'
 import { TopicForm }        from './TopicForm'
 import { GenerateModal }    from './GenerateModal'
-import { FreshdeskSection }     from './FreshdeskSection'
-import { ZamakThreatsSection } from './ZamakThreatsSection'
+import { FreshdeskSection }         from './FreshdeskSection'
+import { ZamakThreatsSection }     from './ZamakThreatsSection'
+import { ZamakPerformanceSection } from './ZamakPerformanceSection'
+import { ZamakOutagesSection }     from './ZamakOutagesSection'
 
 export function StoreDashboard({ storeName, onStoreListRefresh }) {
   const [topics,        setTopics]       = useState([])
@@ -93,6 +95,12 @@ export function StoreDashboard({ storeName, onStoreListRefresh }) {
 
       {/* Zamak MAV Threats */}
       <ZamakThreatsSection storeName={storeName} />
+
+      {/* Zamak Performance History */}
+      <ZamakPerformanceSection storeName={storeName} />
+
+      {/* Zamak Outages */}
+      <ZamakOutagesSection storeName={storeName} />
 
       {/* Modais */}
       {showForm && (
