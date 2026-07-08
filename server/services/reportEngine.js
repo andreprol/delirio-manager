@@ -99,11 +99,13 @@ function buildStoreContext(storeName, month) {
     };
   });
 
-  // SO fora de suporte
-  const win10Machines = rawDb.prepare(
-    `SELECT hostname FROM machines
-     WHERE location = ? AND (agent_version LIKE '%Win 10%' OR agent_version LIKE '%10.0.%')`
-  ).all(storeName).map(m => m.hostname);
+  // SO fora de suporte — usa os_version real (coletado desde agente v1.5.11)
+  const win10Rows = rawDb.prepare(
+    `SELECT hostname FROM machines WHERE location = ? AND os_version LIKE '%Windows 10%'`
+  ).all(storeName);
+  const win10Machines         = win10Rows.map(m => m.hostname);
+  const win10CriticalMachines = win10Machines.filter(h => /^(TERM|BOH)/i.test(h));
+  const win10NormalMachines   = win10Machines.filter(h => !/^(TERM|BOH)/i.test(h));
 
   const recentFeedback = db.getRecentFeedback(storeName, 5);
 
@@ -111,7 +113,7 @@ function buildStoreContext(storeName, month) {
     storeName, month,
     openTopics, history: history.slice(0, 20), recurrences,
     fdActive, fdClosed, fdTotal,
-    machineData, win10Machines, recentFeedback,
+    machineData, win10Machines, win10CriticalMachines, win10NormalMachines, recentFeedback,
   };
 }
 
@@ -121,7 +123,8 @@ function buildStoreContext(storeName, month) {
 
 function buildPrompt(ctx) {
   const { storeName, month, openTopics, history, recurrences,
-          fdActive, machineData, win10Machines, recentFeedback } = ctx;
+          fdActive, machineData, win10Machines, win10CriticalMachines,
+          win10NormalMachines, recentFeedback } = ctx;
 
   const fmtTopic    = t => `  [ID:${t.id}][${t.severity.toUpperCase()}${t.is_critical_machine ? ' BOH/TERM' : ''}] ${t.description}`;
   const fmtTicket   = t => `  [${t.status}] ${t.title}`;
@@ -151,8 +154,10 @@ ${recurrences.length ? recurrences.map(r => '  ' + r).join('\n') : '  Nenhum'}
 SAUDE DAS MAQUINAS (media 30 dias):
 ${machineData.length ? machineData.map(fmtMachine).join('\n') : '  Sem dados'}
 
-MAQUINAS WINDOWS 10 (risco de seguranca):
-${win10Machines.length ? win10Machines.join(', ') : '  Nenhuma'}
+MAQUINAS WINDOWS 10 — SO fora de suporte (Microsoft EOL out/2025):
+  Criticas TERM/BOH: ${win10CriticalMachines.length ? win10CriticalMachines.join(', ') : 'Nenhuma'}
+  Normais: ${win10NormalMachines.length ? win10NormalMachines.join(', ') : 'Nenhuma'}
+REGRA WIN10: Maquinas TERM/BOH com Win10 = severidade maxima em Software/OS e Seguranca.
 
 FEEDBACK HISTORICO DO GESTOR:
 ${recentFeedback.length ? recentFeedback.map(fmtFeedback).join('\n') : '  Nenhum'}
@@ -211,13 +216,32 @@ async function callClaude(ctx) {
 // Score parser
 // ─────────────────────────────────────────────────────────────────────────────
 
-function parseClaudeScore(aiResult) {
+function parseClaudeScore(aiResult, ctx) {
   const score_hardware     = clamp(aiResult.hardware);
-  const score_software     = clamp(aiResult.software);
+  let   score_software     = clamp(aiResult.software);
   const score_connectivity = clamp(aiResult.conectividade);
-  const score_security     = clamp(aiResult.seguranca);
+  let   score_security     = clamp(aiResult.seguranca);
   const score_incidents    = clamp(aiResult.incidentes);
   const score_operational  = clamp(aiResult.operacional);
+
+  // ── Penalidade Win10 (programática — não depende do julgamento da IA) ──────
+  const hasCriticalWin10 = (ctx?.win10CriticalMachines?.length ?? 0) > 0;
+  const hasNormalWin10   = (ctx?.win10NormalMachines?.length   ?? 0) > 0;
+  let   win10Adendo      = '';
+
+  if (hasCriticalWin10) {
+    score_software = Math.min(100, score_software + 40);
+    score_security = Math.min(100, score_security + 35);
+    const lista = ctx.win10CriticalMachines.join(', ');
+    win10Adendo = `⚠️ RISCO CRÍTICO: máquinas TERM/BOH com Windows 10 detectadas (${lista}). ` +
+                  `Windows 10 encerrou suporte em outubro/2025 — vulnerabilidades sem patch em terminais de faturamento representam risco máximo de invasão e violação de dados.`;
+  } else if (hasNormalWin10) {
+    score_software = Math.min(100, score_software + 25);
+    score_security = Math.min(100, score_security + 20);
+    const lista = ctx.win10NormalMachines.join(', ');
+    win10Adendo = `⚠️ Máquinas com Windows 10 detectadas (${lista}). ` +
+                  `Windows 10 encerrou suporte em outubro/2025 — atualização para Windows 11 necessária para manter cobertura de segurança.`;
+  }
 
   const score_total = Math.round(
     score_hardware     * WEIGHTS.score_hardware     +
@@ -228,21 +252,34 @@ function parseClaudeScore(aiResult) {
     score_operational  * WEIGHTS.score_operational
   );
 
+  // Injeta adendo nas narrativas de software e segurança se houver Win10
+  const narrativaSoftware  = [aiResult.narrativa_software  || '', win10Adendo ? win10Adendo : ''].filter(Boolean).join(' ');
+  const narrativaSeguranca = [aiResult.narrativa_seguranca || '', win10Adendo ? win10Adendo : ''].filter(Boolean).join(' ');
+
+  // Adiciona recomendação explícita de upgrade se Win10 crítico
+  const recomendacoes = Array.isArray(aiResult.recomendacoes) ? [...aiResult.recomendacoes] : [];
+  if (hasCriticalWin10) {
+    recomendacoes.unshift(`URGENTE: atualizar para Windows 11 as máquinas críticas com Windows 10 (${ctx.win10CriticalMachines.join(', ')})`);
+  } else if (hasNormalWin10) {
+    recomendacoes.push(`Atualizar para Windows 11 as máquinas com Windows 10 (${ctx.win10NormalMachines.join(', ')})`);
+  }
+
   return {
     // DB fields (used by saveReportRun via explicit columns)
     score_total, score_hardware, score_software, score_connectivity,
     score_security, score_incidents, score_operational,
     ai_narrative:       aiResult.resumo || aiResult.narrativa || '',
-    ai_recommendations: Array.isArray(aiResult.recomendacoes) ? aiResult.recomendacoes : [],
-    inconclusivos:      Array.isArray(aiResult.inconclusivos)  ? aiResult.inconclusivos  : [],
+    ai_recommendations: recomendacoes,
+    inconclusivos:      Array.isArray(aiResult.inconclusivos) ? aiResult.inconclusivos : [],
     // Per-dimension narratives for docx (not persisted to DB — saveReportRun uses explicit cols)
-    dim_resumo:        aiResult.resumo            || '',
+    dim_resumo:        aiResult.resumo       || '',
     dim_hardware:      aiResult.narrativa_hardware      || '',
-    dim_software:      aiResult.narrativa_software      || '',
+    dim_software:      narrativaSoftware,
     dim_conectividade: aiResult.narrativa_conectividade || '',
-    dim_seguranca:     aiResult.narrativa_seguranca     || '',
+    dim_seguranca:     narrativaSeguranca,
     dim_incidentes:    aiResult.narrativa_incidentes    || '',
     dim_operacional:   aiResult.narrativa_operacional   || '',
+    win10Adendo,
   };
 }
 

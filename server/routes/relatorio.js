@@ -170,7 +170,7 @@ router.post('/generate', async (req, res) => {
 
     // 3. Chamar Claude
     const aiRaw   = await callClaude(ctx);
-    const scores  = parseClaudeScore(aiRaw);
+    const scores  = parseClaudeScore(aiRaw, ctx);
 
     // 4. Gerar documentos
     const docxPath = await generateDocx(ctx, scores, month);
