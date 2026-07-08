@@ -286,6 +286,32 @@ function migrate(db) {
     )`,
     `ALTER TABLE report_runs ADD COLUMN score_operational INTEGER`,
     `ALTER TABLE machines ADD COLUMN os_version TEXT DEFAULT ''`,
+    // ── Métricas horárias (24 leituras/dia por máquina) ───────────────────────
+    `CREATE TABLE IF NOT EXISTS machine_metrics_hourly (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      machine_id   TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      snapshot_ts  INTEGER NOT NULL,
+      hour_of_day  INTEGER NOT NULL,
+      hour_weight  INTEGER NOT NULL,
+      cpu_pct      REAL DEFAULT 0,
+      ram_pct      REAL DEFAULT 0,
+      disk_pct     REAL DEFAULT 0,
+      cpu_temp_c   REAL DEFAULT -1,
+      created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_metrics_hourly_machine_ts
+      ON machine_metrics_hourly(machine_id, snapshot_ts)`,
+    // ── Eventos de queda offline ───────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS machine_offline_events (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      machine_id   TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      offline_at   TEXT NOT NULL,
+      online_at    TEXT NOT NULL,
+      duration_min REAL NOT NULL,
+      created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_offline_events_machine
+      ON machine_offline_events(machine_id, offline_at)`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -1053,6 +1079,72 @@ function getStoresOverview() {
   return { countMap, scoreMap };
 }
 
+// ── Métricas horárias ─────────────────────────────────────────────────────────
+
+function insertMetricsHourly(machineId, { snapshotTs, cpuPct, ramPct, diskPct, cpuTempC }) {
+  const hourOfDay = new Date(snapshotTs * 1000).getUTCHours();
+  // Business hours (8–22 UTC-3 = 11–01 UTC; approximation using local store timezone)
+  // Simplified: use server local time's hour — hora de Brasília (UTC-3)
+  const localHour = new Date(snapshotTs * 1000).getHours();
+  const hourWeight = (localHour >= 8 && localHour < 22) ? 2 : 1;
+  getDb().prepare(`
+    INSERT INTO machine_metrics_hourly
+      (machine_id, snapshot_ts, hour_of_day, hour_weight, cpu_pct, ram_pct, disk_pct, cpu_temp_c)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(machineId, snapshotTs, hourOfDay, hourWeight,
+         cpuPct ?? 0, ramPct ?? 0, diskPct ?? 0, cpuTempC ?? -1);
+}
+
+// Retorna média ponderada por hora de todas as máquinas da loja no mês informado.
+// month = "2026-07"
+function getWeightedMetricsForStore(location, month) {
+  const [year, mon] = month.split('-').map(Number);
+  const monthStart = Math.floor(new Date(year, mon - 1, 1).getTime() / 1000);
+  const monthEnd   = Math.floor(new Date(year, mon,     1).getTime() / 1000);
+
+  const row = getDb().prepare(`
+    SELECT
+      SUM(mmh.cpu_pct  * mmh.hour_weight) / NULLIF(SUM(mmh.hour_weight), 0) AS avg_cpu_pct,
+      SUM(mmh.ram_pct  * mmh.hour_weight) / NULLIF(SUM(mmh.hour_weight), 0) AS avg_ram_pct,
+      SUM(mmh.disk_pct * mmh.hour_weight) / NULLIF(SUM(mmh.hour_weight), 0) AS avg_disk_pct,
+      SUM(CASE WHEN mmh.cpu_temp_c > 0 THEN mmh.cpu_temp_c * mmh.hour_weight ELSE 0 END)
+        / NULLIF(SUM(CASE WHEN mmh.cpu_temp_c > 0 THEN mmh.hour_weight ELSE 0 END), 0) AS avg_cpu_temp,
+      COUNT(*) AS total_readings
+    FROM machine_metrics_hourly mmh
+    JOIN machines m ON m.id = mmh.machine_id
+    WHERE m.location = ?
+      AND mmh.snapshot_ts >= ? AND mmh.snapshot_ts < ?
+  `).get(location, monthStart, monthEnd);
+
+  return row || { avg_cpu_pct: null, avg_ram_pct: null, avg_disk_pct: null, avg_cpu_temp: null, total_readings: 0 };
+}
+
+// ── Eventos offline ───────────────────────────────────────────────────────────
+
+function insertOfflineEvent(machineId, { offlineAt, onlineAt, durationMin }) {
+  getDb().prepare(`
+    INSERT INTO machine_offline_events (machine_id, offline_at, online_at, duration_min)
+    VALUES (?, ?, ?, ?)
+  `).run(machineId, offlineAt, onlineAt, durationMin);
+}
+
+// Retorna contagem total de eventos offline da loja no mês informado.
+function getOfflineEventsForStore(location, month) {
+  const [year, mon] = month.split('-').map(Number);
+  const monthStart = new Date(year, mon - 1, 1).toISOString();
+  const monthEnd   = new Date(year, mon,     1).toISOString();
+
+  const row = getDb().prepare(`
+    SELECT COUNT(*) AS total_events
+    FROM machine_offline_events moe
+    JOIN machines m ON m.id = moe.machine_id
+    WHERE m.location = ?
+      AND moe.offline_at >= ? AND moe.offline_at < ?
+  `).get(location, monthStart, monthEnd);
+
+  return row?.total_events ?? 0;
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -1096,4 +1188,8 @@ module.exports = {
   saveFeedback, getRecentFeedback,
   // relatório — overview
   getStoresOverview,
+  // métricas horárias
+  insertMetricsHourly, getWeightedMetricsForStore,
+  // eventos offline
+  insertOfflineEvent, getOfflineEventsForStore,
 };

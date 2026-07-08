@@ -109,11 +109,17 @@ function buildStoreContext(storeName, month) {
 
   const recentFeedback = db.getRecentFeedback(storeName, 5);
 
+  // Métricas horárias ponderadas do mês do relatório
+  const weightedMetrics  = db.getWeightedMetricsForStore(storeName, month);
+  // Eventos offline do mês do relatório
+  const offlineEventCount = db.getOfflineEventsForStore(storeName, month);
+
   return {
     storeName, month,
     openTopics, history: history.slice(0, 20), recurrences,
     fdActive, fdClosed, fdTotal,
     machineData, win10Machines, win10CriticalMachines, win10NormalMachines, recentFeedback,
+    weightedMetrics, offlineEventCount,
   };
 }
 
@@ -217,12 +223,12 @@ async function callClaude(ctx) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function parseClaudeScore(aiResult, ctx) {
-  const score_hardware     = clamp(aiResult.hardware);
+  let   score_hardware     = clamp(aiResult.hardware);
   let   score_software     = clamp(aiResult.software);
   const score_connectivity = clamp(aiResult.conectividade);
   let   score_security     = clamp(aiResult.seguranca);
   const score_incidents    = clamp(aiResult.incidentes);
-  const score_operational  = clamp(aiResult.operacional);
+  let   score_operational  = clamp(aiResult.operacional);
 
   // ── Penalidade Win10 (programática — não depende do julgamento da IA) ──────
   const hasCriticalWin10 = (ctx?.win10CriticalMachines?.length ?? 0) > 0;
@@ -243,6 +249,64 @@ function parseClaudeScore(aiResult, ctx) {
                   `Windows 10 encerrou suporte em outubro/2025 — atualização para Windows 11 necessária para manter cobertura de segurança.`;
   }
 
+  // ── Penalidades de Hardware (métricas horárias ponderadas — mês do relatório) ─
+  const wm = ctx?.weightedMetrics;
+  const hwAdendos = [];
+  if (wm && wm.total_readings > 0) {
+    const cpu  = wm.avg_cpu_pct  ?? 0;
+    const ram  = wm.avg_ram_pct  ?? 0;
+    const disk = wm.avg_disk_pct ?? 0;
+    const temp = wm.avg_cpu_temp ?? 0;
+
+    // CPU% — média ponderada (horas comerciais peso 2, fora peso 1)
+    if (cpu > 60) {
+      const pen = cpu > 80 ? { hw: 18, op: 15 } : { hw: 10, op: 8 };
+      score_hardware    = Math.min(100, score_hardware    + pen.hw);
+      score_operational = Math.min(100, score_operational + pen.op);
+      hwAdendos.push(`CPU média ponderada ${Math.round(cpu)}% (${cpu > 80 ? 'CRÍTICO' : 'ALERTA'} — threshold: >60%)`);
+    }
+    // RAM% — média ponderada
+    if (ram > 60) {
+      const pen = ram > 80 ? { hw: 18, op: 15 } : { hw: 10, op: 8 };
+      score_hardware    = Math.min(100, score_hardware    + pen.hw);
+      score_operational = Math.min(100, score_operational + pen.op);
+      hwAdendos.push(`RAM média ponderada ${Math.round(ram)}% (${ram > 80 ? 'CRÍTICO' : 'ALERTA'} — threshold: >60%)`);
+    }
+    // Disco% — média ponderada
+    if (disk > 60) {
+      const pen = disk > 80 ? { hw: 12, op: 8 } : { hw: 6, op: 4 };
+      score_hardware    = Math.min(100, score_hardware    + pen.hw);
+      score_operational = Math.min(100, score_operational + pen.op);
+      hwAdendos.push(`Disco médio ponderado ${Math.round(disk)}% (${disk > 80 ? 'CRÍTICO — risco de falha' : 'ALERTA'} — threshold: >60%)`);
+    }
+    // Temperatura CPU — média ponderada
+    if (temp > 60) {
+      const pen = temp > 70 ? { hw: 15, op: 10 } : { hw: 8, op: 5 };
+      score_hardware    = Math.min(100, score_hardware    + pen.hw);
+      score_operational = Math.min(100, score_operational + pen.op);
+      hwAdendos.push(`Temperatura CPU média ponderada ${Math.round(temp)}°C (${temp > 70 ? 'CRÍTICO — risco de queima' : 'ALERTA'} — threshold: >60°C)`);
+    } else if (temp >= 50 && temp <= 60) {
+      score_hardware    = Math.min(100, score_hardware    + 4);
+      score_operational = Math.min(100, score_operational + 2);
+      hwAdendos.push(`Temperatura CPU média ponderada ${Math.round(temp)}°C (atenção — threshold: >=50°C)`);
+    }
+  }
+
+  // ── Penalidade de quedas offline (eventos do mês) ────────────────────────
+  const offlineCount = ctx?.offlineEventCount ?? 0;
+  let offlineAdendo = '';
+  if (offlineCount > 0) {
+    let pen;
+    if (offlineCount > 15)     pen = { op: 28, sec: 20, nivel: 'CRÍTICO' };
+    else if (offlineCount > 5) pen = { op: 18, sec: 12, nivel: 'ALTO' };
+    else                       pen = { op: 10, sec: 6,  nivel: 'MÉDIO' };
+
+    score_operational = Math.min(100, score_operational + pen.op);
+    score_security    = Math.min(100, score_security    + pen.sec);
+    offlineAdendo = `${offlineCount} queda(s) offline registrada(s) no mês [${pen.nivel}]: ` +
+      `máquinas offline não executam aplicações, patches de SO ou atualizações de segurança.`;
+  }
+
   const score_total = Math.round(
     score_hardware     * WEIGHTS.score_hardware     +
     score_software     * WEIGHTS.score_software     +
@@ -252,9 +316,12 @@ function parseClaudeScore(aiResult, ctx) {
     score_operational  * WEIGHTS.score_operational
   );
 
-  // Injeta adendo nas narrativas de software e segurança se houver Win10
-  const narrativaSoftware  = [aiResult.narrativa_software  || '', win10Adendo ? win10Adendo : ''].filter(Boolean).join(' ');
-  const narrativaSeguranca = [aiResult.narrativa_seguranca || '', win10Adendo ? win10Adendo : ''].filter(Boolean).join(' ');
+  // Injeta adendos nas narrativas
+  const hwAdendoText = hwAdendos.length
+    ? `MÉTRICAS DE HARDWARE (média ponderada mensal): ${hwAdendos.join('; ')}.`
+    : '';
+  const narrativaSoftware  = [aiResult.narrativa_software  || '', win10Adendo].filter(Boolean).join(' ');
+  const narrativaSeguranca = [aiResult.narrativa_seguranca || '', win10Adendo, offlineAdendo].filter(Boolean).join(' ');
 
   // Adiciona recomendação explícita de upgrade se Win10 crítico
   const recomendacoes = Array.isArray(aiResult.recomendacoes) ? [...aiResult.recomendacoes] : [];
@@ -263,6 +330,24 @@ function parseClaudeScore(aiResult, ctx) {
   } else if (hasNormalWin10) {
     recomendacoes.push(`Atualizar para Windows 11 as máquinas com Windows 10 (${ctx.win10NormalMachines.join(', ')})`);
   }
+
+  // Recomendações automáticas de hardware
+  if (wm && wm.total_readings > 0) {
+    const cpu  = wm.avg_cpu_pct  ?? 0;
+    const ram  = wm.avg_ram_pct  ?? 0;
+    const disk = wm.avg_disk_pct ?? 0;
+    const temp = wm.avg_cpu_temp ?? 0;
+    if (cpu > 80)  recomendacoes.push(`URGENTE: CPU média mensal ${Math.round(cpu)}% — avaliar upgrade de processador ou redistribuição de carga`);
+    else if (cpu > 60) recomendacoes.push(`CPU média mensal ${Math.round(cpu)}% — monitorar e planejar upgrade`);
+    if (ram > 80)  recomendacoes.push(`URGENTE: RAM média mensal ${Math.round(ram)}% — expandir memória nas máquinas da loja`);
+    else if (ram > 60) recomendacoes.push(`RAM média mensal ${Math.round(ram)}% — considerar expansão de memória`);
+    if (disk > 80) recomendacoes.push(`URGENTE: Disco médio mensal ${Math.round(disk)}% — limpeza imediata e avaliação de upgrade de armazenamento`);
+    else if (disk > 60) recomendacoes.push(`Disco médio mensal ${Math.round(disk)}% — iniciar limpeza de arquivos desnecessários`);
+    if (temp > 70) recomendacoes.unshift(`URGENTE: temperatura CPU média ${Math.round(temp)}°C — limpeza de cooler e troca de pasta térmica imediata`);
+    else if (temp > 60) recomendacoes.push(`Temperatura CPU média ${Math.round(temp)}°C — agendar manutenção preventiva (limpeza de cooler)`);
+  }
+  if (offlineCount > 5)  recomendacoes.unshift(`URGENTE: ${offlineCount} quedas offline no mês — investigar estabilidade da rede e nobreaks`);
+  else if (offlineCount > 0) recomendacoes.push(`${offlineCount} queda(s) offline registrada(s) — verificar estabilidade de rede e nobreaks`);
 
   return {
     // DB fields (used by saveReportRun via explicit columns)
@@ -273,13 +358,15 @@ function parseClaudeScore(aiResult, ctx) {
     inconclusivos:      Array.isArray(aiResult.inconclusivos) ? aiResult.inconclusivos : [],
     // Per-dimension narratives for docx (not persisted to DB — saveReportRun uses explicit cols)
     dim_resumo:        aiResult.resumo       || '',
-    dim_hardware:      aiResult.narrativa_hardware      || '',
+    dim_hardware:      [aiResult.narrativa_hardware || '', hwAdendoText].filter(Boolean).join(' '),
     dim_software:      narrativaSoftware,
     dim_conectividade: aiResult.narrativa_conectividade || '',
     dim_seguranca:     narrativaSeguranca,
     dim_incidentes:    aiResult.narrativa_incidentes    || '',
-    dim_operacional:   aiResult.narrativa_operacional   || '',
+    dim_operacional:   [aiResult.narrativa_operacional || '', offlineAdendo].filter(Boolean).join(' '),
     win10Adendo,
+    hwAdendoText,
+    offlineAdendo,
   };
 }
 

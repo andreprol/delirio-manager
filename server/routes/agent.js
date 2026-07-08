@@ -4,6 +4,7 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
 const { agentAuth, agentAuthNoLimit } = require('../middleware/auth');
+const { insertMetricsHourly, insertOfflineEvent } = require('../db');
 const { broadcast } = require('../services/websocket');
 const { readVersionInfo } = require('./update');
 const { clearOfflineCooldown } = require('../services/alertEngine');
@@ -156,6 +157,43 @@ router.post('/heartbeat', agentAuth, (req, res) => {
     });
   } catch (err) {
     console.error(`[Heartbeat] Erro para ${machine.id}:`, err.message);
+    return res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// POST /api/metrics/hourly
+// Agente envia snapshot horário de métricas (24x/dia).
+router.post('/metrics/hourly', agentAuth, (req, res) => {
+  const machine = req.machine;
+  const { snapshotTs, cpuPct, ramPct, diskPct, cpuTempC } = req.body;
+
+  if (!snapshotTs) return res.status(400).json({ error: 'snapshotTs obrigatorio' });
+
+  try {
+    insertMetricsHourly(machine.id, { snapshotTs, cpuPct, ramPct, diskPct, cpuTempC });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[metrics/hourly]', err.message);
+    return res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// POST /api/offline-event
+// Agente reporta evento de queda: quando reconecta após gap > 10 min.
+router.post('/offline-event', agentAuth, (req, res) => {
+  const machine = req.machine;
+  const { offlineAt, onlineAt, durationMin } = req.body;
+
+  if (!offlineAt || !onlineAt || durationMin == null) {
+    return res.status(400).json({ error: 'offlineAt, onlineAt e durationMin sao obrigatorios' });
+  }
+
+  try {
+    insertOfflineEvent(machine.id, { offlineAt, onlineAt, durationMin });
+    console.log(`[offline-event] ${machine.id} offline ${Math.round(durationMin)} min (${offlineAt} → ${onlineAt})`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[offline-event]', err.message);
     return res.status(500).json({ error: 'Erro interno' });
   }
 });

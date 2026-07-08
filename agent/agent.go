@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,10 @@ type Agent struct {
 	wolEnabled  *bool  // cached após primeira verificação
 	motherboard string // cached após primeira verificação
 	osVersion   string // cached na inicialização
+
+	// offline event detection
+	mu            sync.Mutex
+	lastSuccessAt time.Time // zero = nunca teve sucesso
 }
 
 // HeartbeatPayload e o JSON enviado ao servidor a cada ciclo.
@@ -97,6 +102,9 @@ func (a *Agent) start() error {
 
 	// Loop de polling de comandos
 	go a.commandLoop()
+
+	// Loop de snapshot horário (24x/dia)
+	go a.hourlySnapshotLoop()
 
 	go ensureLHM(a.cfg.ServerURL) // installs and starts LHM for CPU temperature
 
@@ -238,8 +246,19 @@ func (a *Agent) sendHeartbeat() {
 
 	// Save successful heartbeat timestamp for boot event collection
 	if resp.StatusCode == http.StatusOK {
-		a.cfg.LastHeartbeatAt = time.Now().UTC().Format(time.RFC3339)
+		now := time.Now().UTC()
+		a.cfg.LastHeartbeatAt = now.Format(time.RFC3339)
 		_ = saveConfig(a.cfg)
+
+		// Offline event detection: se gap desde último sucesso > 10 min, reporta queda
+		a.mu.Lock()
+		prev := a.lastSuccessAt
+		a.lastSuccessAt = now
+		a.mu.Unlock()
+
+		if !prev.IsZero() && now.Sub(prev) > 10*time.Minute {
+			go a.reportOfflineEvent(prev, now)
+		}
 	}
 
 	// Verifica se servidor indica nova versao disponivel
@@ -370,6 +389,86 @@ func (a *Agent) post(path string, payload interface{}) (*http.Response, error) {
 	req.Header.Set("X-Agent-Version", Version)
 
 	return a.client.Do(req)
+}
+
+// hourlySnapshotLoop envia snapshot de métricas a cada hora (24x/dia).
+// Aguarda o primeiro heartbeat com sucesso antes de começar.
+func (a *Agent) hourlySnapshotLoop() {
+	// Espera ter token (até 60s)
+	for i := 0; i < 20; i++ {
+		if a.cfg.Token != "" {
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+	if a.cfg.Token == "" {
+		logWarn("hourlySnapshotLoop: sem token após 60s, abortando")
+		return
+	}
+
+	// Primeiro snapshot imediato
+	a.sendHourlySnapshot()
+
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			a.sendHourlySnapshot()
+		case <-a.stopCh:
+			return
+		}
+	}
+}
+
+func (a *Agent) sendHourlySnapshot() {
+	metrics, err := collectMetrics()
+	if err != nil {
+		logWarn(fmt.Sprintf("hourlySnapshot: erro ao coletar métricas: %v", err))
+		return
+	}
+
+	var ramPct float64
+	if metrics.RAMTotalMB > 0 {
+		ramPct = round2(float64(metrics.RAMTotalMB-metrics.RAMFreeMB) / float64(metrics.RAMTotalMB) * 100)
+	}
+	var diskPct float64
+	if metrics.DiskTotalGB > 0 {
+		diskPct = round2((metrics.DiskTotalGB - metrics.DiskFreeGB) / metrics.DiskTotalGB * 100)
+	}
+
+	payload := map[string]interface{}{
+		"snapshotTs": time.Now().Unix(),
+		"cpuPct":     metrics.CPUPct,
+		"ramPct":     ramPct,
+		"diskPct":    diskPct,
+		"cpuTempC":   metrics.CPUTempC,
+	}
+
+	resp, err := a.post("/api/metrics/hourly", payload)
+	if err != nil {
+		logWarn(fmt.Sprintf("hourlySnapshot: envio falhou: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+	logInfo(fmt.Sprintf("hourlySnapshot: cpu=%.1f%% ram=%.1f%% disk=%.1f%% temp=%.1f°C", metrics.CPUPct, ramPct, diskPct, metrics.CPUTempC))
+}
+
+func (a *Agent) reportOfflineEvent(offlineAt, onlineAt time.Time) {
+	durationMin := onlineAt.Sub(offlineAt).Minutes()
+	payload := map[string]interface{}{
+		"offlineAt":   offlineAt.Format(time.RFC3339),
+		"onlineAt":    onlineAt.Format(time.RFC3339),
+		"durationMin": round2(durationMin),
+	}
+	resp, err := a.post("/api/offline-event", payload)
+	if err != nil {
+		logWarn(fmt.Sprintf("offlineEvent: envio falhou: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+	logInfo(fmt.Sprintf("offlineEvent reportado: %.0f min (desde %s)", durationMin, offlineAt.Format("15:04")))
 }
 
 func (a *Agent) stop() {
