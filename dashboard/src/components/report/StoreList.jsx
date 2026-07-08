@@ -2,8 +2,8 @@
 
 function dotColor(score) {
   if (score === null) return '#4a5568'
-  if (score >= 60)   return '#e53e3e'
-  if (score >= 30)   return '#ed8936'
+  if (score > 50)    return '#e53e3e'
+  if (score > 30)    return '#ed8936'
   return '#48bb78'
 }
 
