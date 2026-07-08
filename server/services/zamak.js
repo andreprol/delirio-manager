@@ -489,4 +489,212 @@ async function syncIfStale(hours = 6) {
   return null;
 }
 
-module.exports = { syncAll, syncIfStale };
+// ─── Sync diário — performance + outages apenas ────────────────────────────────
+// Usa device IDs já conhecidos no cache — sem re-discovery (poupa ~5 chamadas API)
+async function syncPerfAndOutages() {
+  const cfg = loadConfig();
+  if (!cfg.server || !cfg.apiKey) throw new Error('zamak.server e zamak.apiKey não configurados');
+
+  const { server, apiKey } = cfg;
+  const now = new Date().toISOString();
+
+  const cachedDevices = db.getZamakCachedDeviceIds();
+  if (!cachedDevices.length) throw new Error('Nenhum device no cache. Execute sync completo primeiro (botão Atualizar).');
+
+  const log = [];
+  const perfRows = [];
+  const outageRows = [];
+  let errors = 0;
+
+  log.push(`Sync performance+outages — ${cachedDevices.length} devices`);
+
+  for (const { device_id: did, device_name: name, store_name: storeName } of cachedDevices) {
+    if (!did) continue;
+
+    // Performance history (interval=60 → 8 dias em intervalos horários)
+    try {
+      await throttle();
+      const phXml = await fetchNsight(server, apiKey, 'list_performance_history', { deviceid: did, interval: 60 });
+      function firstFloat(tag) {
+        const m = phXml.match(new RegExp(`<${tag}[^>]*>([\\d.]+)</${tag}>`));
+        return m ? parseFloat(m[1]) : null;
+      }
+      perfRows.push({
+        device_id:     did,
+        device_name:   name,
+        store_name:    storeName,
+        cpu_avg:       firstFloat('load_average'),
+        cpu_peak:      firstFloat('load_max'),
+        ram_total_mb:  firstFloat('total'),
+        ram_avail_avg: firstFloat('available_average'),
+        disk_time_avg: firstFloat('disk_time_average'),
+        cached_at:     now,
+      });
+    } catch (e) {
+      log.push(`Perf ${name}: ${e.message}`);
+      perfRows.push({ device_id: did, device_name: name, store_name: storeName, cached_at: now });
+      errors++;
+    }
+
+    // Outages (últimos 61 dias)
+    try {
+      await throttle();
+      const oXml = await fetchNsight(server, apiKey, 'list_outages', { deviceid: did });
+      const outages = parseFlatXmlList(oXml, 'outage');
+      for (const o of outages) {
+        let durationMin = null;
+        if (o.utc_start && o.utc_end) {
+          durationMin = Math.round((new Date(o.utc_end) - new Date(o.utc_start)) / 60000);
+        }
+        outageRows.push({
+          outage_id:         o.outage_id || null,
+          device_id:         did,
+          device_name:       name,
+          store_name:        storeName,
+          reason:            o.reason || null,
+          utc_start:         o.utc_start || null,
+          utc_end:           o.utc_end || null,
+          duration_min:      durationMin,
+          check_description: o.check_description || null,
+          cached_at:         now,
+        });
+      }
+    } catch (e) {
+      log.push(`Outages ${name}: ${e.message}`);
+      errors++;
+    }
+  }
+
+  db.replaceZamakPerformance(perfRows);
+  db.replaceZamakOutages(outageRows);
+
+  return {
+    devices:   cachedDevices.length,
+    perfRows:  perfRows.length,
+    outageRows: outageRows.length,
+    errors,
+    log,
+    syncedAt:  now,
+  };
+}
+
+// ─── Email de resultado via MS Graph ──────────────────────────────────────────
+async function sendSyncEmail(success, summary, error) {
+  const path = require('path');
+  const fs   = require('fs');
+  const cfg  = (() => {
+    try { return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8')).msGraph || {}; }
+    catch { return {}; }
+  })();
+
+  if (!cfg.tenantId || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
+    console.warn('[ZamakDaily] Email não enviado — msGraph não configurado');
+    return;
+  }
+
+  // Obter access token
+  const params = new URLSearchParams({
+    grant_type:    'refresh_token',
+    client_id:     cfg.clientId,
+    client_secret: cfg.clientSecret,
+    refresh_token: cfg.refreshToken,
+    scope:         'offline_access https://graph.microsoft.com/Mail.Send',
+  });
+  const tokenRes = await fetch(
+    `https://login.microsoftonline.com/${cfg.tenantId}/oauth2/v2.0/token`,
+    { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() }
+  );
+  if (!tokenRes.ok) { console.error('[ZamakDaily] Falha ao obter token Graph'); return; }
+  const { access_token, refresh_token: newRt } = await tokenRes.json();
+
+  // Persistir novo refresh_token se veio rotacionado
+  if (newRt && newRt !== cfg.refreshToken) {
+    try {
+      const confPath = path.join(__dirname, '..', 'config.json');
+      const conf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+      conf.msGraph.refreshToken = newRt;
+      fs.writeFileSync(confPath, JSON.stringify(conf, null, 2));
+    } catch {}
+  }
+
+  const dtBRT = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo',
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+  const subject = success
+    ? `✅ Zamak sync concluido — ${dtBRT}`
+    : `❌ Zamak sync FALHOU — ${dtBRT}`;
+
+  const bodyHtml = success ? `
+<!DOCTYPE html><html lang="pt-BR"><body style="font-family:Arial,sans-serif;max-width:580px;margin:0 auto;color:#222">
+<div style="background:#276749;color:#fff;padding:12px 20px;border-radius:6px 6px 0 0">
+  <h2 style="margin:0;font-size:16px">✅ Zamak — Sync diário concluído</h2>
+</div>
+<div style="border:1px solid #ddd;border-top:none;padding:16px 20px;border-radius:0 0 6px 6px">
+  <p><b>Data/hora:</b> ${dtBRT} (Brasília)</p>
+  <table style="border-collapse:collapse;width:100%;margin:12px 0">
+    <tr style="background:#f7f7f7"><td style="padding:6px 10px"><b>Devices sincronizados</b></td><td style="padding:6px 10px;text-align:right">${summary.devices}</td></tr>
+    <tr><td style="padding:6px 10px"><b>Linhas de performance</b></td><td style="padding:6px 10px;text-align:right">${summary.perfRows}</td></tr>
+    <tr style="background:#f7f7f7"><td style="padding:6px 10px"><b>Outages registrados</b></td><td style="padding:6px 10px;text-align:right">${summary.outageRows}</td></tr>
+    <tr><td style="padding:6px 10px"><b>Erros</b></td><td style="padding:6px 10px;text-align:right;color:${summary.errors > 0 ? '#c0392b' : '#276749'}">${summary.errors}</td></tr>
+  </table>
+  ${summary.errors > 0 ? `<p style="color:#c0392b"><b>Erros encontrados:</b></p><pre style="background:#fff5f5;padding:10px;border-radius:4px;font-size:12px">${summary.log.filter(l => l.includes(': ')).join('\n')}</pre>` : ''}
+  <p style="color:#718096;font-size:12px;margin-top:16px">Delirio Manager — sync automático diário 02:00 BRT</p>
+</div></body></html>` : `
+<!DOCTYPE html><html lang="pt-BR"><body style="font-family:Arial,sans-serif;max-width:580px;margin:0 auto;color:#222">
+<div style="background:#c0392b;color:#fff;padding:12px 20px;border-radius:6px 6px 0 0">
+  <h2 style="margin:0;font-size:16px">❌ Zamak — Sync diário FALHOU</h2>
+</div>
+<div style="border:1px solid #ddd;border-top:none;padding:16px 20px;border-radius:0 0 6px 6px">
+  <p><b>Data/hora:</b> ${dtBRT} (Brasília)</p>
+  <p><b>Erro:</b></p>
+  <pre style="background:#fff5f5;padding:10px;border-radius:4px;font-size:12px">${error?.message || String(error)}</pre>
+  <p style="color:#718096;font-size:12px;margin-top:16px">Verifique os logs do servidor (pm2 logs dt-manager).</p>
+</div></body></html>`;
+
+  await fetch('https://graph.microsoft.com/v1.0/users/andre@delirio.com.br/sendMail', {
+    method:  'POST',
+    headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: {
+        subject,
+        body: { contentType: 'HTML', content: bodyHtml },
+        toRecipients: [{ emailAddress: { address: 'andre@delirio.com.br' } }],
+      },
+    }),
+  }).then(r => {
+    if (r.ok || r.status === 202) console.log('[ZamakDaily] Email enviado para andre@delirio.com.br');
+    else r.text().then(t => console.error('[ZamakDaily] Erro ao enviar email:', t.slice(0, 200)));
+  }).catch(e => console.error('[ZamakDaily] Falha no envio de email:', e.message));
+}
+
+// ─── Agendador diário — 02:00 BRT (05:00 UTC) ─────────────────────────────────
+async function runDailySync() {
+  console.log('[ZamakDaily] Iniciando sync performance+outages...');
+  try {
+    const summary = await syncPerfAndOutages();
+    console.log(`[ZamakDaily] Concluido: ${summary.devices} devices, ${summary.perfRows} perf, ${summary.outageRows} outages, ${summary.errors} erros`);
+    await sendSyncEmail(true, summary, null);
+  } catch (err) {
+    console.error('[ZamakDaily] FALHOU:', err.message);
+    await sendSyncEmail(false, null, err);
+  }
+}
+
+function scheduleDailySync() {
+  function scheduleNext() {
+    const now  = new Date();
+    const next = new Date();
+    next.setUTCHours(5, 0, 0, 0); // 02:00 BRT = 05:00 UTC
+    if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+    const delayMs = next - now;
+    const delayMin = Math.round(delayMs / 60000);
+    console.log(`[ZamakDaily] Proximo sync em ${delayMin} min (${next.toISOString()})`);
+    setTimeout(async () => {
+      await runDailySync();
+      scheduleNext();
+    }, delayMs);
+  }
+  scheduleNext();
+}
+
+module.exports = { syncAll, syncIfStale, scheduleDailySync };

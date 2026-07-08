@@ -1279,6 +1279,13 @@ function getIntegrationsStatus() {
   };
 }
 
+// Devices conhecidos no cache — evita re-discovery na API durante sync diário
+function getZamakCachedDeviceIds() {
+  return getDb().prepare(
+    `SELECT device_id, device_name, store_name FROM zamak_device_cache WHERE device_id IS NOT NULL`
+  ).all();
+}
+
 // Retorna quantas horas desde o último sync (Infinity se nunca sincronizou)
 function getZamakCacheAge() {
   const row = getDb().prepare(
@@ -1443,7 +1450,7 @@ module.exports = {
   // status integrações
   getIntegrationsStatus,
   // zamak / N-able
-  upsertZamakDevices, replaceZamakDiscrepancies, getZamakCacheAge,
+  upsertZamakDevices, replaceZamakDiscrepancies, getZamakCacheAge, getZamakCachedDeviceIds,
   getZamakSummaryForStore, getZamakDiscrepancies,
   replaceZamakThreats, getZamakThreats,
   replaceZamakPerformance, getZamakPerformance,
