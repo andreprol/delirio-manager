@@ -169,6 +169,7 @@ function parseMachine(m) {
     lastMetrics:  m.last_metrics ? parseJSON(m.last_metrics, null) : null,
     wolStatus:    m.wol_status   || 'unknown',
     motherboard:  m.motherboard  || '',
+    osVersion:    m.os_version   || '',
   };
 }
 

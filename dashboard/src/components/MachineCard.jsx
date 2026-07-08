@@ -242,6 +242,16 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
                     <span>{lastSeen}</span>
                   </>
                 )}
+                {machine.osVersion && (() => {
+                  const v = machine.osVersion
+                  const color = v.includes('Windows 11') ? 'var(--green)' : v.includes('Windows 10') ? 'var(--red)' : 'var(--text)'
+                  return (
+                    <>
+                      <span className="mc-info-label">SO</span>
+                      <span style={{ color, fontSize: '11px' }} title={v}>{v}</span>
+                    </>
+                  )
+                })()}
                 <span className="mc-info-label">Agente</span>
                 <span>v{machine.agentVersion || '?'}</span>
                 <span className="mc-info-label">Uptime</span>

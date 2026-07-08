@@ -79,11 +79,14 @@ router.post('/heartbeat', agentAuth, (req, res) => {
     }
     if (Object.keys(upd).length) db.updateMachine(machine.id, upd)
 
-    // Atualiza WoL driver status e motherboard
-    const { wolEnabled, motherboard } = req.body;
+    // Atualiza WoL driver status, motherboard e OS version
+    const { wolEnabled, motherboard, osVersion } = req.body;
 
     if (typeof motherboard === 'string' && motherboard && !machine.motherboard) {
       db.updateMachine(machine.id, { motherboard });
+    }
+    if (typeof osVersion === 'string' && osVersion && osVersion !== machine.os_version) {
+      db.updateMachine(machine.id, { os_version: osVersion });
     }
 
     let currentWolStatus = machine.wol_status;
@@ -107,6 +110,7 @@ router.post('/heartbeat', agentAuth, (req, res) => {
       metrics,
       wolStatus:   currentWolStatus,
       motherboard: machine.motherboard,
+      osVersion:   osVersion || machine.os_version || '',
     });
 
     // DR status — update machines table and insert backup record if new

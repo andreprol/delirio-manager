@@ -151,3 +151,24 @@ try {
 	}
 	return result
 }
+
+// getWindowsVersion retorna a versão do SO no formato "Windows 11 Pro 23H2".
+// Lê HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion via PowerShell.
+func getWindowsVersion() string {
+	script := `
+try {
+  $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+  $n = (Get-ItemProperty $k).ProductName
+  $d = (Get-ItemProperty $k).DisplayVersion
+  if ($d) { "$n $d" } else { $n }
+} catch { "" }
+`
+	var out bytes.Buffer
+	cmd := exec.Command("powershell", "-NonInteractive", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		logWarn(fmt.Sprintf("getWindowsVersion: powershell falhou: %v", err))
+		return ""
+	}
+	return strings.TrimSpace(out.String())
+}

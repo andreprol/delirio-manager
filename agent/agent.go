@@ -19,17 +19,19 @@ type Agent struct {
 	stopCh      chan struct{}
 	wolEnabled  *bool  // cached após primeira verificação
 	motherboard string // cached após primeira verificação
+	osVersion   string // cached na inicialização
 }
 
 // HeartbeatPayload e o JSON enviado ao servidor a cada ciclo.
 type HeartbeatPayload struct {
-	MachineID   string   `json:"machineId"`
-	Token       string   `json:"token"`
-	Hostname    string   `json:"hostname"`
-	Version     string   `json:"agentVersion"`
-	Metrics     *Metrics `json:"metrics"`
+	MachineID   string    `json:"machineId"`
+	Token       string    `json:"token"`
+	Hostname    string    `json:"hostname"`
+	Version     string    `json:"agentVersion"`
+	Metrics     *Metrics  `json:"metrics"`
 	WolEnabled  *bool     `json:"wolEnabled,omitempty"`
 	Motherboard string    `json:"motherboard,omitempty"`
+	OsVersion   string    `json:"osVersion,omitempty"`
 	DrStatus    *DRStatus `json:"dr_status,omitempty"`
 }
 
@@ -109,7 +111,8 @@ func (a *Agent) collectWolStatus() {
 	enabled := checkAndEnableWolDriver()
 	a.wolEnabled = &enabled
 	a.motherboard = getMotherboardInfo()
-	logInfo(fmt.Sprintf("WoL driver: %v | Placa: %s", enabled, a.motherboard))
+	a.osVersion = getWindowsVersion()
+	logInfo(fmt.Sprintf("WoL driver: %v | Placa: %s | SO: %s", enabled, a.motherboard, a.osVersion))
 }
 
 // collectAndSendBootEvents waits for the agent to have a valid token, then
@@ -198,6 +201,7 @@ func (a *Agent) sendHeartbeat() {
 		Metrics:     metrics,
 		WolEnabled:  a.wolEnabled,
 		Motherboard: a.motherboard,
+		OsVersion:   a.osVersion,
 	}
 
 	if isVeeamInstalled() {

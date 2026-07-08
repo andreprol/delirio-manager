@@ -285,6 +285,7 @@ function migrate(db) {
       deleted_at TEXT NOT NULL
     )`,
     `ALTER TABLE report_runs ADD COLUMN score_operational INTEGER`,
+    `ALTER TABLE machines ADD COLUMN os_version TEXT DEFAULT ''`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -357,7 +358,7 @@ function isDeletedMachine(id) {
 }
 
 function updateMachine(id, fields) {
-  const allowed = ['display_name', 'location', 'critica', 'subnet', 'ip_interno', 'mac', 'agent_version', 'motherboard'];
+  const allowed = ['display_name', 'location', 'critica', 'subnet', 'ip_interno', 'mac', 'agent_version', 'motherboard', 'os_version'];
   const keys    = Object.keys(fields).filter(k => allowed.includes(k));
   if (!keys.length) return;
   const set = keys.map(k => `${k}=?`).join(', ');
