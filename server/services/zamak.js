@@ -373,7 +373,7 @@ async function syncAll() {
     if (did) {
       try {
         await throttle();
-        const oXml = await fetchNsight(server, apiKey, 'list_outages_arsenal', { deviceid: did });
+        const oXml = await fetchNsight(server, apiKey, 'list_outages', { deviceid: did });
         const outages = parseFlatXmlList(oXml, 'outage');
         for (const o of outages) {
           let durationMin = null;
