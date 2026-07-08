@@ -312,6 +312,38 @@ function migrate(db) {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_offline_events_machine
       ON machine_offline_events(machine_id, offline_at)`,
+    // ── Cache Zamak / N-able N-sight ──────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS zamak_device_cache (
+      device_id          TEXT PRIMARY KEY,
+      site_id            TEXT NOT NULL,
+      site_name          TEXT,
+      store_name         TEXT,
+      device_name        TEXT NOT NULL,
+      device_type        TEXT,
+      status             TEXT,
+      os_type            TEXT,
+      ip_address         TEXT,
+      has_web_protection INTEGER DEFAULT 0,
+      patch_critical     INTEGER DEFAULT 0,
+      patch_high         INTEGER DEFAULT 0,
+      patch_medium       INTEGER DEFAULT 0,
+      patch_total        INTEGER DEFAULT 0,
+      threats_active     INTEGER DEFAULT 0,
+      failing_checks     INTEGER DEFAULT 0,
+      dm_machine_id      TEXT,
+      dm_hostname        TEXT,
+      cached_at          TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS zamak_discrepancies (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      type            TEXT NOT NULL,
+      device_name     TEXT NOT NULL,
+      store_name      TEXT,
+      zamak_device_id TEXT,
+      dm_machine_id   TEXT,
+      detail          TEXT,
+      detected_at     TEXT NOT NULL
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -1145,6 +1177,85 @@ function getOfflineEventsForStore(location, month) {
   return row?.total_events ?? 0;
 }
 
+// ── Zamak / N-able N-sight cache ──────────────────────────────────────────────
+
+function upsertZamakDevices(rows) {
+  const stmt = getDb().prepare(`
+    INSERT OR REPLACE INTO zamak_device_cache
+      (device_id, site_id, site_name, store_name, device_name, device_type, status,
+       os_type, ip_address, has_web_protection,
+       patch_critical, patch_high, patch_medium, patch_total,
+       threats_active, failing_checks, dm_machine_id, dm_hostname, cached_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insert = getDb().transaction((items) => {
+    for (const r of items) {
+      stmt.run(
+        r.device_id, r.site_id, r.site_name, r.store_name, r.device_name,
+        r.device_type, r.status, r.os_type, r.ip_address,
+        r.has_web_protection ? 1 : 0,
+        r.patch_critical, r.patch_high, r.patch_medium, r.patch_total,
+        r.threats_active, r.failing_checks,
+        r.dm_machine_id || null, r.dm_hostname || null, r.cached_at,
+      );
+    }
+  });
+  insert(rows);
+}
+
+function replaceZamakDiscrepancies(rows) {
+  const d = getDb();
+  d.prepare('DELETE FROM zamak_discrepancies').run();
+  const stmt = d.prepare(`
+    INSERT INTO zamak_discrepancies
+      (type, device_name, store_name, zamak_device_id, dm_machine_id, detail, detected_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insert = d.transaction((items) => {
+    for (const r of items) {
+      stmt.run(r.type, r.device_name, r.store_name || null,
+               r.zamak_device_id || null, r.dm_machine_id || null,
+               r.detail || null, r.detected_at);
+    }
+  });
+  insert(rows);
+}
+
+// Retorna quantas horas desde o último sync (Infinity se nunca sincronizou)
+function getZamakCacheAge() {
+  const row = getDb().prepare(
+    `SELECT cached_at FROM zamak_device_cache ORDER BY cached_at DESC LIMIT 1`
+  ).get();
+  if (!row) return Infinity;
+  return (Date.now() - new Date(row.cached_at).getTime()) / 3600000;
+}
+
+// Resumo por loja: agregados de patches, ameaças e failing checks
+function getZamakSummaryForStore(storeName) {
+  const row = getDb().prepare(`
+    SELECT
+      COUNT(*) AS total_devices,
+      SUM(patch_critical) AS patch_critical,
+      SUM(patch_high)     AS patch_high,
+      SUM(patch_total)    AS patch_total,
+      SUM(threats_active) AS threats_active,
+      SUM(failing_checks) AS failing_checks,
+      SUM(CASE WHEN status IN ('offline','overdue','Error') THEN 1 ELSE 0 END) AS devices_offline
+    FROM zamak_device_cache
+    WHERE store_name = ?
+  `).get(storeName);
+  return row || {
+    total_devices: 0, patch_critical: 0, patch_high: 0, patch_total: 0,
+    threats_active: 0, failing_checks: 0, devices_offline: 0,
+  };
+}
+
+function getZamakDiscrepancies() {
+  return getDb().prepare(
+    `SELECT * FROM zamak_device_cache ORDER BY detected_at DESC`
+  ).all();
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -1192,4 +1303,7 @@ module.exports = {
   insertMetricsHourly, getWeightedMetricsForStore,
   // eventos offline
   insertOfflineEvent, getOfflineEventsForStore,
+  // zamak / N-able
+  upsertZamakDevices, replaceZamakDiscrepancies, getZamakCacheAge,
+  getZamakSummaryForStore, getZamakDiscrepancies,
 };

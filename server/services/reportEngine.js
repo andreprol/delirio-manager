@@ -114,12 +114,18 @@ function buildStoreContext(storeName, month) {
   // Eventos offline do mês do relatório
   const offlineEventCount = db.getOfflineEventsForStore(storeName, month);
 
+  // Dados Zamak / N-able (cache, pode estar vazio se nunca sincronizado)
+  const zamak = db.getZamakSummaryForStore(storeName);
+  const zamakAge = db.getZamakCacheAge();
+  const zamakSynced = zamakAge < Infinity && zamakAge < 48; // considera válido se < 48h
+
   return {
     storeName, month,
     openTopics, history: history.slice(0, 20), recurrences,
     fdActive, fdClosed, fdTotal,
     machineData, win10Machines, win10CriticalMachines, win10NormalMachines, recentFeedback,
     weightedMetrics, offlineEventCount,
+    zamak, zamakSynced,
   };
 }
 
@@ -130,7 +136,7 @@ function buildStoreContext(storeName, month) {
 function buildPrompt(ctx) {
   const { storeName, month, openTopics, history, recurrences,
           fdActive, machineData, win10Machines, win10CriticalMachines,
-          win10NormalMachines, recentFeedback } = ctx;
+          win10NormalMachines, recentFeedback, zamak, zamakSynced } = ctx;
 
   const fmtTopic    = t => `  [ID:${t.id}][${t.severity.toUpperCase()}${t.is_critical_machine ? ' BOH/TERM' : ''}] ${t.description}`;
   const fmtTicket   = t => `  [${t.status}] ${t.title}`;
@@ -164,6 +170,16 @@ MAQUINAS WINDOWS 10 — SO fora de suporte (Microsoft EOL out/2025):
   Criticas TERM/BOH: ${win10CriticalMachines.length ? win10CriticalMachines.join(', ') : 'Nenhuma'}
   Normais: ${win10NormalMachines.length ? win10NormalMachines.join(', ') : 'Nenhuma'}
 REGRA WIN10: Maquinas TERM/BOH com Win10 = severidade maxima em Software/OS e Seguranca.
+
+ZAMAK RMM — SEGURANCA E PATCHES (${zamakSynced ? 'dados atuais' : 'SEM DADOS — Zamak nao sincronizada'}):
+${zamakSynced && zamak.total_devices > 0 ? `  Dispositivos monitorados: ${zamak.total_devices}
+  Patches criticos pendentes: ${zamak.patch_critical}
+  Patches high pendentes: ${zamak.patch_high}
+  Patches total pendentes: ${zamak.patch_total}
+  Ameacas MAV ativas: ${zamak.threats_active}
+  Checks com falha: ${zamak.failing_checks}
+  Devices offline (Zamak): ${zamak.devices_offline}
+REGRA ZAMAK: Patches criticos = severidade maxima em seguranca. Ameacas MAV ativas = emergencia de seguranca.` : '  Sem dados Zamak — desconsiderar dimensao seguranca baseada em patches'}
 
 FEEDBACK HISTORICO DO GESTOR:
 ${recentFeedback.length ? recentFeedback.map(fmtFeedback).join('\n') : '  Nenhum'}
