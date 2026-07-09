@@ -54,10 +54,10 @@ Send-FileToVM "$BASE\services\websocket.js"   "$DEST/services/websocket.js"
 Send-FileToVM "$BASE\services\alertEngine.js" "$DEST/services/alertEngine.js"
 Send-FileToVM "$BASE\middleware\auth.js"   "$DEST/middleware/auth.js"
 
-Write-Host "[4/4] Instalando dependencias e iniciando servidor..." -ForegroundColor Cyan
+Write-Host "[4/4] Instalando dependencias e reiniciando servidor (safe-restart)..." -ForegroundColor Cyan
 az vm run-command invoke --resource-group $RG --name $VM `
     --command-id RunShellScript `
-    --scripts "cd $DEST && npm install --production 2>&1 | tail -3 && pm2 delete dt-manager 2>/dev/null; pm2 start ecosystem.config.js && pm2 save && sleep 3 && curl -s http://localhost:3847/health" `
+    --scripts "cd $DEST && npm install --production 2>&1 | tail -3 && bash $DEST/infra/safe-restart.sh" `
     --output json | ConvertFrom-Json | ForEach-Object { Write-Host $_.value[0].message }
 
 Write-Host ""
