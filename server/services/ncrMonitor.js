@@ -392,7 +392,12 @@ async function tick() {
     return;
   }
 
-  const since = cfg.ncrSince ? new Date(cfg.ncrSince) : null;
+  let ncrSince;
+  try {
+    const rootConf = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
+    ncrSince = rootConf.ncrSince || null;
+  } catch { ncrSince = null; }
+  const since = ncrSince ? new Date(ncrSince) : null;
 
   let newCount = 0;
   for (const msg of emails) {
