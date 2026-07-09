@@ -681,6 +681,11 @@ async function runDailySync() {
 }
 
 function scheduleDailySync() {
+  // Se cache estiver stale no startup (restart pós-05:00 UTC), sync imediato
+  syncIfStale(6)
+    .then(result => { if (result) console.log('[ZamakDaily] Startup sync executado (cache estava stale)'); })
+    .catch(e => console.error('[ZamakDaily] Startup sync error:', e.message));
+
   function scheduleNext() {
     const now  = new Date();
     const next = new Date();
