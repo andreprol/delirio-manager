@@ -337,7 +337,6 @@ async function fetchNewNcrEmails(token) {
     '?$search="subject:NCR"',
     '&$top=50',
     '&$select=id,subject,from,receivedDateTime,body',
-    '&$orderby=receivedDateTime%20desc',
   ].join('');
 
   const res = await fetch(url, {
