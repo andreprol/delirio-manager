@@ -392,9 +392,12 @@ async function tick() {
     return;
   }
 
+  const since = cfg.ncrSince ? new Date(cfg.ncrSince) : null;
+
   let newCount = 0;
   for (const msg of emails) {
     try {
+      if (since && new Date(msg.receivedDateTime) < since) continue;
       if (db.ncrGetByMessageId(msg.id)) continue;
 
       const parsed = parseNcrEmail(msg);
