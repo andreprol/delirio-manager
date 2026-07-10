@@ -21,5 +21,6 @@
   },
   "autoWake": {
     "enabled": false
-  }
+  },
+  "adminSecret": "TROCAR-POR-SECRET-FORTE-AQUI"
 }

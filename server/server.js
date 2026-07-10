@@ -26,6 +26,7 @@ const alohaRoutes    = require('./routes/aloha');
 const drRoutes       = require('./routes/dr');
 const relatorioRoutes = require('./routes/relatorio');
 const zamakRoutes     = require('./routes/zamak');
+const adminRoutes     = require('./routes/admin');
 
 const PORT    = process.env.PORT    || 3847;
 const VERSION = '1.0.0';
@@ -90,6 +91,7 @@ app.use('/api/aloha',    alohaRoutes);
 app.use('/api/dr',       drRoutes);
 app.use('/api/relatorio', relatorioRoutes);
 app.use('/api/zamak',    zamakRoutes);
+app.use('/api/admin',    adminRoutes);
 
 // ── Servir o instalador e o binario do agente ─────────────────────────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');
