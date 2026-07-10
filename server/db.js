@@ -379,6 +379,7 @@ function migrate(db) {
       check_description TEXT,
       cached_at         TEXT NOT NULL
     )`,
+    `ALTER TABLE machines ADD COLUMN wol_ever_confirmed INTEGER DEFAULT 0`,
     `CREATE TABLE IF NOT EXISTS ncr_monitor_emails (
       id                 INTEGER PRIMARY KEY AUTOINCREMENT,
       message_id         TEXT UNIQUE NOT NULL,
@@ -506,9 +507,16 @@ function getMachinesStale(thresholdISO) {
 
 function setWolStatus(machineId, status, testedAt = null) {
   const d = getDb();
-  if (testedAt) {
+  const everConfirmed = status === 'wol_confirmed' ? 1 : undefined;
+  if (testedAt && everConfirmed !== undefined) {
+    d.prepare(`UPDATE machines SET wol_status=?, wol_tested_at=?, wol_ever_confirmed=1 WHERE id=?`)
+     .run(status, testedAt, machineId);
+  } else if (testedAt) {
     d.prepare(`UPDATE machines SET wol_status=?, wol_tested_at=? WHERE id=?`)
      .run(status, testedAt, machineId);
+  } else if (everConfirmed !== undefined) {
+    d.prepare(`UPDATE machines SET wol_status=?, wol_ever_confirmed=1 WHERE id=?`)
+     .run(status, machineId);
   } else {
     d.prepare(`UPDATE machines SET wol_status=? WHERE id=?`)
      .run(status, machineId);

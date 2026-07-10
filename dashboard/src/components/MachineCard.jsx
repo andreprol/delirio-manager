@@ -7,12 +7,13 @@ const STATUS_COLOR = { online: '#22c55e', offline: '#ef4444', unknown: '#6b7280'
 const STATUS_LABEL = { online: 'Online', offline: 'Offline', unknown: 'Desconhecido' }
 
 const WOL_BADGE = {
-  unknown:         null,
-  driver_disabled: { color: '#ef4444', label: 'WoL ✗',     title: 'Driver Windows desabilitado — agente tentou habilitar' },
-  driver_enabled:  { color: '#f59e0b', label: 'WoL ○',      title: 'Driver OK — WoL não testado. Desligue e Ligue para testar.' },
-  testing:         { color: '#f59e0b', label: 'WoL …',       title: 'Teste em andamento' },
-  wol_confirmed:   { color: '#22c55e', label: 'WoL ✓',       title: 'Wake-on-LAN confirmado e funcionando' },
-  bios_needed:     { color: '#f59e0b', label: 'WoL ⚠ BIOS', title: 'Driver OK mas BIOS precisa ser configurado. Verifique alertas.' },
+  unknown:          null,
+  driver_disabled:  { color: '#ef4444', label: 'WoL ✗',     title: 'Driver Windows desabilitado — agente tentou habilitar' },
+  driver_enabled:   { color: '#f59e0b', label: 'WoL ○',      title: 'Driver OK — WoL não testado. Desligue e Ligue para testar.' },
+  testing:          { color: '#f59e0b', label: 'WoL …',       title: 'Teste em andamento' },
+  wol_confirmed:    { color: '#22c55e', label: 'WoL ✓',       title: 'Wake-on-LAN confirmado e funcionando' },
+  bios_needed:      { color: '#f59e0b', label: 'WoL ⚠ BIOS', title: 'Driver OK mas BIOS precisa ser configurado. Verifique alertas.' },
+  wol_auto_testing: { color: '#22c55e', label: 'WoL ✓',       title: 'Wake-on-LAN confirmado — tentando ligar remotamente…' },
 }
 
 const DR_BADGE = {
@@ -136,7 +137,10 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
         {isCrit && <span className="mc-badge-crit">CRIT</span>}
         {machine.pendingCommand && <span className="mc-badge-pend">…</span>}
         {(() => {
-          const badge = WOL_BADGE[machine.wolStatus]
+          const isOfflineConfirmed = machine.wolEverConfirmed && machine.status === 'offline'
+          const badge = isOfflineConfirmed
+            ? WOL_BADGE.wol_confirmed
+            : WOL_BADGE[machine.wolStatus]
           if (!badge) return null
           return (
             <span

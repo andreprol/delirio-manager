@@ -167,7 +167,8 @@ function parseMachine(m) {
     onlineSince:  m.online_since || null,
     registeredAt: m.registered_at,
     lastMetrics:  m.last_metrics ? parseJSON(m.last_metrics, null) : null,
-    wolStatus:    m.wol_status   || 'unknown',
+    wolStatus:       m.wol_status        || 'unknown',
+    wolEverConfirmed: m.wol_ever_confirmed === 1,
     motherboard:  m.motherboard  || '',
     osVersion:    m.os_version   || '',
   };
