@@ -25,6 +25,9 @@ type Agent struct {
 	// offline event detection
 	mu            sync.Mutex
 	lastSuccessAt time.Time // zero = nunca teve sucesso
+
+	// update deduplication — previne goroutines concorrentes de update
+	updating bool
 }
 
 // HeartbeatPayload e o JSON enviado ao servidor a cada ciclo.
@@ -266,10 +269,25 @@ func (a *Agent) sendHeartbeat() {
 		var hbResp HeartbeatResponse
 		if err := json.NewDecoder(resp.Body).Decode(&hbResp); err == nil {
 			if hbResp.LatestVersion != "" && hbResp.LatestVersion != Version {
-				go a.checkAndUpdate(UpdateInfo{
-					Version: hbResp.LatestVersion,
-					SHA256:  hbResp.UpdateInfo.SHA256,
-				})
+				a.mu.Lock()
+				alreadyUpdating := a.updating
+				if !alreadyUpdating {
+					a.updating = true
+				}
+				a.mu.Unlock()
+				if !alreadyUpdating {
+					go func(info UpdateInfo) {
+						defer func() {
+							a.mu.Lock()
+							a.updating = false
+							a.mu.Unlock()
+						}()
+						a.checkAndUpdate(info)
+					}(UpdateInfo{
+						Version: hbResp.LatestVersion,
+						SHA256:  hbResp.UpdateInfo.SHA256,
+					})
+				}
 			}
 		}
 	}

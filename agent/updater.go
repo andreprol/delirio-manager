@@ -7,9 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 )
 
 // UpdateInfo e retornado pelo servidor no heartbeat ou em /api/agent/version
@@ -102,7 +100,10 @@ func cleanOldExe() {
 
 // validateBinary garante que o arquivo baixado é um executável Windows válido
 // com a versão esperada — bloqueia binários corrompidos, Linux/Mac, ou versão errada.
-func validateBinary(path, expectedVersion string) error {
+// validateBinary garante que o arquivo baixado é um PE Windows válido.
+// SHA256 (verificado antes) já garante autenticidade — não executamos o binário
+// para evitar bloqueio pelo Windows Defender/SmartScreen em endpoints Win10.
+func validateBinary(path, _ string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("stat falhou: %w", err)
@@ -123,14 +124,6 @@ func validateBinary(path, expectedVersion string) error {
 		return fmt.Errorf("nao e um executavel Windows (magic: %02X%02X, esperado: 4D5A)", magic[0], magic[1])
 	}
 
-	// Executa --version e verifica que a versão bate
-	out, err := exec.Command(path, "--version").Output()
-	if err != nil {
-		return fmt.Errorf("--version falhou: %w", err)
-	}
-	if !strings.Contains(string(out), expectedVersion) {
-		return fmt.Errorf("versao incorreta: esperado %s, obtido: %s", expectedVersion, strings.TrimSpace(string(out)))
-	}
 	return nil
 }
 

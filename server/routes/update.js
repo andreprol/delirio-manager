@@ -12,7 +12,7 @@ const { broadcast } = require('../services/websocket');
 
 const PUBLIC_DIR    = path.join(__dirname, '..', 'public');
 const VERSION_FILE  = path.join(PUBLIC_DIR, 'version.json');
-const AGENT_EXE     = path.join(PUBLIC_DIR, 'delirio-agent.exe');
+const AGENT_EXE     = path.join(PUBLIC_DIR, 'downloads', 'delirio-agent.exe');
 
 function readVersionInfo() {
   try {
@@ -51,7 +51,7 @@ router.post('/publish', express.raw({ type: 'application/octet-stream', limit: '
   const sha256 = crypto.createHash('sha256').update(req.body).digest('hex');
 
   // Salva o binario
-  fs.mkdirSync(PUBLIC_DIR, { recursive: true });
+  fs.mkdirSync(path.dirname(AGENT_EXE), { recursive: true });
   fs.writeFileSync(AGENT_EXE, req.body);
 
   // Salva version.json

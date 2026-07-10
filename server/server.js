@@ -240,16 +240,6 @@ if ($svcFinal -and $svcFinal.Status -eq "Running") {
   res.send(script);
 });
 
-// GET /downloads/delirio-agent.exe
-app.get('/downloads/delirio-agent.exe', (req, res) => {
-  const exePath = path.join(PUBLIC_DIR, 'delirio-agent.exe');
-  if (!fs.existsSync(exePath)) {
-    return res.status(404).json({
-      error: 'Binario nao encontrado. Copie delirio-agent.exe para a pasta public/ da VM.'
-    });
-  }
-  res.download(exePath, 'delirio-agent.exe');
-});
 
 // GET /downloads/lhm.zip
 app.get('/downloads/lhm.zip', (req, res) => {
