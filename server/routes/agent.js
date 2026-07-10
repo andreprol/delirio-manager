@@ -42,11 +42,90 @@ router.post('/register', (req, res) => {
   }
 });
 
+// Valida o payload do heartbeat. Retorna array de erros (vazio = válido).
+function validateHeartbeat(body) {
+  const errors = [];
+  const { metrics, agentVersion, motherboard, osVersion, drStatus } = body;
+
+  if (agentVersion !== undefined && (typeof agentVersion !== 'string' || agentVersion.length > 50)) {
+    errors.push('agentVersion deve ser string com máximo 50 chars');
+  }
+  if (motherboard !== undefined && (typeof motherboard !== 'string' || motherboard.length > 200)) {
+    errors.push('motherboard deve ser string com máximo 200 chars');
+  }
+  if (osVersion !== undefined && (typeof osVersion !== 'string' || osVersion.length > 100)) {
+    errors.push('osVersion deve ser string com máximo 100 chars');
+  }
+
+  if (metrics !== undefined) {
+    if (typeof metrics !== 'object' || metrics === null || Array.isArray(metrics)) {
+      errors.push('metrics deve ser um objeto');
+    } else {
+      const numericRanges = [
+        { field: 'cpu_pct',  min: 0, max: 100 },
+        { field: 'ram_pct',  min: 0, max: 100 },
+        { field: 'disk_pct', min: 0, max: 100 },
+        { field: 'temp_c',   min: 0, max: 150 },
+      ];
+      for (const { field, min, max } of numericRanges) {
+        const val = metrics[field];
+        if (val !== undefined && val !== null) {
+          if (typeof val !== 'number' || isNaN(val) || val < min || val > max) {
+            errors.push(`metrics.${field} deve ser número entre ${min} e ${max}`);
+          }
+        }
+      }
+
+      if (metrics.mac !== undefined && metrics.mac !== null) {
+        const macRegex = /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$/;
+        if (typeof metrics.mac !== 'string' || !macRegex.test(metrics.mac)) {
+          errors.push('metrics.mac deve ser endereço MAC válido (ex: AA:BB:CC:DD:EE:FF)');
+        }
+      }
+
+      if (metrics.ips !== undefined) {
+        if (!Array.isArray(metrics.ips)) {
+          errors.push('metrics.ips deve ser um array');
+        } else if (metrics.ips.length > 20) {
+          errors.push('metrics.ips deve ter no máximo 20 itens');
+        } else if (metrics.ips.some(ip => typeof ip !== 'string' || ip.length > 45)) {
+          errors.push('cada item de metrics.ips deve ser string com máximo 45 chars');
+        }
+      }
+    }
+  }
+
+  if (drStatus !== undefined) {
+    if (typeof drStatus !== 'object' || drStatus === null || Array.isArray(drStatus)) {
+      errors.push('drStatus deve ser um objeto');
+    } else {
+      if (drStatus.storage_gb !== undefined && drStatus.storage_gb !== null &&
+          (typeof drStatus.storage_gb !== 'number' || isNaN(drStatus.storage_gb) || drStatus.storage_gb < 0)) {
+        errors.push('drStatus.storage_gb deve ser número não-negativo');
+      }
+      if (drStatus.setup !== undefined && (typeof drStatus.setup !== 'string' || drStatus.setup.length > 50)) {
+        errors.push('drStatus.setup deve ser string com máximo 50 chars');
+      }
+      if (drStatus.veeam_version !== undefined &&
+          (typeof drStatus.veeam_version !== 'string' || drStatus.veeam_version.length > 50)) {
+        errors.push('drStatus.veeam_version deve ser string com máximo 50 chars');
+      }
+    }
+  }
+
+  return errors;
+}
+
 // POST /api/heartbeat
 // Recebe metricas do agente. Requer token valido.
 router.post('/heartbeat', agentAuth, (req, res) => {
   const machine = req.machine;
   const { metrics, hostname, agentVersion } = req.body;
+
+  const validationErrors = validateHeartbeat(req.body);
+  if (validationErrors.length > 0) {
+    return res.status(400).json({ error: 'Payload inválido', details: validationErrors });
+  }
 
   try {
     // Se a máquina estava offline, reseta cooldown para que a próxima queda alerte imediatamente
@@ -322,3 +401,4 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
 });
 
 module.exports = router;
+module.exports.validateHeartbeat = validateHeartbeat;
