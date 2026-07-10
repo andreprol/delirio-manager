@@ -19,11 +19,11 @@ function fmtAge(min) {
   return `${Math.floor(min / 60)}h${Math.round(min % 60).toString().padStart(2, '0')}min atrás`
 }
 
-function IntSyncPill({ label, ok, ageMinutes }) {
-  const color = ok ? 'var(--green)' : (ageMinutes == null ? '#718096' : '#e53e3e')
+function IntSyncPill({ label, ok, ageMinutes, syncing }) {
+  const color = syncing ? '#ED8936' : (ok ? 'var(--green)' : (ageMinutes == null ? '#718096' : '#e53e3e'))
+  const tooltip = syncing ? 'Sincronizando... (pode levar até 16 min)' : `Último sync: ${fmtAge(ageMinutes)}`
   return (
-    <div className="conn-status" title={`Último sync: ${fmtAge(ageMinutes)}`}
-         style={{ color, gap: 4 }}>
+    <div className="conn-status" title={tooltip} style={{ color, gap: 4 }}>
       <span className="conn-dot" style={{ width: 6, height: 6, background: color, flexShrink: 0 }} />
       {label}
     </div>
@@ -325,7 +325,7 @@ export default function App() {
             {wsConnected ? 'Tempo real' : '30s sync'}
           </div>
           {intStatus && <>
-            <IntSyncPill label="Zamak"     ok={intStatus.zamak.ok}     ageMinutes={intStatus.zamak.ageMinutes} />
+            <IntSyncPill label="Zamak"     ok={intStatus.zamak.ok}     ageMinutes={intStatus.zamak.ageMinutes} syncing={intStatus.zamak.syncing} />
             <IntSyncPill label="Freshdesk" ok={intStatus.freshdesk.ok} ageMinutes={intStatus.freshdesk.ageMinutes} />
           </>}
         </div>

@@ -69,7 +69,10 @@ app.get('/health', (req, res) => {
 // ── Status integrações ────────────────────────────────────────────────────────
 app.get('/api/status/integrations', (req, res) => {
   const { getIntegrationsStatus } = require('./db');
-  res.json(getIntegrationsStatus());
+  const zamakService = require('./services/zamak');
+  const status = getIntegrationsStatus();
+  status.zamak.syncing = zamakService.isSyncing();
+  res.json(status);
 });
 
 // ── Rotas ─────────────────────────────────────────────────────────────────────

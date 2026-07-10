@@ -183,8 +183,21 @@ function deviceStatus(d) {
   return d.status || d.online_status || d.device_status || 'unknown';
 }
 
+// ─── Sync state ───────────────────────────────────────────────────────────────
+let _syncing = false;
+function isSyncing() { return _syncing; }
+
 // ─── Sync principal ───────────────────────────────────────────────────────────
 async function syncAll() {
+  _syncing = true;
+  try {
+    return await _syncAllInner();
+  } finally {
+    _syncing = false;
+  }
+}
+
+async function _syncAllInner() {
   const cfg = loadConfig();
   if (!cfg.server || !cfg.apiKey) {
     throw new Error('zamak.server e zamak.apiKey não configurados em config.json');
@@ -702,4 +715,4 @@ function scheduleDailySync() {
   scheduleNext();
 }
 
-module.exports = { syncAll, syncIfStale, scheduleDailySync };
+module.exports = { syncAll, syncIfStale, scheduleDailySync, isSyncing };
