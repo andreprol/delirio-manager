@@ -7,7 +7,7 @@ const db         = require('../db');
 const { broadcast } = require('./websocket');
 const { getBiosGuide } = require('./wolBiosGuide');
 
-const CHECK_INTERVAL_MS = 60 * 1000;
+const CHECK_INTERVAL_MS = 30 * 1000;
 const OFFLINE_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min entre alertas offline por máquina
 const cpuAlertStart = new Map();
 const offlineAlertCooldown = new Map(); // machineId → timestamp do último alerta offline
@@ -26,7 +26,7 @@ function loadConfig() {
 
 function start() {
   timer = setInterval(checkAll, CHECK_INTERVAL_MS);
-  console.log('[AlertEngine] Iniciado (intervalo: 60s)');
+  console.log('[AlertEngine] Iniciado (intervalo: 30s, threshold offline: 90s)');
 }
 
 function stop() {
@@ -105,7 +105,7 @@ function checkAll() {
 
 // Detecta maquinas que pararam de enviar heartbeat
 function checkOffline() {
-  const threshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const threshold = new Date(Date.now() - 90 * 1000).toISOString();
   const stale     = db.getMachinesStale(threshold);
 
   for (const machine of stale) {
