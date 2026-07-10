@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -87,7 +88,17 @@ func round2(f float64) float64 {
 }
 
 func isLoopback(name string) bool {
-	return name == "Loopback Pseudo-Interface 1" || name == "lo"
+	if name == "Loopback Pseudo-Interface 1" || name == "lo" {
+		return true
+	}
+	// Exclui adaptadores virtuais/loopback por nome (Topaz, KM-TEST, VPN, etc.)
+	lower := strings.ToLower(name)
+	for _, kw := range []string{"loopback", "topaz", "km-test", "vmware", "virtualbox", "hyper-v", "vethernet"} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func isIPv4(ip string) bool {
