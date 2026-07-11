@@ -103,7 +103,7 @@ func installVeeam(serverURL string) error {
 	defer os.Remove(tmpPath)
 
 	logInfo("DR: instalando Veeam Agent (modo silencioso)...")
-	cmd := exec.Command(tmpPath, "/silent", "/norestart")
+	cmd := exec.Command(tmpPath, "/silent", "/norestart", "/acceptLicense")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("instalacao Veeam falhou: %w — output: %s", err, string(out))
 	}
