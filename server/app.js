@@ -22,6 +22,7 @@ const relatorioRoutes = require('./routes/relatorio');
 const zamakRoutes     = require('./routes/zamak');
 const adminRoutes     = require('./routes/admin');
 
+const logger  = require('./services/logger');
 const VERSION = '1.0.0';
 
 const app = express();
@@ -36,9 +37,10 @@ app.use((req, res, next) => {
   next();
 });
 
+// ── Request logger ────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   if (req.path !== '/health') {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    logger.info(`${req.method} ${req.path}`, { ip: req.ip });
   }
   next();
 });
@@ -46,14 +48,42 @@ app.use((req, res, next) => {
 // ── Health Check ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   const { getDb } = require('./db');
-  const machineCount = getDb()
-    .prepare('SELECT COUNT(*) as c FROM machines').get().c;
+  const db = getDb();
+
+  const machines = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN status = 'online'  THEN 1 ELSE 0 END) AS online,
+      SUM(CASE WHEN status = 'offline' THEN 1 ELSE 0 END) AS offline
+    FROM machines
+  `).get();
+
+  const alertRulesEnabled = db
+    .prepare('SELECT COUNT(*) AS c FROM alerts WHERE enabled = 1').get().c;
+
+  const pendingCommands = db
+    .prepare("SELECT COUNT(*) AS c FROM commands WHERE status = 'pending'").get().c;
+
+  const mem = process.memoryUsage();
+  const uptimeSec = Math.round(process.uptime());
 
   res.json({
-    status:  'ok',
-    version: VERSION,
-    uptime:  Math.round(process.uptime()),
-    machines: machineCount,
+    status:   'ok',
+    version:  VERSION,
+    uptime:   uptimeSec,
+    uptimeHuman: logger.formatUptime(uptimeSec),
+    machines: {
+      total:   machines.total   ?? 0,
+      online:  machines.online  ?? 0,
+      offline: machines.offline ?? 0,
+    },
+    alertRulesEnabled,
+    pendingCommands,
+    memory: {
+      heapUsedMB: Math.round(mem.heapUsed  / 1024 / 1024),
+      rssMB:      Math.round(mem.rss       / 1024 / 1024),
+    },
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -238,7 +268,7 @@ app.use((req, res) => {
 
 // ── Erro global ───────────────────────────────────────────────────────────────
 app.use((err, req, res, _next) => {
-  console.error('[ERROR]', err.message);
+  logger.error(err.message, { path: req.path, stack: err.stack?.split('\n')[1]?.trim() });
   res.status(500).json({ error: 'Erro interno do servidor' });
 });
 

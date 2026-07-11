@@ -1,7 +1,8 @@
 'use strict';
 
-const http = require('http');
-const app  = require('./app');
+const http   = require('http');
+const app    = require('./app');
+const logger = require('./services/logger');
 
 const { initWebSocket } = require('./services/websocket');
 const alertEngine       = require('./services/alertEngine');
@@ -16,18 +17,18 @@ const server = http.createServer(app);
 initWebSocket(server);
 
 server.listen(PORT, () => {
-  console.log('==============================================');
-  console.log(`  Delirio Manager Server v1.0.0`);
-  console.log(`  Porta   : ${PORT}`);
-  console.log(`  DB      : ${process.env.DB_PATH || 'data/dt-manager.db'}`);
-  console.log(`  Health  : http://localhost:${PORT}/health`);
-  console.log('==============================================');
+  logger.info('Delirio Manager Server iniciado', {
+    version: '1.0.0',
+    port:    PORT,
+    db:      process.env.DB_PATH || 'data/dt-manager.db',
+    health:  `http://localhost:${PORT}/health`,
+  });
   alertEngine.start();
   insightEngine.start();
   zamakService.scheduleDailySync();
   metricsEmail.scheduleDailyMetricsEmail();
   ncrMonitor.start();
-  console.log('[NCR] Monitor de encomendas iniciado (intervalo: 2min)');
+  logger.info('NCR monitor iniciado', { interval: '2min' });
 });
 
 // ── NF-Ce indexer — dispara diariamente às 23:00 para servidores BOH ─────────
@@ -38,7 +39,7 @@ setInterval(() => {
   const today = now.toISOString().slice(0, 10);
   if (hhmm === '23:00' && _nfceLastIndexDay !== today) {
     _nfceLastIndexDay = today;
-    _triggerNFCeIndexing(now).catch(e => console.error('[NFCe] Erro no scheduler:', e.message));
+    _triggerNFCeIndexing(now).catch(e => logger.error('[NFCe] Erro no scheduler', { error: e.message }));
   }
 }, 60000);
 
@@ -52,7 +53,7 @@ async function _triggerNFCeIndexing(now) {
   );
   if (!boh.length) return;
 
-  console.log(`[NFCe] Indexação noturna: ${boh.length} BOH, ${month}, dias 01–${String(today).padStart(2,'0')}`);
+  logger.info('NFCe indexação noturna', { boh: boh.length, month, diasAte: String(today).padStart(2, '0') });
   for (const machine of boh) {
     for (let d = 1; d <= today; d++) {
       createCommand(machine.id, 'aloha-index-nfce-day', { month, day: String(d).padStart(2, '0') });
@@ -62,7 +63,7 @@ async function _triggerNFCeIndexing(now) {
 
 // ── Shutdown gracioso ─────────────────────────────────────────────────────────
 process.on('SIGTERM', () => {
-  console.log('SIGTERM recebido. Encerrando...');
+  logger.info('SIGTERM recebido — encerrando graciosamente');
   alertEngine.stop();
   insightEngine.stop();
   server.close(() => process.exit(0));

@@ -19,7 +19,16 @@ jest.mock('./db', () => ({
   getMachineById:       jest.fn(),
   getIntegrationsStatus: jest.fn(() => ({ zamak: { syncing: false } })),
   getDb: jest.fn(() => ({
-    prepare: jest.fn(() => ({ get: jest.fn(() => ({ c: 42 })) })),
+    prepare: jest.fn((sql) => ({
+      get: jest.fn(() => {
+        // /health — machines summary query
+        if (sql.includes('online')) return { total: 10, online: 7, offline: 3 };
+        // /health — alertRulesEnabled + pendingCommands
+        return { c: 5 };
+      }),
+      all: jest.fn(() => []),
+      run: jest.fn(),
+    })),
   })),
   setMachineStatus:     jest.fn(),
   saveMetrics:          jest.fn(),
@@ -101,11 +110,37 @@ describe('GET /health', () => {
   it('retorna 200 com campos obrigatórios', async () => {
     const res = await request(app).get('/health').expect(200);
     expect(res.body).toMatchObject({
-      status:   'ok',
-      version:  expect.any(String),
-      uptime:   expect.any(Number),
-      machines: 42, // valor mockado pelo getDb stub
+      status:      'ok',
+      version:     expect.any(String),
+      uptime:      expect.any(Number),
+      uptimeHuman: expect.any(String),
+      timestamp:   expect.any(String),
     });
+  });
+
+  it('retorna breakdown de machines (total/online/offline)', async () => {
+    const res = await request(app).get('/health').expect(200);
+    expect(res.body.machines).toEqual({ total: 10, online: 7, offline: 3 });
+  });
+
+  it('retorna alertRulesEnabled e pendingCommands numéricos', async () => {
+    const res = await request(app).get('/health').expect(200);
+    expect(res.body.alertRulesEnabled).toBe(5);
+    expect(res.body.pendingCommands).toBe(5);
+  });
+
+  it('retorna memory com heapUsedMB e rssMB', async () => {
+    const res = await request(app).get('/health').expect(200);
+    expect(res.body.memory).toMatchObject({
+      heapUsedMB: expect.any(Number),
+      rssMB:      expect.any(Number),
+    });
+  });
+
+  it('uptimeHuman formata segundos como string legível', async () => {
+    const res = await request(app).get('/health').expect(200);
+    // formato: Xm | Xh Ym | Xd Yh Zm
+    expect(res.body.uptimeHuman).toMatch(/^(\d+d \d+h \d+m|\d+h \d+m|\d+m)$/);
   });
 });
 
