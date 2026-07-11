@@ -250,7 +250,7 @@ async function callClaude(ctx) {
 
   const msg = await client.messages.create({
     model:      cfg.model || 'claude-haiku-4-5-20251001',
-    max_tokens: cfg.max_tokens || 6000,
+    max_tokens: Math.max(cfg.max_tokens || 6000, 6000),
     system:     'You are a JSON API. Return only a single valid JSON object. No markdown, no explanation, no text outside the JSON.',
     messages:   [{ role: 'user', content: prompt }],
   });
