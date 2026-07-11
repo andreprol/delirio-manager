@@ -46,10 +46,11 @@ jobs:
       - name: Build Windows agent binary
         run: |
           VERSION="${{ steps.ver.outputs.VERSION }}"
+          cd agent
           GOOS=windows GOARCH=amd64 go build \
             -ldflags="-s -w" \
-            -o "delirio-agent-${VERSION}.exe" \
-            ./agent/
+            -o "../delirio-agent-${VERSION}.exe" \
+            .
 
       - name: Publish binary to server
         run: |
