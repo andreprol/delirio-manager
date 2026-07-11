@@ -250,13 +250,21 @@ async function callClaude(ctx) {
 
   const msg = await client.messages.create({
     model:      cfg.model || 'claude-haiku-4-5-20251001',
-    max_tokens: cfg.max_tokens || 3000,
+    max_tokens: cfg.max_tokens || 6000,
+    system:     'You are a JSON API. Return only a single valid JSON object. No markdown, no explanation, no text outside the JSON.',
     messages:   [{ role: 'user', content: prompt }],
   });
 
   const text = msg.content[0].text.trim();
+  // stop_reason 'max_tokens' means response was cut — JSON will be incomplete
+  if (msg.stop_reason === 'max_tokens') {
+    throw new Error(`Claude atingiu limite de tokens (${cfg.max_tokens || 6000}) — resposta truncada. Aumente max_tokens em config.json.`);
+  }
   const jsonMatch = text.match(/\{[\s\S]+\}/);
-  if (!jsonMatch) throw new Error('Claude retornou resposta sem JSON válido');
+  if (!jsonMatch) {
+    const preview = text.slice(0, 200).replace(/\n/g, ' ');
+    throw new Error(`Claude retornou resposta sem JSON válido. Prévia: "${preview}"`);
+  }
   return JSON.parse(jsonMatch[0]);
 }
 
