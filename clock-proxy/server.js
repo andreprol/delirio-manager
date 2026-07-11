@@ -3,6 +3,7 @@ const fs      = require('fs');
 const path    = require('path');
 const express = require('express');
 const { HenryHexa } = require('./henry-hexa');
+const { buildMasterCache } = require('./utils');
 
 const app = express();
 const PORT       = process.env.PORT       || 4321;
@@ -413,58 +414,6 @@ try {
   _clockResults = [];
 }
 
-function buildMasterCache(clockResults) {
-  const clockRef2Map = {};
-  for (const clock of clockResults) {
-    if (!clock.success) continue;
-    clockRef2Map[clock.ip] = {};
-    for (const emp of clock.employees) {
-      clockRef2Map[clock.ip][emp.cpf] = emp.ref2 || '';
-    }
-  }
-
-  const masterMap = new Map();
-  for (const clock of clockResults) {
-    if (!clock.success) continue;
-    for (const emp of clock.employees) {
-      if (!masterMap.has(emp.cpf)) {
-        masterMap.set(emp.cpf, {
-          name: emp.name, cpf: emp.cpf, ref1: emp.ref1, ref2: emp.ref2,
-          presentIn: [], absentIn: [],
-        });
-      } else {
-        const existing = masterMap.get(emp.cpf);
-        if (!existing.ref2 && emp.ref2) existing.ref2 = emp.ref2;
-        if (!existing.ref1 && emp.ref1) existing.ref1 = emp.ref1;
-      }
-      masterMap.get(emp.cpf).presentIn.push(clock.ip);
-    }
-  }
-
-  const reachableIps = clockResults.filter(r => r.success).map(r => r.ip);
-  for (const emp of masterMap.values()) {
-    emp.absentIn     = reachableIps.filter(ip => !emp.presentIn.includes(ip));
-    emp.incompleteIn = emp.ref2
-      ? reachableIps.filter(ip => emp.presentIn.includes(ip) && !clockRef2Map[ip]?.[emp.cpf])
-      : [];
-  }
-
-  const employees  = Array.from(masterMap.values());
-  const divergent  = employees.filter(e => e.absentIn.length > 0);
-  const incomplete = employees.filter(e => e.incompleteIn.length > 0);
-  return {
-    total:        employees.length,
-    divergent:    divergent.length,
-    incomplete:   incomplete.length,
-    synchronized: employees.length - divergent.length,
-    employees,
-    clocks: clockResults.map(r => ({
-      ip: r.ip, success: r.success, total: r.total || 0, error: r.message,
-    })),
-    allClockIps: CLOCK_IPS,
-    timestamp:   new Date().toISOString(),
-  };
-}
 
 // targetIps: undefined = full refresh (todos CLOCK_IPS); array = partial refresh (só esses IPs)
 // Todos os IPs são processados em PARALELO, cada um na sua própria fila.
@@ -562,7 +511,7 @@ async function runEmployeesInBackground(targetIps) {
       }));
     }
 
-    _empCache   = buildMasterCache(_clockResults);
+    _empCache   = buildMasterCache(_clockResults, CLOCK_IPS);
     _empCacheAt = Date.now();
     console.log(`[/rh/employees] Job concluído — ${_empCache.total} funcionários, ${_empCache.divergent} divergentes, ${_empCache.incomplete} incompletos`);
 
@@ -752,7 +701,7 @@ app.post('/deploy', (req, res) => {
     return res.status(400).json({ error: 'files obrigatorio' });
   }
 
-  const ALLOWED = new Set(['server.js', 'henry-hexa.js']);
+  const ALLOWED = new Set(['server.js', 'henry-hexa.js', 'utils.js']);
   const TARGET  = process.cwd();
   const results = {};
 

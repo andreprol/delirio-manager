@@ -1,5 +1,6 @@
 const { chromium } = require('playwright');
 const http = require('http');
+const { formatCpf } = require('./utils');
 
 class HenryHexa {
   constructor(ip, user, password) {
@@ -107,8 +108,7 @@ class HenryHexa {
 
   // Abre formulário de busca diretamente, sem esperar a lista de 300+ funcionários carregar
   async navigateAndSearchByCPF(page, cpf) {
-    const cpfDigits = cpf.replace(/\D/g, '').slice(0, 11);
-    const formattedCpf = cpfDigits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+    const formattedCpf = formatCpf(cpf);
 
     await page.getByText('Colaboradores').click();
     // Aguarda o botão "Inserir" — exclusivo da página de Colaboradores, nunca presente no menu principal
@@ -224,9 +224,7 @@ class HenryHexa {
 
         await page.locator('#lblName').fill(name.toUpperCase().slice(0, 52));
 
-        const cpfDigits = cpf.replace(/\D/g, '').slice(0, 11);
-        const formattedCpf = cpfDigits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
-        await page.locator('#lblCpf').fill(formattedCpf);
+        await page.locator('#lblCpf').fill(formatCpf(cpf));
 
         if (ref1) {
           await page.locator('#lblRegistration1').fill(String(ref1).slice(0, 20));
