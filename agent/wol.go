@@ -110,6 +110,17 @@ try {
   $enabled = ($null -ne (Get-NetAdapterPowerManagement -ErrorAction SilentlyContinue |
     Where-Object { $_.WakeOnMagicPacket -eq 'Enabled' }))
 } catch {}
+
+# Fallback: Get-NetAdapterPowerManagement falha em algumas placas ("Classe invalida").
+# Nesse caso verifica diretamente o registro — *WakeOnMagicPacket=1 equivale a Enabled.
+if (-not $enabled) {
+  $regBase = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}'
+  $keys = Get-ChildItem $regBase -ErrorAction SilentlyContinue
+  foreach ($k in $keys) {
+    $v = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
+    if ($v.'*WakeOnMagicPacket' -eq '1') { $enabled = $true; break }
+  }
+}
 Write-Output $(if ($enabled) { 'true' } else { 'false' })
 `
 	var out bytes.Buffer
