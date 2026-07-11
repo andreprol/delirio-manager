@@ -1249,6 +1249,29 @@ function getOfflineEventsForStore(location, month) {
   return row?.total_events ?? 0;
 }
 
+// Média mensal de hardware por máquina (usa machine_metrics_hourly, não metrics 24h)
+function getMachineDataForMonth(storeName, month) {
+  const [year, mon] = month.split('-').map(Number);
+  const monthStart = Math.floor(new Date(year, mon - 1, 1).getTime() / 1000);
+  const monthEnd   = Math.floor(new Date(year, mon,     1).getTime() / 1000);
+
+  return getDb().prepare(`
+    SELECT m.id, m.hostname, m.status,
+           AVG(h.cpu_pct)  AS avg_cpu,
+           AVG(h.ram_pct)  AS avg_ram,
+           AVG(CASE WHEN h.cpu_temp_c > 0 THEN h.cpu_temp_c ELSE NULL END) AS avg_temp,
+           AVG(h.disk_pct) AS avg_disk_pct,
+           COUNT(h.id)     AS reading_count
+    FROM machines m
+    LEFT JOIN machine_metrics_hourly h
+      ON h.machine_id = m.id
+      AND h.snapshot_ts >= ? AND h.snapshot_ts < ?
+    WHERE m.location = ?
+    GROUP BY m.id
+    ORDER BY m.hostname
+  `).all(monthStart, monthEnd, storeName);
+}
+
 // Máquinas sem medição horária no mês (offline total ou agente desatualizado)
 function getMachinesWithoutMetrics(storeName, month) {
   const [year, mon] = month.split('-').map(Number);
@@ -1561,7 +1584,7 @@ module.exports = {
   getStoresOverview,
   // métricas horárias
   insertMetricsHourly, getWeightedMetricsForStore,
-  getMachinesWithoutMetrics, getDailyMetricsSummary,
+  getMachineDataForMonth, getMachinesWithoutMetrics, getDailyMetricsSummary,
   // eventos offline
   insertOfflineEvent, getOfflineEventsForStore,
   // status integrações

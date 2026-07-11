@@ -76,29 +76,18 @@ function buildStoreContext(storeName, month) {
     `SELECT COUNT(*) as n FROM freshdesk_cache WHERE store_name = ?`
   ).get(storeName)?.n || 0;
 
-  // Métricas DM — últimos 30 dias
-  const since = new Date();
-  since.setDate(since.getDate() - 30);
-  const machines = db.getAllMachines().filter(m => m.location === storeName);
-  const metricsStmt = rawDb.prepare(
-    `SELECT AVG(cpu_pct) as avg_cpu,
-            AVG((ram_total_mb - ram_free_mb)*100.0/ram_total_mb) as avg_ram,
-            AVG(disk_free_gb) as avg_disk_free,
-            AVG(cpu_temp_c) as avg_temp
-     FROM metrics WHERE machine_id = ? AND ts >= ?`
-  );
-  const machineData = machines.map(m => {
-    const r = metricsStmt.get(m.id, since.toISOString());
-    return {
-      name:       m.hostname,
-      isCritical: /^(TERM|BOH)/i.test(m.hostname),
-      status:     m.status,
-      avg_cpu:    r?.avg_cpu    ? Math.round(r.avg_cpu)    : null,
-      avg_ram:    r?.avg_ram    ? Math.round(r.avg_ram)    : null,
-      avg_temp:   r?.avg_temp   ? Math.round(r.avg_temp)   : null,
-      disk_free:  r?.avg_disk_free ? Math.round(r.avg_disk_free) : null,
-    };
-  });
+  // Métricas DM — média mensal via machine_metrics_hourly (tabela correta para relatórios)
+  const rawMachineData = db.getMachineDataForMonth(storeName, month);
+  const machineData = rawMachineData.map(m => ({
+    name:       m.hostname,
+    isCritical: /^(TERM|BOH)/i.test(m.hostname),
+    status:     m.status,
+    avg_cpu:    m.avg_cpu      != null ? Math.round(m.avg_cpu)      : null,
+    avg_ram:    m.avg_ram      != null ? Math.round(m.avg_ram)      : null,
+    avg_temp:   m.avg_temp     != null ? Math.round(m.avg_temp)     : null,
+    disk_pct:   m.avg_disk_pct != null ? Math.round(m.avg_disk_pct) : null,
+    readings:   m.reading_count,
+  }));
 
   // SO fora de suporte — usa os_version real (coletado desde agente v1.5.11)
   const win10Rows = rawDb.prepare(
@@ -185,7 +174,7 @@ function buildUserPrompt(ctx) {
 
   const fmtTopic    = t => `  [ID:${t.id}][${t.severity.toUpperCase()}${t.is_critical_machine ? ' BOH/TERM' : ''}] ${t.description}`;
   const fmtTicket   = t => `  [${t.status}] ${t.title}`;
-  const fmtMachine  = m => `  ${m.name}${m.isCritical ? '*' : ''} ${m.avg_cpu ?? '?'}/${m.avg_ram ?? '?'}/${m.avg_temp ?? '?'}/${m.disk_free ?? '?'} ${m.status}`;
+  const fmtMachine  = m => `  ${m.name}${m.isCritical ? '*' : ''} ${m.avg_cpu ?? '?'}/${m.avg_ram ?? '?'}/${m.avg_temp ?? '?'}/${m.disk_pct ?? '?'} ${m.status} (${m.readings ?? 0}leit)`;
   const fmtFeedback = f => `  [${f.month}] "${f.feedback_text}"`;
 
   return `LOJA: ${storeName} | MES: ${month}
@@ -206,7 +195,7 @@ ${history.filter(h => h.resolved_at?.slice(0,7) === month).slice(0,10).map(t => 
 PROBLEMAS RECORRENTES:
 ${recurrences.length ? recurrences.map(r => '  ' + r).join('\n') : '  Nenhum recorrente identificado'}
 
-SAUDE DAS MAQUINAS — CPU%/RAM%/Temp°C/DiskLivreGB/status (* = TERM/BOH critica):
+SAUDE DAS MAQUINAS — CPU%/RAM%/Temp°C/Disco%/status/leituras-no-mes (* = TERM/BOH critica):
 ${machineData.length ? machineData.map(fmtMachine).join('\n') : '  Sem dados de saude de maquinas para este periodo'}
 
 MAQUINAS SEM MEDICAO HORARIA NO MES (offline ou agente desatualizado):
@@ -607,7 +596,7 @@ async function generateDocx(ctx, scores, month) {
   function machinesSection(machineData) {
     if (!machineData.length) return [new Paragraph({ children: [new TextRun({ text: 'Sem dados de máquinas para este período.', size: 20 })] })];
     return [new Table({ rows: [
-      new TableRow({ children: ['Máquina','CPU%','RAM%','Temp°C','Disco Livre GB','Status'].map(h =>
+      new TableRow({ children: ['Máquina','CPU%','RAM%','Temp°C','Disco Uso%','Status','Leituras'].map(h =>
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, size: 18 })] })] })
       )}),
       ...machineData.map(m => new TableRow({ children: [
@@ -615,8 +604,9 @@ async function generateDocx(ctx, scores, month) {
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.avg_cpu ?? '—'), size: 18, color: m.avg_cpu > 80 ? 'E53E3E' : '000000' })] })] }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.avg_ram ?? '—'), size: 18, color: m.avg_ram > 80 ? 'E53E3E' : '000000' })] })] }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.avg_temp ?? '—'), size: 18, color: m.avg_temp > 70 ? 'E53E3E' : '000000' })] })] }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.disk_free ?? '—'), size: 18 })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: m.disk_pct != null ? `${m.disk_pct}%` : '—', size: 18, color: m.disk_pct > 80 ? 'E53E3E' : m.disk_pct > 60 ? 'ED8936' : '000000' })] })] }),
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: m.status || '—', size: 18 })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.readings ?? 0), size: 18, color: (m.readings ?? 0) < 8 ? 'ED8936' : '000000' })] })] }),
       ]})),
     ]})];
   }
