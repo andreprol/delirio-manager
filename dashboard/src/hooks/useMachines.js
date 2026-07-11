@@ -148,6 +148,15 @@ export function useMachines() {
     ))
   }, [])
 
+  const renameMachine = useCallback(async (machineId, displayName) => {
+    const name = displayName.trim()
+    if (!name) return
+    await api.updateMachine(machineId, { displayName: name })
+    setMachines(prev => prev.map(m =>
+      m.id === machineId ? { ...m, displayName: name } : m
+    ))
+  }, [])
+
   const deleteMachine = useCallback(async (machineId) => {
     await api.deleteMachine(machineId)
     setMachines(prev => prev.filter(m => m.id !== machineId))
@@ -191,7 +200,7 @@ export function useMachines() {
     machines, groupMap, groupsList: groups,
     connected: httpOk, wsConnected,
     lastUpdate, alerts, lastOffline,
-    sendCommand, wolMachine, moveMachineToGroup, deleteMachine,
+    sendCommand, wolMachine, moveMachineToGroup, renameMachine, deleteMachine,
     createGroup, renameGroup, deleteGroup,
     refresh: fetchAll,
     insightVersion,

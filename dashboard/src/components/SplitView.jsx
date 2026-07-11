@@ -122,7 +122,7 @@ function SidebarItem({ name, machines, isSelected, onSelect, onRename, onDelete,
 
 export function SplitView({
   filteredGroups, allGroups, groupsList,
-  onCommand, onWol, onMoveToGroup, onDeleteMachine,
+  onCommand, onWol, onMoveToGroup, onDeleteMachine, onRenameMachine,
   onRename, onDelete,
   selectedGroup, onSelectGroup,
   search = '',
@@ -185,6 +185,7 @@ export function SplitView({
                       onWol={onWol}
                       onMoveToGroup={onMoveToGroup}
                       onDeleteMachine={onDeleteMachine}
+                      onRenameMachine={onRenameMachine}
                       groupsList={groupsList}
                     />
                   ))
@@ -224,6 +225,7 @@ export function SplitView({
                       onWol={onWol}
                       onMoveToGroup={onMoveToGroup}
                       onDeleteMachine={onDeleteMachine}
+                      onRenameMachine={onRenameMachine}
                       groupsList={groupsList}
                     />
                   ))

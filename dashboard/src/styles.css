@@ -240,6 +240,13 @@ body {
 .mc-name {
   flex: 1; font-weight: 600; font-size: 12px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: default;
+}
+.mc-name-input {
+  flex: 1; font-weight: 600; font-size: 12px;
+  background: var(--bg2); color: var(--text);
+  border: 1px solid var(--blue); border-radius: 3px;
+  padding: 0 4px; outline: none; min-width: 0;
 }
 .mc-badge-crit {
   font-size: 9px; font-weight: 700; padding: 1px 4px;

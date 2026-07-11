@@ -23,7 +23,7 @@ const DR_BADGE = {
   error:      { color: '#ef4444', label: 'DR ✗',  title: 'Erro no backup — verificar logs' },
 }
 
-export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDeleteMachine, groupsList = [] }) {
+export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDeleteMachine, onRenameMachine, groupsList = [] }) {
   const [expanded,    setExpanded]    = useState(false)
   const [confirmCmd,  setConfirmCmd]  = useState(null)
   const [confirmText, setConfirmText] = useState('')
@@ -34,6 +34,9 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
   const [insightsUnread, setInsightsUnread] = useState(0)
   const [drLoading, setDrLoading] = useState(false)
   const [drMsg,     setDrMsg]     = useState(null)
+  const [editingName, setEditingName] = useState(false)
+  const [nameInput,   setNameInput]   = useState('')
+  const nameInputRef = useRef(null)
 
   const menuRef = useRef(null)
 
@@ -43,6 +46,24 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
     document.addEventListener('click', close)
     return () => document.removeEventListener('click', close)
   }, [contextMenu])
+
+  useEffect(() => {
+    if (editingName) nameInputRef.current?.focus()
+  }, [editingName])
+
+  function startRename() {
+    setNameInput(machine.displayName || machine.hostname)
+    setEditingName(true)
+    setContextMenu(null)
+  }
+
+  function confirmRename() {
+    const name = nameInput.trim()
+    if (name && name !== (machine.displayName || machine.hostname)) {
+      onRenameMachine?.(machine.id, name)
+    }
+    setEditingName(false)
+  }
 
   function handleRightClick(e) {
     e.preventDefault()
@@ -131,9 +152,28 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
       {/* ── Linha compacta (sempre visível) ── */}
       <div className="mc-row">
         <span className="mc-dot" style={{ background: color }} />
-        <span className="mc-name" title={machine.hostname}>
-          {machine.displayName || machine.hostname}
-        </span>
+        {editingName ? (
+          <input
+            ref={nameInputRef}
+            className="mc-name-input"
+            value={nameInput}
+            onChange={e => setNameInput(e.target.value)}
+            onBlur={confirmRename}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); confirmRename() }
+              if (e.key === 'Escape') { e.preventDefault(); setEditingName(false) }
+            }}
+            onClick={e => e.stopPropagation()}
+          />
+        ) : (
+          <span
+            className="mc-name"
+            title={`${machine.hostname} — duplo clique para renomear`}
+            onDoubleClick={e => { e.stopPropagation(); startRename() }}
+          >
+            {machine.displayName || machine.hostname}
+          </span>
+        )}
         {isCrit && <span className="mc-badge-crit">CRIT</span>}
         {machine.pendingCommand && <span className="mc-badge-pend">…</span>}
         {(() => {
@@ -412,6 +452,9 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
             {machine.location === g.name && '✓ '}{g.name}
           </button>
         ))}
+        <button className="ctx-item" onClick={startRename}>
+          ✎ Renomear máquina
+        </button>
         <button className="ctx-item ctx-remove"
           onClick={() => {
             if (window.confirm(`Excluir "${machine.displayName || machine.id}" do sistema?\n\nEsta ação remove a máquina permanentemente.`)) {
