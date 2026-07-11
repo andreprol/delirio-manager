@@ -10,7 +10,8 @@
     "electron": "electron .",
     "start": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "dist": "npm run build:icon && vite build && electron-builder",
-    "release": "bash scripts/release.sh"
+    "release": "bash scripts/release.sh",
+    "test": "vitest run"
   },
   "dependencies": {
     "electron-updater": "^6.8.3",
@@ -19,11 +20,16 @@
   },
   "devDependencies": {
     "@napi-rs/canvas": "^0.1.100",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^4.3.0",
     "concurrently": "^9.0.0",
     "electron": "^34.0.0",
     "electron-builder": "^25.0.0",
+    "jsdom": "^29.1.1",
     "vite": "^6.0.0",
+    "vitest": "^4.1.10",
     "wait-on": "^8.0.0"
   },
   "build": {
