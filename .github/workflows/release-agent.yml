@@ -1,0 +1,75 @@
+name: Release — Agent (Go)
+
+# Trigger: git tag v<major>.<minor>.<patch>
+# Example: git tag v1.5.19 && git push origin v1.5.19
+#
+# Pre-requisito: bumpar Version em agent/main.go ANTES de criar a tag.
+# O job valida que a tag bate com main.go e falha se divergirem.
+#
+# Segredos necessários no repo: nenhum
+# (endpoint /api/update/publish valida MZ magic + tamanho mínimo 1MB)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-and-publish:
+    name: Build Windows binary + publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+          cache-dependency-path: agent/go.sum
+
+      - name: Extract version from tag
+        id: ver
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Validate version matches agent/main.go
+        run: |
+          TAG_VER="${{ steps.ver.outputs.VERSION }}"
+          AGENT_VER=$(grep -oP 'Version\s*=\s*"\K[^"]+' agent/main.go)
+          if [ "$AGENT_VER" != "$TAG_VER" ]; then
+            echo "ERROR: tag v${TAG_VER} != agent/main.go Version=${AGENT_VER}"
+            echo "Bump Version in agent/main.go, commit, then re-tag."
+            exit 1
+          fi
+          echo "Version OK: v${TAG_VER}"
+
+      - name: Build Windows agent binary
+        run: |
+          VERSION="${{ steps.ver.outputs.VERSION }}"
+          GOOS=windows GOARCH=amd64 go build \
+            -ldflags="-s -w" \
+            -o "delirio-agent-${VERSION}.exe" \
+            ./agent/
+
+      - name: Publish binary to server
+        run: |
+          VERSION="${{ steps.ver.outputs.VERSION }}"
+          EXE="delirio-agent-${VERSION}.exe"
+          URL="https://dt-manager.brazilsouth.cloudapp.azure.com/api/update/publish"
+
+          RESPONSE=$(curl -sf \
+            -X POST "$URL" \
+            -H "Content-Type: application/octet-stream" \
+            -H "X-Agent-Version: $VERSION" \
+            --data-binary "@$EXE" \
+            -w "\n%{http_code}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Publish failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+
+          echo "Published: $BODY"

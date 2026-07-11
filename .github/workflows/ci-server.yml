@@ -1,5 +1,16 @@
 name: CI — Server
 
+# Segredos GitHub necessários para o job 'deploy':
+#   AZURE_CREDENTIALS — JSON do service principal (az ad sp create-for-rbac
+#                       --name "github-dt-manager" --role Contributor
+#                       --scopes "/subscriptions/.../resourceGroups/rg-dt-manager"
+#                       --json-auth)
+#
+# Setup único na VM (rodar uma vez via az vm run-command):
+#   echo "ghp_xxx..." > /home/delirioadmin/.github-pat && chmod 600 /home/delirioadmin/.github-pat
+#
+# O job 'deploy' só roda em push direto ao master (nunca em PRs).
+
 on:
   push:
     branches: [master]
@@ -28,3 +39,42 @@ jobs:
 
       - name: Run tests
         run: npm test -- --forceExit
+
+  deploy:
+    name: Deploy to Azure VM
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Write deploy script
+        run: |
+          cat > /tmp/deploy-server.sh << 'HEREDOC'
+          set -e
+          GH_PAT=$(cat /home/delirioadmin/.github-pat)
+          cd /tmp && rm -rf dt-deploy
+          git clone --depth=1 "https://x-access-token:${GH_PAT}@github.com/andreprol/delirio-manager.git" dt-deploy 2>&1 | tail -3
+          cp -r dt-deploy/server/. /opt/dt-manager/
+          cp -r dt-deploy/infra/. /opt/dt-manager/infra/
+          cd /opt/dt-manager
+          npm install --production 2>&1 | tail -5
+          bash /opt/dt-manager/infra/safe-restart.sh 2>&1 | tail -20
+          rm -rf /tmp/dt-deploy
+          echo DEPLOY_OK
+          HEREDOC
+
+      - name: Deploy server files + restart
+        run: |
+          az vm run-command invoke \
+            --resource-group rg-dt-manager \
+            --name vm-dt-manager \
+            --command-id RunShellScript \
+            --scripts @/tmp/deploy-server.sh \
+            --query "value[0].message" -o tsv
