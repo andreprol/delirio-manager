@@ -174,7 +174,12 @@ function buildUserPrompt(ctx) {
 
   const fmtTopic    = t => `  [ID:${t.id}][${t.severity.toUpperCase()}${t.is_critical_machine ? ' BOH/TERM' : ''}] ${t.description}`;
   const fmtTicket   = t => `  [${t.status}] ${t.title}`;
-  const fmtMachine  = m => `  ${m.name}${m.isCritical ? '*' : ''} ${m.avg_cpu ?? '?'}/${m.avg_ram ?? '?'}/${m.avg_temp ?? '?'}/${m.disk_pct ?? '?'} ${m.status} (${m.readings ?? 0}leit)`;
+  const machineRisk = m => {
+    if ((m.avg_cpu > 60) || (m.avg_ram > 60) || (m.disk_pct > 60) || (m.avg_temp > 60)) return 'RISCO-ALTO';
+    if ((m.avg_cpu > 30) || (m.avg_ram > 30) || (m.disk_pct > 30) || (m.avg_temp >= 50)) return 'RISCO-MÉDIO';
+    return 'RISCO-BAIXO';
+  };
+  const fmtMachine  = m => `  ${m.name}${m.isCritical ? '*' : ''} cpu=${m.avg_cpu ?? '?'}% ram=${m.avg_ram ?? '?'}% temp=${m.avg_temp ?? '?'}°C disco=${m.disk_pct ?? '?'}% ${m.status} leit=${m.readings ?? 0} [${machineRisk(m)}]`;
   const fmtFeedback = f => `  [${f.month}] "${f.feedback_text}"`;
 
   return `LOJA: ${storeName} | MES: ${month}
@@ -593,22 +598,88 @@ async function generateDocx(ctx, scores, month) {
 
   // ── Machines table ────────────────────────────────────────────────────────
 
+  // Per-machine risk based on agreed thresholds:
+  // CPU%/RAM%/Disco: >60=ALTO(red), >30=MÉDIO(orange), ≤30=BAIXO(green)
+  // Temp: >60=ALTO(red), ≥50=MÉDIO(orange), <50=BAIXO(green)
+  function machineRiskLevel(m) {
+    if ((m.avg_cpu  != null && m.avg_cpu  > 60) ||
+        (m.avg_ram  != null && m.avg_ram  > 60) ||
+        (m.disk_pct != null && m.disk_pct > 60) ||
+        (m.avg_temp != null && m.avg_temp > 60)) return 'ALTO';
+    if ((m.avg_cpu  != null && m.avg_cpu  > 30) ||
+        (m.avg_ram  != null && m.avg_ram  > 30) ||
+        (m.disk_pct != null && m.disk_pct > 30) ||
+        (m.avg_temp != null && m.avg_temp >= 50)) return 'MÉDIO';
+    return 'BAIXO';
+  }
+
+  function machineUpgrades(m) {
+    const s = [];
+    if (m.avg_cpu  != null && m.avg_cpu  > 60) s.push(`CPU ${m.avg_cpu}% — upgrade de processador ou redistribuição de carga`);
+    if (m.avg_ram  != null && m.avg_ram  > 60) s.push(`RAM ${m.avg_ram}% — expansão de memória`);
+    if (m.disk_pct != null && m.disk_pct > 60) s.push(`Disco ${m.disk_pct}% — limpeza e/ou upgrade de armazenamento`);
+    if (m.avg_temp != null && m.avg_temp > 60) s.push(`Temp ${m.avg_temp}°C — limpeza de cooler e troca de pasta térmica`);
+    return s;
+  }
+
+  function metricColor(val, orangeThresh, redThresh) {
+    if (val == null) return '000000';
+    if (val > redThresh)    return 'E53E3E';
+    if (val > orangeThresh) return 'ED8936';
+    return '000000';
+  }
+
+  function riskColor(level) {
+    if (level === 'ALTO')  return 'E53E3E';
+    if (level === 'MÉDIO') return 'ED8936';
+    return '48BB78';
+  }
+
   function machinesSection(machineData) {
     if (!machineData.length) return [new Paragraph({ children: [new TextRun({ text: 'Sem dados de máquinas para este período.', size: 20 })] })];
-    return [new Table({ rows: [
-      new TableRow({ children: ['Máquina','CPU%','RAM%','Temp°C','Disco Uso%','Status','Leituras'].map(h =>
+
+    const items = [];
+
+    items.push(new Table({ rows: [
+      new TableRow({ children: ['Máquina','CPU%','RAM%','Temp°C','Disco%','Status','Leituras','Risco'].map(h =>
         new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, size: 18 })] })] })
       )}),
-      ...machineData.map(m => new TableRow({ children: [
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${m.name}${m.isCritical ? ' 🔴' : ''}`, size: 18 })] })] }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.avg_cpu ?? '—'), size: 18, color: m.avg_cpu > 80 ? 'E53E3E' : '000000' })] })] }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.avg_ram ?? '—'), size: 18, color: m.avg_ram > 80 ? 'E53E3E' : '000000' })] })] }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.avg_temp ?? '—'), size: 18, color: m.avg_temp > 70 ? 'E53E3E' : '000000' })] })] }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: m.disk_pct != null ? `${m.disk_pct}%` : '—', size: 18, color: m.disk_pct > 80 ? 'E53E3E' : m.disk_pct > 60 ? 'ED8936' : '000000' })] })] }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: m.status || '—', size: 18 })] })] }),
-        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.readings ?? 0), size: 18, color: (m.readings ?? 0) < 8 ? 'ED8936' : '000000' })] })] }),
-      ]})),
-    ]})];
+      ...machineData.map(m => {
+        const risk = machineRiskLevel(m);
+        return new TableRow({ children: [
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${m.name}${m.isCritical ? ' ★' : ''}`, size: 18, bold: m.isCritical })] })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.avg_cpu ?? '—'), size: 18, color: metricColor(m.avg_cpu, 30, 60) })] })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.avg_ram ?? '—'), size: 18, color: metricColor(m.avg_ram, 30, 60) })] })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.avg_temp ?? '—'), size: 18, color: metricColor(m.avg_temp, 49, 60) })] })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: m.disk_pct != null ? `${m.disk_pct}%` : '—', size: 18, color: metricColor(m.disk_pct, 30, 60) })] })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: m.status || '—', size: 18 })] })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(m.readings ?? 0), size: 18, color: (m.readings ?? 0) < 8 ? 'ED8936' : '000000' })] })] }),
+          new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: risk, size: 18, bold: true, color: riskColor(risk) })] })] }),
+        ]});
+      }),
+    ]}));
+
+    // Upgrade suggestions for machines that need it
+    const needsUpgrade = machineData.filter(m => machineUpgrades(m).length > 0);
+    if (needsUpgrade.length) {
+      items.push(new Paragraph(''));
+      items.push(new Paragraph({ children: [new TextRun({ text: 'Sugestões de Upgrade / Manutenção por Máquina:', bold: true, size: 20 })] }));
+      for (const m of needsUpgrade) {
+        const upgrades = machineUpgrades(m);
+        items.push(new Paragraph({
+          children: [new TextRun({ text: `${m.name}${m.isCritical ? ' (TERM/BOH)' : ''}:`, bold: true, size: 18 })],
+          indent: { left: 360 },
+        }));
+        for (const u of upgrades) {
+          items.push(new Paragraph({
+            children: [new TextRun({ text: `• ${u}`, size: 18, color: u.startsWith('CPU') || u.startsWith('RAM') || u.startsWith('Disco') ? metricColor(parseInt(u.match(/\d+/)?.[0] ?? '0'), 30, 60) : 'E53E3E' })],
+            indent: { left: 720 },
+          }));
+        }
+      }
+    }
+
+    return items;
   }
 
   // ── Freshdesk section ─────────────────────────────────────────────────────
