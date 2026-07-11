@@ -76,7 +76,7 @@ func (a *Agent) checkAndUpdate(latest UpdateInfo) {
 	}
 
 	if err := os.Rename(newExe, exe); err != nil {
-		os.Rename(oldExe, exe) // rollback
+		os.Rename(oldExe, exe) //nolint:errcheck // rollback best-effort
 		logError("Falha ao colocar novo exe no lugar: " + err.Error())
 		return
 	}
@@ -118,8 +118,8 @@ func validateBinary(path, _ string) error {
 		return fmt.Errorf("nao foi possivel abrir: %w", err)
 	}
 	magic := make([]byte, 2)
-	f.Read(magic)
-	f.Close()
+	f.Read(magic) //nolint:errcheck // erro aqui resulta em magic[0]==0 → rejeita o arquivo
+	f.Close()     //nolint:errcheck
 	if magic[0] != 0x4D || magic[1] != 0x5A {
 		return fmt.Errorf("nao e um executavel Windows (magic: %02X%02X, esperado: 4D5A)", magic[0], magic[1])
 	}

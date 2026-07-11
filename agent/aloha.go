@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"time"
 )
@@ -80,6 +79,3 @@ func scanAloha() AlohaScanResult {
 	return result
 }
 
-func alohaRoundMB(bytes int64) float64 {
-	return math.Round(float64(bytes)/1024/1024*100) / 100
-}

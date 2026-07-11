@@ -356,10 +356,7 @@ func parseNFCeFile(xmlPath, dayFolder string) (NFCeRecord, error) {
 
 	danfe.Payment = make([]NFCePayPayload, 0, len(inf.Pag.DetPag))
 	for _, p := range inf.Pag.DetPag {
-		danfe.Payment = append(danfe.Payment, NFCePayPayload{
-			TPag: p.TPag,
-			VPag: p.VPag,
-		})
+		danfe.Payment = append(danfe.Payment, NFCePayPayload(p))
 	}
 
 	return NFCeRecord{
@@ -372,16 +369,6 @@ func parseNFCeFile(xmlPath, dayFolder string) (NFCeRecord, error) {
 	}, nil
 }
 
-// productsText returns a space-separated list of product names for full-text search.
-func productsText(products []NFCeProdPayload) string {
-	names := make([]string, 0, len(products))
-	for _, p := range products {
-		if p.XProd != "" {
-			names = append(names, p.XProd)
-		}
-	}
-	return strings.Join(names, " | ")
-}
 
 // nfceRecordToJSON serialises an NFCeIndexDayResult to JSON string.
 func nfceRecordToJSON(r NFCeIndexDayResult) (string, error) {

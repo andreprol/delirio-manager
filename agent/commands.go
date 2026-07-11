@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -76,9 +78,9 @@ func (a *Agent) executeCommand(cmd Command) (string, error) {
 			installDir := filepath.Dir(exePath)
 			_ = uninstallService()
 			// Deleta a pasta apos o processo encerrar (processo atual segura o exe)
-			exec.Command("cmd", "/c",
+			exec.Command("cmd", "/c", //nolint:errcheck
 				fmt.Sprintf(`timeout /t 4 /nobreak >nul && rmdir /s /q "%s"`, installDir),
-			).Start()
+			).Start() //nolint:errcheck
 			os.Exit(0)
 		}()
 		return "Desinstalando agente. Maquina sera removida em instantes.", nil
@@ -197,6 +199,28 @@ func (a *Agent) executeCommand(cmd Command) (string, error) {
 			return "", err
 		}
 		return string(data), nil
+
+	case "run_powershell":
+		var params struct {
+			Script string `json:"script"`
+		}
+		if err := json.Unmarshal(cmd.Params, &params); err != nil || strings.TrimSpace(params.Script) == "" {
+			return "", fmt.Errorf("run_powershell: parametro 'script' obrigatorio")
+		}
+		logInfo(fmt.Sprintf("Comando RUN_POWERSHELL recebido (ID: %s). Script: %.80s", cmd.ID, params.Script))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx,
+			"powershell.exe", "-NonInteractive", "-NoProfile", "-Command", params.Script,
+		).CombinedOutput()
+		output := strings.TrimSpace(string(out))
+		if len(output) > 8000 {
+			output = output[:8000] + "\n[truncado]"
+		}
+		if err != nil {
+			return output, fmt.Errorf("powershell saiu com erro: %w", err)
+		}
+		return output, nil
 
 	default:
 		return "", fmt.Errorf("tipo de comando desconhecido: %q", cmd.Type)

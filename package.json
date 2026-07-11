@@ -11,6 +11,6 @@
   },
   "lint-staged": {
     "server/**/*.js": "npx --prefix server eslint --max-warnings=9999",
-    "agent/**/*.go": "golangci-lint run --config agent/.golangci.yml"
+    "agent/**/*.go": "bash -c 'cd agent && golangci-lint run'"
   }
 }

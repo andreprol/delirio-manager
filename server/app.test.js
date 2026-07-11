@@ -41,6 +41,7 @@ jest.mock('./db', () => ({
   ackCommand:           jest.fn(),
   addEvent:             jest.fn(),
   getCommandById:       jest.fn(() => null),
+  getCommandResult:     jest.fn(() => null),
   ncrGetByCommandId:    jest.fn(() => null),
   upsertNFCeRecords:    jest.fn(),
   updateMachineDRStatus: jest.fn(),
@@ -418,6 +419,119 @@ describe('POST /api/update/publish', () => {
     expect(res.body.version).toBe('1.5.19');
     expect(res.body.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(writeFileSpy).toHaveBeenCalledTimes(2); // agent exe + version.json
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/machines/:id/run
+// ─────────────────────────────────────────────────────────────────────────────
+describe('POST /api/machines/:id/run', () => {
+  const ADMIN_SECRET = 'test-admin-secret-xyz';
+  let readFileSpy;
+
+  beforeEach(() => {
+    readFileSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((p, enc) => {
+      if (typeof p === 'string' && p.endsWith('config.json')) {
+        return JSON.stringify({ adminSecret: ADMIN_SECRET });
+      }
+      // outros readFileSync passam normalmente
+      return jest.requireActual('fs').readFileSync(p, enc);
+    });
+    db.createCommand.mockReturnValue('cmd-test-id');
+    db.getCommandResult.mockReturnValue({ id: 'cmd-test-id', status: 'pending', result: null, acked_at: null });
+  });
+
+  afterEach(() => {
+    readFileSpy.mockRestore();
+    jest.clearAllMocks();
+  });
+
+  it('401 sem X-Admin-Secret', async () => {
+    const res = await request(app)
+      .post('/api/machines/machine-abc/run')
+      .send({ script: 'Write-Output ok' })
+      .expect(401);
+    expect(res.body.error).toMatch(/X-Admin-Secret/i);
+  });
+
+  it('401 com X-Admin-Secret errado', async () => {
+    const res = await request(app)
+      .post('/api/machines/machine-abc/run')
+      .set('X-Admin-Secret', 'wrong-secret')
+      .send({ script: 'Write-Output ok' })
+      .expect(401);
+    expect(res.body.error).toMatch(/X-Admin-Secret/i);
+  });
+
+  it('404 para machineId desconhecido', async () => {
+    db.getMachineById.mockReturnValueOnce(null);
+    const res = await request(app)
+      .post('/api/machines/nao-existe/run')
+      .set('X-Admin-Secret', ADMIN_SECRET)
+      .send({ script: 'Write-Output ok' })
+      .expect(404);
+    expect(res.body.error).toMatch(/nao encontrada/i);
+  });
+
+  it('400 para script vazio', async () => {
+    db.getMachineById.mockReturnValueOnce(freshMachine());
+    const res = await request(app)
+      .post('/api/machines/machine-abc/run')
+      .set('X-Admin-Secret', ADMIN_SECRET)
+      .send({ script: '   ' })
+      .expect(400);
+    expect(res.body.error).toMatch(/script/i);
+  });
+
+  it('400 para script ausente', async () => {
+    db.getMachineById.mockReturnValueOnce(freshMachine());
+    const res = await request(app)
+      .post('/api/machines/machine-abc/run')
+      .set('X-Admin-Secret', ADMIN_SECRET)
+      .send({})
+      .expect(400);
+    expect(res.body.error).toMatch(/script/i);
+  });
+
+  it('200 quando maquina responde com acked', async () => {
+    db.getMachineById.mockReturnValueOnce(freshMachine());
+    // Primeira chamada pending, segunda acked
+    db.getCommandResult
+      .mockReturnValueOnce({ id: 'cmd-test-id', status: 'pending', result: null })
+      .mockReturnValueOnce({ id: 'cmd-test-id', status: 'acked', result: 'output-ok', acked_at: new Date().toISOString() });
+
+    jest.useFakeTimers();
+    const resPromise = request(app)
+      .post('/api/machines/machine-abc/run')
+      .set('X-Admin-Secret', ADMIN_SECRET)
+      .send({ script: 'Write-Output ok' });
+    // Avanca 1s para cobrir 2 ciclos de 500ms
+    await jest.advanceTimersByTimeAsync(1000);
+    jest.useRealTimers();
+
+    const res = await resPromise;
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.output).toBe('output-ok');
+    expect(res.body.commandId).toBe('cmd-test-id');
+  });
+
+  it('500 quando maquina retorna failed', async () => {
+    db.getMachineById.mockReturnValueOnce(freshMachine());
+    db.getCommandResult.mockReturnValue({ id: 'cmd-test-id', status: 'failed', result: 'erro powershell' });
+
+    jest.useFakeTimers();
+    const resPromise = request(app)
+      .post('/api/machines/machine-abc/run')
+      .set('X-Admin-Secret', ADMIN_SECRET)
+      .send({ script: 'exit 1' });
+    await jest.advanceTimersByTimeAsync(600);
+    jest.useRealTimers();
+
+    const res = await resPromise;
+    expect(res.status).toBe(500);
+    expect(res.body.success).toBe(false);
+    expect(res.body.output).toBe('erro powershell');
   });
 });
 

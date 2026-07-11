@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.5.18"
+	Version            = "1.5.19"
 )
 
 func main() {
@@ -82,12 +82,12 @@ func installService() error {
 	if err != nil {
 		return fmt.Errorf("conectar ao SCM: %w", err)
 	}
-	defer m.Disconnect()
+	defer m.Disconnect() //nolint:errcheck
 
 	// Remove servico existente se houver
 	if s, err := m.OpenService(ServiceName); err == nil {
-		s.Control(svc.Stop)
-		s.Delete()
+		s.Control(svc.Stop) //nolint:errcheck // best-effort stop antes de deletar
+		s.Delete()          //nolint:errcheck
 		s.Close()
 	}
 
@@ -104,14 +104,14 @@ func installService() error {
 	defer s.Close()
 
 	// Configura recuperacao automatica em caso de falha
-	s.SetRecoveryActions([]mgr.RecoveryAction{
+	s.SetRecoveryActions([]mgr.RecoveryAction{ //nolint:errcheck
 		{Type: mgr.ServiceRestart, Delay: 5000},  // 5s
 		{Type: mgr.ServiceRestart, Delay: 10000}, // 10s
 		{Type: mgr.ServiceRestart, Delay: 30000}, // 30s
 	}, 86400) // reset contador apos 1 dia
 
 	// Registra no Event Log do Windows
-	eventlog.InstallAsEventCreate(ServiceName, eventlog.Error|eventlog.Warning|eventlog.Info)
+	eventlog.InstallAsEventCreate(ServiceName, eventlog.Error|eventlog.Warning|eventlog.Info) //nolint:errcheck
 
 	// Inicia o servico imediatamente
 	return s.Start()
@@ -122,7 +122,7 @@ func uninstallService() error {
 	if err != nil {
 		return fmt.Errorf("conectar ao SCM: %w", err)
 	}
-	defer m.Disconnect()
+	defer m.Disconnect() //nolint:errcheck
 
 	s, err := m.OpenService(ServiceName)
 	if err != nil {
@@ -130,7 +130,7 @@ func uninstallService() error {
 	}
 	defer s.Close()
 
-	s.Control(svc.Stop)
-	eventlog.Remove(ServiceName)
+	s.Control(svc.Stop)          //nolint:errcheck // best-effort stop
+	eventlog.Remove(ServiceName) //nolint:errcheck // best-effort cleanup
 	return s.Delete()
 }

@@ -856,6 +856,10 @@ function getCommandById(id) {
   return getDb().prepare('SELECT id, machine_id, type, params, status FROM commands WHERE id = ?').get(id);
 }
 
+function getCommandResult(id) {
+  return getDb().prepare('SELECT id, status, result, acked_at FROM commands WHERE id = ?').get(id);
+}
+
 function upsertNFCeRecords(machineId, records) {
   const d   = getDb();
   const now = new Date().toISOString();
@@ -1524,7 +1528,7 @@ module.exports = {
   // metrics
   saveMetrics, getMetrics,
   // commands
-  createCommand, getPendingCommands, ackCommand, getCommandHistory, getLastAlohaScan,
+  createCommand, getPendingCommands, ackCommand, getCommandHistory, getLastAlohaScan, getCommandResult,
   // events
   addEvent, getEvents,
   // alerts

@@ -174,6 +174,53 @@ function parseMachine(m) {
   };
 }
 
+// POST /api/machines/:id/run
+// Executa script PowerShell na maquina e aguarda resultado sincrono (max 35s).
+// Requer header X-Admin-Secret (mesmo segredo do endpoint /api/admin/*).
+router.post('/:id/run', async (req, res) => {
+  const fs   = require('fs');
+  const path = require('path');
+  let adminSecret;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
+    adminSecret = cfg.adminSecret || null;
+  } catch { adminSecret = null; }
+
+  if (!adminSecret || req.headers['x-admin-secret'] !== adminSecret) {
+    return res.status(401).json({ error: 'X-Admin-Secret invalido ou nao configurado' });
+  }
+
+  const machine = db.getMachineById(req.params.id);
+  if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
+
+  const { script } = req.body;
+  if (!script || typeof script !== 'string' || !script.trim()) {
+    return res.status(400).json({ error: 'script obrigatorio' });
+  }
+
+  const commandId = db.createCommand(machine.id, 'run_powershell', { script });
+
+  const POLL_MS    = 500;
+  const TIMEOUT_MS = 35_000;
+  const deadline   = Date.now() + TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, POLL_MS));
+    const cmd = db.getCommandResult(commandId);
+    if (cmd && cmd.status === 'acked') {
+      return res.json({ success: true, output: cmd.result || '', commandId });
+    }
+    if (cmd && cmd.status === 'failed') {
+      return res.status(500).json({ success: false, output: cmd.result || '', commandId });
+    }
+  }
+
+  return res.status(504).json({
+    error: 'Timeout aguardando resposta da maquina (35s). Maquina pode estar offline.',
+    commandId,
+  });
+});
+
 function parseJSON(str, fallback) {
   try { return JSON.parse(str); } catch { return fallback; }
 }

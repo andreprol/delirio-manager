@@ -230,6 +230,89 @@ func TestExecuteCommand_DrSetup_MissingCreds(t *testing.T) {
 	})
 }
 
+// ── run_powershell ────────────────────────────────────────────────────────────
+
+func TestExecuteCommand_RunPowershell_MissingScript(t *testing.T) {
+	a := newTestAgent("https://dt.example.com")
+
+	t.Run("script ausente", func(t *testing.T) {
+		_, err := a.executeCommand(Command{
+			ID:     "c-ps-001",
+			Type:   "run_powershell",
+			Params: mustJSON(t, map[string]string{}),
+		})
+		if err == nil {
+			t.Fatal("esperava erro para script ausente")
+		}
+		if !strings.Contains(err.Error(), "script") {
+			t.Errorf("mensagem deve citar 'script', obteve: %v", err)
+		}
+	})
+
+	t.Run("script vazio", func(t *testing.T) {
+		_, err := a.executeCommand(Command{
+			ID:     "c-ps-002",
+			Type:   "run_powershell",
+			Params: mustJSON(t, map[string]string{"script": "   "}),
+		})
+		if err == nil {
+			t.Fatal("esperava erro para script vazio")
+		}
+	})
+
+	t.Run("JSON invalido", func(t *testing.T) {
+		_, err := a.executeCommand(Command{
+			ID:     "c-ps-003",
+			Type:   "run_powershell",
+			Params: json.RawMessage(`{bad`),
+		})
+		if err == nil {
+			t.Fatal("esperava erro para JSON invalido")
+		}
+	})
+}
+
+func TestExecuteCommand_RunPowershell_HappyPath(t *testing.T) {
+	a := newTestAgent("https://dt.example.com")
+	result, err := a.executeCommand(Command{
+		ID:     "c-ps-004",
+		Type:   "run_powershell",
+		Params: mustJSON(t, map[string]string{"script": "Write-Output 'hello-dm'"}),
+	})
+	if err != nil {
+		t.Fatalf("script simples falhou: %v", err)
+	}
+	if !strings.Contains(result, "hello-dm") {
+		t.Errorf("output deve conter 'hello-dm', obteve: %q", result)
+	}
+}
+
+func TestExecuteCommand_RunPowershell_Stderr(t *testing.T) {
+	// CombinedOutput captura stderr junto com stdout
+	a := newTestAgent("https://dt.example.com")
+	result, _ := a.executeCommand(Command{
+		ID:     "c-ps-005",
+		Type:   "run_powershell",
+		Params: mustJSON(t, map[string]string{"script": "Write-Output 'ok'; Write-Error 'fail'"}),
+	})
+	if !strings.Contains(result, "ok") {
+		t.Errorf("output deve conter 'ok', obteve: %q", result)
+	}
+}
+
+func TestExecuteCommand_RunPowershell_ExitCode(t *testing.T) {
+	// Script que sai com exit code != 0 deve retornar erro
+	a := newTestAgent("https://dt.example.com")
+	_, err := a.executeCommand(Command{
+		ID:     "c-ps-006",
+		Type:   "run_powershell",
+		Params: mustJSON(t, map[string]string{"script": "exit 1"}),
+	})
+	if err == nil {
+		t.Fatal("esperava erro para script que sai com exit 1")
+	}
+}
+
 // ── cancel-shutdown ───────────────────────────────────────────────────────────
 
 func TestExecuteCommand_CancelShutdown_NoActiveShutdown(t *testing.T) {

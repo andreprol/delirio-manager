@@ -94,7 +94,7 @@ func downloadAndExtractLHM(serverURL string) error {
 			rc.Close()
 			continue
 		}
-		io.Copy(fc, rc)
+		io.Copy(fc, rc) //nolint:errcheck
 		rc.Close()
 		fc.Close()
 	}
