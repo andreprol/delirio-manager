@@ -190,9 +190,16 @@ router.post('/generate', async (req, res) => {
     if (scores.inconclusivos && scores.inconclusivos.length > 0) {
       const topicById = {};
       ctx.openTopics.forEach(t => { topicById[t.id] = t; });
-      for (const topicId of scores.inconclusivos) {
+      // Só enviar email para IDs que ainda existem como tópicos abertos.
+      // Claude pode retornar IDs de tópicos já deletados ou inventar IDs — ignorar.
+      const validIds = scores.inconclusivos.filter(id => topicById[id]);
+      if (validIds.length !== scores.inconclusivos.length) {
+        const skipped = scores.inconclusivos.filter(id => !topicById[id]);
+        console.log(`[relatorio] ignorando inconclusivos sem tópico aberto: ${JSON.stringify(skipped)}`);
+      }
+      for (const topicId of validIds) {
         const topic = topicById[topicId];
-        const descricao = topic ? topic.description : `ID ${topicId}`;
+        const descricao = topic.description;
         const html = `<p>O tópico abaixo inserido para a loja <strong>${store}</strong> foi considerado <strong>inconclusivo</strong> pela análise de IA e não pôde contribuir para nenhuma dimensão do relatório.</p>
 <table border="1" cellpadding="6" style="border-collapse:collapse;font-family:Arial,sans-serif">
   <tr><td><strong>Loja</strong></td><td>${store}</td></tr>
