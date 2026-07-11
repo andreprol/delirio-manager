@@ -74,11 +74,33 @@ func getVeeamVersion() string {
 	return out
 }
 
+func hasPendingReboot() bool {
+	out, err := runPS(`
+$keys = @(
+    'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager',
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending',
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
+)
+foreach ($k in $keys) {
+    if (Test-Path $k) {
+        $v = Get-ItemProperty $k -ErrorAction SilentlyContinue
+        if ($v.PendingFileRenameOperations -or $k -ne $keys[0]) { Write-Output "yes"; exit }
+    }
+}
+Write-Output "no"
+`)
+	return err == nil && strings.TrimSpace(out) == "yes"
+}
+
 // installVeeam downloads VeeamAgentWindows.exe from the DM server and installs it silently.
 func installVeeam(serverURL string) error {
 	if isVeeamInstalled() {
 		logInfo("DR: Veeam ja instalado, pulando download.")
 		return nil
+	}
+
+	if hasPendingReboot() {
+		return fmt.Errorf("reboot pendente — reinicie a maquina e acione dr-setup novamente")
 	}
 
 	logInfo("DR: baixando instalador Veeam do servidor...")
@@ -103,9 +125,9 @@ func installVeeam(serverURL string) error {
 	defer os.Remove(tmpPath)
 
 	logInfo("DR: instalando Veeam Agent (modo silencioso)...")
-	cmd := exec.Command(tmpPath, "/silent", "/norestart", "/acceptLicense")
+	cmd := exec.Command(tmpPath, "/silent", "/norestart", "/acceptEULA", "/acceptLicensePolicies", "/acceptThirdPartyLicenses")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("instalacao Veeam falhou: %w — output: %s", err, string(out))
+		return fmt.Errorf("instalacao Veeam falhou (exit %w) — output: %s", err, string(out))
 	}
 
 	// Aguarda servico subir (ate 3 minutos)
