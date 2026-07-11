@@ -1,9 +1,10 @@
 // server/services/reportEngine.js
 'use strict';
 
-const path = require('path');
-const fs   = require('fs');
-const db   = require('../db');
+const path   = require('path');
+const fs     = require('fs');
+const db     = require('../db');
+const logger = require('./logger');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -132,23 +133,11 @@ function buildStoreContext(storeName, month) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Prompt
+// Prompt — parte estática (cacheável) + parte dinâmica (por loja/mês)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildPrompt(ctx) {
-  const { storeName, month, openTopics, history, recurrences,
-          fdActive, machineData, win10Machines, win10CriticalMachines,
-          win10NormalMachines, recentFeedback, zamak, zamakSynced,
-          machinesWithoutMetrics } = ctx;
-
-  const fmtTopic    = t => `  [ID:${t.id}][${t.severity.toUpperCase()}${t.is_critical_machine ? ' BOH/TERM' : ''}] ${t.description}`;
-  const fmtTicket   = t => `  [${t.status}] ${t.title}`;
-  const fmtMachine  = m => `  ${m.name}${m.isCritical ? ' [CRITICA]' : ''} — CPU ${m.avg_cpu ?? '?'}% RAM ${m.avg_ram ?? '?'}% Temp ${m.avg_temp ?? '?'}C DiskFree ${m.disk_free ?? '?'}GB status:${m.status}`;
-  const fmtFeedback = f => `  [${f.month}] "${f.feedback_text}"`;
-
-  return `Voce e um analista de TI senior da Delirio Tropical, empresa de food service com lojas no Rio de Janeiro. Seu relatorio sera lido pelo gerente de TI e pela diretoria. Avalie o risco da loja e retorne SOMENTE um objeto JSON valido, sem texto adicional.
-
-LOJA: ${storeName} | MES: ${month}
+// Nunca muda entre chamadas — elegível para prompt caching da Anthropic (TTL 5min).
+const STATIC_SYSTEM_PROMPT = `Voce e um analista de TI senior da Delirio Tropical, empresa de food service com lojas no Rio de Janeiro. Seu relatorio sera lido pelo gerente de TI e pela diretoria. Avalie o risco da loja e retorne SOMENTE um objeto JSON valido, sem texto adicional.
 
 ═══════════════════════════════════════
 REGRAS CRITICAS — LEIA ANTES DE AVALIAR
@@ -163,49 +152,6 @@ REGRA HUMANIZACAO: O texto deve soar como escrito por um analista experiente, na
 REGRA NOTA 30: Sem dados relevantes para uma dimensao → atribua exatamente 30.
 
 REGRA OPERACIONAL: Avalie apenas topicos abertos inseridos pela equipe. Topico sem contexto tecnico real (texto de teste, generico, sem descricao de problema) = inconclusivo. Se todos inconclusivos ou nenhum topico → campo "operacional" = exatamente 30.
-
-═══════════════════════════════════
-DADOS DA LOJA
-═══════════════════════════════════
-
-TOPICOS ABERTOS (pesam em TODAS as dimensoes + operacional):
-${openTopics.length ? openTopics.map(fmtTopic).join('\n') : '  Nenhum topico aberto'}
-
-CHAMADOS FRESHDESK ATIVOS (${fdActive.length} abertos/pendentes):
-${fdActive.slice(0, 20).map(fmtTicket).join('\n') || '  Nenhum chamado ativo'}
-
-TOPICOS RESOLVIDOS NO MES (historico — nao pesam no score):
-${history.filter(h => h.resolved_at?.slice(0,7) === month).slice(0,10).map(t => `  [resolvido] ${t.description}`).join('\n') || '  Nenhum'}
-
-PROBLEMAS RECORRENTES (apareceram em mais de 1 relatorio):
-${recurrences.length ? recurrences.map(r => '  ' + r).join('\n') : '  Nenhum recorrente identificado'}
-
-SAUDE DAS MAQUINAS — media dos ultimos 30 dias (CPU% / RAM% / Temp°C / DiskLivreGB / status):
-${machineData.length ? machineData.map(fmtMachine).join('\n') : '  Sem dados de saude de maquinas para este periodo'}
-
-MAQUINAS SEM MEDICAO HORARIA NO MES (offline ou agente desatualizado — nao enviaram snapshots):
-${machinesWithoutMetrics && machinesWithoutMetrics.length
-  ? machinesWithoutMetrics.map(m => `  ${m.hostname} (status: ${m.status})`).join('\n')
-  : '  Nenhuma — todas as maquinas enviando medicoes horarias regularmente'}
-REGRA MEDICAO: Maquinas sem medicao horaria = estado de hardware desconhecido + patches nao monitorados = risco elevado em Hardware e Software.
-
-MAQUINAS WINDOWS 10 — SO sem suporte de seguranca (Microsoft EOL out/2025):
-  Criticas TERM/BOH: ${win10CriticalMachines.length ? win10CriticalMachines.join(', ') : 'Nenhuma'}
-  Normais: ${win10NormalMachines.length ? win10NormalMachines.join(', ') : 'Nenhuma'}
-REGRA WIN10: Maquinas TERM/BOH com Win10 = severidade maxima em Software/OS e Seguranca.
-
-ZAMAK RMM — SEGURANCA E PATCHES (${zamakSynced ? 'dados atuais — ultima sincronizacao valida' : 'SEM DADOS — Zamak nao sincronizada recentemente'}):
-${zamakSynced && zamak.total_devices > 0 ? `  Dispositivos monitorados: ${zamak.total_devices}
-  Patches criticos pendentes: ${zamak.patch_critical}
-  Patches high pendentes: ${zamak.patch_high}
-  Patches total pendentes: ${zamak.patch_total}
-  Ameacas MAV ativas: ${zamak.threats_active}
-  Checks com falha: ${zamak.failing_checks}
-  Devices offline (Zamak): ${zamak.devices_offline}
-REGRA ZAMAK: Patches criticos pendentes = risco maximo em seguranca. Ameacas MAV ativas = emergencia — acoes imediatas requeridas.` : '  Sem dados Zamak — desconsiderar avaliacao de patches e antivirus neste relatorio'}
-
-FEEDBACK HISTORICO DO GESTOR (use para calibrar tom e prioridades):
-${recentFeedback.length ? recentFeedback.map(fmtFeedback).join('\n') : '  Nenhum feedback anterior registrado'}
 
 ═══════════════════════════════════
 FORMATO DE SAIDA (JSON puro, sem texto fora do JSON)
@@ -230,6 +176,55 @@ FORMATO DE SAIDA (JSON puro, sem texto fora do JSON)
 }
 
 LEMBRETE FINAL: Cada narrativa deve ter dados especificos. Um relatorio que diz "alguns equipamentos apresentam problemas" e reprovado. Um relatorio que diz "TERMCITTA1 e TERMCITTA3 operam com CPU acima de 75% nas ultimas 3 semanas, elevando o risco de lentidao no PDV durante o pico de vendas do almoco" e aprovado.`;
+
+function buildUserPrompt(ctx) {
+  const { storeName, month, openTopics, history, recurrences,
+          fdActive, machineData, win10CriticalMachines,
+          win10NormalMachines, recentFeedback, zamak, zamakSynced,
+          machinesWithoutMetrics } = ctx;
+
+  const fmtTopic    = t => `  [ID:${t.id}][${t.severity.toUpperCase()}${t.is_critical_machine ? ' BOH/TERM' : ''}] ${t.description}`;
+  const fmtTicket   = t => `  [${t.status}] ${t.title}`;
+  const fmtMachine  = m => `  ${m.name}${m.isCritical ? '*' : ''} ${m.avg_cpu ?? '?'}/${m.avg_ram ?? '?'}/${m.avg_temp ?? '?'}/${m.disk_free ?? '?'} ${m.status}`;
+  const fmtFeedback = f => `  [${f.month}] "${f.feedback_text}"`;
+
+  return `LOJA: ${storeName} | MES: ${month}
+
+═══════════════════════════════════
+DADOS DA LOJA
+═══════════════════════════════════
+
+TOPICOS ABERTOS (pesam em TODAS as dimensoes + operacional):
+${openTopics.length ? openTopics.map(fmtTopic).join('\n') : '  Nenhum topico aberto'}
+
+CHAMADOS FRESHDESK ATIVOS (${fdActive.length} abertos/pendentes):
+${fdActive.slice(0, 20).map(fmtTicket).join('\n') || '  Nenhum chamado ativo'}
+
+TOPICOS RESOLVIDOS NO MES (historico):
+${history.filter(h => h.resolved_at?.slice(0,7) === month).slice(0,10).map(t => `  [resolvido] ${t.description}`).join('\n') || '  Nenhum'}
+
+PROBLEMAS RECORRENTES:
+${recurrences.length ? recurrences.map(r => '  ' + r).join('\n') : '  Nenhum recorrente identificado'}
+
+SAUDE DAS MAQUINAS — CPU%/RAM%/Temp°C/DiskLivreGB/status (* = TERM/BOH critica):
+${machineData.length ? machineData.map(fmtMachine).join('\n') : '  Sem dados de saude de maquinas para este periodo'}
+
+MAQUINAS SEM MEDICAO HORARIA NO MES (offline ou agente desatualizado):
+${machinesWithoutMetrics && machinesWithoutMetrics.length
+  ? machinesWithoutMetrics.map(m => `  ${m.hostname} (${m.status})`).join('\n')
+  : '  Nenhuma'}
+
+MAQUINAS WINDOWS 10 (EOL out/2025):
+  TERM/BOH criticas: ${win10CriticalMachines.length ? win10CriticalMachines.join(', ') : 'Nenhuma'}
+  Normais: ${win10NormalMachines.length ? win10NormalMachines.join(', ') : 'Nenhuma'}
+
+ZAMAK RMM (${zamakSynced ? 'dados validos' : 'SEM DADOS'}):
+${zamakSynced && zamak.total_devices > 0
+  ? `  devices:${zamak.total_devices} patches_criticos:${zamak.patch_critical} patches_high:${zamak.patch_high} patches_total:${zamak.patch_total} ameacas:${zamak.threats_active} checks_falha:${zamak.failing_checks} offline:${zamak.devices_offline}`
+  : '  Sem dados Zamak'}
+
+FEEDBACK HISTORICO DO GESTOR:
+${recentFeedback.length ? recentFeedback.map(fmtFeedback).join('\n') : '  Nenhum feedback anterior'}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -245,21 +240,44 @@ async function callClaude(ctx) {
   if (!apiKey) throw new Error('Claude API key não configurada em config.json');
 
   const { Anthropic } = require('@anthropic-ai/sdk');
-  const client = new Anthropic({ apiKey });
-  const prompt = buildPrompt(ctx);
+  const client    = new Anthropic({ apiKey });
+  const maxTokens = Math.max(cfg.max_tokens || 6000, 6000);
+  const model     = cfg.model || 'claude-haiku-4-5-20251001';
+  const t0        = Date.now();
 
   const msg = await client.messages.create({
-    model:      cfg.model || 'claude-haiku-4-5-20251001',
-    max_tokens: Math.max(cfg.max_tokens || 6000, 6000),
-    system:     'You are a JSON API. Return only a single valid JSON object. No markdown, no explanation, no text outside the JSON.',
-    messages:   [{ role: 'user', content: prompt }],
+    model,
+    max_tokens: maxTokens,
+    // Parte estática vai no system com cache_control — Anthropic cacheia por 5min,
+    // reduz ~60% do custo de input em chamadas consecutivas para lojas diferentes.
+    system: [
+      {
+        type:          'text',
+        text:          STATIC_SYSTEM_PROMPT,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
+    messages: [{ role: 'user', content: buildUserPrompt(ctx) }],
   });
 
-  const text = msg.content[0].text.trim();
-  // stop_reason 'max_tokens' means response was cut — JSON will be incomplete
+  const u = msg.usage ?? {};
+  logger.info('claude:relatorio', {
+    store:        ctx.storeName,
+    month:        ctx.month,
+    model,
+    input:        u.input_tokens             ?? 0,
+    output:       u.output_tokens            ?? 0,
+    cache_write:  u.cache_creation_input_tokens ?? 0,
+    cache_read:   u.cache_read_input_tokens  ?? 0,
+    stop_reason:  msg.stop_reason,
+    latency_ms:   Date.now() - t0,
+  });
+
   if (msg.stop_reason === 'max_tokens') {
-    throw new Error(`Claude atingiu limite de tokens (${cfg.max_tokens || 6000}) — resposta truncada. Aumente max_tokens em config.json.`);
+    throw new Error(`Claude atingiu limite de tokens (${maxTokens}) — resposta truncada. Aumente max_tokens em config.json.`);
   }
+
+  const text = msg.content[0].text.trim();
   const jsonMatch = text.match(/\{[\s\S]+\}/);
   if (!jsonMatch) {
     const preview = text.slice(0, 200).replace(/\n/g, ' ');
@@ -818,5 +836,5 @@ async function generatePdf(docxPath) {
 
 module.exports = {
   buildStoreContext, callClaude, parseClaudeScore,
-  detectRecurrences, buildPrompt, generateDocx, generatePdf,
+  detectRecurrences, buildUserPrompt, generateDocx, generatePdf,
 };
