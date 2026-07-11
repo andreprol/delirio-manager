@@ -35,7 +35,7 @@ function broadcast(type, data) {
   const msg = JSON.stringify({ type, data, ts: new Date().toISOString() });
   wss.clients.forEach(ws => {
     if (ws.readyState === ws.OPEN) {
-      ws.send(msg, err => { if (err) {} });
+      ws.send(msg, _err => {}); // swallow WebSocket send errors intentionally
     }
   });
 }

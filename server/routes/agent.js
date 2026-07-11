@@ -77,7 +77,7 @@ function validateHeartbeat(body) {
       }
 
       if (metrics.mac !== undefined && metrics.mac !== null) {
-        const macRegex = /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$/;
+        const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
         if (typeof metrics.mac !== 'string' || !macRegex.test(metrics.mac)) {
           errors.push('metrics.mac deve ser endereço MAC válido (ex: AA:BB:CC:DD:EE:FF)');
         }

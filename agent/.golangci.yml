@@ -1,0 +1,22 @@
+run:
+  timeout: 3m
+
+linters:
+  enable:
+    - errcheck      # Verifica erros de retorno ignorados
+    - gosimple      # Simplificações idiomáticas
+    - govet         # Análise estática padrão (go vet)
+    - ineffassign   # Atribuições sem efeito
+    - staticcheck   # Conjunto amplo de análises estáticas
+    - unused        # Identificadores não usados
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false  # type assertions sem ok são comuns em Go idiomático
+
+issues:
+  # Permite comentar no mesmo arquivo que o erro foi detectado
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck  # Testes frequentemente ignoram erros intencionalmente

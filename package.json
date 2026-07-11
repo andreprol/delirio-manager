@@ -1,0 +1,16 @@
+{
+  "name": "delirio-manager",
+  "private": true,
+  "description": "Delirio Manager — monorepo root (git hooks only)",
+  "scripts": {
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.0.0",
+    "lint-staged": "^15.0.0"
+  },
+  "lint-staged": {
+    "server/**/*.js": "npx --prefix server eslint --max-warnings=9999",
+    "agent/**/*.go": "golangci-lint run --config agent/.golangci.yml"
+  }
+}

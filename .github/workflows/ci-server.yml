@@ -37,6 +37,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint (ESLint — falha só em errors, warns são informativos)
+        run: npm run lint -- --max-warnings=9999
+
       - name: Run tests
         run: npm test -- --forceExit
 
