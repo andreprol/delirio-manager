@@ -313,6 +313,21 @@ function migrate(db) {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_offline_events_machine
       ON machine_offline_events(machine_id, offline_at)`,
+    // ── Leituras horárias perdidas ────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS reading_miss_events (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      machine_id     TEXT    NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      expected_hour  INTEGER NOT NULL,
+      machine_status TEXT    NOT NULL,
+      agent_version  TEXT,
+      last_heartbeat INTEGER,
+      diagnosis      TEXT,
+      created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_reading_miss_machine
+      ON reading_miss_events(machine_id, expected_hour)`,
+    `CREATE INDEX IF NOT EXISTS idx_reading_miss_hour
+      ON reading_miss_events(expected_hour)`,
     // ── Cache Zamak / N-able N-sight ──────────────────────────────────────────
     `CREATE TABLE IF NOT EXISTS zamak_device_cache (
       device_id          TEXT PRIMARY KEY,
@@ -1250,6 +1265,65 @@ function getOfflineEventsForStore(location, month) {
   return row?.total_events ?? 0;
 }
 
+// ── Leituras horárias perdidas ────────────────────────────────────────────────
+
+function insertReadingMiss(machineId, { expectedHour, machineStatus, agentVersion, lastHeartbeat, diagnosis }) {
+  getDb().prepare(`
+    INSERT OR IGNORE INTO reading_miss_events
+      (machine_id, expected_hour, machine_status, agent_version, last_heartbeat, diagnosis)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(machineId, expectedHour, machineStatus, agentVersion || null, lastHeartbeat || null, diagnosis || null);
+}
+
+function getReadingMissesForDate(dateStr) {
+  const dayStart = Math.floor(new Date(dateStr + 'T00:00:00Z').getTime() / 1000);
+  const dayEnd   = dayStart + 86400;
+  return getDb().prepare(`
+    SELECT rme.machine_id, rme.expected_hour, rme.machine_status,
+           rme.agent_version, rme.last_heartbeat, rme.diagnosis,
+           m.hostname, m.location, m.display_name
+    FROM reading_miss_events rme
+    JOIN machines m ON m.id = rme.machine_id
+    WHERE rme.expected_hour >= ? AND rme.expected_hour < ?
+    ORDER BY rme.machine_status DESC, m.location, m.hostname, rme.expected_hour
+  `).all(dayStart, dayEnd);
+}
+
+function getReadingMissesForMonth(storeName, month) {
+  const [year, mon] = month.split('-').map(Number);
+  const monthStart  = Math.floor(new Date(year, mon - 1, 1).getTime() / 1000);
+  const monthEnd    = Math.floor(new Date(year, mon,     1).getTime() / 1000);
+  return getDb().prepare(`
+    SELECT m.hostname, m.display_name,
+           COUNT(*)                                             AS total_misses,
+           SUM(CASE WHEN rme.machine_status = 'online'  THEN 1 ELSE 0 END) AS online_misses,
+           SUM(CASE WHEN rme.machine_status = 'offline' THEN 1 ELSE 0 END) AS offline_misses
+    FROM reading_miss_events rme
+    JOIN machines m ON m.id = rme.machine_id
+    WHERE m.location = ?
+      AND rme.expected_hour >= ? AND rme.expected_hour < ?
+    GROUP BY m.id
+    ORDER BY online_misses DESC, total_misses DESC
+  `).all(storeName, monthStart, monthEnd);
+}
+
+// Máquinas online sem leitura há mais de N horas — usado pelo monitor
+function getMachinesOnlineMissingReading(sinceTs) {
+  return getDb().prepare(`
+    SELECT m.id, m.hostname, m.display_name, m.location, m.status,
+           m.agent_version, m.last_seen,
+           MAX(h.snapshot_ts) AS last_snapshot_ts,
+           COUNT(h.id)        AS readings_24h
+    FROM machines m
+    LEFT JOIN machine_metrics_hourly h
+      ON h.machine_id = m.id AND h.snapshot_ts >= (strftime('%s','now') - 86400)
+    WHERE m.status = 'online'
+    GROUP BY m.id
+    HAVING last_snapshot_ts IS NULL OR last_snapshot_ts < ?
+    ORDER BY last_snapshot_ts ASC NULLS FIRST
+  `).all(sinceTs);
+}
+
 // Média mensal de hardware por máquina (usa machine_metrics_hourly, não metrics 24h)
 function getMachineDataForMonth(storeName, month) {
   const [year, mon] = month.split('-').map(Number);
@@ -1603,6 +1677,8 @@ module.exports = {
   getMachineDataForMonth, getMachinesWithoutMetrics, getDailyMetricsSummary, getHourlyMetricsDiag,
   // eventos offline
   insertOfflineEvent, getOfflineEventsForStore,
+  // leituras perdidas
+  insertReadingMiss, getReadingMissesForDate, getReadingMissesForMonth, getMachinesOnlineMissingReading,
   // status integrações
   getIntegrationsStatus,
   // zamak / N-able

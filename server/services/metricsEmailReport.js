@@ -42,8 +42,52 @@ async function getAccessToken(cfg) {
   return access_token;
 }
 
+// Bloco HTML de leituras perdidas com máquinas ONLINE
+function buildMissSection(misses) {
+  const online = misses.filter(m => m.machine_status === 'online');
+  if (online.length === 0) return '';
+
+  const byStore = {};
+  for (const m of online) {
+    if (!byStore[m.location]) byStore[m.location] = [];
+    byStore[m.location].push(m);
+  }
+
+  const storeRows = Object.entries(byStore).map(([store, items]) => {
+    const machineRows = items.map(m => {
+      const name = m.display_name || m.hostname;
+      const hora = new Date(m.expected_hour * 1000).toLocaleTimeString('pt-BR', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo',
+      });
+      return `<tr style="border-bottom:1px solid #eee">
+        <td style="padding:5px 8px;font-size:13px">${store}</td>
+        <td style="padding:5px 8px;font-family:monospace;font-size:13px">${name}</td>
+        <td style="padding:5px 8px;text-align:center;font-size:12px">${hora}</td>
+        <td style="padding:5px 8px;font-size:12px;color:#555">${m.diagnosis || '—'}</td>
+      </tr>`;
+    }).join('');
+    return machineRows;
+  }).join('');
+
+  return `
+  <h3 style="font-size:14px;color:#c0392b;border-bottom:2px solid #e2e8f0;padding-bottom:6px;margin:20px 0 12px">
+    🔍 Leituras Horárias Perdidas — Máquinas ONLINE (requerem atenção)
+  </h3>
+  <table style="width:100%;border-collapse:collapse;border:1px solid #ddd;border-radius:4px;font-size:13px">
+    <thead>
+      <tr style="background:#fff5f5;font-size:12px;color:#555">
+        <th style="padding:5px 8px;text-align:left">Loja</th>
+        <th style="padding:5px 8px;text-align:left">Máquina</th>
+        <th style="padding:5px 8px;text-align:center">Hora esperada</th>
+        <th style="padding:5px 8px;text-align:left">Diagnóstico automático</th>
+      </tr>
+    </thead>
+    <tbody>${storeRows}</tbody>
+  </table>`;
+}
+
 // Gera o HTML do email com tabela por loja
-function buildEmailHtml(rows, dtBRT) {
+function buildEmailHtml(rows, dtBRT, misses) {
   const totalMachines = rows.length;
   const withReadings  = rows.filter(r => r.readings_24h > 0).length;
   const noReadings    = totalMachines - withReadings;
@@ -140,6 +184,8 @@ function buildEmailHtml(rows, dtBRT) {
   <h3 style="font-size:14px;color:#4a5568;border-bottom:2px solid #e2e8f0;padding-bottom:6px;margin-bottom:12px">Detalhamento por Loja</h3>
   ${storeBlocks}
 
+  ${buildMissSection(misses || [])}
+
   <hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0">
   <p style="color:#718096;font-size:11px">
     Legenda: ✅ 20-24 leituras | ⚠️ 12-19 leituras | 🟡 1-11 leituras | ❌ 0 leituras<br>
@@ -163,9 +209,17 @@ async function sendDailyMetricsEmail() {
     hour: '2-digit', minute: '2-digit',
   });
 
-  const noReadings = rows.filter(r => r.readings_24h === 0).length;
-  const subject = noReadings > 0
-    ? `⚠️ DM — Medições: ${noReadings} máquina(s) sem dados — ${dtBRT}`
+  // Leituras perdidas do dia (máquinas online com miss registrado nas últimas 24h)
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const misses   = (() => {
+    try { return db.getReadingMissesForDate(todayStr); } catch { return []; }
+  })();
+
+  const noReadings  = rows.filter(r => r.readings_24h === 0).length;
+  const onlineMisses = misses.filter(m => m.machine_status === 'online').length;
+
+  const subject = noReadings > 0 || onlineMisses > 0
+    ? `⚠️ DM — Medições: ${noReadings} sem dados, ${onlineMisses} miss online — ${dtBRT}`
     : `✅ DM — Medições OK (${rows.length} máquinas) — ${dtBRT}`;
 
   let access_token;
@@ -176,7 +230,7 @@ async function sendDailyMetricsEmail() {
     return;
   }
 
-  const bodyHtml = buildEmailHtml(rows, dtBRT);
+  const bodyHtml = buildEmailHtml(rows, dtBRT, misses);
 
   await fetch('https://graph.microsoft.com/v1.0/users/andre@delirio.com.br/sendMail', {
     method:  'POST',

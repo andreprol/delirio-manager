@@ -32,55 +32,132 @@ server.listen(PORT, () => {
   _scheduleHourlyMetricsMonitor();
 });
 
-// ── Monitor de métricas horárias — loga máquinas sem snapshot há >2h ─────────
+// ── Monitor autônomo de leituras horárias ────────────────────────────────────
+// Roda a cada minuto; dispara a verificação completa nos :05 de cada hora.
+// Para cada máquina online sem leitura no último 65 min:
+//   • offline  → registra reading_miss_event (causa: offline)
+//   • online   → registra + diagnostica automaticamente + dispara alerta
 function _scheduleHourlyMetricsMonitor() {
-  const CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 min
-  const ALERT_THRESHOLD_H = 2;
+  let lastCheckedHour = -1;
 
-  function check() {
+  function _diagnose(machine, nowTs) {
+    const ver = machine.agent_version;
+    if (!ver || ver < '1.5.20') {
+      return `agente ${ver || 'desconhecido'} não suporta hourlySnapshot — atualizar para v1.5.23+`;
+    }
+    const heartbeatAgoMin = machine.last_seen
+      ? Math.round((nowTs * 1000 - new Date(machine.last_seen).getTime()) / 60000)
+      : null;
+    if (heartbeatAgoMin !== null && heartbeatAgoMin < 3) {
+      const r = machine.readings_24h ?? 0;
+      if (r === 0) {
+        return `agente ${ver} vivo (heartbeat há ${heartbeatAgoMin}min) — goroutine nunca iniciou (verificar logs: token ausente no boot?)`;
+      }
+      return `agente ${ver} vivo (heartbeat há ${heartbeatAgoMin}min) — goroutine morreu após ${r} leitura(s) — provável panic silencioso ou crash do rate-limiter`;
+    }
+    if (heartbeatAgoMin !== null && heartbeatAgoMin < 10) {
+      return `agente ${ver} com heartbeat recente (${heartbeatAgoMin}min) — goroutine interrompida`;
+    }
+    return `agente ${ver} sem heartbeat há ${heartbeatAgoMin ?? '?'}min — agente pode ter crashado completamente`;
+  }
+
+  async function _checkHour() {
     try {
-      const { getHourlyMetricsDiag } = require('./db');
-      const now = Math.floor(Date.now() / 1000);
-      const threshold = now - ALERT_THRESHOLD_H * 3600;
-      const rows = getHourlyMetricsDiag();
+      const {
+        getMachinesOnlineMissingReading,
+        getHourlyMetricsDiag,
+        insertReadingMiss,
+      } = require('./db');
+      const { checkAll: alertCheckAll } = require('./services/alertEngine');
 
-      const missing = rows.filter(r => {
-        if (r.status !== 'online') return false; // offline é esperado
-        return !r.last_snapshot_ts || r.last_snapshot_ts < threshold;
-      });
+      const nowTs    = Math.floor(Date.now() / 1000);
+      // Janela: leitura esperada na hora anterior (65 min para dar folga à rede)
+      const window   = 65 * 60;
+      const threshold = nowTs - window;
 
-      if (missing.length === 0) {
-        logger.info('[HourlyMonitor] Todas as máquinas online enviando snapshots');
+      // Máquinas online sem leitura nos últimos 65 min
+      const onlineMissing = getMachinesOnlineMissingReading(threshold);
+
+      // Todas as máquinas para capturar offline sem leitura também
+      const allDiag = getHourlyMetricsDiag();
+      const offlineMissing = allDiag.filter(r =>
+        r.status === 'offline' &&
+        (!r.last_snapshot_ts || r.last_snapshot_ts < threshold)
+      );
+
+      const hourTs = Math.floor(nowTs / 3600) * 3600; // início da hora atual
+
+      // Registra leituras perdidas — offline (causa esperada)
+      for (const m of offlineMissing) {
+        insertReadingMiss(m.id, {
+          expectedHour:  hourTs,
+          machineStatus: 'offline',
+          agentVersion:  m.agent_version,
+          lastHeartbeat: m.last_snapshot_ts,
+          diagnosis:     'máquina offline',
+        });
+      }
+
+      if (onlineMissing.length === 0) {
+        logger.info('[HourlyMonitor] Todas as máquinas online enviando snapshots corretamente');
         return;
       }
 
-      logger.warn(`[HourlyMonitor] ${missing.length} máquina(s) online sem snapshot há >${ALERT_THRESHOLD_H}h`, {
-        machines: missing.map(r => ({
-          hostname:     r.hostname,
-          location:     r.location,
-          agentVersion: r.agent_version || '?',
-          readings24h:  r.readings_24h,
-          lastHourlyAt: r.last_hourly_at || 'nunca',
-          agoMin:       r.last_snapshot_ts
-            ? Math.round((now - r.last_snapshot_ts) / 60)
-            : null,
-          motivo: !r.agent_version || r.agent_version < '1.5.13'
-            ? `agente ${r.agent_version || '?'} (sem hourlySnapshot — atualizar)`
-            : r.readings_24h === 0
-              ? 'agente novo mas sem nenhuma leitura hoje (verificar logs do agente)'
-              : 'baixa cobertura',
-        })),
+      // Registra + diagnostica leituras perdidas — online (problema real)
+      const { broadcast } = require('./services/websocket');
+      const { addEvent }  = require('./db');
+
+      for (const m of onlineMissing) {
+        const diagnosis = _diagnose(m, nowTs);
+        const name      = m.display_name || m.hostname;
+
+        insertReadingMiss(m.id, {
+          expectedHour:  hourTs,
+          machineStatus: 'online',
+          agentVersion:  m.agent_version,
+          lastHeartbeat: m.last_snapshot_ts,
+          diagnosis,
+        });
+
+        addEvent(m.id, 'reading_miss',
+          `Leitura horária perdida — ${name} online mas sem snapshot. ${diagnosis}`);
+
+        broadcast('alert', {
+          machineId: m.id,
+          type:      'reading_miss',
+          message:   `${name} (${m.location}): leitura horária perdida. ${diagnosis}`,
+          ts:        new Date().toISOString(),
+        });
+
+        logger.warn('[HourlyMonitor] Leitura perdida — máquina ONLINE', {
+          hostname:    m.hostname,
+          location:    m.location,
+          readings24h: m.readings_24h,
+          diagnosis,
+        });
+      }
+
+      logger.warn(`[HourlyMonitor] ${onlineMissing.length} máquina(s) ONLINE sem leitura na última hora`, {
+        locations: [...new Set(onlineMissing.map(m => m.location))],
       });
     } catch (err) {
-      logger.error('[HourlyMonitor] Erro ao verificar snapshots', { error: err.message });
+      logger.error('[HourlyMonitor] Erro no check horário', { error: err.message });
     }
   }
 
-  // Primeira verificação após 5 min (aguarda agentes conectarem)
-  setTimeout(() => {
-    check();
-    setInterval(check, CHECK_INTERVAL_MS);
-  }, 5 * 60 * 1000);
+  // Tick a cada minuto — dispara nos :05 de cada hora (após agentes terem tempo de enviar)
+  setInterval(() => {
+    const now  = new Date();
+    const min  = now.getUTCMinutes();
+    const hour = now.getUTCHours();
+    if (min === 5 && hour !== lastCheckedHour) {
+      lastCheckedHour = hour;
+      _checkHour();
+    }
+  }, 60 * 1000);
+
+  // Primeira verificação: 5 min após o boot (aguarda agentes registrarem)
+  setTimeout(_checkHour, 5 * 60 * 1000);
 }
 
 // ── NF-Ce indexer — dispara diariamente às 23:00 para servidores BOH ─────────
