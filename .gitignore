@@ -29,6 +29,8 @@ Thumbs.db
 .claude/statsig/
 .claude/*.jsonl
 .claude/launch.json
+.claude/decision.log
+.claude/auto-approve.json
 .claude/skills/
 .claude-flow/
 .playwright-mcp/
