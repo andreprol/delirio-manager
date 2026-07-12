@@ -286,6 +286,7 @@ function migrate(db) {
     )`,
     `ALTER TABLE report_runs ADD COLUMN score_operational INTEGER`,
     `ALTER TABLE machines ADD COLUMN os_version TEXT DEFAULT ''`,
+    `ALTER TABLE machines ADD COLUMN last_hourly_at TEXT`,
     // ── Métricas horárias (24 leituras/dia por máquina) ───────────────────────
     `CREATE TABLE IF NOT EXISTS machine_metrics_hourly (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1187,16 +1188,16 @@ function getStoresOverview() {
 
 function insertMetricsHourly(machineId, { snapshotTs, cpuPct, ramPct, diskPct, cpuTempC }) {
   const hourOfDay = new Date(snapshotTs * 1000).getUTCHours();
-  // Business hours (8–22 UTC-3 = 11–01 UTC; approximation using local store timezone)
-  // Simplified: use server local time's hour — hora de Brasília (UTC-3)
   const localHour = new Date(snapshotTs * 1000).getHours();
   const hourWeight = (localHour >= 8 && localHour < 22) ? 2 : 1;
-  getDb().prepare(`
+  const db = getDb();
+  db.prepare(`
     INSERT INTO machine_metrics_hourly
       (machine_id, snapshot_ts, hour_of_day, hour_weight, cpu_pct, ram_pct, disk_pct, cpu_temp_c)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(machineId, snapshotTs, hourOfDay, hourWeight,
          cpuPct ?? 0, ramPct ?? 0, diskPct ?? 0, cpuTempC ?? -1);
+  db.prepare(`UPDATE machines SET last_hourly_at = datetime('now') WHERE id = ?`).run(machineId);
 }
 
 // Retorna média ponderada por hora de todas as máquinas da loja no mês informado.
@@ -1295,13 +1296,28 @@ function getMachinesWithoutMetrics(storeName, month) {
 function getDailyMetricsSummary() {
   const since = Math.floor(Date.now() / 1000) - 86400;
   return getDb().prepare(`
-    SELECT m.id, m.hostname, m.location, m.status,
+    SELECT m.id, m.hostname, m.location, m.status, m.agent_version, m.last_hourly_at,
            COUNT(h.id) as readings_24h
     FROM machines m
     LEFT JOIN machine_metrics_hourly h
       ON h.machine_id = m.id AND h.snapshot_ts >= ?
     GROUP BY m.id
     ORDER BY m.location, readings_24h ASC, m.hostname
+  `).all(since);
+}
+
+// Diagnóstico de snapshots horários — última medição por máquina
+function getHourlyMetricsDiag() {
+  const since = Math.floor(Date.now() / 1000) - 86400;
+  return getDb().prepare(`
+    SELECT m.id, m.hostname, m.location, m.status, m.agent_version, m.last_hourly_at,
+           COUNT(h.id) as readings_24h,
+           MAX(h.snapshot_ts) as last_snapshot_ts
+    FROM machines m
+    LEFT JOIN machine_metrics_hourly h
+      ON h.machine_id = m.id AND h.snapshot_ts >= ?
+    GROUP BY m.id
+    ORDER BY readings_24h ASC, m.location, m.hostname
   `).all(since);
 }
 
@@ -1584,7 +1600,7 @@ module.exports = {
   getStoresOverview,
   // métricas horárias
   insertMetricsHourly, getWeightedMetricsForStore,
-  getMachineDataForMonth, getMachinesWithoutMetrics, getDailyMetricsSummary,
+  getMachineDataForMonth, getMachinesWithoutMetrics, getDailyMetricsSummary, getHourlyMetricsDiag,
   // eventos offline
   insertOfflineEvent, getOfflineEventsForStore,
   // status integrações

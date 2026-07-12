@@ -424,6 +424,12 @@ func (a *Agent) hourlySnapshotLoop() {
 		return
 	}
 
+	// Aguarda 10s para o heartbeat inicial completar antes de enviar snapshot.
+	// Evita colisão com o rate-limiter de 5s do endpoint /api/heartbeat.
+	time.Sleep(10 * time.Second)
+
+	logInfo(fmt.Sprintf("hourlySnapshotLoop: iniciado (agente v%s)", Version))
+
 	// Primeiro snapshot imediato
 	a.sendHourlySnapshot()
 
@@ -435,6 +441,7 @@ func (a *Agent) hourlySnapshotLoop() {
 		case <-ticker.C:
 			a.sendHourlySnapshot()
 		case <-a.stopCh:
+			logInfo("hourlySnapshotLoop: encerrado")
 			return
 		}
 	}
@@ -466,11 +473,18 @@ func (a *Agent) sendHourlySnapshot() {
 
 	resp, err := a.post("/api/metrics/hourly", payload)
 	if err != nil {
-		logWarn(fmt.Sprintf("hourlySnapshot: envio falhou: %v", err))
+		logWarn(fmt.Sprintf("hourlySnapshot: envio falhou (erro de rede): %v", err))
 		return
 	}
 	defer resp.Body.Close()
-	logInfo(fmt.Sprintf("hourlySnapshot: cpu=%.1f%% ram=%.1f%% disk=%.1f%% temp=%.1f°C", metrics.CPUPct, ramPct, diskPct, metrics.CPUTempC))
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		logWarn(fmt.Sprintf("hourlySnapshot: servidor rejeitou snapshot (HTTP %d): %s", resp.StatusCode, string(body)))
+		return
+	}
+
+	logInfo(fmt.Sprintf("hourlySnapshot: OK — cpu=%.1f%% ram=%.1f%% disk=%.1f%% temp=%.1f°C", metrics.CPUPct, ramPct, diskPct, metrics.CPUTempC))
 }
 
 func (a *Agent) reportOfflineEvent(offlineAt, onlineAt time.Time) {

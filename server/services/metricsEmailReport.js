@@ -68,6 +68,9 @@ function buildEmailHtml(rows, dtBRT) {
       else                            { icon = '🟡'; color = '#b7791f'; }
 
       const pct = Math.round((m.readings_24h / 24) * 100);
+      const ver = m.agent_version || '?';
+      const verColor = (!m.agent_version || m.agent_version < '1.5.13') ? '#c0392b' : '#718096';
+      const verNote  = (!m.agent_version || m.agent_version < '1.5.13') ? ' ⚠️ sem snapshot' : '';
       return `
         <tr style="border-bottom:1px solid #eee">
           <td style="padding:5px 8px;font-family:monospace;font-size:13px">${m.hostname}</td>
@@ -75,6 +78,7 @@ function buildEmailHtml(rows, dtBRT) {
           <td style="padding:5px 8px;text-align:right;color:${color};font-weight:bold">${m.readings_24h}/24</td>
           <td style="padding:5px 8px;text-align:right;color:#718096;font-size:12px">${pct}%</td>
           <td style="padding:5px 8px;color:#718096;font-size:12px">${m.status || ''}</td>
+          <td style="padding:5px 8px;font-family:monospace;font-size:11px;color:${verColor}">${ver}${verNote}</td>
         </tr>`;
     }).join('');
 
@@ -91,6 +95,7 @@ function buildEmailHtml(rows, dtBRT) {
             <th style="padding:5px 8px;text-align:right">Leituras</th>
             <th style="padding:5px 8px;text-align:right">Cobertura</th>
             <th style="padding:5px 8px;text-align:left">Agente</th>
+            <th style="padding:5px 8px;text-align:left">Versão</th>
           </tr>
         </thead>
         <tbody>${machineRows}</tbody>
@@ -103,7 +108,7 @@ function buildEmailHtml(rows, dtBRT) {
   return `<!DOCTYPE html><html lang="pt-BR"><body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;color:#222">
 <div style="background:#2d3748;color:#fff;padding:14px 20px;border-radius:6px 6px 0 0">
   <h2 style="margin:0;font-size:16px">📊 Delirio Manager — Relatório de Medições Horárias</h2>
-  <p style="margin:4px 0 0;font-size:13px;opacity:0.8">Agente v1.5.13 | Período: últimas 24h | ${dtBRT}</p>
+  <p style="margin:4px 0 0;font-size:13px;opacity:0.8">Período: últimas 24h | ${dtBRT}</p>
 </div>
 <div style="border:1px solid #ddd;border-top:none;padding:16px 20px;border-radius:0 0 6px 6px">
 

@@ -239,17 +239,25 @@ router.post('/heartbeat', agentAuth, (req, res) => {
 
 // POST /api/metrics/hourly
 // Agente envia snapshot horário de métricas (24x/dia).
-router.post('/metrics/hourly', agentAuth, (req, res) => {
+// Usa agentAuthNoLimit: chamado 1x/hora, rate limit de 5s causaria rejeição no startup
+// quando heartbeat e snapshot disparam simultaneamente.
+router.post('/metrics/hourly', agentAuthNoLimit, (req, res) => {
   const machine = req.machine;
   const { snapshotTs, cpuPct, ramPct, diskPct, cpuTempC } = req.body;
 
   if (!snapshotTs) return res.status(400).json({ error: 'snapshotTs obrigatorio' });
 
+  const tsNum = Number(snapshotTs);
+  if (!Number.isFinite(tsNum) || tsNum <= 0) {
+    return res.status(400).json({ error: 'snapshotTs inválido' });
+  }
+
   try {
-    insertMetricsHourly(machine.id, { snapshotTs, cpuPct, ramPct, diskPct, cpuTempC });
+    insertMetricsHourly(machine.id, { snapshotTs: tsNum, cpuPct, ramPct, diskPct, cpuTempC });
+    console.log(`[metrics/hourly] ${machine.hostname || machine.id}: ts=${tsNum} cpu=${cpuPct?.toFixed(1)}% ram=${ramPct?.toFixed(1)}% disk=${diskPct?.toFixed(1)}% temp=${cpuTempC?.toFixed(1)}°C`);
     return res.json({ ok: true });
   } catch (err) {
-    console.error('[metrics/hourly]', err.message);
+    console.error(`[metrics/hourly] ${machine.hostname || machine.id}: ${err.message}`);
     return res.status(500).json({ error: 'Erro interno' });
   }
 });

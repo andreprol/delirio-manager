@@ -95,6 +95,29 @@ app.get('/api/status/integrations', (req, res) => {
   res.json(status);
 });
 
+// ── Diagnóstico de medições horárias ─────────────────────────────────────────
+// GET /api/metrics/hourly/status — mostra leituras 24h + última medição por máquina
+app.get('/api/metrics/hourly/status', (req, res) => {
+  const { getHourlyMetricsDiag } = require('./db');
+  const rows = getHourlyMetricsDiag();
+  const now = Math.floor(Date.now() / 1000);
+  const result = rows.map(r => ({
+    id:            r.id,
+    hostname:      r.hostname,
+    location:      r.location,
+    status:        r.status,
+    agentVersion:  r.agent_version || '?',
+    lastHourlyAt:  r.last_hourly_at || null,
+    lastSnapshotAgoMin: r.last_snapshot_ts
+      ? Math.round((now - r.last_snapshot_ts) / 60)
+      : null,
+    readings24h:   r.readings_24h,
+    coverage:      `${Math.round(r.readings_24h / 24 * 100)}%`,
+  }));
+  const noReadings = result.filter(r => r.readings_24h === 0).length;
+  res.json({ total: result.length, noReadings, machines: result });
+});
+
 // ── Rotas ─────────────────────────────────────────────────────────────────────
 app.use('/api',           agentRoutes);
 app.use('/api',           winEventsRoutes);

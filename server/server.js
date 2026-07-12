@@ -29,7 +29,59 @@ server.listen(PORT, () => {
   metricsEmail.scheduleDailyMetricsEmail();
   ncrMonitor.start();
   logger.info('NCR monitor iniciado', { interval: '2min' });
+  _scheduleHourlyMetricsMonitor();
 });
+
+// ── Monitor de métricas horárias — loga máquinas sem snapshot há >2h ─────────
+function _scheduleHourlyMetricsMonitor() {
+  const CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 min
+  const ALERT_THRESHOLD_H = 2;
+
+  function check() {
+    try {
+      const { getHourlyMetricsDiag } = require('./db');
+      const now = Math.floor(Date.now() / 1000);
+      const threshold = now - ALERT_THRESHOLD_H * 3600;
+      const rows = getHourlyMetricsDiag();
+
+      const missing = rows.filter(r => {
+        if (r.status !== 'online') return false; // offline é esperado
+        return !r.last_snapshot_ts || r.last_snapshot_ts < threshold;
+      });
+
+      if (missing.length === 0) {
+        logger.info('[HourlyMonitor] Todas as máquinas online enviando snapshots');
+        return;
+      }
+
+      logger.warn(`[HourlyMonitor] ${missing.length} máquina(s) online sem snapshot há >${ALERT_THRESHOLD_H}h`, {
+        machines: missing.map(r => ({
+          hostname:     r.hostname,
+          location:     r.location,
+          agentVersion: r.agent_version || '?',
+          readings24h:  r.readings_24h,
+          lastHourlyAt: r.last_hourly_at || 'nunca',
+          agoMin:       r.last_snapshot_ts
+            ? Math.round((now - r.last_snapshot_ts) / 60)
+            : null,
+          motivo: !r.agent_version || r.agent_version < '1.5.13'
+            ? `agente ${r.agent_version || '?'} (sem hourlySnapshot — atualizar)`
+            : r.readings_24h === 0
+              ? 'agente novo mas sem nenhuma leitura hoje (verificar logs do agente)'
+              : 'baixa cobertura',
+        })),
+      });
+    } catch (err) {
+      logger.error('[HourlyMonitor] Erro ao verificar snapshots', { error: err.message });
+    }
+  }
+
+  // Primeira verificação após 5 min (aguarda agentes conectarem)
+  setTimeout(() => {
+    check();
+    setInterval(check, CHECK_INTERVAL_MS);
+  }, 5 * 60 * 1000);
+}
 
 // ── NF-Ce indexer — dispara diariamente às 23:00 para servidores BOH ─────────
 let _nfceLastIndexDay = null;
