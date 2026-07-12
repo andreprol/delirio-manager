@@ -27,10 +27,10 @@ if [[ -f "$ROOT/agent/go.mod" ]]; then
 fi
 
 # ESLint — server
-# Nota: --max-warnings=9999 (igual ao lint-staged do projeto; 124 warnings pré-existentes no-console/no-unused-vars)
+# 124 = count atual de warnings pré-existentes no-console/no-unused-vars. Qualquer novo warning falha.
 if [[ -f "$ROOT/server/eslint.config.js" ]]; then
   echo "[verify] ▶ eslint (server)"
-  (cd "$ROOT/server" && npx eslint . --max-warnings=9999 2>&1) || { echo "[verify] ✗ lint falhou"; ERRORS=$((ERRORS+1)); }
+  (cd "$ROOT/server" && npx eslint . --max-warnings=124 2>&1) || { echo "[verify] ✗ lint falhou"; ERRORS=$((ERRORS+1)); }
 fi
 
 if [[ $ERRORS -gt 0 ]]; then
