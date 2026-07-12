@@ -114,7 +114,7 @@ app.get('/api/metrics/hourly/status', (req, res) => {
     readings24h:   r.readings_24h,
     coverage:      `${Math.round(r.readings_24h / 24 * 100)}%`,
   }));
-  const noReadings = result.filter(r => r.readings_24h === 0).length;
+  const noReadings = result.filter(r => r.readings24h === 0).length;
   res.json({ total: result.length, noReadings, machines: result });
 });
 
