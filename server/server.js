@@ -67,6 +67,7 @@ function _scheduleHourlyMetricsMonitor() {
         getMachinesOnlineMissingReading,
         getHourlyMetricsDiag,
         insertReadingMiss,
+        createCommand,
       } = require('./db');
       const { checkAll: alertCheckAll } = require('./services/alertEngine');
 
@@ -118,6 +119,9 @@ function _scheduleHourlyMetricsMonitor() {
           lastHeartbeat: m.last_snapshot_ts,
           diagnosis,
         });
+
+        // Solicita log do agente para diagnóstico — processado no ACK de get_agent_log
+        createCommand(m.id, 'get_agent_log', { lines: 100 });
 
         addEvent(m.id, 'reading_miss',
           `Leitura horária perdida — ${name} online mas sem snapshot. ${diagnosis}`);

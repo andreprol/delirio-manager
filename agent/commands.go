@@ -222,6 +222,28 @@ func (a *Agent) executeCommand(cmd Command) (string, error) {
 		}
 		return output, nil
 
+	case "get_agent_log":
+		var params struct {
+			Lines int `json:"lines"`
+		}
+		_ = json.Unmarshal(cmd.Params, &params)
+		if params.Lines <= 0 || params.Lines > 500 {
+			params.Lines = 100
+		}
+		logInfo(fmt.Sprintf("Comando GET_AGENT_LOG recebido (ID: %s). Últimas %d linhas.", cmd.ID, params.Lines))
+		if logFilePath == "" {
+			return "", fmt.Errorf("get_agent_log: logger não inicializado")
+		}
+		raw, err := os.ReadFile(logFilePath)
+		if err != nil {
+			return "", fmt.Errorf("get_agent_log: %w", err)
+		}
+		logLines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+		if len(logLines) > params.Lines {
+			logLines = logLines[len(logLines)-params.Lines:]
+		}
+		return strings.Join(logLines, "\n"), nil
+
 	default:
 		return "", fmt.Errorf("tipo de comando desconhecido: %q", cmd.Type)
 	}

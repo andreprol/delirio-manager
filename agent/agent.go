@@ -65,11 +65,23 @@ type CommandAck struct {
 	Message   string `json:"message"`
 }
 
+// safeGo executa fn em goroutine com recover — panic não encerra o processo.
+func safeGo(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logError(fmt.Sprintf("PANIC goroutine %s: %v", name, r))
+			}
+		}()
+		fn()
+	}()
+}
+
 func newAgent() *Agent {
 	cfg, err := loadConfig()
 	if err != nil {
+		// loadConfig já retorna defaultConfig() com UUID estável — NÃO gerar novo UUID.
 		logWarn(fmt.Sprintf("Erro ao carregar config: %v — usando padrao.", err))
-		cfg = defaultConfig()
 	}
 
 	initLogger()
@@ -109,11 +121,9 @@ func (a *Agent) start() error {
 	// Loop de snapshot horário (24x/dia)
 	go a.hourlySnapshotLoop()
 
-	go ensureLHM(a.cfg.ServerURL) // installs and starts LHM for CPU temperature
-
-	go a.collectAndSendBootEvents()
-
-	go a.collectWolStatus()
+	safeGo("lhm",        func() { ensureLHM(a.cfg.ServerURL) })
+	safeGo("bootEvents", a.collectAndSendBootEvents)
+	safeGo("wolStatus",  a.collectWolStatus)
 
 	return nil
 }
@@ -175,7 +185,14 @@ func (a *Agent) heartbeatLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			a.sendHeartbeat()
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logError(fmt.Sprintf("heartbeat panic: %v", r))
+					}
+				}()
+				a.sendHeartbeat()
+			}()
 		case <-a.stopCh:
 			return
 		}
@@ -439,7 +456,14 @@ func (a *Agent) hourlySnapshotLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			a.sendHourlySnapshot()
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logError(fmt.Sprintf("hourlySnapshot panic: %v — próxima leitura na hora seguinte", r))
+					}
+				}()
+				a.sendHourlySnapshot()
+			}()
 		case <-a.stopCh:
 			logInfo("hourlySnapshotLoop: encerrado")
 			return

@@ -38,6 +38,15 @@ func loadConfig() (*Config, error) {
 	}
 
 	if err := json.Unmarshal(data, cfg); err != nil {
+		// config.json corrompido — tenta recuperar do .tmp (backup pré-rename atômico)
+		if tmpData, _ := os.ReadFile(configPath() + ".tmp"); len(tmpData) > 0 {
+			tmpCfg := defaultConfig()
+			if json.Unmarshal(tmpData, tmpCfg) == nil && tmpCfg.MachineID != "" {
+				logWarn("config.json corrompido — recuperado do backup .tmp")
+				_ = saveConfig(tmpCfg)
+				return tmpCfg, nil
+			}
+		}
 		return cfg, err
 	}
 
@@ -52,12 +61,18 @@ func loadConfig() (*Config, error) {
 	return cfg, nil
 }
 
+// saveConfig grava atomicamente (write tmp → rename) para evitar
+// config.json truncado/corrompido em caso de crash durante a escrita.
 func saveConfig(cfg *Config) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath(), data, 0600)
+	tmp := configPath() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, configPath())
 }
 
 func generateUUID() string {

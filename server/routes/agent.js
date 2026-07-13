@@ -386,6 +386,12 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
       }
     }
 
+    // Post-process: armazena log do agente recebido como diagnóstico de reading_miss
+    if (cmd && cmd.type === 'get_agent_log' && success !== false && message) {
+      db.addEvent(req.machine.id, 'agent_log_retrieved',
+        `Diagnóstico reading_miss — log do agente (últimas linhas):\n${message.slice(0, 5000)}`);
+    }
+
     broadcast('command:acked', {
       commandId,
       machineId: req.machine.id,
