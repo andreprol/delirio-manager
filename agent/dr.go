@@ -23,6 +23,9 @@ const (
 	veeamSvcName       = "VeeamEndpointBackupSvc"
 	veeamPSModulePath  = `C:\Program Files\Veeam\Endpoint Backup\Veeam.Endpoint.Backup.PowerShell.dll`
 	veeamLogDir        = `C:\ProgramData\Veeam\Endpoint\Log`
+	// Path fixo para o instalador — evita variação entre os.TempDir() por conta de serviço ou usuário.
+	// Excluir este caminho no Bitdefender/Zamak: C:\ProgramData\DelirioAgent\VeeamAgentWindows.exe
+	veeamInstallerDir  = `C:\ProgramData\DelirioAgent`
 	drJobName          = "BMR-DM"
 	drRepoName         = "AzureBlob-DM"
 )
@@ -118,7 +121,10 @@ func installVeeam(serverURL string) error {
 		return fmt.Errorf("ler instalador Veeam: %w", err)
 	}
 
-	tmpPath := filepath.Join(os.TempDir(), veeamInstallerName)
+	if err := os.MkdirAll(veeamInstallerDir, 0755); err != nil {
+		return fmt.Errorf("criar diretório instalador: %w", err)
+	}
+	tmpPath := filepath.Join(veeamInstallerDir, veeamInstallerName)
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
 		return fmt.Errorf("salvar instalador Veeam: %w", err)
 	}
