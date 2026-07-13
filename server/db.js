@@ -425,11 +425,18 @@ function migrate(db) {
 
 // ── Machines ──────────────────────────────────────────────────────────────────
 
+// Tabelas com machine_id para re-key e limpeza de duplicatas
+const _MACHINE_CHILD_TABLES = [
+  'metrics', 'commands', 'events', 'machine_metrics_hourly',
+  'machine_offline_events', 'reading_miss_events', 'win_events',
+  'nfce_index', 'dr_backups',
+];
+
 function registerMachine({ machineId, hostname, agentVersion }) {
   const d = getDb();
   const now = new Date().toISOString();
 
-  // Verifica se ja existe pelo machineId
+  // 1. UUID já conhecido → atualiza normalmente
   const existing = d.prepare('SELECT * FROM machines WHERE id = ?').get(machineId);
   if (existing) {
     d.prepare(`UPDATE machines SET hostname=?, agent_version=?, last_seen=?, online_since=?, status='online'
@@ -437,8 +444,49 @@ function registerMachine({ machineId, hostname, agentVersion }) {
     return existing.token;
   }
 
+  // 2. UUID desconhecido mas hostname conhecido → config.json foi corrompido, agente gerou novo UUID.
+  //    Re-key atomicamente: migra filhos, troca PK, deleta duplicatas — preserva localidade e histórico.
+  const canonical = d.prepare(
+    `SELECT * FROM machines WHERE UPPER(hostname) = UPPER(?)
+     ORDER BY CASE WHEN location != 'Temporário' THEN 0 ELSE 1 END,
+              last_seen DESC LIMIT 1`
+  ).get(hostname);
+
+  if (canonical) {
+    const oldId = canonical.id;
+    d.pragma('foreign_keys = OFF');
+    try {
+      d.transaction(() => {
+        // Migra registros filhos do canonical para o novo UUID
+        for (const t of _MACHINE_CHILD_TABLES) {
+          try { d.prepare(`UPDATE ${t} SET machine_id=? WHERE machine_id=?`).run(machineId, oldId); } catch (_) {}
+        }
+        // Re-key do registro principal
+        d.prepare('UPDATE machines SET id=? WHERE id=?').run(machineId, oldId);
+        // Atualiza campos de presença
+        d.prepare(`UPDATE machines SET hostname=?, agent_version=?, last_seen=?, online_since=?, status='online'
+                   WHERE id=?`).run(hostname, agentVersion || '', now, now, machineId);
+        // Remove todos os outros registros com mesmo hostname (duplicatas de registros anteriores)
+        const dupes = d.prepare(
+          `SELECT id FROM machines WHERE UPPER(hostname) = UPPER(?) AND id != ?`
+        ).all(hostname, machineId);
+        for (const { id: dupId } of dupes) {
+          for (const t of _MACHINE_CHILD_TABLES) {
+            try { d.prepare(`DELETE FROM ${t} WHERE machine_id=?`).run(dupId); } catch (_) {}
+          }
+          d.prepare('DELETE FROM machines WHERE id=?').run(dupId);
+        }
+      })();
+    } finally {
+      d.pragma('foreign_keys = ON');
+    }
+    addEvent(machineId, 'agent_reregistered',
+      `UUID atualizado (config recuperado de ${oldId.slice(0, 8)}): agente v${agentVersion || '?'}`);
+    return canonical.token;
+  }
+
+  // 3. Máquina genuinamente nova
   const token = crypto.randomUUID();
-  // Detecta subnet pelo machineId ou hostname (pode ser refinado depois)
   d.prepare(`INSERT INTO machines
     (id, hostname, display_name, location, token, agent_version, status, last_seen, online_since, registered_at)
     VALUES (?, ?, ?, 'Temporário', ?, ?, 'online', ?, ?, ?)`
