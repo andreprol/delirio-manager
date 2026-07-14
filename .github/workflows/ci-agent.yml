@@ -34,6 +34,7 @@ jobs:
 
       - name: Check coverage threshold (≥16% — elevar gradualmente)
         shell: pwsh
+        working-directory: agent
         run: |
           $output = go tool cover -func coverage.out
           $totalLine = $output | Select-String "total:"
