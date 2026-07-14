@@ -444,8 +444,10 @@ function registerMachine({ machineId, hostname, agentVersion }) {
     return existing.token;
   }
 
-  // 2. UUID desconhecido mas hostname conhecido → config.json foi corrompido, agente gerou novo UUID.
-  //    Re-key atomicamente: migra filhos, troca PK, deleta duplicatas — preserva localidade e histórico.
+  // 2. UUID desconhecido mas hostname conhecido.
+  //    Se a canônica está ativa (last_seen < 5 min) → máquina física diferente com mesmo hostname
+  //    → cai no passo 3 (Temporário). Caso contrário → reinstall (config.json corrompido) →
+  //    re-key atômico: migra filhos, troca PK, deleta duplicatas, preserva localidade e histórico.
   const canonical = d.prepare(
     `SELECT * FROM machines WHERE UPPER(hostname) = UPPER(?)
      ORDER BY CASE WHEN location != 'Temporário' THEN 0 ELSE 1 END,
@@ -453,36 +455,41 @@ function registerMachine({ machineId, hostname, agentVersion }) {
   ).get(hostname);
 
   if (canonical) {
-    const oldId = canonical.id;
-    d.pragma('foreign_keys = OFF');
-    try {
-      d.transaction(() => {
-        // Migra registros filhos do canonical para o novo UUID
-        for (const t of _MACHINE_CHILD_TABLES) {
-          try { d.prepare(`UPDATE ${t} SET machine_id=? WHERE machine_id=?`).run(machineId, oldId); } catch (_) {}
-        }
-        // Re-key do registro principal
-        d.prepare('UPDATE machines SET id=? WHERE id=?').run(machineId, oldId);
-        // Atualiza campos de presença
-        d.prepare(`UPDATE machines SET hostname=?, agent_version=?, last_seen=?, online_since=?, status='online'
-                   WHERE id=?`).run(hostname, agentVersion || '', now, now, machineId);
-        // Remove todos os outros registros com mesmo hostname (duplicatas de registros anteriores)
-        const dupes = d.prepare(
-          `SELECT id FROM machines WHERE UPPER(hostname) = UPPER(?) AND id != ?`
-        ).all(hostname, machineId);
-        for (const { id: dupId } of dupes) {
+    const recentThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    if (canonical.last_seen < recentThreshold) {
+      // Reinstall: máquina offline há mais de 5 min → re-key atômico
+      const oldId = canonical.id;
+      d.pragma('foreign_keys = OFF');
+      try {
+        d.transaction(() => {
+          // Migra registros filhos do canonical para o novo UUID
           for (const t of _MACHINE_CHILD_TABLES) {
-            try { d.prepare(`DELETE FROM ${t} WHERE machine_id=?`).run(dupId); } catch (_) {}
+            try { d.prepare(`UPDATE ${t} SET machine_id=? WHERE machine_id=?`).run(machineId, oldId); } catch (_) {}
           }
-          d.prepare('DELETE FROM machines WHERE id=?').run(dupId);
-        }
-      })();
-    } finally {
-      d.pragma('foreign_keys = ON');
+          // Re-key do registro principal
+          d.prepare('UPDATE machines SET id=? WHERE id=?').run(machineId, oldId);
+          // Atualiza campos de presença
+          d.prepare(`UPDATE machines SET hostname=?, agent_version=?, last_seen=?, online_since=?, status='online'
+                     WHERE id=?`).run(hostname, agentVersion || '', now, now, machineId);
+          // Remove todos os outros registros com mesmo hostname (duplicatas de registros anteriores)
+          const dupes = d.prepare(
+            `SELECT id FROM machines WHERE UPPER(hostname) = UPPER(?) AND id != ?`
+          ).all(hostname, machineId);
+          for (const { id: dupId } of dupes) {
+            for (const t of _MACHINE_CHILD_TABLES) {
+              try { d.prepare(`DELETE FROM ${t} WHERE machine_id=?`).run(dupId); } catch (_) {}
+            }
+            d.prepare('DELETE FROM machines WHERE id=?').run(dupId);
+          }
+        })();
+      } finally {
+        d.pragma('foreign_keys = ON');
+      }
+      addEvent(machineId, 'agent_reregistered',
+        `UUID atualizado (config recuperado de ${oldId.slice(0, 8)}): agente v${agentVersion || '?'}`);
+      return canonical.token;
     }
-    addEvent(machineId, 'agent_reregistered',
-      `UUID atualizado (config recuperado de ${oldId.slice(0, 8)}): agente v${agentVersion || '?'}`);
-    return canonical.token;
+    // Canônica ativa (< 5 min) → máquina física diferente com mesmo hostname → cai no passo 3
   }
 
   // 3. Máquina genuinamente nova
