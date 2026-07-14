@@ -15,6 +15,7 @@ function getDb() {
 
     db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
+    db.pragma('busy_timeout = 10000'); // espera até 10s em vez de SQLITE_BUSY imediato
     db.pragma('foreign_keys = ON');
     migrate(db);
   }
