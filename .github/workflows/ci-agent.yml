@@ -35,7 +35,7 @@ jobs:
       - name: Check coverage threshold (≥16% — elevar gradualmente)
         shell: pwsh
         run: |
-          $output = go tool cover -func=coverage.out
+          $output = go tool cover -func coverage.out
           $totalLine = $output | Select-String "total:"
           if (-not $totalLine) { Write-Error "No coverage data"; exit 1 }
           $pct = [double]($totalLine.Line -replace '.*\s+([\d.]+)%\s*$', '$1')
