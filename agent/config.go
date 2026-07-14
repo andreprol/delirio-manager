@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // Config contem todas as configuracoes do agente.
@@ -58,6 +59,15 @@ func loadConfig() (*Config, error) {
 		cfg.PollSecs = 10
 	}
 
+	// Auto-migra machineId baseado em hostname (pré-v1.5.18) para UUID v4.
+	// Ocorre silenciosamente no próximo restart/update — sem intervenção manual.
+	if !isUUIDv4(cfg.MachineID) {
+		logWarn(fmt.Sprintf("machineId não-UUID detectado (%s) — migrando para UUID v4", cfg.MachineID))
+		cfg.MachineID = generateUUID()
+		cfg.Token = ""
+		_ = saveConfig(cfg)
+	}
+
 	return cfg, nil
 }
 
@@ -73,6 +83,13 @@ func saveConfig(cfg *Config) error {
 		return err
 	}
 	return os.Rename(tmp, configPath())
+}
+
+var uuidV4Re = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+// isUUIDv4 verifica se s tem formato UUID v4 lowercase.
+func isUUIDv4(s string) bool {
+	return uuidV4Re.MatchString(s)
 }
 
 func generateUUID() string {
