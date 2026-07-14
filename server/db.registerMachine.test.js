@@ -49,6 +49,26 @@ describe('registerMachine — passo 2a: reinstall (offline > 5 min)', () => {
   });
 });
 
+describe('registerMachine — passo 2c: migração hostname→UUID (isHostnameBased)', () => {
+  it('canonical hostname-based ativo (< 5 min) → re-key e herda localidade', () => {
+    const { registerMachine, getDb } = makeDb();
+    // Simula máquina pré-v1.5.18: machineId == hostname
+    const db = getDb();
+    const hostnameId = 'Nutricionista';
+    db.prepare(`INSERT INTO machines (id, hostname, display_name, location, token, agent_version, status, last_seen, online_since, registered_at)
+      VALUES (?, ?, ?, 'Escritório Central', 'tok-old', '1.5.17', 'online', ?, ?, ?)`
+    ).run(hostnameId, hostnameId, hostnameId, new Date().toISOString(), new Date().toISOString(), new Date().toISOString());
+
+    // Novo UUID registra com mesmo hostname (agente v1.5.26 migrou config)
+    const token = registerMachine({ machineId: 'uuid-NEW', hostname: 'Nutricionista', agentVersion: '1.5.26' });
+    expect(token).toBeTruthy();
+    const m = db.prepare('SELECT * FROM machines WHERE id=?').get('uuid-NEW');
+    expect(m.location).toBe('Escritório Central');
+    const old = db.prepare('SELECT * FROM machines WHERE id=?').get(hostnameId);
+    expect(old).toBeUndefined();
+  });
+});
+
 describe('registerMachine — passo 2b: guard máquina ativa (< 5 min)', () => {
   it('máquina diferente com mesmo hostname vai para Temporário sem re-key', () => {
     const { registerMachine, getDb } = makeDb();

@@ -455,9 +455,12 @@ function registerMachine({ machineId, hostname, agentVersion }) {
   ).get(hostname);
 
   if (canonical) {
+    // Se canonical.id === hostname (case-insensitive) → machineId era hostname-based (pré-v1.5.18).
+    // Neste caso é migração automática (mesma máquina física), não outra máquina: re-key incondicional.
+    const isHostnameBased = canonical.id.toUpperCase() === hostname.toUpperCase();
     const recentThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    if (canonical.last_seen < recentThreshold) {
-      // Reinstall: máquina offline há mais de 5 min → re-key atômico
+    if (isHostnameBased || canonical.last_seen < recentThreshold) {
+      // Reinstall ou migração hostname→UUID: re-key atômico
       const oldId = canonical.id;
       d.pragma('foreign_keys = OFF');
       try {
