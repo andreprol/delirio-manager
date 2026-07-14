@@ -42,6 +42,44 @@ Para qualquer feature, fix ou melhoria em projetos com usuários/clientes reais,
 
 Se o usuário pedir para implementar algo em projeto de produção sem ter passado pelo `/qa-before-code`, lembrar e perguntar se quer fazer o gate primeiro.
 
+## Verificação Final — Revisor Local
+
+Neste projeto usar o agente `code-reviewer` (`.claude/agents/code-reviewer.md`) no lugar de `cavecrew-reviewer` na etapa 4 do protocolo de verificação global (CLAUDE.md raiz). O agente local verifica 4 eixos: **corretude + SOLID + Code Smells + segurança**.
+
+Prompt para invocar:
+```
+Revisar o diff abaixo como revisor sênior independente.
+Contexto: Delirio Manager — <descrição da tarefa>
+--- DIFF ---
+<diff da sessão>
+```
+
+Aplicar: 🔴 CRÍTICO obrigatório · 🟠 ALTO obrigatório · 🟡 MÉDIO avaliar · 🔵 BAIXO ignorar.
+
+## Feature Flags — Convenção de Desenvolvimento
+
+Código incompleto que vai para produção deve ser isolado com env var toggle:
+
+```bash
+# .env (todos os ambientes)
+FEATURE_NOME=false   # desabilitar até estar pronto e testado em staging
+```
+
+```js
+// Node.js
+if (process.env.FEATURE_NOME === 'true') { /* novo código */ }
+```
+
+```go
+// Go agent
+if os.Getenv("FEATURE_NOME") == "true" { /* novo código */ }
+```
+
+**Regras:**
+1. Flag ativa em staging primeiro, produção só após validação
+2. Flag removida (cleanup) junto com o PR que conclui a feature
+3. Nome da flag: `FEATURE_` + nome em `UPPER_SNAKE_CASE` descritivo
+
 ## Installed Skills
 
 - `agent-browser` — browser automation CLI (CDP-based). Load usage guide with: `agent-browser skills get core`

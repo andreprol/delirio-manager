@@ -9,10 +9,17 @@ linters:
     - ineffassign   # Atribuições sem efeito
     - staticcheck   # Conjunto amplo de análises estáticas
     - unused        # Identificadores não usados
+    - cyclop        # Complexidade ciclomática — máx 10 por função (Cap. 5 Eng.Soft.Moderna)
 
 linters-settings:
   errcheck:
     check-type-assertions: false  # type assertions sem ok são comuns em Go idiomático
+  cyclop:
+    # Baseline 14/07/2026: 10 violações existentes (pior: executeCommand=50, temperature=21, metrics=15).
+    # Threshold em 51 para não bloquear CI agora. Reduzir conforme refactorings:
+    # 51 → 25 → 15 → 10 (meta final Cap.5 Eng.Soft.Moderna).
+    max-complexity: 51
+    skip-tests: true    # testes podem ter branches sem ser smells
 
 issues:
   # Permite comentar no mesmo arquivo que o erro foi detectado
