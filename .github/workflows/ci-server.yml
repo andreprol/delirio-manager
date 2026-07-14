@@ -35,11 +35,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint (ESLint — falha só em errors, warns são informativos)
-        run: npm run lint -- --max-warnings=9999
+      - name: Lint (ESLint — complexity:error + max 126 warns)
+        # 126 = baseline 14/07/2026 (no-console + no-unused-vars). Reduzir conforme limpeza.
+        run: npm run lint -- --max-warnings=126
 
       - name: Run tests
         run: npm test -- --forceExit
+
+      - name: Jest coverage
+        run: npm test -- --coverage --coverageReporters=json-summary --forceExit
+        env:
+          CI: true
+
+      - name: Check coverage threshold (lines ≥20%)
+        run: |
+          node -e "
+            const r = require('./coverage/coverage-summary.json');
+            const pct = r.total.lines.pct;
+            // Threshold atual: 20% (baseline 14/07/2026). Elevar +5%/sprint -> meta 70%.
+            console.log('Line coverage: ' + pct + '%');
+            if (pct < 20) { console.error('Coverage ' + pct + '% below 20% threshold'); process.exit(1); }
+            console.log('Coverage OK');
+          "
 
   deploy:
     name: Deploy to Azure VM

@@ -50,10 +50,9 @@
 - Gate: lines ≥20% (baseline conservador), elevar +5%/sprint → meta 70%
 - Bloquear se cobertura cair abaixo do threshold
 
-### P2.3 — 3 Test Suites Falhando (Cap. 8)
-**Problema:** 124 testes passam mas 3 suítes têm erro — mascarando regressões.  
-**Solução:** Investigar e corrigir as 3 suítes com falha antes de habilitar CI.  
-**Suítes a verificar:** `npm test -- --verbose 2>&1 | grep FAIL`
+### P2.3 — 3 Test Suites Falhando (Cap. 8) ✅ FALSO POSITIVO
+**Investigado em 14/07/2026:** Falso positivo — ocorria ao rodar `npx jest` da raiz, que confundia os testes Vitest do dashboard com Jest.  
+**Estado real:** Server 4/4 suítes (99 testes) ✅ | Dashboard 3/3 suítes (49 testes) ✅. Rodar de diretórios corretos.
 
 ### P2.4 — Funções >40 Linhas (Cap. 9)
 **Problema:** Complexity ≤10 não garante funções curtas. Função com 80 linhas de `if` simples passa.  
