@@ -183,460 +183,209 @@ function deviceStatus(d) {
   return d.status || d.online_status || d.device_status || 'unknown';
 }
 
-// ─── Sync state ───────────────────────────────────────────────────────────────
-let _syncing = false;
-function isSyncing() { return _syncing; }
+// ─── Per-device fetchers ──────────────────────────────────────────────────────
 
-// ─── Sync principal ───────────────────────────────────────────────────────────
-async function syncAll() {
-  _syncing = true;
+async function fetchDevicePatches(server, apiKey, did, name, log) {
+  const result = { critical: 0, high: 0, medium: 0, total: 0 };
+  if (!did) return result;
   try {
-    return await _syncAllInner();
-  } finally {
-    _syncing = false;
+    await throttle();
+    const pXml = await fetchNsight(server, apiKey, 'patch_list_all', { deviceid: did });
+    let patches = parseJsonList(pXml, 'patch', 'patches');
+    if (!patches) patches = parseFlatXmlList(pXml, 'patch');
+    result.total = patches.length;
+    for (const p of patches) {
+      const sev = (p.severity || '').toLowerCase();
+      if (sev === 'critical')    result.critical++;
+      else if (sev === 'high')   result.high++;
+      else if (sev === 'medium') result.medium++;
+    }
+  } catch (e) {
+    log.push(`Patches ${name}: ${e.message}`);
+  }
+  return result;
+}
+
+async function fetchDeviceThreats(server, apiKey, did, name, log) {
+  if (!did) return { threatsActive: 0, activeThreats: [] };
+  try {
+    await throttle();
+    const mXml = await fetchNsight(server, apiKey, 'list_mav_threats', { deviceid: did });
+    let threats = parseJsonList(mXml, 'threat', 'threats');
+    if (!threats) threats = parseFlatXmlList(mXml, 'threat');
+    const activeThreats = threats.filter(t => (t.last_status || t.status || '').toLowerCase() !== 'cleaned');
+    return { threatsActive: activeThreats.length, activeThreats };
+  } catch (e) {
+    log.push(`MAV ${name}: ${e.message}`);
+    return { threatsActive: 0, activeThreats: [] };
   }
 }
 
-async function _syncAllInner() {
-  const cfg = loadConfig();
-  if (!cfg.server || !cfg.apiKey) {
-    throw new Error('zamak.server e zamak.apiKey não configurados em config.json');
+async function fetchDevicePerformance(server, apiKey, did, name, storeName, log, now) {
+  if (!did) return null;
+  const base = { device_id: did, device_name: name, store_name: storeName, cached_at: now };
+  try {
+    await throttle();
+    const phXml = await fetchNsight(server, apiKey, 'list_performance_history', { deviceid: did, interval: 60 });
+    function firstFloat(tag) {
+      const m = phXml.match(new RegExp(`<${tag}[^>]*>([\\d.]+)</${tag}>`));
+      return m ? parseFloat(m[1]) : null;
+    }
+    return { ...base, cpu_avg: firstFloat('load_average'), cpu_peak: firstFloat('load_max'),
+      ram_total_mb: firstFloat('total'), ram_avail_avg: firstFloat('available_average'),
+      disk_time_avg: firstFloat('disk_time_average') };
+  } catch (e) {
+    log.push(`Perf ${name}: ${e.message}`);
+    return base;
   }
+}
 
-  const { server, apiKey } = cfg;
-  const customStoreMap = cfg.store_map || {};
-  const log = [];
-  const unmappedSites = [];
-  const now = new Date().toISOString();
+async function fetchDeviceOutages(server, apiKey, did, name, storeName, log, now) {
+  if (!did) return [];
+  try {
+    await throttle();
+    const oXml = await fetchNsight(server, apiKey, 'list_outages', { deviceid: did });
+    return parseFlatXmlList(oXml, 'outage').map(o => {
+      const durationMin = (o.utc_start && o.utc_end)
+        ? Math.round((new Date(o.utc_end) - new Date(o.utc_start)) / 60000)
+        : null;
+      return { outage_id: o.outage_id || null, device_id: did, device_name: name, store_name: storeName,
+        reason: o.reason || '', state: o.state || '', utc_start: o.utc_start || null, utc_end: o.utc_end || null,
+        duration_min: durationMin, check_description: o.check_description || null, cached_at: now };
+    });
+  } catch (e) {
+    log.push(`Outages ${name}: ${e.message}`);
+    return [];
+  }
+}
 
-  // 1. Listar clientes — encontrar Delírio Tropical
+function buildDiscrepancies(rows, allDmMachines, now) {
+  const discrepancies = [];
+  for (const row of rows) {
+    if (!row.dm_machine_id) {
+      discrepancies.push({ type: 'zamak_only', device_name: row.device_name, store_name: row.store_name,
+        zamak_device_id: row.device_id, dm_machine_id: null,
+        detail: `Existe na Zamak (${row.store_name || row.site_name}) mas sem agente Delirio Manager`, detected_at: now });
+    }
+  }
+  const zamakNames = new Set(rows.map(r => r.device_name.toLowerCase()).filter(Boolean));
+  for (const m of allDmMachines) {
+    if (!m.hostname) continue;
+    if (!zamakNames.has(m.hostname.toLowerCase())) {
+      discrepancies.push({ type: 'dm_only', device_name: m.hostname, store_name: m.location,
+        zamak_device_id: null, dm_machine_id: m.id,
+        detail: 'Tem agente DM mas não aparece na Zamak (possível reinstalação ou máquina nova)', detected_at: now });
+    }
+  }
+  return discrepancies;
+}
+
+// ─── Discovery helpers ────────────────────────────────────────────────────────
+
+async function discoverDelirio(server, apiKey, log) {
   log.push('Buscando clientes N-able...');
   await throttle();
   const clientsXml = await fetchNsight(server, apiKey, 'list_clients');
   let clients = parseJsonList(clientsXml, 'client', 'clients');
   if (!clients) clients = parseFlatXmlList(clientsXml, 'client');
-
-  const delirio = clients.find(c => {
-    return stripAccents(c.name || c.clientname || '').includes('delirio');
-  });
+  const delirio = clients.find(c => stripAccents(c.name || c.clientname || '').includes('delirio'));
   if (!delirio) {
     const names = clients.map(c => c.name || c.clientname || '?').join(', ');
     throw new Error(`Cliente Delírio não encontrado na Zamak. Clientes disponíveis: ${names}`);
   }
-
   const clientId = delirio.clientid;
   log.push(`Cliente: ${delirio.name || delirio.clientname} (clientid=${clientId})`);
+  return { clientId };
+}
 
-  // 2. Listar sites
+async function discoverSites(server, apiKey, clientId, customStoreMap, unmappedSites, log) {
   await throttle();
   const sitesXml = await fetchNsight(server, apiKey, 'list_sites', { clientid: clientId });
   let sites = parseJsonList(sitesXml, 'site', 'sites');
   if (!sites) sites = parseFlatXmlList(sitesXml, 'site');
   log.push(`Sites: ${sites.length}`);
-
-  const siteToStore = {};
   for (const site of sites) {
     const siteId   = site.siteid || site.id;
     const siteName = site.name || site.sitename || '';
-    const mapped   = resolveStoreName(siteName, customStoreMap);
-    siteToStore[siteId] = { siteName, storeName: mapped };
-    if (!mapped) {
+    if (!resolveStoreName(siteName, customStoreMap)) {
       unmappedSites.push({ siteId, siteName });
       log.push(`⚠️ Site sem mapeamento: "${siteName}" (siteId=${siteId})`);
     }
   }
+}
 
-  // 3. Listar todos os dispositivos — resposta hierárquica: <site> → <workstation>/<server>
+async function fetchAllDevices(server, apiKey, clientId, log) {
   await throttle();
-  const wsXml = await fetchNsight(server, apiKey, 'list_devices_at_client', {
-    clientid: clientId, devicetype: 'workstation',
-  });
+  const wsXml = await fetchNsight(server, apiKey, 'list_devices_at_client', { clientid: clientId, devicetype: 'workstation' });
   const workstations = parseDevicesWithSite(wsXml, 'workstation').map(d => ({ ...d, _type: 'workstation' }));
-
   await throttle();
-  const srvXml = await fetchNsight(server, apiKey, 'list_devices_at_client', {
-    clientid: clientId, devicetype: 'server',
-  });
+  const srvXml = await fetchNsight(server, apiKey, 'list_devices_at_client', { clientid: clientId, devicetype: 'server' });
   const servers = parseDevicesWithSite(srvXml, 'server').map(d => ({ ...d, _type: 'server' }));
-
   const allDevices = [...workstations, ...servers];
   log.push(`Dispositivos: ${allDevices.length} (${workstations.length} workstations + ${servers.length} servidores)`);
+  return allDevices;
+}
 
-  // 4. Failing checks globais (1 chamada)
+async function buildFailingByDevice(server, apiKey, clientId, log) {
   await throttle();
   const fcXml = await fetchNsight(server, apiKey, 'list_failing_checks', { clientid: clientId });
   let failingChecks = parseJsonList(fcXml, 'check', 'checks');
   if (!failingChecks) failingChecks = parseFlatXmlList(fcXml, 'check');
   log.push(`Failing checks: ${failingChecks.length}`);
-
   const failingByDevice = {};
   for (const fc of failingChecks) {
     const did = fc.deviceid;
     if (did) failingByDevice[did] = (failingByDevice[did] || 0) + 1;
   }
-
-  // 5. Por dispositivo: patches + ameaças MAV + performance + outages
-  const allDmMachines = db.getAllMachines();
-  const rows = [];
-  const threatRows = [];
-  const perfRows = [];
-  const outageRows = [];
-
-  for (const device of allDevices) {
-    const did      = deviceId(device);
-    const name     = deviceName(device);
-    const siteId   = device._siteid;
-    const siteName = device._sitename || '?';
-    const storeName = resolveStoreName(siteName, customStoreMap);
-
-    if (!storeName && siteName !== '?' && !unmappedSites.find(u => u.siteId === siteId)) {
-      unmappedSites.push({ siteId, siteName });
-      log.push(`⚠️ Site sem mapeamento: "${siteName}" (siteId=${siteId})`);
-    }
-
-    // Match com máquina do DM por hostname (case-insensitive)
-    const dmMatch = allDmMachines.find(m =>
-      m.hostname && m.hostname.toLowerCase() === name.toLowerCase()
-    );
-
-    // Patches
-    let patchCritical = 0, patchHigh = 0, patchMedium = 0, patchTotal = 0;
-    if (did) {
-      try {
-        await throttle();
-        const pXml = await fetchNsight(server, apiKey, 'patch_list_all', { deviceid: did });
-        let patches = parseJsonList(pXml, 'patch', 'patches');
-        if (!patches) patches = parseFlatXmlList(pXml, 'patch');
-        patchTotal = patches.length;
-        for (const p of patches) {
-          const sev = (p.severity || '').toLowerCase();
-          if (sev === 'critical')     patchCritical++;
-          else if (sev === 'high')    patchHigh++;
-          else if (sev === 'medium')  patchMedium++;
-        }
-      } catch (e) {
-        log.push(`Patches ${name}: ${e.message}`);
-      }
-    }
-
-    // MAV threats
-    let threatsActive = 0;
-    let activeThreats = [];
-    if (did) {
-      try {
-        await throttle();
-        const mXml = await fetchNsight(server, apiKey, 'list_mav_threats', { deviceid: did });
-        let threats = parseJsonList(mXml, 'threat', 'threats');
-        if (!threats) threats = parseFlatXmlList(mXml, 'threat');
-        activeThreats = threats.filter(t =>
-          (t.last_status || t.status || '').toLowerCase() !== 'cleaned'
-        );
-        threatsActive = activeThreats.length;
-      } catch (e) {
-        log.push(`MAV ${name}: ${e.message}`);
-      }
-    }
-
-    for (const t of activeThreats) {
-      threatRows.push({
-        device_id:   did,
-        device_name: name,
-        store_name:  storeName,
-        threat_name: t.name || t.threat_name || t.filename || 'Desconhecida',
-        category:    t.category || t.infotype || '',
-        last_status: t.last_status || t.status || '',
-        cached_at:   now,
-      });
-    }
-
-    // Performance history (interval=60 → até 8 dias)
-    if (did) {
-      try {
-        await throttle();
-        const phXml = await fetchNsight(server, apiKey, 'list_performance_history', {
-          deviceid: did, interval: 60,
-        });
-        function firstFloat(tag) {
-          const m = phXml.match(new RegExp(`<${tag}[^>]*>([\\d.]+)</${tag}>`));
-          return m ? parseFloat(m[1]) : null;
-        }
-        const cpuAvg  = firstFloat('load_average');
-        const cpuPeak = firstFloat('load_max');
-        const ramTot  = firstFloat('total');
-        const ramAvail= firstFloat('available_average');
-        const diskTime= firstFloat('disk_time_average');
-        perfRows.push({
-          device_id:    did,
-          device_name:  name,
-          store_name:   storeName,
-          cpu_avg:      cpuAvg,
-          cpu_peak:     cpuPeak,
-          ram_total_mb: ramTot,
-          ram_avail_avg:ramAvail,
-          disk_time_avg:diskTime,
-          cached_at:    now,
-        });
-      } catch (e) {
-        log.push(`Perf ${name}: ${e.message}`);
-        perfRows.push({ device_id: did, device_name: name, store_name: storeName, cached_at: now });
-      }
-    }
-
-    // Outages (últimos 61 dias)
-    if (did) {
-      try {
-        await throttle();
-        const oXml = await fetchNsight(server, apiKey, 'list_outages', { deviceid: did });
-        const outages = parseFlatXmlList(oXml, 'outage');
-        for (const o of outages) {
-          let durationMin = null;
-          if (o.utc_start && o.utc_end) {
-            durationMin = Math.round((new Date(o.utc_end) - new Date(o.utc_start)) / 60000);
-          }
-          outageRows.push({
-            outage_id:        o.outage_id || null,
-            device_id:        did,
-            device_name:      name,
-            store_name:       storeName,
-            reason:           o.reason || '',
-            state:            o.state || '',
-            utc_start:        o.utc_start || null,
-            utc_end:          o.utc_end || null,
-            duration_min:     durationMin,
-            check_description:o.check_description || null,
-            cached_at:        now,
-          });
-        }
-      } catch (e) {
-        log.push(`Outages ${name}: ${e.message}`);
-      }
-    }
-
-    rows.push({
-      device_id:          did,
-      site_id:            siteId || '',
-      site_name:          siteName,
-      store_name:         storeName,
-      device_name:        name,
-      device_type:        device._type,
-      status:             deviceStatus(device),
-      os_type:            device.os_type || device.os || '',
-      ip_address:         device.ip_address || device.ipaddress || '',
-      has_web_protection: 0, // WebControl não está disponível na API pública do N-sight
-      patch_critical:     patchCritical,
-      patch_high:         patchHigh,
-      patch_medium:       patchMedium,
-      patch_total:        patchTotal,
-      threats_active:     threatsActive,
-      failing_checks:     failingByDevice[did] || 0,
-      dm_machine_id:      dmMatch?.id || null,
-      dm_hostname:        dmMatch?.hostname || null,
-      cached_at:          now,
-    });
-  }
-
-  // 6. Salvar no banco
-  db.upsertZamakDevices(rows);
-  db.replaceZamakThreats(threatRows);
-  db.replaceZamakPerformance(perfRows);
-  db.replaceZamakOutages(outageRows);
-
-  // 7. Discrepâncias
-  const discrepancies = [];
-
-  // zamak_only: existe na Zamak mas sem agente DM
-  for (const row of rows) {
-    if (!row.dm_machine_id) {
-      discrepancies.push({
-        type:            'zamak_only',
-        device_name:     row.device_name,
-        store_name:      row.store_name,
-        zamak_device_id: row.device_id,
-        dm_machine_id:   null,
-        detail:          `Existe na Zamak (${row.store_name || row.site_name}) mas sem agente Delirio Manager`,
-        detected_at:     now,
-      });
-    }
-  }
-
-  // dm_only: tem agente DM mas não aparece na Zamak
-  const zamakNames = new Set(rows.map(r => r.device_name.toLowerCase()).filter(Boolean));
-  for (const m of allDmMachines) {
-    if (!m.hostname) continue;
-    if (!zamakNames.has(m.hostname.toLowerCase())) {
-      discrepancies.push({
-        type:            'dm_only',
-        device_name:     m.hostname,
-        store_name:      m.location,
-        zamak_device_id: null,
-        dm_machine_id:   m.id,
-        detail:          `Tem agente DM mas não aparece na Zamak (possível reinstalação ou máquina nova)`,
-        detected_at:     now,
-      });
-    }
-  }
-
-  db.replaceZamakDiscrepancies(discrepancies);
-
-  const summary = {
-    devices:       rows.length,
-    discrepancies: discrepancies.length,
-    unmappedSites,
-    log,
-  };
-
-  log.push(`✅ Sync concluído: ${rows.length} dispositivos, ${discrepancies.length} discrepâncias`);
-  if (unmappedSites.length > 0) {
-    log.push(
-      `⚠️ Sites sem mapeamento (configurar em config.json > zamak.store_map): ` +
-      unmappedSites.map(s => `"${s.siteName}"`).join(', ')
-    );
-  }
-
-  return summary;
+  return failingByDevice;
 }
 
-async function syncIfStale(hours = 6) {
-  const age = db.getZamakCacheAge();
-  if (age >= hours) return syncAll();
-  return null;
+function trackUnmappedSite(storeName, siteName, siteId, unmappedSites, log) {
+  if (storeName || siteName === '?') return;
+  if (unmappedSites.find(u => u.siteId === siteId)) return;
+  unmappedSites.push({ siteId, siteName });
+  log.push(`⚠️ Site sem mapeamento: "${siteName}" (siteId=${siteId})`);
 }
 
-// ─── Sync diário — performance + outages apenas ────────────────────────────────
-// Usa device IDs já conhecidos no cache — sem re-discovery (poupa ~5 chamadas API)
-async function syncPerfAndOutages() {
-  const cfg = loadConfig();
-  if (!cfg.server || !cfg.apiKey) throw new Error('zamak.server e zamak.apiKey não configurados');
-
-  const { server, apiKey } = cfg;
-  const now = new Date().toISOString();
-
-  const cachedDevices = db.getZamakCachedDeviceIds();
-  if (!cachedDevices.length) throw new Error('Nenhum device no cache. Execute sync completo primeiro (botão Atualizar).');
-
-  const log = [];
-  const perfRows = [];
-  const outageRows = [];
-  let errors = 0;
-
-  log.push(`Sync performance+outages — ${cachedDevices.length} devices`);
-
-  for (const { device_id: did, device_name: name, store_name: storeName } of cachedDevices) {
-    if (!did) continue;
-
-    // Performance history (interval=60 → 8 dias em intervalos horários)
-    try {
-      await throttle();
-      const phXml = await fetchNsight(server, apiKey, 'list_performance_history', { deviceid: did, interval: 60 });
-      function firstFloat(tag) {
-        const m = phXml.match(new RegExp(`<${tag}[^>]*>([\\d.]+)</${tag}>`));
-        return m ? parseFloat(m[1]) : null;
-      }
-      perfRows.push({
-        device_id:     did,
-        device_name:   name,
-        store_name:    storeName,
-        cpu_avg:       firstFloat('load_average'),
-        cpu_peak:      firstFloat('load_max'),
-        ram_total_mb:  firstFloat('total'),
-        ram_avail_avg: firstFloat('available_average'),
-        disk_time_avg: firstFloat('disk_time_average'),
-        cached_at:     now,
-      });
-    } catch (e) {
-      log.push(`Perf ${name}: ${e.message}`);
-      perfRows.push({ device_id: did, device_name: name, store_name: storeName, cached_at: now });
-      errors++;
-    }
-
-    // Outages (últimos 61 dias)
-    try {
-      await throttle();
-      const oXml = await fetchNsight(server, apiKey, 'list_outages', { deviceid: did });
-      const outages = parseFlatXmlList(oXml, 'outage');
-      for (const o of outages) {
-        let durationMin = null;
-        if (o.utc_start && o.utc_end) {
-          durationMin = Math.round((new Date(o.utc_end) - new Date(o.utc_start)) / 60000);
-        }
-        outageRows.push({
-          outage_id:         o.outage_id || null,
-          device_id:         did,
-          device_name:       name,
-          store_name:        storeName,
-          reason:            o.reason || null,
-          utc_start:         o.utc_start || null,
-          utc_end:           o.utc_end || null,
-          duration_min:      durationMin,
-          check_description: o.check_description || null,
-          cached_at:         now,
-        });
-      }
-    } catch (e) {
-      log.push(`Outages ${name}: ${e.message}`);
-      errors++;
-    }
-  }
-
-  db.replaceZamakPerformance(perfRows);
-  db.replaceZamakOutages(outageRows);
-
+function buildThreatRow(t, did, name, storeName, now) {
   return {
-    devices:   cachedDevices.length,
-    perfRows:  perfRows.length,
-    outageRows: outageRows.length,
-    errors,
-    log,
-    syncedAt:  now,
+    device_id: did, device_name: name, store_name: storeName,
+    threat_name: t.name || t.threat_name || t.filename || 'Desconhecida',
+    category:    t.category || t.infotype || '',
+    last_status: t.last_status || t.status || '',
+    cached_at:   now,
   };
 }
 
-// ─── Email de resultado via MS Graph ──────────────────────────────────────────
-async function sendSyncEmail(success, summary, error) {
-  const path = require('path');
-  const fs   = require('fs');
-  const cfg  = (() => {
-    try { return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8')).msGraph || {}; }
-    catch { return {}; }
-  })();
+function buildDeviceRow(device, did, siteId, siteName, storeName, patches, threatsActive, failingByDevice, dmMatch, now) {
+  return {
+    device_id: did, site_id: siteId || '', site_name: siteName, store_name: storeName,
+    device_name: deviceName(device), device_type: device._type, status: deviceStatus(device),
+    os_type: device.os_type || device.os || '', ip_address: device.ip_address || device.ipaddress || '',
+    has_web_protection: 0,
+    patch_critical: patches.critical, patch_high: patches.high, patch_medium: patches.medium, patch_total: patches.total,
+    threats_active: threatsActive, failing_checks: failingByDevice[did] || 0,
+    dm_machine_id: dmMatch ? dmMatch.id : null, dm_hostname: dmMatch ? dmMatch.hostname : null,
+    cached_at: now,
+  };
+}
 
-  if (!cfg.tenantId || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
-    console.warn('[ZamakDaily] Email não enviado — msGraph não configurado');
-    return;
-  }
-
-  // Obter access token
+async function getGraphAccessToken(cfg) {
   const params = new URLSearchParams({
-    grant_type:    'refresh_token',
-    client_id:     cfg.clientId,
-    client_secret: cfg.clientSecret,
-    refresh_token: cfg.refreshToken,
-    scope:         'offline_access https://graph.microsoft.com/Mail.Send',
+    grant_type: 'refresh_token', client_id: cfg.clientId,
+    client_secret: cfg.clientSecret, refresh_token: cfg.refreshToken,
+    scope: 'offline_access https://graph.microsoft.com/Mail.Send',
   });
-  const tokenRes = await fetch(
+  const res = await fetch(
     `https://login.microsoftonline.com/${cfg.tenantId}/oauth2/v2.0/token`,
     { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() }
   );
-  if (!tokenRes.ok) { console.error('[ZamakDaily] Falha ao obter token Graph'); return; }
-  const { access_token, refresh_token: newRt } = await tokenRes.json();
+  if (!res.ok) throw new Error('Falha ao obter token Graph');
+  return res.json();
+}
 
-  // Persistir novo refresh_token se veio rotacionado
-  if (newRt && newRt !== cfg.refreshToken) {
-    try {
-      const confPath = path.join(__dirname, '..', 'config.json');
-      const conf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
-      conf.msGraph.refreshToken = newRt;
-      fs.writeFileSync(confPath, JSON.stringify(conf, null, 2));
-    } catch {}
-  }
-
-  const dtBRT = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo',
-    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-
-  const subject = success
-    ? `✅ Zamak sync concluido — ${dtBRT}`
-    : `❌ Zamak sync FALHOU — ${dtBRT}`;
-
+function buildSyncEmailContent(success, summary, error, dtBRT) {
+  const subject = success ? `✅ Zamak sync concluido — ${dtBRT}` : `❌ Zamak sync FALHOU — ${dtBRT}`;
   const bodyHtml = success ? `
 <!DOCTYPE html><html lang="pt-BR"><body style="font-family:Arial,sans-serif;max-width:580px;margin:0 auto;color:#222">
 <div style="background:#276749;color:#fff;padding:12px 20px;border-radius:6px 6px 0 0">
@@ -663,6 +412,160 @@ async function sendSyncEmail(success, summary, error) {
   <pre style="background:#fff5f5;padding:10px;border-radius:4px;font-size:12px">${error?.message || String(error)}</pre>
   <p style="color:#718096;font-size:12px;margin-top:16px">Verifique os logs do servidor (pm2 logs dt-manager).</p>
 </div></body></html>`;
+  return { subject, bodyHtml };
+}
+
+// ─── Sync state ───────────────────────────────────────────────────────────────
+let _syncing = false;
+function isSyncing() { return _syncing; }
+
+// ─── Sync principal ───────────────────────────────────────────────────────────
+async function syncAll() {
+  _syncing = true;
+  try {
+    return await _syncAllInner();
+  } finally {
+    _syncing = false;
+  }
+}
+
+async function _syncAllInner() {
+  const cfg = loadConfig();
+  if (!cfg.server || !cfg.apiKey) {
+    throw new Error('zamak.server e zamak.apiKey não configurados em config.json');
+  }
+
+  const { server, apiKey } = cfg;
+  const customStoreMap = cfg.store_map || {};
+  const log            = [];
+  const unmappedSites  = [];
+  const now            = new Date().toISOString();
+
+  const { clientId }    = await discoverDelirio(server, apiKey, log);
+  await discoverSites(server, apiKey, clientId, customStoreMap, unmappedSites, log);
+  const allDevices      = await fetchAllDevices(server, apiKey, clientId, log);
+  const failingByDevice = await buildFailingByDevice(server, apiKey, clientId, log);
+
+  const allDmMachines = db.getAllMachines();
+  const rows = [], threatRows = [], perfRows = [], outageRows = [];
+
+  for (const device of allDevices) {
+    const did       = deviceId(device);
+    const name      = deviceName(device);
+    const siteId    = device._siteid;
+    const siteName  = device._sitename || '?';
+    const storeName = resolveStoreName(siteName, customStoreMap);
+    trackUnmappedSite(storeName, siteName, siteId, unmappedSites, log);
+    const dmMatch = allDmMachines.find(m => m.hostname && m.hostname.toLowerCase() === name.toLowerCase());
+
+    const patches                      = await fetchDevicePatches(server, apiKey, did, name, log);
+    const { threatsActive, activeThreats } = await fetchDeviceThreats(server, apiKey, did, name, log);
+    const perfRow                      = await fetchDevicePerformance(server, apiKey, did, name, storeName, log, now);
+    const deviceOutages                = await fetchDeviceOutages(server, apiKey, did, name, storeName, log, now);
+
+    for (const t of activeThreats) threatRows.push(buildThreatRow(t, did, name, storeName, now));
+    if (perfRow) perfRows.push(perfRow);
+    outageRows.push(...deviceOutages);
+    rows.push(buildDeviceRow(device, did, siteId, siteName, storeName, patches, threatsActive, failingByDevice, dmMatch, now));
+  }
+
+  db.upsertZamakDevices(rows);
+  db.replaceZamakThreats(threatRows);
+  db.replaceZamakPerformance(perfRows);
+  db.replaceZamakOutages(outageRows);
+
+  const discrepancies = buildDiscrepancies(rows, allDmMachines, now);
+  db.replaceZamakDiscrepancies(discrepancies);
+
+  const summary = { devices: rows.length, discrepancies: discrepancies.length, unmappedSites, log };
+  log.push(`✅ Sync concluído: ${rows.length} dispositivos, ${discrepancies.length} discrepâncias`);
+  if (unmappedSites.length > 0) {
+    log.push(`⚠️ Sites sem mapeamento (configurar em config.json > zamak.store_map): ` +
+      unmappedSites.map(s => `"${s.siteName}"`).join(', '));
+  }
+  return summary;
+}
+
+async function syncIfStale(hours = 6) {
+  const age = db.getZamakCacheAge();
+  if (age >= hours) return syncAll();
+  return null;
+}
+
+// ─── Sync diário — performance + outages apenas ────────────────────────────────
+// Usa device IDs já conhecidos no cache — sem re-discovery (poupa ~5 chamadas API)
+async function syncPerfAndOutages() {
+  const cfg = loadConfig();
+  if (!cfg.server || !cfg.apiKey) throw new Error('zamak.server e zamak.apiKey não configurados');
+
+  const { server, apiKey } = cfg;
+  const now = new Date().toISOString();
+
+  const cachedDevices = db.getZamakCachedDeviceIds();
+  if (!cachedDevices.length) throw new Error('Nenhum device no cache. Execute sync completo primeiro (botão Atualizar).');
+
+  const log = [];
+  const perfRows = [];
+  const outageRows = [];
+
+  log.push(`Sync performance+outages — ${cachedDevices.length} devices`);
+
+  for (const { device_id: did, device_name: name, store_name: storeName } of cachedDevices) {
+    if (!did) continue;
+    perfRows.push(await fetchDevicePerformance(server, apiKey, did, name, storeName, log, now));
+    outageRows.push(...await fetchDeviceOutages(server, apiKey, did, name, storeName, log, now));
+  }
+
+  db.replaceZamakPerformance(perfRows);
+  db.replaceZamakOutages(outageRows);
+
+  const errors = log.filter(l => /^(Perf|Outages) .+:/.test(l)).length;
+  return {
+    devices:   cachedDevices.length,
+    perfRows:  perfRows.length,
+    outageRows: outageRows.length,
+    errors,
+    log,
+    syncedAt:  now,
+  };
+}
+
+// ─── Email de resultado via MS Graph ──────────────────────────────────────────
+async function sendSyncEmail(success, summary, error) {
+  const path = require('path');
+  const fs   = require('fs');
+  const cfg  = (() => {
+    try { return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8')).msGraph || {}; }
+    catch { return {}; }
+  })();
+
+  if (!cfg.tenantId || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
+    console.warn('[ZamakDaily] Email não enviado — msGraph não configurado');
+    return;
+  }
+
+  let tokenData;
+  try {
+    tokenData = await getGraphAccessToken(cfg);
+  } catch {
+    console.error('[ZamakDaily] Falha ao obter token Graph');
+    return;
+  }
+  const { access_token, refresh_token: newRt } = tokenData;
+
+  if (newRt && newRt !== cfg.refreshToken) {
+    try {
+      const confPath = path.join(__dirname, '..', 'config.json');
+      const conf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+      conf.msGraph.refreshToken = newRt;
+      fs.writeFileSync(confPath, JSON.stringify(conf, null, 2));
+    } catch {}
+  }
+
+  const dtBRT = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo',
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+  const { subject, bodyHtml } = buildSyncEmailContent(success, summary, error, dtBRT);
 
   await fetch('https://graph.microsoft.com/v1.0/users/andre@delirio.com.br/sendMail', {
     method:  'POST',

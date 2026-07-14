@@ -40,6 +40,17 @@ server.listen(PORT, () => {
 function _scheduleHourlyMetricsMonitor() {
   let lastCheckedHour = -1;
 
+  function _diagnoseHeartbeat(ver, heartbeatAgoMin, readings24h) {
+    if (heartbeatAgoMin !== null && heartbeatAgoMin < 3) {
+      if (readings24h === 0) return `agente ${ver} vivo (heartbeat há ${heartbeatAgoMin}min) — goroutine nunca iniciou (verificar logs: token ausente no boot?)`;
+      return `agente ${ver} vivo (heartbeat há ${heartbeatAgoMin}min) — goroutine morreu após ${readings24h} leitura(s) — provável panic silencioso ou crash do rate-limiter`;
+    }
+    if (heartbeatAgoMin !== null && heartbeatAgoMin < 10) {
+      return `agente ${ver} com heartbeat recente (${heartbeatAgoMin}min) — goroutine interrompida`;
+    }
+    return `agente ${ver} sem heartbeat há ${heartbeatAgoMin ?? '?'}min — agente pode ter crashado completamente`;
+  }
+
   function _diagnose(machine, nowTs) {
     const ver = machine.agent_version;
     if (!ver || ver < '1.5.20') {
@@ -48,17 +59,7 @@ function _scheduleHourlyMetricsMonitor() {
     const heartbeatAgoMin = machine.last_seen
       ? Math.round((nowTs * 1000 - new Date(machine.last_seen).getTime()) / 60000)
       : null;
-    if (heartbeatAgoMin !== null && heartbeatAgoMin < 3) {
-      const r = machine.readings_24h ?? 0;
-      if (r === 0) {
-        return `agente ${ver} vivo (heartbeat há ${heartbeatAgoMin}min) — goroutine nunca iniciou (verificar logs: token ausente no boot?)`;
-      }
-      return `agente ${ver} vivo (heartbeat há ${heartbeatAgoMin}min) — goroutine morreu após ${r} leitura(s) — provável panic silencioso ou crash do rate-limiter`;
-    }
-    if (heartbeatAgoMin !== null && heartbeatAgoMin < 10) {
-      return `agente ${ver} com heartbeat recente (${heartbeatAgoMin}min) — goroutine interrompida`;
-    }
-    return `agente ${ver} sem heartbeat há ${heartbeatAgoMin ?? '?'}min — agente pode ter crashado completamente`;
+    return _diagnoseHeartbeat(ver, heartbeatAgoMin, machine.readings_24h ?? 0);
   }
 
   async function _checkHour() {

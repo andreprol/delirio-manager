@@ -62,6 +62,40 @@ router.get('/:id/commands', (req, res) => {
   res.json(db.getCommandHistory(req.params.id));
 });
 
+// ── Helpers for POST /:id/commands ───────────────────────────────────────────
+
+function getCriticalCheckError(machine, type, confirm) {
+  if (machine.critica && ['reboot', 'shutdown'].includes(type)) {
+    if (confirm !== machine.id) {
+      return {
+        error: 'Maquina critica. Envie confirm=<machineId> para confirmar.',
+        machineId: machine.id,
+        critica: true,
+      };
+    }
+  }
+  return null;
+}
+
+function handleWolSetup(machine, params) {
+  const now         = new Date().toISOString();
+  const wolTargetId = params?.targetId || machine.id;
+  db.setWolStatus(wolTargetId, 'testing', now);
+  db.addEvent(wolTargetId, 'wol_testing', `WoL iniciado via relay ${machine.id}`);
+  const target = db.getMachineById(wolTargetId);
+  if (target) {
+    broadcast('machine:update', {
+      machineId:   wolTargetId,
+      displayName: target.display_name || target.hostname,
+      status:      target.status || 'offline',
+      lastSeen:    target.last_seen,
+      wolStatus:   'testing',
+      motherboard: target.motherboard,
+    });
+  }
+  console.log(`[WoL] Teste iniciado para ${wolTargetId} via relay ${machine.id} às ${now}`);
+}
+
 // POST /api/machines/:id/commands
 // Envia um comando para a maquina (reboot, shutdown, wol, cancel-shutdown)
 router.post('/:id/commands', (req, res) => {
@@ -76,42 +110,13 @@ router.post('/:id/commands', (req, res) => {
   }
 
   // Protecao para maquinas criticas: bloqueia reboot/shutdown sem confirmacao
-  if (machine.critica && ['reboot', 'shutdown'].includes(type)) {
-    const confirm = req.body.confirm;
-    if (confirm !== machine.id) {
-      return res.status(409).json({
-        error: 'Maquina critica. Envie confirm=<machineId> para confirmar.',
-        machineId: machine.id,
-        critica: true,
-      });
-    }
-  }
+  const critError = getCriticalCheckError(machine, type, req.body.confirm);
+  if (critError) return res.status(409).json(critError);
 
   try {
     const commandId = db.createCommand(machine.id, type, params || {});
 
-    if (type === 'wol') {
-      const now = new Date().toISOString();
-      // targetId = máquina a acordar; machine.id = relay que envia o magic packet
-      const wolTargetId = params?.targetId || machine.id;
-      db.setWolStatus(wolTargetId, 'testing', now);
-      db.addEvent(wolTargetId, 'wol_testing', `WoL iniciado via relay ${machine.id}`);
-
-      // Broadcast imediato para o dashboard atualizar o badge sem esperar poll
-      const target = db.getMachineById(wolTargetId);
-      if (target) {
-        broadcast('machine:update', {
-          machineId:   wolTargetId,
-          displayName: target.display_name || target.hostname,
-          status:      target.status || 'offline',
-          lastSeen:    target.last_seen,
-          wolStatus:   'testing',
-          motherboard: target.motherboard,
-        });
-      }
-
-      console.log(`[WoL] Teste iniciado para ${wolTargetId} via relay ${machine.id} às ${now}`);
-    }
+    if (type === 'wol') handleWolSetup(machine, params);
 
     db.addEvent(machine.id, `command_sent`, `Comando ${type} enviado (id: ${commandId})`);
 
@@ -151,41 +156,75 @@ router.delete('/:id', (req, res) => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+function buildMachineIdentity(m) {
+  return {
+    displayName: m.display_name || m.hostname,
+    location:    m.location     || '',
+    subnet:      m.subnet       || '',
+    ipInterno:   m.ip_interno   || '',
+    mac:         m.mac          || '',
+  };
+}
+
+function buildMachineStatus(m) {
+  return {
+    agentVersion: m.agent_version || '',
+    status:       m.status        || 'unknown',
+    lastSeen:     m.last_seen     || null,
+    onlineSince:  m.online_since  || null,
+    wolStatus:    m.wol_status    || 'unknown',
+    motherboard:  m.motherboard   || '',
+    osVersion:    m.os_version    || '',
+  };
+}
+
 function parseMachine(m) {
   return {
-    id:           m.id,
-    hostname:     m.hostname,
-    displayName:  m.display_name || m.hostname,
-    location:     m.location     || '',
-    subnet:       m.subnet       || '',
-    ipInterno:    m.ip_interno   || '',
-    mac:          m.mac          || '',
-    critica:      m.critica === 1,
-    agentVersion: m.agent_version || '',
-    status:       m.status       || 'unknown',
-    lastSeen:     m.last_seen    || null,
-    onlineSince:  m.online_since || null,
-    registeredAt: m.registered_at,
-    lastMetrics:  m.last_metrics ? parseJSON(m.last_metrics, null) : null,
-    wolStatus:       m.wol_status        || 'unknown',
+    id:              m.id,
+    hostname:        m.hostname,
+    ...buildMachineIdentity(m),
+    critica:         m.critica === 1,
+    ...buildMachineStatus(m),
+    registeredAt:    m.registered_at,
+    lastMetrics:     m.last_metrics ? parseJSON(m.last_metrics, null) : null,
     wolEverConfirmed: m.wol_ever_confirmed === 1,
-    motherboard:  m.motherboard  || '',
-    osVersion:    m.os_version   || '',
   };
 }
 
 // POST /api/machines/:id/run
 // Executa script PowerShell na maquina e aguarda resultado sincrono (max 35s).
 // Requer header X-Admin-Secret (mesmo segredo do endpoint /api/admin/*).
-router.post('/:id/run', async (req, res) => {
+
+function loadAdminSecret() {
   const fs   = require('fs');
   const path = require('path');
-  let adminSecret;
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
-    adminSecret = cfg.adminSecret || null;
-  } catch { adminSecret = null; }
+    return cfg.adminSecret || null;
+  } catch { return null; }
+}
 
+function isValidScript(script) {
+  return script && typeof script === 'string' && script.trim();
+}
+
+async function pollCommandResult(commandId, deadline) {
+  const POLL_MS = 500;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, POLL_MS));
+    const cmd = db.getCommandResult(commandId);
+    if (cmd && cmd.status === 'acked') {
+      return { failed: false, output: cmd.result || '' };
+    }
+    if (cmd && cmd.status === 'failed') {
+      return { failed: true, output: cmd.result || '' };
+    }
+  }
+  return null;
+}
+
+router.post('/:id/run', async (req, res) => {
+  const adminSecret = loadAdminSecret();
   if (!adminSecret || req.headers['x-admin-secret'] !== adminSecret) {
     return res.status(401).json({ error: 'X-Admin-Secret invalido ou nao configurado' });
   }
@@ -194,31 +233,25 @@ router.post('/:id/run', async (req, res) => {
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 
   const { script } = req.body;
-  if (!script || typeof script !== 'string' || !script.trim()) {
+  if (!isValidScript(script)) {
     return res.status(400).json({ error: 'script obrigatorio' });
   }
 
-  const commandId = db.createCommand(machine.id, 'run_powershell', { script });
-
-  const POLL_MS    = 500;
+  const commandId  = db.createCommand(machine.id, 'run_powershell', { script });
   const TIMEOUT_MS = 35_000;
   const deadline   = Date.now() + TIMEOUT_MS;
 
-  while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, POLL_MS));
-    const cmd = db.getCommandResult(commandId);
-    if (cmd && cmd.status === 'acked') {
-      return res.json({ success: true, output: cmd.result || '', commandId });
-    }
-    if (cmd && cmd.status === 'failed') {
-      return res.status(500).json({ success: false, output: cmd.result || '', commandId });
-    }
+  const pollResult = await pollCommandResult(commandId, deadline);
+  if (!pollResult) {
+    return res.status(504).json({
+      error: 'Timeout aguardando resposta da maquina (35s). Maquina pode estar offline.',
+      commandId,
+    });
   }
-
-  return res.status(504).json({
-    error: 'Timeout aguardando resposta da maquina (35s). Maquina pode estar offline.',
-    commandId,
-  });
+  if (pollResult.failed) {
+    return res.status(500).json({ success: false, output: pollResult.output, commandId });
+  }
+  return res.json({ success: true, output: pollResult.output, commandId });
 });
 
 function parseJSON(str, fallback) {

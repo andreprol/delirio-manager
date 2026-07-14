@@ -982,6 +982,14 @@ function getNFCeByChave(machineId, chave) {
   return { ...row, danfe: JSON.parse(row.danfe_json || '{}') };
 }
 
+function _parseSessionRow(sess) {
+  return {
+    totalDays:        sess?.total      || 0,
+    pendingDays:      sess?.pending    || 0,
+    sessionStartedAt: sess?.started_at || null,
+  };
+}
+
 function getNFCeIndexStatus(machineId) {
   const d = getDb();
   const months = d.prepare(`
@@ -1005,10 +1013,8 @@ function getNFCeIndexStatus(machineId) {
       FROM commands
       WHERE machine_id = ? AND type = 'aloha-index-nfce-day' AND created_at >= ?
     `).get(machineId, listCmd.created_at);
-    totalDays       = sess?.total      || 0;
-    pendingDays     = sess?.pending    || 0;
-    processedDays   = totalDays - pendingDays;
-    sessionStartedAt = sess?.started_at || null;
+    ({ totalDays, pendingDays, sessionStartedAt } = _parseSessionRow(sess));
+    processedDays = totalDays - pendingDays;
   } else {
     const pendingRow = d.prepare(
       `SELECT COUNT(*) as c FROM commands WHERE machine_id = ? AND type = 'aloha-index-nfce-day' AND status = 'pending'`

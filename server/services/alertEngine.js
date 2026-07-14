@@ -157,6 +157,41 @@ function clearOfflineCooldown(machineId) {
   offlineAlertCooldown.delete(machineId);
 }
 
+function checkCpuAlerts(machineId, displayName, m, alerts) {
+  const key = `${machineId}:cpu`;
+  for (const rule of alerts) {
+    if (m.cpuPct >= rule.threshold) {
+      if (!cpuAlertStart.has(key)) cpuAlertStart.set(key, Date.now());
+      const elapsed = (Date.now() - cpuAlertStart.get(key)) / 60000;
+      if (elapsed >= rule.duration_mins) {
+        fireAlert(machineId, 'cpu_high',
+          `${displayName}: CPU em ${m.cpuPct}% por ${Math.round(elapsed)}min`);
+        cpuAlertStart.delete(key);
+      }
+    } else {
+      cpuAlertStart.delete(key);
+    }
+  }
+}
+
+function checkTempAlerts(machineId, displayName, m, alerts) {
+  for (const rule of alerts) {
+    if (m.cpuTempC > 0 && m.cpuTempC >= rule.threshold) {
+      fireAlert(machineId, 'temp_high',
+        `${displayName}: Temperatura CPU em ${m.cpuTempC}C`);
+    }
+  }
+}
+
+function checkDiskAlerts(machineId, displayName, m, alerts) {
+  for (const rule of alerts) {
+    if (m.diskFreeGB > 0 && m.diskFreeGB <= rule.threshold) {
+      fireAlert(machineId, 'disk_low',
+        `${displayName}: Disco livre: ${m.diskFreeGB}GB`);
+    }
+  }
+}
+
 // Verifica limiares de CPU, temperatura e disco
 function checkMetricThresholds() {
   const machines = db.getAllMachines();
@@ -167,46 +202,15 @@ function checkMetricThresholds() {
     let m;
     try { m = JSON.parse(machine.last_metrics); } catch { continue; }
 
-    // CPU alta
-    const cpuAlerts = db.getAlerts(machine.id).filter(
-      a => a.enabled && a.type === 'cpu_high'
-    );
-    for (const rule of cpuAlerts) {
-      const key = `${machine.id}:cpu`;
-      if (m.cpuPct >= rule.threshold) {
-        if (!cpuAlertStart.has(key)) cpuAlertStart.set(key, Date.now());
-        const elapsed = (Date.now() - cpuAlertStart.get(key)) / 60000;
-        if (elapsed >= rule.duration_mins) {
-          fireAlert(machine.id, 'cpu_high',
-            `${machine.display_name || machine.id}: CPU em ${m.cpuPct}% por ${Math.round(elapsed)}min`);
-          cpuAlertStart.delete(key); // reseta para nao spam
-        }
-      } else {
-        cpuAlertStart.delete(key);
-      }
-    }
+    const displayName = machine.display_name || machine.id;
+    const allAlerts   = db.getAlerts(machine.id);
 
-    // Temperatura alta
-    const tempAlerts = db.getAlerts(machine.id).filter(
-      a => a.enabled && a.type === 'temp_high'
-    );
-    for (const rule of tempAlerts) {
-      if (m.cpuTempC > 0 && m.cpuTempC >= rule.threshold) {
-        fireAlert(machine.id, 'temp_high',
-          `${machine.display_name || machine.id}: Temperatura CPU em ${m.cpuTempC}C`);
-      }
-    }
-
-    // Disco baixo
-    const diskAlerts = db.getAlerts(machine.id).filter(
-      a => a.enabled && a.type === 'disk_low'
-    );
-    for (const rule of diskAlerts) {
-      if (m.diskFreeGB > 0 && m.diskFreeGB <= rule.threshold) {
-        fireAlert(machine.id, 'disk_low',
-          `${machine.display_name || machine.id}: Disco livre: ${m.diskFreeGB}GB`);
-      }
-    }
+    checkCpuAlerts(machine.id, displayName, m,
+      allAlerts.filter(a => a.enabled && a.type === 'cpu_high'));
+    checkTempAlerts(machine.id, displayName, m,
+      allAlerts.filter(a => a.enabled && a.type === 'temp_high'));
+    checkDiskAlerts(machine.id, displayName, m,
+      allAlerts.filter(a => a.enabled && a.type === 'disk_low'));
   }
 }
 
@@ -414,6 +418,24 @@ async function sendAutoWakeEmail(name, location, offlineMin) {
   }
 }
 
+function buildAutoWakeResultMailContent(name, location, success) {
+  const icon   = success ? '✅' : '⚠️';
+  const color  = success ? '#22c55e' : '#f59e0b';
+  const status = success ? 'Ligada com sucesso' : 'Falhou — sem resposta em 3 min';
+  const label  = success ? 'Concluído' : 'Falhou';
+  const okFail = success ? 'OK' : 'Falhou';
+  return {
+    subject: `${icon} Auto-Wake ${okFail}: ${name}`,
+    html: `
+        <h2 style="color:${color}">${icon} Auto-Wake ${label}</h2>
+        <p><strong>Máquina:</strong> ${name}</p>
+        <p><strong>Localidade:</strong> ${location}</p>
+        <p><strong>Resultado:</strong> ${status}</p>
+        <hr><p style="color:#888;font-size:12px">Delirio Manager — Auto-Wake</p>
+      `,
+  };
+}
+
 async function sendAutoWakeResultEmail(name, location, success) {
   const cfg = loadConfig().alerts?.email;
   if (!cfg?.enabled || !cfg.to?.length) return;
@@ -424,22 +446,14 @@ async function sendAutoWakeResultEmail(name, location, success) {
     auth: { user: cfg.user, pass: cfg.pass },
   });
 
-  const icon   = success ? '✅' : '⚠️';
-  const color  = success ? '#22c55e' : '#f59e0b';
-  const status = success ? 'Ligada com sucesso' : 'Falhou — sem resposta em 3 min';
+  const { subject, html } = buildAutoWakeResultMailContent(name, location, success);
 
   try {
     await transporter.sendMail({
-      from:    `"Delirio Manager" <${cfg.user}>`,
-      to:      cfg.to.join(', '),
-      subject: `${icon} Auto-Wake ${success ? 'OK' : 'Falhou'}: ${name}`,
-      html: `
-        <h2 style="color:${color}">${icon} Auto-Wake ${success ? 'Concluído' : 'Falhou'}</h2>
-        <p><strong>Máquina:</strong> ${name}</p>
-        <p><strong>Localidade:</strong> ${location}</p>
-        <p><strong>Resultado:</strong> ${status}</p>
-        <hr><p style="color:#888;font-size:12px">Delirio Manager — Auto-Wake</p>
-      `,
+      from: `"Delirio Manager" <${cfg.user}>`,
+      to:   cfg.to.join(', '),
+      subject,
+      html,
     });
   } catch (err) {
     console.error('[AutoWake] Falha email result:', err.message);

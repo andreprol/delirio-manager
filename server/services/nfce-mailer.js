@@ -21,13 +21,17 @@ function loadGraphConfig() {
   } catch { return {}; }
 }
 
+function validateGraphConfig(cfg) {
+  return cfg.tenantId && cfg.clientId && cfg.clientSecret && cfg.refreshToken;
+}
+
 async function getAccessToken() {
   if (_tokenCache && _tokenCache.expiresAt > Date.now() + 300_000) {
     return _tokenCache.token;
   }
 
   const cfg = loadGraphConfig();
-  if (!cfg.tenantId || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
+  if (!validateGraphConfig(cfg)) {
     throw new Error('Configuração Microsoft Graph ausente. Adicione "msGraph" em config.json com tenantId, clientId, clientSecret e refreshToken.');
   }
 
@@ -85,6 +89,20 @@ function fmtDate(iso) {
   } catch { return iso; }
 }
 
+function buildEmitHeader(emit) {
+  const e = emit || {};
+  return `  <h3 style="margin:0 0 4px">${e.xNome || ''}</h3>
+  <p style="margin:0 0 12px;color:#555;font-size:13px">CNPJ: ${e.cnpj || ''}</p>`;
+}
+
+function buildQrHtml(qrCode) {
+  if (!qrCode) return '';
+  return `<div style="text-align:center;margin:12px 0">
+         <img src="${qrCode}" width="130" height="130" alt="QR Code NFC-e" />
+         <p style="font-size:11px;color:#666">Aponte a câmera para consultar no SEFAZ</p>
+       </div>`;
+}
+
 function buildHtml(danfe) {
   const rows = (danfe.products || []).map(p => `
     <tr>
@@ -99,12 +117,9 @@ function buildHtml(danfe) {
     `<tr><td>${PAG_LABELS[p.tPag] || `Cód ${p.tPag}`}</td><td style="text-align:right">${fmtMoeda(p.vPag)}</td></tr>`
   ).join('');
 
-  const qrHtml = danfe.qrCode
-    ? `<div style="text-align:center;margin:12px 0">
-         <img src="${danfe.qrCode}" width="130" height="130" alt="QR Code NFC-e" />
-         <p style="font-size:11px;color:#666">Aponte a câmera para consultar no SEFAZ</p>
-       </div>`
-    : '';
+  const qrHtml      = buildQrHtml(danfe.qrCode);
+  const emitHeader  = buildEmitHeader(danfe.emit);
+  const vNF         = (danfe.totals || {}).vNF || danfe.vNF;
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -117,8 +132,7 @@ function buildHtml(danfe) {
 
 <div style="border:1px solid #ddd;border-top:none;padding:16px 20px;border-radius:0 0 6px 6px">
 
-  <h3 style="margin:0 0 4px">${danfe.emit?.xNome || ''}</h3>
-  <p style="margin:0 0 12px;color:#555;font-size:13px">CNPJ: ${danfe.emit?.cnpj || ''}</p>
+  ${emitHeader}
 
   <table style="width:100%;font-size:13px;margin-bottom:12px">
     <tr><td><b>Nº da Nota:</b></td><td>${danfe.nNF}</td>
@@ -140,7 +154,7 @@ function buildHtml(danfe) {
   </table>
 
   <div style="text-align:right;margin-top:10px;font-size:15px">
-    <b>TOTAL: ${fmtMoeda((danfe.totals || {}).vNF || danfe.vNF)}</b>
+    <b>TOTAL: ${fmtMoeda(vNF)}</b>
   </div>
 
   <div style="margin-top:10px;font-size:13px">

@@ -56,6 +56,46 @@ async function runNow() {
   return totalGenerated;
 }
 
+async function fetchClaudeResponse(cfg, prompt) {
+  try {
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client    = new Anthropic.default({ apiKey: cfg.claude_api_key });
+    const msg = await client.messages.create({
+      model:      'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages:   [{ role: 'user', content: prompt }],
+    });
+    return msg.content[0]?.text || '{"insights":[]}';
+  } catch (err) {
+    console.error(`[InsightEngine] Claude API error: ${err.message}`);
+    return null;
+  }
+}
+
+function persistInsights(machine, machineInsights) {
+  let saved = 0;
+  for (const insight of machineInsights) {
+    if (!insight.pattern || !insight.severity) continue;
+    const hash = crypto
+      .createHash('sha256')
+      .update(`${machine.id}:${insight.pattern.slice(0, 80)}`)
+      .digest('hex');
+    db.saveInsight({
+      machineId:   machine.id,
+      severity:    insight.severity,
+      pattern:     insight.pattern,
+      solution:    insight.solution || null,
+      patternHash: hash,
+    });
+    saved++;
+  }
+  if (saved > 0) {
+    broadcast('new_insight', { machineId: machine.id, count: saved });
+    console.log(`[InsightEngine] ${saved} insights para ${machine.id}`);
+  }
+  return saved;
+}
+
 async function analyzeMachine(machine, cfg) {
   const lookbackDays = cfg.lookback_days || 7;
   const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
@@ -102,21 +142,8 @@ Responda SOMENTE com JSON neste formato exato:
 
 Se não houver padrões relevantes, retorne: {"insights":[]}`;
 
-  let responseText;
-  try {
-    const Anthropic = require('@anthropic-ai/sdk');
-    const client    = new Anthropic.default({ apiKey: cfg.claude_api_key });
-
-    const msg = await client.messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      messages:   [{ role: 'user', content: prompt }],
-    });
-    responseText = msg.content[0]?.text || '{"insights":[]}';
-  } catch (err) {
-    console.error(`[InsightEngine] Claude API error for ${machine.id}: ${err.message}`);
-    return 0;
-  }
+  const responseText = await fetchClaudeResponse(cfg, prompt);
+  if (!responseText) return 0;
 
   let parsed;
   try {
@@ -128,33 +155,7 @@ Se não houver padrões relevantes, retorne: {"insights":[]}`;
     return 0;
   }
 
-  const machineInsights = parsed.insights || [];
-  let saved = 0;
-
-  for (const insight of machineInsights) {
-    if (!insight.pattern || !insight.severity) continue;
-
-    const hash = crypto
-      .createHash('sha256')
-      .update(`${machine.id}:${insight.pattern.slice(0, 80)}`)
-      .digest('hex');
-
-    db.saveInsight({
-      machineId:   machine.id,
-      severity:    insight.severity,
-      pattern:     insight.pattern,
-      solution:    insight.solution || null,
-      patternHash: hash,
-    });
-    saved++;
-  }
-
-  if (saved > 0) {
-    broadcast('new_insight', { machineId: machine.id, count: saved });
-    console.log(`[InsightEngine] ${saved} insights para ${machine.id}`);
-  }
-
-  return saved;
+  return persistInsights(machine, parsed.insights || []);
 }
 
 function buildContext(name, events, offlineEvents) {

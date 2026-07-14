@@ -46,23 +46,25 @@ router.get('/:machineId/index/status', (req, res) => {
   }
 });
 
+function parseSearchParams(query) {
+  const { machineId, dateFrom, dateTo, valueMin, valueMax, product, limit, offset } = query;
+  return {
+    machineId,
+    dateFrom: dateFrom  || null,
+    dateTo:   dateTo    || null,
+    valueMin: valueMin != null && valueMin !== '' ? parseFloat(valueMin) : null,
+    valueMax: valueMax != null && valueMax !== '' ? parseFloat(valueMax) : null,
+    product:  product   || null,
+    limit:    Math.min(parseInt(limit)  || 50,  200),
+    offset:   parseInt(offset) || 0,
+  };
+}
+
 // GET /api/aloha/search?machineId=&dateFrom=&dateTo=&valueMin=&valueMax=&product=&limit=&offset=
 router.get('/search', (req, res) => {
-  const { machineId, dateFrom, dateTo, valueMin, valueMax, product, limit, offset } = req.query;
-  if (!machineId) return res.status(400).json({ error: 'machineId obrigatorio' });
-
+  if (!req.query.machineId) return res.status(400).json({ error: 'machineId obrigatorio' });
   try {
-    const result = db.searchNFCe({
-      machineId,
-      dateFrom: dateFrom  || null,
-      dateTo:   dateTo    || null,
-      valueMin: valueMin != null && valueMin !== '' ? parseFloat(valueMin) : null,
-      valueMax: valueMax != null && valueMax !== '' ? parseFloat(valueMax) : null,
-      product:  product   || null,
-      limit:    Math.min(parseInt(limit)  || 50,  200),
-      offset:   parseInt(offset) || 0,
-    });
-    res.json(result);
+    res.json(db.searchNFCe(parseSearchParams(req.query)));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

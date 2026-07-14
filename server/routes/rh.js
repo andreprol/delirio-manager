@@ -55,6 +55,44 @@ function callClockProxy(path, body, method = 'POST') {
   });
 }
 
+// ── Helpers for POST /offboard ────────────────────────────────────────────────
+
+function buildOffboardPayload(cpf, employeeName, triggeredBy) {
+  return {
+    cpf,
+    employeeName: employeeName || '',
+    triggeredBy:  triggeredBy  || 'delirio-manager-rh',
+  };
+}
+
+function buildOffboardSuccessLog(cpf, employeeName, triggeredBy, timestamp, result) {
+  return {
+    cpf,
+    employeeName:  employeeName         || '',
+    triggeredBy:   triggeredBy          || 'delirio-manager-rh',
+    timestamp,
+    success:       result.success ? 1 : 0,
+    removed:       result.removed       || 0,
+    alreadyAbsent: result.alreadyAbsent || 0,
+    failed:        result.failed        || 0,
+    detail:        JSON.stringify(result.clocks || []),
+  };
+}
+
+function buildOffboardFailureLog(cpf, employeeName, triggeredBy, timestamp, err) {
+  return {
+    cpf,
+    employeeName:  employeeName || '',
+    triggeredBy:   triggeredBy  || 'delirio-manager-rh',
+    timestamp,
+    success:      0,
+    removed:      0,
+    alreadyAbsent:0,
+    failed:       -1,
+    detail:       JSON.stringify({ error: err.message }),
+  };
+}
+
 // POST /api/rh/offboard
 // Dispara o offboarding LGPD de um funcionário em todos os relógios.
 // Body: { cpf, employeeName, triggeredBy }
@@ -69,41 +107,13 @@ router.post('/offboard', async (req, res) => {
   const timestamp = new Date().toISOString();
 
   try {
-    const result = await callClockProxy('/rh/offboard', {
-      cpf,
-      employeeName: employeeName || '',
-      triggeredBy:  triggeredBy  || 'delirio-manager-rh',
-    });
-
+    const result = await callClockProxy('/rh/offboard', buildOffboardPayload(cpf, employeeName, triggeredBy));
     // Log de auditoria LGPD — evidência para ANPD
-    db.logClockOffboard({
-      cpf,
-      employeeName: employeeName || '',
-      triggeredBy:  triggeredBy  || 'delirio-manager-rh',
-      timestamp,
-      success:      result.success ? 1 : 0,
-      removed:      result.removed      || 0,
-      alreadyAbsent:result.alreadyAbsent || 0,
-      failed:       result.failed       || 0,
-      detail:       JSON.stringify(result.clocks || []),
-    });
-
+    db.logClockOffboard(buildOffboardSuccessLog(cpf, employeeName, triggeredBy, timestamp, result));
     res.json(result);
-
   } catch (err) {
     // Log de falha também é importante para auditoria
-    db.logClockOffboard({
-      cpf,
-      employeeName: employeeName || '',
-      triggeredBy:  triggeredBy  || 'delirio-manager-rh',
-      timestamp,
-      success:      0,
-      removed:      0,
-      alreadyAbsent:0,
-      failed:       -1,
-      detail:       JSON.stringify({ error: err.message }),
-    });
-
+    db.logClockOffboard(buildOffboardFailureLog(cpf, employeeName, triggeredBy, timestamp, err));
     res.status(502).json({
       error:   'Falha ao conectar com o clock-proxy',
       detail:  err.message,
@@ -183,8 +193,34 @@ router.post('/enroll', async (req, res) => {
   }
 });
 
-// GET /api/rh/enroll/:jobId — polling de resultado de enroll assíncrono
+// ── Helpers for GET /enroll/:jobId ───────────────────────────────────────────
+
 const _loggedEnrollJobs = new Set();
+
+function buildEnrollLogPayload(result, triggeredBy) {
+  return {
+    operation:    'enroll',
+    cpf:          result.cpf       || '',
+    employeeName: result.name      || '',
+    triggeredBy:  triggeredBy      || 'delirio-manager-rh',
+    timestamp:    result.timestamp || new Date().toISOString(),
+    success:      result.success   || false,
+    total:        result.total     || 0,
+    okCount:      result.enrolled  || 0,
+    failedCount:  result.failed    || 0,
+    detail:       result.clocks    || [],
+  };
+}
+
+function processEnrollCompletion(result, jobId, triggeredBy) {
+  _loggedEnrollJobs.add(jobId);
+  db.logClockOperation(buildEnrollLogPayload(result, triggeredBy));
+  if (result.ref1) {
+    db.registerRef1({ ref1: result.ref1, cpf: result.cpf || '', name: result.name || '' });
+  }
+}
+
+// GET /api/rh/enroll/:jobId — polling de resultado de enroll assíncrono
 router.get('/enroll/:jobId', async (req, res) => {
   if (!CLOCK_PROXY_TOKEN) {
     return res.status(500).json({ error: 'CLOCK_PROXY_TOKEN nao configurado' });
@@ -196,23 +232,7 @@ router.get('/enroll/:jobId', async (req, res) => {
     }
     // Loga uma única vez quando o job completa
     if (result.status === 'done' && !_loggedEnrollJobs.has(req.params.jobId)) {
-      _loggedEnrollJobs.add(req.params.jobId);
-      db.logClockOperation({
-        operation:    'enroll',
-        cpf:          result.cpf          || '',
-        employeeName: result.name         || '',
-        triggeredBy:  req.query.triggeredBy || 'delirio-manager-rh',
-        timestamp:    result.timestamp    || new Date().toISOString(),
-        success:      result.success      || false,
-        total:        result.total        || 0,
-        okCount:      result.enrolled     || 0,
-        failedCount:  result.failed       || 0,
-        detail:       result.clocks       || [],
-      });
-      // Registra o Ref1 permanentemente — garante que não seja reutilizado mesmo após remoção
-      if (result.ref1) {
-        db.registerRef1({ ref1: result.ref1, cpf: result.cpf || '', name: result.name || '' });
-      }
+      processEnrollCompletion(result, req.params.jobId, req.query.triggeredBy);
     }
     res.json(result);
   } catch (err) {

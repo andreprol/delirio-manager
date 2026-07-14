@@ -39,6 +39,16 @@ router.get('/', (req, res) => {
   }
 });
 
+function applyInsightsSettings(cfg, ins) {
+  cfg.insights = {
+    ...(cfg.insights || {}),
+    enabled: ins.enabled === true,
+  };
+  if (ins.interval_hours) cfg.insights.interval_hours = ins.interval_hours;
+  if (ins.lookback_days)  cfg.insights.lookback_days  = ins.lookback_days;
+  if (typeof ins.claude_api_key === 'string') cfg.insights.claude_api_key = ins.claude_api_key;
+}
+
 // PUT /api/settings — atualiza configurações
 router.put('/', (req, res) => {
   try {
@@ -55,18 +65,8 @@ router.put('/', (req, res) => {
     }
 
     if (req.body.insights !== undefined) {
-      const ins = req.body.insights;
-      cfg.insights = {
-        ...(cfg.insights || {}),
-        enabled: ins.enabled === true,
-      };
-      if (ins.interval_hours) cfg.insights.interval_hours = ins.interval_hours;
-      if (ins.lookback_days)  cfg.insights.lookback_days  = ins.lookback_days;
-      if (typeof ins.claude_api_key === 'string') {
-        cfg.insights.claude_api_key = ins.claude_api_key;
-      }
+      applyInsightsSettings(cfg, req.body.insights);
       saveConfig(cfg);
-      // Reinicia o engine para pegar a nova config (key + enabled)
       const insightEngine = require('../services/insightEngine');
       insightEngine.restart();
     } else {

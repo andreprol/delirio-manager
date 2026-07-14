@@ -104,61 +104,79 @@ function extractJsonBraces(text, startMarker) {
   return null;
 }
 
+function extractPayloadJson(decoded) {
+  const jsonStr = extractJsonBraces(decoded, '{"channel":')
+    || extractJsonBraces(decoded, '{"orderId":')
+    || extractJsonBraces(decoded, '{"referenceId":');
+  if (!jsonStr) return null;
+  try {
+    return JSON.parse(jsonStr) || null;
+  } catch {
+    return null;
+  }
+}
+
+function extractOrderRef(payload) {
+  return payload.referenceId || payload.orderId || payload.id || '?';
+}
+
+function extractEnterpriseUnitId(payload) {
+  return payload.enterpriseUnitId || payload.enterprise_unit_id || '';
+}
+
+function extractStoreName(payload) {
+  return payload.enterpriseUnitName || payload.storeName || payload.store_name || '';
+}
+
+function parseTotalValue(payload) {
+  const totalObj = (payload.totals || []).find(t => t.type === 'Net' || t.type === 'net');
+  return totalObj ? Number(totalObj.value) : 0;
+}
+
+function parseDateBrt(payload, msg) {
+  const dtUTC = new Date(payload.dateCreated || msg.receivedDateTime);
+  const brtMs = dtUTC.getTime() - 3 * 3600 * 1000;
+  const brtDate = new Date(brtMs);
+  return [
+    brtDate.getUTCFullYear(),
+    String(brtDate.getUTCMonth() + 1).padStart(2, '0'),
+    String(brtDate.getUTCDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+function resolveMachineForPayload(enterpriseUnitId, storeName) {
+  const bohHostname = resolveBoh(enterpriseUnitId, storeName);
+  const machine = bohHostname ? db.getMachineByHostname(bohHostname) : null;
+  return { bohHostname: bohHostname || null, machineId: machine ? machine.id : null };
+}
+
 function parseNcrEmail(msg) {
   try {
     const html = msg.body?.content || '';
-
-    // Strip script/style blocks, then all tags
     const stripped = html
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style[\s\S]*?<\/style>/gi, ' ')
       .replace(/<[^>]+>/g, ' ');
-
     const decoded = decodeHtmlEntities(stripped);
-
-    // Extract JSON payload by brace-counting from known start marker
-    const jsonStr = extractJsonBraces(decoded, '{"channel":');
-    if (!jsonStr) {
-      // Try alternate markers
-      const alt = extractJsonBraces(decoded, '{"orderId":') ||
-                  extractJsonBraces(decoded, '{"referenceId":');
-      if (!alt) return null;
-    }
-
-    const payload = JSON.parse(jsonStr || extractJsonBraces(decoded, '{"orderId":') || extractJsonBraces(decoded, '{"referenceId":'));
+    const payload = extractPayloadJson(decoded);
     if (!payload) return null;
 
-    // Extract fields
-    const orderRef = payload.referenceId || payload.orderId || payload.id || '?';
-    const enterpriseUnitId = payload.enterpriseUnitId || payload.enterprise_unit_id || '';
-    const storeName = payload.enterpriseUnitName || payload.storeName || payload.store_name || '';
-
-    const totalObj = (payload.totals || []).find(t => t.type === 'Net' || t.type === 'net');
-    const totalValue = totalObj ? Number(totalObj.value) : 0;
-
-    const products = (payload.orderLines || [])
+    const orderRef         = extractOrderRef(payload);
+    const enterpriseUnitId = extractEnterpriseUnitId(payload);
+    const storeName        = extractStoreName(payload);
+    const totalValue       = parseTotalValue(payload);
+    const products         = (payload.orderLines || [])
       .map(l => l.description || l.name || '')
       .filter(Boolean);
-
-    // dateCreated is UTC; convert to BRT (UTC-3, no DST since 2019)
-    const dtUTC = new Date(payload.dateCreated || msg.receivedDateTime);
-    const brtMs = dtUTC.getTime() - 3 * 3600 * 1000;
-    const brtDate = new Date(brtMs);
-    const dateBRT = [
-      brtDate.getUTCFullYear(),
-      String(brtDate.getUTCMonth() + 1).padStart(2, '0'),
-      String(brtDate.getUTCDate()).padStart(2, '0'),
-    ].join('-');
-
-    const bohHostname = resolveBoh(enterpriseUnitId, storeName);
-    const machine = bohHostname ? db.getMachineByHostname(bohHostname) : null;
+    const dateBRT          = parseDateBrt(payload, msg);
+    const { bohHostname, machineId } = resolveMachineForPayload(enterpriseUnitId, storeName);
 
     return {
       order_ref:          String(orderRef),
       enterprise_unit_id: enterpriseUnitId,
       store_name:         storeName,
-      boh_hostname:       bohHostname || null,
-      machine_id:         machine ? machine.id : null,
+      boh_hostname:       bohHostname,
+      machine_id:         machineId,
       total_value:        totalValue,
       date_brt:           dateBRT,
       products_json:      JSON.stringify(products),
@@ -184,11 +202,25 @@ async function dispatchNcrCheck(emailRow) {
 
 // ── Email de resultado ────────────────────────────────────────────────────────
 
+function fmtEmailStore(row) {
+  return row.store_name || row.boh_hostname || 'N/D';
+}
+
+function fmtEmailDate(dateBrt) {
+  const parts = (dateBrt || '').split('-');
+  return parts.length === 3
+    ? `${parts[2]}/${parts[1]}/${parts[0]}`
+    : (dateBrt || '');
+}
+
+function fmtEmailValue(v) {
+  return v != null ? `R$ ${Number(v).toFixed(2).replace('.', ',')}` : 'N/D';
+}
+
 function buildFoundEmail(emailRow, result) {
-  const storeName = emailRow.store_name || emailRow.boh_hostname || 'N/D';
-  const dtParts   = (emailRow.date_brt || '').split('-');
-  const dtFormatted = dtParts.length === 3 ? `${dtParts[2]}/${dtParts[1]}/${dtParts[0]}` : emailRow.date_brt;
-  const value = emailRow.total_value != null ? `R$ ${Number(emailRow.total_value).toFixed(2).replace('.', ',')}` : 'N/D';
+  const storeName   = fmtEmailStore(emailRow);
+  const dtFormatted = fmtEmailDate(emailRow.date_brt);
+  const value       = fmtEmailValue(emailRow.total_value);
   const chave = result.chave || '';
   const dhEmi = result.dh_emi ? result.dh_emi.replace('T', ' ').slice(0, 19) : '';
 
@@ -233,11 +265,13 @@ function buildFoundEmail(emailRow, result) {
 }
 
 function buildNotFoundEmail(emailRow) {
-  const storeName = emailRow.store_name || emailRow.boh_hostname || 'N/D';
-  const dtParts   = (emailRow.date_brt || '').split('-');
-  const dtFormatted = dtParts.length === 3 ? `${dtParts[2]}/${dtParts[1]}/${dtParts[0]}` : emailRow.date_brt;
-  const value = emailRow.total_value != null ? `R$ ${Number(emailRow.total_value).toFixed(2).replace('.', ',')}` : 'N/D';
-  const products = JSON.parse(emailRow.products_json || '[]');
+  const storeName   = fmtEmailStore(emailRow);
+  const dtFormatted = fmtEmailDate(emailRow.date_brt);
+  const value       = fmtEmailValue(emailRow.total_value);
+  const products    = JSON.parse(emailRow.products_json || '[]');
+  const retryNum    = (emailRow.retry_count || 0) + 1;
+  const bohLabel    = emailRow.boh_hostname || 'Não identificado';
+  const bohWarn     = emailRow.boh_hostname || 'BOH';
 
   return `<!DOCTYPE html><html lang="pt-BR"><body style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto;color:#222">
 <div style="background:#c0392b;color:#fff;padding:14px 20px;border-radius:6px 6px 0 0">
@@ -264,11 +298,11 @@ function buildNotFoundEmail(emailRow) {
     </tr>
     <tr style="background:#f7f7f7">
       <td style="padding:8px 12px;font-size:14px"><b>Servidor BOH</b></td>
-      <td style="padding:8px 12px;font-size:14px">${emailRow.boh_hostname || 'Não identificado'}</td>
+      <td style="padding:8px 12px;font-size:14px">${bohLabel}</td>
     </tr>
     <tr>
       <td style="padding:8px 12px;font-size:14px"><b>Tentativas</b></td>
-      <td style="padding:8px 12px;font-size:14px">${(emailRow.retry_count || 0) + 1} de 3</td>
+      <td style="padding:8px 12px;font-size:14px">${retryNum} de 3</td>
     </tr>
     ${products.length ? `<tr style="background:#f7f7f7">
       <td style="padding:8px 12px;font-size:14px;vertical-align:top"><b>Produtos</b></td>
@@ -276,12 +310,23 @@ function buildNotFoundEmail(emailRow) {
     </tr>` : ''}
   </table>
   <p style="background:#fff5f5;border-left:4px solid #c0392b;padding:10px 14px;margin-top:16px;font-size:13px">
-    ⚠️ <b>Atenção:</b> A NFC-e não foi localizada no servidor ${emailRow.boh_hostname || 'BOH'} após
-    ${(emailRow.retry_count || 0) + 1} tentativa(s). Verifique manualmente o servidor Aloha.
+    ⚠️ <b>Atenção:</b> A NFC-e não foi localizada no servidor ${bohWarn} após
+    ${retryNum} tentativa(s). Verifique manualmente o servidor Aloha.
   </p>
   <p style="color:#718096;font-size:11px;margin-top:16px">Delirio Manager — Check de Encomendas (fase de teste)</p>
 </div>
 </body></html>`;
+}
+
+function buildNcrEmailPayload(emailRow, result) {
+  const found     = !!result.found;
+  const storeName = emailRow.store_name || emailRow.boh_hostname || 'loja';
+  const orderRef  = emailRow.order_ref || '?';
+  const subject   = found
+    ? `✅ NFC-e confirmada — Pedido #${orderRef} | ${storeName}`
+    : `⚠️ NFC-e NÃO gerada — Pedido #${orderRef} | ${storeName}`;
+  const html      = found ? buildFoundEmail(emailRow, result) : buildNotFoundEmail(emailRow);
+  return { found, orderRef, subject, html };
 }
 
 async function sendNcrResultEmail(emailRow, result) {
@@ -289,15 +334,7 @@ async function sendNcrResultEmail(emailRow, result) {
   if (!cfg.tenantId) throw new Error('msGraph não configurado');
 
   const token = await getAccessToken(cfg);
-  const found = !!result.found;
-  const storeName = emailRow.store_name || emailRow.boh_hostname || 'loja';
-  const orderRef  = emailRow.order_ref || '?';
-
-  const subject = found
-    ? `✅ NFC-e confirmada — Pedido #${orderRef} | ${storeName}`
-    : `⚠️ NFC-e NÃO gerada — Pedido #${orderRef} | ${storeName}`;
-
-  const html = found ? buildFoundEmail(emailRow, result) : buildNotFoundEmail(emailRow);
+  const { found, orderRef, subject, html } = buildNcrEmailPayload(emailRow, result);
 
   const message = {
     subject,
@@ -369,6 +406,42 @@ async function processRetries() {
 
 // ── Tick principal ────────────────────────────────────────────────────────────
 
+function loadNcrSince() {
+  try {
+    const conf = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
+    return conf.ncrSince ? new Date(conf.ncrSince) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function processNcrEmail(msg, since) {
+  if (since && new Date(msg.receivedDateTime) < since) return 0;
+  if (db.ncrGetByMessageId(msg.id)) return 0;
+
+  const parsed = parseNcrEmail(msg);
+  if (!parsed) {
+    console.warn('[NCR] Não foi possível parsear email id:', msg.id);
+    return 0;
+  }
+
+  const changes = db.ncrInsertEmail({
+    message_id:  msg.id,
+    received_at: msg.receivedDateTime,
+    ...parsed,
+  });
+
+  if (changes > 0) {
+    const row = db.ncrGetByMessageId(msg.id);
+    if (row && row.machine_id) {
+      await dispatchNcrCheck(row);
+      return 1;
+    }
+    console.warn(`[NCR] BOH não mapeado — Pedido #${parsed.order_ref} enterpriseUnitId=${parsed.enterprise_unit_id}`);
+  }
+  return 0;
+}
+
 async function tick() {
   const cfg = loadGraphConfig();
   if (!cfg.refreshToken) {
@@ -392,40 +465,11 @@ async function tick() {
     return;
   }
 
-  let ncrSince;
-  try {
-    const rootConf = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
-    ncrSince = rootConf.ncrSince || null;
-  } catch { ncrSince = null; }
-  const since = ncrSince ? new Date(ncrSince) : null;
-
+  const since = loadNcrSince();
   let newCount = 0;
   for (const msg of emails) {
     try {
-      if (since && new Date(msg.receivedDateTime) < since) continue;
-      if (db.ncrGetByMessageId(msg.id)) continue;
-
-      const parsed = parseNcrEmail(msg);
-      if (!parsed) {
-        console.warn('[NCR] Não foi possível parsear email id:', msg.id);
-        continue;
-      }
-
-      const changes = db.ncrInsertEmail({
-        message_id:  msg.id,
-        received_at: msg.receivedDateTime,
-        ...parsed,
-      });
-
-      if (changes > 0) {
-        const row = db.ncrGetByMessageId(msg.id);
-        if (row && row.machine_id) {
-          await dispatchNcrCheck(row);
-          newCount++;
-        } else {
-          console.warn(`[NCR] BOH não mapeado — Pedido #${parsed.order_ref} enterpriseUnitId=${parsed.enterprise_unit_id}`);
-        }
-      }
+      newCount += await processNcrEmail(msg, since);
     } catch (e) {
       console.error('[NCR] Erro ao processar email:', e.message);
     }

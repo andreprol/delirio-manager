@@ -42,85 +42,187 @@ router.post('/register', (req, res) => {
   }
 });
 
+// ── Validadores auxiliares ────────────────────────────────────────────────────
+
+function validateStringField(value, name, maxLen) {
+  if (value === undefined) return null;
+  if (typeof value !== 'string' || value.length > maxLen) {
+    return `${name} deve ser string com máximo ${maxLen} chars`;
+  }
+  return null;
+}
+
+function validateNumericNonNegative(value, name) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || isNaN(value) || value < 0) {
+    return `${name} deve ser número não-negativo`;
+  }
+  return null;
+}
+
+const MAC_REGEX = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
+
+function validateMacField(mac) {
+  if (mac === undefined || mac === null) return null;
+  if (typeof mac !== 'string' || !MAC_REGEX.test(mac)) {
+    return 'metrics.mac deve ser endereço MAC válido (ex: AA:BB:CC:DD:EE:FF)';
+  }
+  return null;
+}
+
+function validateIpsField(ips) {
+  if (ips === undefined) return [];
+  if (!Array.isArray(ips)) return ['metrics.ips deve ser um array'];
+  if (ips.length > 20) return ['metrics.ips deve ter no máximo 20 itens'];
+  if (ips.some(ip => typeof ip !== 'string' || ip.length > 45)) {
+    return ['cada item de metrics.ips deve ser string com máximo 45 chars'];
+  }
+  return [];
+}
+
+const NUMERIC_RANGES = [
+  { field: 'cpu_pct',  min: 0, max: 100 },
+  { field: 'ram_pct',  min: 0, max: 100 },
+  { field: 'disk_pct', min: 0, max: 100 },
+  { field: 'temp_c',   min: 0, max: 150 },
+];
+
+function validateNumericMetrics(metrics) {
+  const errors = [];
+  for (const { field, min, max } of NUMERIC_RANGES) {
+    const val = metrics[field];
+    if (val !== undefined && val !== null && (typeof val !== 'number' || isNaN(val) || val < min || val > max)) {
+      errors.push(`metrics.${field} deve ser número entre ${min} e ${max}`);
+    }
+  }
+  return errors;
+}
+
+function validateMetricsObject(metrics) {
+  if (typeof metrics !== 'object' || metrics === null || Array.isArray(metrics)) {
+    return ['metrics deve ser um objeto'];
+  }
+  const errors = [];
+  errors.push(...validateNumericMetrics(metrics));
+  const macErr = validateMacField(metrics.mac);
+  if (macErr) errors.push(macErr);
+  errors.push(...validateIpsField(metrics.ips));
+  return errors;
+}
+
+function validateDrStatusObject(drStatus) {
+  if (typeof drStatus !== 'object' || drStatus === null || Array.isArray(drStatus)) {
+    return ['drStatus deve ser um objeto'];
+  }
+  const errors = [];
+  const storageErr = validateNumericNonNegative(drStatus.storage_gb, 'drStatus.storage_gb');
+  if (storageErr) errors.push(storageErr);
+  const setupErr = validateStringField(drStatus.setup, 'drStatus.setup', 50);
+  if (setupErr) errors.push(setupErr);
+  const veeamErr = validateStringField(drStatus.veeam_version, 'drStatus.veeam_version', 50);
+  if (veeamErr) errors.push(veeamErr);
+  return errors;
+}
+
 // Valida o payload do heartbeat. Retorna array de erros (vazio = válido).
 function validateHeartbeat(body) {
   const errors = [];
   const { metrics, agentVersion, motherboard, osVersion, drStatus } = body;
-
-  if (agentVersion !== undefined && (typeof agentVersion !== 'string' || agentVersion.length > 50)) {
-    errors.push('agentVersion deve ser string com máximo 50 chars');
-  }
-  if (motherboard !== undefined && (typeof motherboard !== 'string' || motherboard.length > 200)) {
-    errors.push('motherboard deve ser string com máximo 200 chars');
-  }
-  if (osVersion !== undefined && (typeof osVersion !== 'string' || osVersion.length > 100)) {
-    errors.push('osVersion deve ser string com máximo 100 chars');
-  }
-
-  if (metrics !== undefined) {
-    if (typeof metrics !== 'object' || metrics === null || Array.isArray(metrics)) {
-      errors.push('metrics deve ser um objeto');
-    } else {
-      const numericRanges = [
-        { field: 'cpu_pct',  min: 0, max: 100 },
-        { field: 'ram_pct',  min: 0, max: 100 },
-        { field: 'disk_pct', min: 0, max: 100 },
-        { field: 'temp_c',   min: 0, max: 150 },
-      ];
-      for (const { field, min, max } of numericRanges) {
-        const val = metrics[field];
-        if (val !== undefined && val !== null) {
-          if (typeof val !== 'number' || isNaN(val) || val < min || val > max) {
-            errors.push(`metrics.${field} deve ser número entre ${min} e ${max}`);
-          }
-        }
-      }
-
-      if (metrics.mac !== undefined && metrics.mac !== null) {
-        const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
-        if (typeof metrics.mac !== 'string' || !macRegex.test(metrics.mac)) {
-          errors.push('metrics.mac deve ser endereço MAC válido (ex: AA:BB:CC:DD:EE:FF)');
-        }
-      }
-
-      if (metrics.ips !== undefined) {
-        if (!Array.isArray(metrics.ips)) {
-          errors.push('metrics.ips deve ser um array');
-        } else if (metrics.ips.length > 20) {
-          errors.push('metrics.ips deve ter no máximo 20 itens');
-        } else if (metrics.ips.some(ip => typeof ip !== 'string' || ip.length > 45)) {
-          errors.push('cada item de metrics.ips deve ser string com máximo 45 chars');
-        }
-      }
-    }
-  }
-
-  if (drStatus !== undefined) {
-    if (typeof drStatus !== 'object' || drStatus === null || Array.isArray(drStatus)) {
-      errors.push('drStatus deve ser um objeto');
-    } else {
-      if (drStatus.storage_gb !== undefined && drStatus.storage_gb !== null &&
-          (typeof drStatus.storage_gb !== 'number' || isNaN(drStatus.storage_gb) || drStatus.storage_gb < 0)) {
-        errors.push('drStatus.storage_gb deve ser número não-negativo');
-      }
-      if (drStatus.setup !== undefined && (typeof drStatus.setup !== 'string' || drStatus.setup.length > 50)) {
-        errors.push('drStatus.setup deve ser string com máximo 50 chars');
-      }
-      if (drStatus.veeam_version !== undefined &&
-          (typeof drStatus.veeam_version !== 'string' || drStatus.veeam_version.length > 50)) {
-        errors.push('drStatus.veeam_version deve ser string com máximo 50 chars');
-      }
-    }
-  }
-
+  const avErr = validateStringField(agentVersion, 'agentVersion', 50);
+  if (avErr) errors.push(avErr);
+  const mbErr = validateStringField(motherboard, 'motherboard', 200);
+  if (mbErr) errors.push(mbErr);
+  const osErr = validateStringField(osVersion, 'osVersion', 100);
+  if (osErr) errors.push(osErr);
+  if (metrics !== undefined) errors.push(...validateMetricsObject(metrics));
+  if (drStatus !== undefined) errors.push(...validateDrStatusObject(drStatus));
   return errors;
+}
+
+// ── Heartbeat helpers ─────────────────────────────────────────────────────────
+
+const PRIVATE_IP_RE = /^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/;
+const isPrivateIp = ip => PRIVATE_IP_RE.test(ip);
+
+function selectNewIp(ips, curIp) {
+  if (!ips || ips.length === 0) return null;
+  const ipv4s = ips.filter(ip => !ip.includes(':'));
+  const candidate = ipv4s.find(isPrivateIp) || ipv4s[0];
+  if (!candidate) return null;
+  const curIsGood = curIp && !curIp.includes(':') && isPrivateIp(curIp);
+  return curIsGood ? null : candidate;
+}
+
+function collectMachineUpdates(machine, { agentVersion, metrics }) {
+  const upd = {};
+  if (agentVersion && agentVersion !== machine.agent_version) upd.agent_version = agentVersion;
+  if (metrics) {
+    const newIp = selectNewIp(metrics.ips, machine.ip_interno);
+    if (newIp) upd.ip_interno = newIp;
+    if (metrics.mac && !machine.mac) upd.mac = metrics.mac;
+  }
+  return upd;
+}
+
+const WOL_PROTECTED = ['wol_confirmed', 'testing', 'bios_needed'];
+
+function getUpdatedWolStatus(machine, wolEnabled) {
+  if (wolEnabled === undefined) return machine.wol_status;
+  if (WOL_PROTECTED.includes(machine.wol_status)) return machine.wol_status;
+  const newStatus = wolEnabled ? 'driver_enabled' : 'driver_disabled';
+  if (newStatus !== machine.wol_status) {
+    db.setWolStatus(machine.id, newStatus);
+    return newStatus;
+  }
+  return machine.wol_status;
+}
+
+function updateHardwareInfo(machineId, machine, { motherboard, osVersion, wolEnabled }) {
+  if (typeof motherboard === 'string' && motherboard && !machine.motherboard) {
+    db.updateMachine(machineId, { motherboard });
+  }
+  if (typeof osVersion === 'string' && osVersion && osVersion !== machine.os_version) {
+    db.updateMachine(machineId, { os_version: osVersion });
+  }
+  return getUpdatedWolStatus(machine, wolEnabled);
+}
+
+function broadcastMachineUpdate(machine, metrics, osVersion, currentWolStatus) {
+  broadcast('machine:update', {
+    machineId:   machine.id,
+    displayName: machine.display_name || machine.hostname,
+    status:      'online',
+    lastSeen:    new Date().toISOString(),
+    metrics,
+    wolStatus:   currentWolStatus,
+    motherboard: machine.motherboard,
+    osVersion:   osVersion || machine.os_version || '',
+  });
+}
+
+function fmtMetric(v) { return v != null ? v.toFixed(1) : 'N/A'; }
+
+function processHeartbeatDr(machineId, drStatus, drLastOk) {
+  const drUpdate = { setup: drStatus.setup || 'not_installed' };
+  if (drStatus.veeam_version) drUpdate.version = drStatus.veeam_version;
+  if (drStatus.storage_gb != null) drUpdate.storageGb = drStatus.storage_gb;
+  if (drStatus.last_backup_at && drStatus.last_backup_at !== drLastOk) {
+    if (drStatus.last_backup_ok) {
+      drUpdate.lastOk = drStatus.last_backup_at;
+      db.insertDRBackup(machineId, { backedAt: drStatus.last_backup_at, status: 'ok', storageGb: drStatus.storage_gb, durationMin: drStatus.duration_min });
+    } else {
+      db.insertDRBackup(machineId, { backedAt: drStatus.last_backup_at, status: 'failed', errorMsg: drStatus.error_msg });
+    }
+  }
+  db.updateMachineDRStatus(machineId, drUpdate);
+  broadcast('dr_update', { machineId, drStatus });
 }
 
 // POST /api/heartbeat
 // Recebe metricas do agente. Requer token valido.
 router.post('/heartbeat', agentAuth, (req, res) => {
   const machine = req.machine;
-  const { metrics, hostname, agentVersion } = req.body;
+  const { metrics, osVersion } = req.body;
 
   const validationErrors = validateHeartbeat(req.body);
   if (validationErrors.length > 0) {
@@ -128,109 +230,25 @@ router.post('/heartbeat', agentAuth, (req, res) => {
   }
 
   try {
-    // Se a máquina estava offline, reseta cooldown para que a próxima queda alerte imediatamente
-    if (machine.status === 'offline') {
-      clearOfflineCooldown(machine.id);
-    }
-
-    // Atualiza status e last_seen
+    if (machine.status === 'offline') clearOfflineCooldown(machine.id);
     db.setMachineStatus(machine.id, 'online');
+    if (metrics) db.saveMetrics(machine.id, metrics);
 
-    // Salva metricas
-    if (metrics) {
-      db.saveMetrics(machine.id, metrics);
-    }
+    const upd = collectMachineUpdates(machine, req.body);
+    if (Object.keys(upd).length) db.updateMachine(machine.id, upd);
 
-    // Atualiza ip_interno, mac e agent_version
-    const upd = {}
-    if (agentVersion && agentVersion !== machine.agent_version) upd.agent_version = agentVersion
-    if (metrics) {
-      if (metrics.ips && metrics.ips.length > 0) {
-        const ipv4s = metrics.ips.filter(ip => !ip.includes(':'))
-        const isPrivate = ip => /^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(ip)
-        const newIp = ipv4s.find(isPrivate) || ipv4s[0]
-        const curIp = machine.ip_interno
-        if (newIp && (!curIp || curIp.includes(':') || !isPrivate(curIp))) upd.ip_interno = newIp
-      }
-      if (metrics.mac && !machine.mac) upd.mac = metrics.mac
-    }
-    if (Object.keys(upd).length) db.updateMachine(machine.id, upd)
+    const currentWolStatus = updateHardwareInfo(machine.id, machine, req.body);
 
-    // Atualiza WoL driver status, motherboard e OS version
-    const { wolEnabled, motherboard, osVersion } = req.body;
+    broadcastMachineUpdate(machine, metrics, osVersion, currentWolStatus);
 
-    if (typeof motherboard === 'string' && motherboard && !machine.motherboard) {
-      db.updateMachine(machine.id, { motherboard });
-    }
-    if (typeof osVersion === 'string' && osVersion && osVersion !== machine.os_version) {
-      db.updateMachine(machine.id, { os_version: osVersion });
-    }
-
-    let currentWolStatus = machine.wol_status;
-    if (wolEnabled !== undefined) {
-      const protectedStates = ['wol_confirmed', 'testing', 'bios_needed'];
-      if (!protectedStates.includes(machine.wol_status)) {
-        const newStatus = wolEnabled ? 'driver_enabled' : 'driver_disabled';
-        if (newStatus !== machine.wol_status) {
-          db.setWolStatus(machine.id, newStatus);
-          currentWolStatus = newStatus;
-        }
-      }
-    }
-
-    // Push em tempo real para o dashboard
-    broadcast('machine:update', {
-      machineId:   machine.id,
-      displayName: machine.display_name || machine.hostname,
-      status:      'online',
-      lastSeen:    new Date().toISOString(),
-      metrics,
-      wolStatus:   currentWolStatus,
-      motherboard: machine.motherboard,
-      osVersion:   osVersion || machine.os_version || '',
-    });
-
-    // DR status — update machines table and insert backup record if new
     const drStatus = req.body.dr_status;
     if (drStatus) {
-      try {
-        const setup = drStatus.setup || 'not_installed';
-        const drUpdate = { setup };
-        if (drStatus.veeam_version) drUpdate.version = drStatus.veeam_version;
-        if (drStatus.storage_gb != null) drUpdate.storageGb = drStatus.storage_gb;
-
-        if (drStatus.last_backup_at && drStatus.last_backup_at !== machine.dr_last_ok) {
-          if (drStatus.last_backup_ok) {
-            drUpdate.lastOk = drStatus.last_backup_at;
-            db.insertDRBackup(machine.id, {
-              backedAt:    drStatus.last_backup_at,
-              status:      'ok',
-              storageGb:   drStatus.storage_gb,
-              durationMin: drStatus.duration_min,
-            });
-          } else {
-            db.insertDRBackup(machine.id, {
-              backedAt: drStatus.last_backup_at,
-              status:   'failed',
-              errorMsg: drStatus.error_msg,
-            });
-          }
-        }
-
-        db.updateMachineDRStatus(machine.id, drUpdate);
-        broadcast('dr_update', { machineId: machine.id, drStatus });
-      } catch (err) {
-        console.error('[heartbeat] DR status update error:', err.message);
-      }
+      try { processHeartbeatDr(machine.id, drStatus, machine.dr_last_ok); }
+      catch (err) { console.error('[heartbeat] DR status update error:', err.message); }
     }
 
-    // Inclui versao mais recente do agente na resposta
     const versionInfo = readVersionInfo();
-    return res.json({
-      ok: true,
-      latestVersion: versionInfo.version,
-      updateInfo: { sha256: versionInfo.sha256 },
-    });
+    return res.json({ ok: true, latestVersion: versionInfo.version, updateInfo: { sha256: versionInfo.sha256 } });
   } catch (err) {
     console.error(`[Heartbeat] Erro para ${machine.id}:`, err.message);
     return res.status(500).json({ error: 'Erro interno' });
@@ -254,10 +272,12 @@ router.post('/metrics/hourly', agentAuthNoLimit, (req, res) => {
 
   try {
     insertMetricsHourly(machine.id, { snapshotTs: tsNum, cpuPct, ramPct, diskPct, cpuTempC });
-    console.log(`[metrics/hourly] ${machine.hostname || machine.id}: ts=${tsNum} cpu=${cpuPct?.toFixed(1)}% ram=${ramPct?.toFixed(1)}% disk=${diskPct?.toFixed(1)}% temp=${cpuTempC?.toFixed(1)}°C`);
+    const host = machine.hostname || machine.id;
+    console.log(`[metrics/hourly] ${host}: ts=${tsNum} cpu=${fmtMetric(cpuPct)}% ram=${fmtMetric(ramPct)}% disk=${fmtMetric(diskPct)}% temp=${fmtMetric(cpuTempC)}°C`);
     return res.json({ ok: true });
   } catch (err) {
-    console.error(`[metrics/hourly] ${machine.hostname || machine.id}: ${err.message}`);
+    const host = machine.hostname || machine.id;
+    console.error(`[metrics/hourly] ${host}: ${err.message}`);
     return res.status(500).json({ error: 'Erro interno' });
   }
 });
@@ -300,6 +320,88 @@ router.get('/commands/:machineId', agentAuthNoLimit, (req, res) => {
   }
 });
 
+// ── Ack post-processors ───────────────────────────────────────────────────────
+
+function postProcessNfceIndex(machineId, message) {
+  try {
+    const result = JSON.parse(message);
+    if (Array.isArray(result.records) && result.records.length > 0) {
+      db.upsertNFCeRecords(machineId, result.records);
+      console.log(`[NFCe] ${machineId} day=${result.day}: ${result.records.length} registros indexados`);
+    }
+  } catch (e) {
+    console.error('[NFCe] Falha ao indexar registros:', e.message);
+  }
+}
+
+function handleNfceFindNotFound(emailRow) {
+  const retryDelays = [5, 15];
+  if (emailRow.retry_count < 2) {
+    const nextAt = new Date(Date.now() + retryDelays[emailRow.retry_count] * 60000).toISOString();
+    db.ncrUpdate(emailRow.id, { retry_count: emailRow.retry_count + 1, next_retry_at: nextAt });
+    console.log(`[NCR] Pedido #${emailRow.order_ref} — retry ${emailRow.retry_count + 1} agendado em ${retryDelays[emailRow.retry_count]}min`);
+  } else {
+    db.ncrUpdate(emailRow.id, { danfe_found: 0 });
+    ncrMonitor.sendNcrResultEmail(emailRow, { found: false }).catch(e =>
+      console.error('[NCR] Falha ao enviar alerta:', e.message)
+    );
+  }
+}
+
+function postProcessNfceFind(commandId, machineId, success, message) {
+  try {
+    const emailRow = db.ncrGetByCommandId(commandId);
+    if (!emailRow || emailRow.notified_at) return;
+    let found = false;
+    let result = { found: false };
+    if (success !== false && message) {
+      try { result = JSON.parse(message); found = !!result.found; } catch (_) {}
+    }
+    if (found) {
+      db.ncrUpdate(emailRow.id, { danfe_found: 1, danfe_chave: result.chave, xml_b64: result.xml_b64 });
+      ncrMonitor.sendNcrResultEmail(emailRow, result).catch(e =>
+        console.error('[NCR] Falha ao enviar email confirmação:', e.message)
+      );
+    } else {
+      handleNfceFindNotFound(emailRow);
+    }
+  } catch (e) {
+    console.error('[NCR] Falha ao processar ACK aloha-find-nfce:', e.message);
+  }
+}
+
+function postProcessNfceMonths(machineId, message) {
+  try {
+    const { months } = JSON.parse(message);
+    if (!Array.isArray(months)) return;
+    if (months.length === 0) {
+      console.warn(`[NFCe] ${machineId}: aloha-list-nfce-months retornou 0 meses — pasta XML vazia ou caminho ausente em C:\\Bootdrv\\AlohaFiscal\\ServerData\\XML`);
+    }
+    let total = 0;
+    for (const { month: mm, year: yy, days } of months) {
+      const yearStr = yy || String(new Date().getFullYear());
+      const monthKey = `${yearStr}-${mm}`;
+      for (const day of (days || [])) {
+        db.createCommand(machineId, 'aloha-index-nfce-day', { month: monthKey, day });
+        total++;
+      }
+    }
+    console.log(`[NFCe] ${machineId} histórico: ${months.length} meses, ${total} comandos enfileirados`);
+  } catch (e) {
+    console.error('[NFCe] Falha ao processar lista de meses:', e.message);
+  }
+}
+
+const ACK_POST_PROCESSORS = {
+  'aloha-index-nfce-day':   (commandId, machineId, success, message) => { if (success !== false && message) postProcessNfceIndex(machineId, message); },
+  'aloha-find-nfce':        (commandId, machineId, success, message) => postProcessNfceFind(commandId, machineId, success, message),
+  'aloha-list-nfce-months': (commandId, machineId, success, message) => { if (success !== false && message) postProcessNfceMonths(machineId, message); },
+  'get_agent_log':          (commandId, machineId, success, message) => {
+    if (success !== false && message)
+      db.addEvent(machineId, 'agent_log_retrieved', `Diagnóstico reading_miss — log do agente (últimas linhas):\n${message.slice(0, 5000)}`);
+  },
+};
+
 // POST /api/commands/ack
 // Agente confirma execucao de um comando.
 router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
@@ -310,101 +412,20 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
   }
 
   try {
-    // Look up command type before ACKing (type doesn't change, but need it for post-processing)
     const cmd = db.getCommandById(commandId);
     db.ackCommand(commandId, req.machine.id, success !== false, message || '');
 
-    // Post-process: upsert NF-Ce records when indexing succeeds
-    if (cmd && cmd.type === 'aloha-index-nfce-day' && success !== false && message) {
-      try {
-        const result = JSON.parse(message);
-        if (Array.isArray(result.records) && result.records.length > 0) {
-          db.upsertNFCeRecords(req.machine.id, result.records);
-          console.log(`[NFCe] ${req.machine.id} day=${result.day}: ${result.records.length} registros indexados`);
-        }
-      } catch (e) {
-        console.error('[NFCe] Falha ao indexar registros:', e.message);
-      }
+    if (cmd) {
+      const processor = ACK_POST_PROCESSORS[cmd.type];
+      if (processor) processor(commandId, req.machine.id, success, message);
     }
 
-    // Post-process: verificar NFC-e para pedidos NCR
-    if (cmd && cmd.type === 'aloha-find-nfce') {
-      try {
-        const emailRow = db.ncrGetByCommandId(commandId);
-        if (emailRow && !emailRow.notified_at) {
-          let found = false;
-          let result = { found: false };
-          if (success !== false && message) {
-            try { result = JSON.parse(message); found = !!result.found; } catch (_) {}
-          }
-
-          if (found) {
-            db.ncrUpdate(emailRow.id, { danfe_found: 1, danfe_chave: result.chave, xml_b64: result.xml_b64 });
-            ncrMonitor.sendNcrResultEmail(emailRow, result).catch(e =>
-              console.error('[NCR] Falha ao enviar email confirmação:', e.message)
-            );
-          } else {
-            const retryDelays = [5, 15];
-            if (emailRow.retry_count < 2) {
-              const nextAt = new Date(Date.now() + retryDelays[emailRow.retry_count] * 60000).toISOString();
-              db.ncrUpdate(emailRow.id, { retry_count: emailRow.retry_count + 1, next_retry_at: nextAt });
-              console.log(`[NCR] Pedido #${emailRow.order_ref} — retry ${emailRow.retry_count + 1} agendado em ${retryDelays[emailRow.retry_count]}min`);
-            } else {
-              db.ncrUpdate(emailRow.id, { danfe_found: 0 });
-              ncrMonitor.sendNcrResultEmail(emailRow, { found: false }).catch(e =>
-                console.error('[NCR] Falha ao enviar alerta:', e.message)
-              );
-            }
-          }
-        }
-      } catch (e) {
-        console.error('[NCR] Falha ao processar ACK aloha-find-nfce:', e.message);
-      }
-    }
-
-    // Post-process: queue day-index commands for every discovered month/day
-    if (cmd && cmd.type === 'aloha-list-nfce-months' && success !== false && message) {
-      try {
-        const { months } = JSON.parse(message);
-        if (Array.isArray(months)) {
-          if (months.length === 0) {
-            console.warn(`[NFCe] ${req.machine.id}: aloha-list-nfce-months retornou 0 meses — pasta XML vazia ou caminho ausente em C:\\Bootdrv\\AlohaFiscal\\ServerData\\XML`);
-          }
-          let total = 0;
-          for (const { month: mm, year: yy, days } of months) {
-            const yearStr = yy || String(new Date().getFullYear());
-            const monthKey = `${yearStr}-${mm}`; // e.g. "2026-06"
-            for (const day of (days || [])) {
-              db.createCommand(req.machine.id, 'aloha-index-nfce-day', { month: monthKey, day });
-              total++;
-            }
-          }
-          console.log(`[NFCe] ${req.machine.id} histórico: ${months.length} meses, ${total} comandos enfileirados`);
-        }
-      } catch (e) {
-        console.error('[NFCe] Falha ao processar lista de meses:', e.message);
-      }
-    }
-
-    // Post-process: armazena log do agente recebido como diagnóstico de reading_miss
-    if (cmd && cmd.type === 'get_agent_log' && success !== false && message) {
-      db.addEvent(req.machine.id, 'agent_log_retrieved',
-        `Diagnóstico reading_miss — log do agente (últimas linhas):\n${message.slice(0, 5000)}`);
-    }
-
-    broadcast('command:acked', {
-      commandId,
-      machineId: req.machine.id,
-      success:   success !== false,
-      message:   message || '',
-    });
+    broadcast('command:acked', { commandId, machineId: req.machine.id, success: success !== false, message: message || '' });
 
     if (success !== false) {
-      db.addEvent(req.machine.id, 'command_ok',
-        `Comando ${commandId} executado: ${message || 'OK'}`);
+      db.addEvent(req.machine.id, 'command_ok', `Comando ${commandId} executado: ${message || 'OK'}`);
     } else {
-      db.addEvent(req.machine.id, 'command_fail',
-        `Comando ${commandId} falhou: ${message || ''}`);
+      db.addEvent(req.machine.id, 'command_fail', `Comando ${commandId} falhou: ${message || ''}`);
     }
 
     return res.json({ ok: true });

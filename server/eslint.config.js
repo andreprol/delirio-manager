@@ -36,8 +36,8 @@ module.exports = [
       'no-useless-assignment': 'warn',
 
       // Complexidade ciclomática — máx 10 por função (Cap. 5 Eng.Soft.Moderna)
-      // warn agora; trocar para error após limpar violações existentes
-      'complexity':      ['warn', { max: 10 }],
+      // Meta atingida em 14/07/2026 — CI bloqueia novas violações
+      'complexity':      ['error', { max: 10 }],
 
       // Qualidade — warn (migração gradual)
       'no-unused-vars':  ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
