@@ -27,10 +27,10 @@ if [[ -f "$ROOT/agent/go.mod" ]]; then
 fi
 
 # ESLint — server
-# 126 = count exato pós-refactor complexity (14/07/2026). complexity agora é error, não conta aqui.
+# 159 = 126 (no-console+no-unused-vars) + 33 (max-lines-per-function warn, 14/07/2026).
 if [[ -f "$ROOT/server/eslint.config.js" ]]; then
   echo "[verify] ▶ eslint (server)"
-  (cd "$ROOT/server" && npx eslint . --max-warnings=126 2>&1) || { echo "[verify] ✗ lint falhou"; ERRORS=$((ERRORS+1)); }
+  (cd "$ROOT/server" && npx eslint . --max-warnings=159 2>&1) || { echo "[verify] ✗ lint falhou"; ERRORS=$((ERRORS+1)); }
 fi
 
 if [[ $ERRORS -gt 0 ]]; then

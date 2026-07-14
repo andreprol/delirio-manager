@@ -36,8 +36,8 @@ jobs:
         run: npm ci
 
       - name: Lint (ESLint — complexity:error + max 126 warns)
-        # 126 = baseline 14/07/2026 (no-console + no-unused-vars). Reduzir conforme limpeza.
-        run: npm run lint -- --max-warnings=126
+        # 159 = 126 (no-console+no-unused-vars) + 33 (max-lines-per-function warn, 14/07/2026).
+        run: npm run lint -- --max-warnings=159
 
       - name: Run tests
         run: npm test -- --forceExit

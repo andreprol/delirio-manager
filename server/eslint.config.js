@@ -39,6 +39,11 @@ module.exports = [
       // Meta atingida em 14/07/2026 — CI bloqueia novas violações
       'complexity':      ['error', { max: 10 }],
 
+      // Funções longas — máx 40 linhas (Cap. 9 Eng.Soft.Moderna — Método Longo)
+      // 33 violações em 14/07/2026 (warn). Limpar e promover para error gradualmente.
+      // Exceções legítimas: migrate (DB migrations), generateDocx (builder).
+      'max-lines-per-function': ['warn', { max: 40, skipBlankLines: true, skipComments: true }],
+
       // Qualidade — warn (migração gradual)
       'no-unused-vars':  ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       'no-console':      'warn',
