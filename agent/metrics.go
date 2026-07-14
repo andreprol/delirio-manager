@@ -30,57 +30,53 @@ type Metrics struct {
 func collectMetrics() (*Metrics, error) {
 	m := &Metrics{}
 
-	// CPU — media dos ultimos 2 segundos
-	pcts, err := cpu.Percent(2*time.Second, false)
-	if err == nil && len(pcts) > 0 {
+	if pcts, err := cpu.Percent(2*time.Second, false); err == nil && len(pcts) > 0 {
 		m.CPUPct = round2(pcts[0])
 	}
 
-	// RAM
-	vmStat, err := mem.VirtualMemory()
-	if err == nil {
-		m.RAMFreeMB  = vmStat.Available / 1024 / 1024
+	if vmStat, err := mem.VirtualMemory(); err == nil {
+		m.RAMFreeMB = vmStat.Available / 1024 / 1024
 		m.RAMTotalMB = vmStat.Total / 1024 / 1024
 	}
 
-	// Disco — particao C:
-	diskStat, err := disk.Usage("C:\\")
-	if err == nil {
-		m.DiskFreeGB  = round2(float64(diskStat.Free) / 1024 / 1024 / 1024)
+	if diskStat, err := disk.Usage("C:\\"); err == nil {
+		m.DiskFreeGB = round2(float64(diskStat.Free) / 1024 / 1024 / 1024)
 		m.DiskTotalGB = round2(float64(diskStat.Total) / 1024 / 1024 / 1024)
 	}
 
-	// Uptime
-	uptimeSec, err := host.Uptime()
-	if err == nil {
+	if uptimeSec, err := host.Uptime(); err == nil {
 		m.UptimeH = round2(float64(uptimeSec) / 3600)
 	}
 
-	// Temperatura CPU e sala
 	temps := readTemperatures()
-	m.CPUTempC  = temps.CPU
+	m.CPUTempC = temps.CPU
 	m.RoomTempC = temps.Room
 
-	// IPs e MAC — apenas IPv4, ignora loopback e link-local
-	ifaces, err := psnet.Interfaces()
-	if err == nil {
-		for _, iface := range ifaces {
-			if isLoopback(iface.Name) {
-				continue
-			}
-			for _, addr := range iface.Addrs {
-				ip := extractIP(addr.Addr)
-				if ip != "" && isIPv4(ip) && !isLinkLocal(ip) {
-					m.IPs = append(m.IPs, ip)
-					if m.MAC == "" && iface.HardwareAddr != "" {
-						m.MAC = iface.HardwareAddr
-					}
-				}
-			}
-		}
+	if ifaces, err := psnet.Interfaces(); err == nil {
+		m.IPs, m.MAC = collectNetworkInfo(ifaces)
 	}
 
 	return m, nil
+}
+
+// collectNetworkInfo extracts IPv4 addresses and primary MAC from non-loopback interfaces.
+func collectNetworkInfo(ifaces []psnet.InterfaceStat) (ips []string, mac string) {
+	for _, iface := range ifaces {
+		if isLoopback(iface.Name) {
+			continue
+		}
+		for _, addr := range iface.Addrs {
+			ip := extractIP(addr.Addr)
+			if ip == "" || !isIPv4(ip) || isLinkLocal(ip) {
+				continue
+			}
+			ips = append(ips, ip)
+			if mac == "" && iface.HardwareAddr != "" {
+				mac = iface.HardwareAddr
+			}
+		}
+	}
+	return
 }
 
 func round2(f float64) float64 {

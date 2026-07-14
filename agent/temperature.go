@@ -17,58 +17,53 @@ type Temperatures struct {
 func readTemperatures() Temperatures {
 	result := Temperatures{CPU: -1, Room: -1}
 
-	// Try LibreHardwareMonitor first — most accurate CPU reading on Windows
 	if cpu := readCPUTempLHM(); cpu > 0 {
 		result.CPU = cpu
 	}
 
-	// Read gopsutil sensors for room temp (ACPI) and CPU fallback
 	temps, err := host.SensorsTemperatures()
 	if err != nil || len(temps) == 0 {
 		return result
 	}
 
-	// CPU fallback via gopsutil (only if LHM didn't work)
 	if result.CPU < 0 {
-		cpuPreferred := []string{
-			"coretemp_core_0",
-			"k10temp_tdie",
-			"cpu_thermal_0",
-			"cpu-thermal_0",
-		}
-		for _, name := range cpuPreferred {
-			for _, t := range temps {
-				if t.SensorKey == name && t.Temperature >= 35 && t.Temperature < 110 {
-					result.CPU = round2(t.Temperature)
-					break
-				}
-			}
-			if result.CPU > 0 {
-				break
-			}
-		}
+		result.CPU = readCPUTempFromSensors(temps)
+	}
+	result.Room = readRoomTempFromSensors(temps)
+	return result
+}
 
-		if result.CPU < 0 {
-			for _, t := range temps {
-				key := strings.ToLower(t.SensorKey)
-				if strings.Contains(key, "cpu") &&
-					!strings.Contains(key, "acpi") &&
-					t.Temperature >= 35 && t.Temperature < 110 {
-					result.CPU = round2(t.Temperature)
-					break
-				}
+// readCPUTempFromSensors tries preferred sensor names first, then fuzzy-matches "cpu".
+func readCPUTempFromSensors(temps []host.TemperatureStat) float64 {
+	preferred := []string{"coretemp_core_0", "k10temp_tdie", "cpu_thermal_0", "cpu-thermal_0"}
+	for _, name := range preferred {
+		for _, t := range temps {
+			if t.SensorKey == name && isCPUTempValid(t.Temperature) {
+				return round2(t.Temperature)
 			}
 		}
 	}
-
-	// Room temperature from ACPI thermal zone
 	for _, t := range temps {
 		key := strings.ToLower(t.SensorKey)
-		if strings.Contains(key, "acpi") && t.Temperature >= 10 && t.Temperature <= 50 {
-			result.Room = round2(t.Temperature)
-			break
+		if strings.Contains(key, "cpu") && !strings.Contains(key, "acpi") && isCPUTempValid(t.Temperature) {
+			return round2(t.Temperature)
 		}
 	}
+	return -1
+}
 
-	return result
+// readRoomTempFromSensors reads ambient temperature from ACPI thermal zone.
+func readRoomTempFromSensors(temps []host.TemperatureStat) float64 {
+	for _, t := range temps {
+		if strings.Contains(strings.ToLower(t.SensorKey), "acpi") &&
+			t.Temperature >= 10 && t.Temperature <= 50 {
+			return round2(t.Temperature)
+		}
+	}
+	return -1
+}
+
+// isCPUTempValid checks if a temperature reading is within a plausible CPU range.
+func isCPUTempValid(t float64) bool {
+	return t >= 35 && t < 110
 }
