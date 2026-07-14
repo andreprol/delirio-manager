@@ -2,7 +2,7 @@
 **Data:** 2026-07-14  
 **Projeto:** Delirio Manager  
 **Fonte:** https://engsoftmoderna.info (10 capítulos)  
-**Status:** P1 concluído — P2 e P3 pendentes
+**Status:** P1 ✅ — P2 ✅ — P3 ✅ (concluído 14/07/2026)
 
 ---
 
@@ -11,9 +11,9 @@
 | Prioridade | Total | Concluído | Pendente |
 |---|---|---|---|
 | P1 | 5 | 5 | 0 |
-| P2 | 4 | 0 | 4 |
-| P3 | 5 | 0 | 5 |
-| **Total** | **14** | **5** | **9** |
+| P2 | 4 | 4 | 0 |
+| P3 | 5 | 5 | 0 |
+| **Total** | **14** | **14** | **0** |
 
 ---
 
@@ -31,7 +31,7 @@
 
 ---
 
-## P2 — Pendente (Alto Impacto)
+## P2 — Concluído ✅ (14/07/2026)
 
 ### P2.1 — ESLint + Jest no CI (Cap. 10)
 **Problema:** `ci-agent.yml` roda apenas Go. `complexity: error` não bloqueia PRs no lado Node.js.  
@@ -64,40 +64,26 @@ Promover para `error` após limpar violações (mesmo padrão do complexity).
 
 ---
 
-## P3 — Pendente (Valor Moderado)
+## P3 — Concluído ✅ (14/07/2026)
 
-### P3.1 — ADRs — Architecture Decision Records (Cap. 7)
-**Problema:** Decisões arquiteturais (SQLite, Go agent, camadas routes→services→db) não documentadas.  
-**Solução:** Criar `docs/adr/` com template MADR. Começar pelas 3 decisões mais críticas:
-- ADR-001: Por que Go para o agente (vs Node)
-- ADR-002: SQLite como banco principal (vs Postgres)
-- ADR-003: Arquitetura em camadas routes→services→db
+### P3.1 — ADRs — Architecture Decision Records (Cap. 7) ✅
+Criado `docs/adr/` com 3 ADRs:
+- `001-sqlite-como-banco-principal.md`
+- `002-go-para-agente-windows.md`
+- `003-arquitetura-em-camadas-routes-services-db.md`
 
-### P3.2 — Diagrama de Arquitetura (Cap. 7)
-**Problema:** Nenhuma visão de alto nível do sistema.  
-**Solução:** Mermaid no `README.md` ou `docs/architecture.md` mostrando:
-- Componentes: Electron+React, Node.js server, Go agent, SQLite, Azure
-- Fluxo de dados: Agent → heartbeat → Server → DB → Dashboard
+### P3.2 — Diagrama de Arquitetura (Cap. 7) ✅
+Criado `docs/architecture.md` com diagramas Mermaid (componentes + fluxo de dados).
 
-### P3.3 — Catálogo de Padrões de Projeto (Cap. 6)
-**Problema:** Padrões usados implicitamente, não documentados.  
-**Solução:** Seção no `docs/` catalogando:
-- Strategy: dispatcher `ACK_POST_PROCESSORS` em `agent.js`
-- Observer: `alertEngine` monitorando métricas
-- Template Method: `buildUserPrompt` + `callClaude` + `parseClaudeScore`
-- Facade: `reportEngine` como fachada do módulo de relatório
+### P3.3 — Catálogo de Padrões de Projeto (Cap. 6) ✅
+Criado `docs/design-patterns.md`. 5 padrões catalogados com evidências reais:
+- Singleton (`db.js:getDb()`), Strategy (`agent.js:ACK_POST_PROCESSORS`), Observer (`alertEngine.js:fireAlert()`), Template Method (`alertEngine.js:checkAll()`), Facade (`reportEngine.js`)
 
-### P3.4 — Issue Templates GitHub (Cap. 2)
-**Problema:** Sem estrutura para reportar bugs ou features.  
-**Solução:** Criar `.github/ISSUE_TEMPLATE/`:
-- `bug_report.md`: descrição, passos para reproduzir, comportamento esperado
-- `feature_request.md`: user story, critério de aceite
+### P3.4 — Issue Templates GitHub (Cap. 2) ✅
+Criado `.github/ISSUE_TEMPLATE/bug_report.md` e `feature_request.md`.
 
-### P3.5 — TDD em Novos Módulos (Cap. 8)
-**Problema:** TDD não praticado — testes escritos após o código.  
-**Solução:** Não retroativo. Para próximas features de médio porte:
-1. Escrever testes antes da implementação
-2. Verificar com `/test-generate` gate após
+### P3.5 — TDD em Novos Módulos (Cap. 8) ✅ (processo)
+Convenção estabelecida: próximas features de médio porte escrever testes antes da implementação, verificar com `/test-generate` gate.
 
 ---
 
@@ -125,3 +111,5 @@ Promover para `error` após limpar violações (mesmo padrão do complexity).
 | 2026-07-14 | Gap analysis inicial + P1 implementado (commit f16c033) |
 | 2026-07-14 | P1.5 concluído: 31+ violações complexity eliminadas, ESLint warn→error, verify.sh=126 |
 | 2026-07-14 | Gap analysis refeito e documentado (esta sessão) |
+| 2026-07-14 | P2 concluído: ci-server.yml (lint+coverage), P2.3 falso positivo diagnosticado, max-lines-per-function warn |
+| 2026-07-14 | P3 concluído: 3 ADRs, architecture.md, design-patterns.md, 2 issue templates |
