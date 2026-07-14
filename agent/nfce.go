@@ -222,27 +222,42 @@ func listNFCeMonths() NFCeListMonthsResult {
 		if !yearEntry.IsDir() || len(yearEntry.Name()) != 4 {
 			continue
 		}
-		monthEntries, err := os.ReadDir(filepath.Join(alohaNFCePath, yearEntry.Name()))
-		if err != nil {
-			continue
-		}
-		for _, monthEntry := range monthEntries {
-			if !monthEntry.IsDir() || len(monthEntry.Name()) != 2 {
-				continue
-			}
-			info := NFCeMonthInfo{Year: yearEntry.Name(), Month: monthEntry.Name(), Days: []string{}}
-			dayEntries, err := os.ReadDir(filepath.Join(alohaNFCePath, yearEntry.Name(), monthEntry.Name()))
-			if err == nil {
-				for _, d := range dayEntries {
-					if d.IsDir() && len(d.Name()) == 2 {
-						info.Days = append(info.Days, d.Name())
-					}
-				}
-			}
-			result.Months = append(result.Months, info)
-		}
+		result.Months = append(result.Months, scanMonthsForYear(yearEntry.Name())...)
 	}
 	return result
+}
+
+func scanMonthsForYear(yearName string) []NFCeMonthInfo {
+	monthEntries, err := os.ReadDir(filepath.Join(alohaNFCePath, yearName))
+	if err != nil {
+		return nil
+	}
+	var months []NFCeMonthInfo
+	for _, monthEntry := range monthEntries {
+		if !monthEntry.IsDir() || len(monthEntry.Name()) != 2 {
+			continue
+		}
+		months = append(months, NFCeMonthInfo{
+			Year:  yearName,
+			Month: monthEntry.Name(),
+			Days:  scanDaysForMonth(yearName, monthEntry.Name()),
+		})
+	}
+	return months
+}
+
+func scanDaysForMonth(yearName, monthName string) []string {
+	entries, err := os.ReadDir(filepath.Join(alohaNFCePath, yearName, monthName))
+	if err != nil {
+		return []string{}
+	}
+	var days []string
+	for _, d := range entries {
+		if d.IsDir() && len(d.Name()) == 2 {
+			days = append(days, d.Name())
+		}
+	}
+	return days
 }
 
 // indexNFCeDay scans C:\Bootdrv\AlohaFiscal\ServerData\XML\{YYYY}\{MM}\{DD}\NFCe\ for XMLs.

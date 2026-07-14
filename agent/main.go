@@ -33,15 +33,22 @@ func main() {
 	}
 
 	if *setServer != "" {
-		cfg, _ := loadConfig()
-		cfg.ServerURL = *setServer
-		if err := saveConfig(cfg); err != nil {
-			log.Fatalf("Erro ao salvar config: %v", err)
-		}
-		fmt.Printf("Servidor configurado: %s\n", *setServer)
+		handleSetServer(*setServer)
 		return
 	}
+	dispatchCommand(install, uninstall, run)
+}
 
+func handleSetServer(url string) {
+	cfg, _ := loadConfig()
+	cfg.ServerURL = url
+	if err := saveConfig(cfg); err != nil {
+		log.Fatalf("Erro ao salvar config: %v", err)
+	}
+	fmt.Printf("Servidor configurado: %s\n", url)
+}
+
+func dispatchCommand(install, uninstall, run *bool) {
 	switch {
 	case *install:
 		if err := installService(); err != nil {

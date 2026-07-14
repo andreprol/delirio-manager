@@ -15,10 +15,12 @@ linters-settings:
   errcheck:
     check-type-assertions: false  # type assertions sem ok são comuns em Go idiomático
   cyclop:
-    # Baseline 14/07/2026: 10 violações existentes (pior: executeCommand=50, temperature=21, metrics=15).
-    # Threshold em 51 para não bloquear CI agora. Reduzir conforme refactorings:
-    # 51 → 25 → 15 → 10 (meta final Cap.5 Eng.Soft.Moderna).
-    max-complexity: 51
+    # Baseline 14/07/2026: threshold 51. Refactors concluídos: executeCommand(50→2),
+    # sendHeartbeat(16→7), readTemperatures(21→4), collectMetrics(15→6),
+    # listNFCeMonths(13→4), main(12→3).
+    # Restam 4 funções em complexity 11: checkAndUpdate, installVeeam, readStatus, downloadAndExtractLHM.
+    # Próximo passo: refatorar essas 4 → baixar para 10 (meta Cap.5 Eng.Soft.Moderna).
+    max-complexity: 12
     skip-tests: true    # testes podem ter branches sem ser smells
 
 issues:

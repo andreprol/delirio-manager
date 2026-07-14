@@ -257,57 +257,57 @@ func (a *Agent) sendHeartbeat() {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized {
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
 		logWarn("Token rejeitado. Re-registrando...")
 		a.cfg.Token = ""
 		_ = a.register()
+	case http.StatusOK:
+		a.onHeartbeatOK(resp.Body)
+	}
+}
+
+func (a *Agent) onHeartbeatOK(body io.Reader) {
+	now := time.Now().UTC()
+	a.cfg.LastHeartbeatAt = now.Format(time.RFC3339)
+	_ = saveConfig(a.cfg)
+
+	a.mu.Lock()
+	prev := a.lastSuccessAt
+	a.lastSuccessAt = now
+	a.mu.Unlock()
+
+	if !prev.IsZero() && now.Sub(prev) > 10*time.Minute {
+		go a.reportOfflineEvent(prev, now)
+	}
+
+	var hbResp HeartbeatResponse
+	if err := json.NewDecoder(body).Decode(&hbResp); err != nil {
 		return
 	}
-
-	// Save successful heartbeat timestamp for boot event collection
-	if resp.StatusCode == http.StatusOK {
-		now := time.Now().UTC()
-		a.cfg.LastHeartbeatAt = now.Format(time.RFC3339)
-		_ = saveConfig(a.cfg)
-
-		// Offline event detection: se gap desde último sucesso > 10 min, reporta queda
-		a.mu.Lock()
-		prev := a.lastSuccessAt
-		a.lastSuccessAt = now
-		a.mu.Unlock()
-
-		if !prev.IsZero() && now.Sub(prev) > 10*time.Minute {
-			go a.reportOfflineEvent(prev, now)
-		}
+	if hbResp.LatestVersion != "" && hbResp.LatestVersion != Version {
+		a.maybeStartUpdate(UpdateInfo{Version: hbResp.LatestVersion, SHA256: hbResp.UpdateInfo.SHA256})
 	}
+}
 
-	// Verifica se servidor indica nova versao disponivel
-	if resp.StatusCode == http.StatusOK {
-		var hbResp HeartbeatResponse
-		if err := json.NewDecoder(resp.Body).Decode(&hbResp); err == nil {
-			if hbResp.LatestVersion != "" && hbResp.LatestVersion != Version {
-				a.mu.Lock()
-				alreadyUpdating := a.updating
-				if !alreadyUpdating {
-					a.updating = true
-				}
-				a.mu.Unlock()
-				if !alreadyUpdating {
-					go func(info UpdateInfo) {
-						defer func() {
-							a.mu.Lock()
-							a.updating = false
-							a.mu.Unlock()
-						}()
-						a.checkAndUpdate(info)
-					}(UpdateInfo{
-						Version: hbResp.LatestVersion,
-						SHA256:  hbResp.UpdateInfo.SHA256,
-					})
-				}
-			}
-		}
+func (a *Agent) maybeStartUpdate(info UpdateInfo) {
+	a.mu.Lock()
+	alreadyUpdating := a.updating
+	if !alreadyUpdating {
+		a.updating = true
 	}
+	a.mu.Unlock()
+	if alreadyUpdating {
+		return
+	}
+	go func() {
+		defer func() {
+			a.mu.Lock()
+			a.updating = false
+			a.mu.Unlock()
+		}()
+		a.checkAndUpdate(info)
+	}()
 }
 
 func (a *Agent) pollCommands() {
