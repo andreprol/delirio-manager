@@ -43,41 +43,18 @@ func (a *Agent) checkAndUpdate(latest UpdateInfo) {
 		return
 	}
 
-	// 2. Valida hash SHA256 — obrigatório
-	if latest.SHA256 == "" {
-		logError("Servidor nao forneceu SHA256 — atualizacao rejeitada por seguranca.")
-		os.Remove(newExe)
-		return
-	}
-	hash, err := fileSHA256(newExe)
-	if err != nil || hash != latest.SHA256 {
-		logError(fmt.Sprintf("Hash invalido! Esperado: %s, Obtido: %s", latest.SHA256, hash))
-		os.Remove(newExe)
-		return
-	}
-	logInfo("Hash SHA256 validado com sucesso.")
-
-	// 3. Valida que o binario baixado e um executavel Windows valido
-	if err := validateBinary(newExe, latest.Version); err != nil {
-		logError("Binario invalido, atualizacao abortada: " + err.Error())
+	// 2. Valida hash SHA256 e assinatura PE
+	if err := validateUpdate(newExe, latest); err != nil {
+		logError("Atualizacao rejeitada: " + err.Error())
 		os.Remove(newExe)
 		return
 	}
 	logInfo(fmt.Sprintf("Binario validado: versao %s confirmada.", latest.Version))
 
-	// 4. Rename trick: renomeia o exe atual para .old (permitido mesmo em uso),
-	//    depois renomeia o .new para o nome original.
-	os.Remove(oldExe) // limpa .old de atualizacao anterior, se houver
-
-	if err := os.Rename(exe, oldExe); err != nil {
-		logError("Falha ao renomear exe atual: " + err.Error())
-		os.Remove(newExe)
-		return
-	}
-
-	if err := os.Rename(newExe, exe); err != nil {
-		os.Rename(oldExe, exe) //nolint:errcheck // rollback best-effort
-		logError("Falha ao colocar novo exe no lugar: " + err.Error())
+	// 3. Rename trick: substitui exe em producao
+	os.Remove(oldExe)
+	if err := swapBinaries(exe, newExe, oldExe); err != nil {
+		logError("Falha ao substituir binario: " + err.Error())
 		return
 	}
 
@@ -85,6 +62,33 @@ func (a *Agent) checkAndUpdate(latest UpdateInfo) {
 	//    o servico com o novo binario ja no lugar.
 	logInfo("Atualizacao aplicada. Encerrando para o SCM reiniciar com nova versao...")
 	os.Exit(1)
+}
+
+// validateUpdate verifica SHA256 e assinatura PE do binário baixado.
+func validateUpdate(newExe string, info UpdateInfo) error {
+	if info.SHA256 == "" {
+		return fmt.Errorf("servidor nao forneceu SHA256 — rejeitado por seguranca")
+	}
+	hash, err := fileSHA256(newExe)
+	if err != nil || hash != info.SHA256 {
+		return fmt.Errorf("hash invalido! esperado: %s, obtido: %s", info.SHA256, hash)
+	}
+	logInfo("Hash SHA256 validado com sucesso.")
+	return validateBinary(newExe, info.Version)
+}
+
+// swapBinaries aplica o rename trick do Windows para substituir o exe em produção.
+// Em caso de falha no segundo rename, tenta rollback best-effort.
+func swapBinaries(exe, newExe, oldExe string) error {
+	if err := os.Rename(exe, oldExe); err != nil {
+		os.Remove(newExe)
+		return fmt.Errorf("renomear exe atual: %w", err)
+	}
+	if err := os.Rename(newExe, exe); err != nil {
+		os.Rename(oldExe, exe) //nolint:errcheck // rollback best-effort
+		return fmt.Errorf("colocar novo exe no lugar: %w", err)
+	}
+	return nil
 }
 
 // cleanOldExe remove o .old deixado por uma atualizacao anterior.

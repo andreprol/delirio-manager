@@ -107,26 +107,9 @@ func installVeeam(serverURL string) error {
 	}
 
 	logInfo("DR: baixando instalador Veeam do servidor...")
-	resp, err := http.Get(serverURL + "/downloads/" + veeamInstallerName)
-	if err != nil {
-		return fmt.Errorf("download VeeamAgentWindows.exe: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("download VeeamAgentWindows.exe: HTTP %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("ler instalador Veeam: %w", err)
-	}
-
-	if err := os.MkdirAll(veeamInstallerDir, 0755); err != nil {
-		return fmt.Errorf("criar diretório instalador: %w", err)
-	}
 	tmpPath := filepath.Join(veeamInstallerDir, veeamInstallerName)
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return fmt.Errorf("salvar instalador Veeam: %w", err)
+	if err := downloadVeeamInstaller(serverURL, tmpPath); err != nil {
+		return err
 	}
 	defer os.Remove(tmpPath)
 
@@ -145,6 +128,26 @@ func installVeeam(serverURL string) error {
 		}
 	}
 	return fmt.Errorf("servico Veeam nao subiu em 3 minutos apos instalacao")
+}
+
+// downloadVeeamInstaller baixa o instalador do servidor DM e salva em destPath.
+func downloadVeeamInstaller(serverURL, destPath string) error {
+	resp, err := http.Get(serverURL + "/downloads/" + veeamInstallerName)
+	if err != nil {
+		return fmt.Errorf("download VeeamAgentWindows.exe: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("download VeeamAgentWindows.exe: HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("ler instalador Veeam: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("criar diretório instalador: %w", err)
+	}
+	return os.WriteFile(destPath, data, 0644)
 }
 
 // configureJob creates an Azure Blob repo and backup job in Veeam via PowerShell.
@@ -259,32 +262,40 @@ if ($sess) {
 `, veeamPSModulePath, drJobName)
 
 	if out, err := runPS(script); err == nil && len(out) > 0 {
-		var sess struct {
-			Result       string `json:"Result"`
-			CreationTime string `json:"CreationTime"`
-			EndTime      string `json:"EndTime"`
-			IsRunning    bool   `json:"IsRunning"`
-		}
-		if json.Unmarshal([]byte(out), &sess) == nil {
-			s.Setup = "configured"
-			s.IsRunning = sess.IsRunning
-			s.LastBackupAt = sess.CreationTime
-			s.LastBackupOk = sess.Result == "Success"
-			if !s.LastBackupOk && sess.Result != "" {
-				s.ErrorMsg = "Veeam result: " + sess.Result
-			}
-			if !sess.IsRunning && sess.EndTime != "" {
-				t1, e1 := time.Parse(time.RFC3339, sess.CreationTime)
-				t2, e2 := time.Parse(time.RFC3339, sess.EndTime)
-				if e1 == nil && e2 == nil {
-					s.DurationMin = int(t2.Sub(t1).Minutes())
-				}
-			}
-			return s
+		if parsed, ok := parseVeeamSession(out, s); ok {
+			return parsed
 		}
 	}
 
 	return readStatusFromLogs(s)
+}
+
+func parseVeeamSession(out string, base DRStatus) (DRStatus, bool) {
+	var sess struct {
+		Result       string `json:"Result"`
+		CreationTime string `json:"CreationTime"`
+		EndTime      string `json:"EndTime"`
+		IsRunning    bool   `json:"IsRunning"`
+	}
+	if err := json.Unmarshal([]byte(out), &sess); err != nil {
+		return base, false
+	}
+	s := base
+	s.Setup = "configured"
+	s.IsRunning = sess.IsRunning
+	s.LastBackupAt = sess.CreationTime
+	s.LastBackupOk = sess.Result == "Success"
+	if !s.LastBackupOk && sess.Result != "" {
+		s.ErrorMsg = "Veeam result: " + sess.Result
+	}
+	if !sess.IsRunning && sess.EndTime != "" {
+		t1, e1 := time.Parse(time.RFC3339, sess.CreationTime)
+		t2, e2 := time.Parse(time.RFC3339, sess.EndTime)
+		if e1 == nil && e2 == nil {
+			s.DurationMin = int(t2.Sub(t1).Minutes())
+		}
+	}
+	return s, true
 }
 
 var (

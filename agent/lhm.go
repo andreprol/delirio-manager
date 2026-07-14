@@ -72,16 +72,19 @@ func downloadAndExtractLHM(serverURL string) error {
 		return fmt.Errorf("create lhm dir: %w", err)
 	}
 
+	return extractZipToDir(data, lhmDir())
+}
+
+func extractZipToDir(data []byte, destDir string) error {
 	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return fmt.Errorf("open lhm.zip: %w", err)
 	}
-
 	for _, f := range r.File {
 		if f.FileInfo().IsDir() {
 			continue
 		}
-		destPath := filepath.Join(lhmDir(), f.Name)
+		destPath := filepath.Join(destDir, f.Name)
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 			continue
 		}
