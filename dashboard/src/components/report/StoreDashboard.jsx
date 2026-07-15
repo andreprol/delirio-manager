@@ -40,12 +40,12 @@ export function StoreDashboard({ storeName, onStoreListRefresh, allStores = [] }
   }
 
   async function handleMove(topicId, targetStore) {
-    await api.relatorio.moveTopic(topicId, targetStore).catch(() => {})
+    await api.relatorio.moveTopic(topicId, targetStore).catch(err => { alert(`Erro ao mover tópico: ${err.message}`) })
     load()
   }
 
   async function handleReplicate(topicId, targetStores) {
-    await api.relatorio.replicateTopic(topicId, targetStores).catch(() => {})
+    await api.relatorio.replicateTopic(topicId, targetStores).catch(err => { alert(`Erro ao replicar tópico: ${err.message}`) })
   }
 
   const scores = latestRun ? {

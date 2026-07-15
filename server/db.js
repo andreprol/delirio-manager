@@ -1181,15 +1181,19 @@ function replicateTopic(id, targetStores) {
   const topic = getDb().prepare('SELECT * FROM report_topics WHERE id = ?').get(id);
   if (!topic) return null;
   const now = new Date().toISOString();
+  const critical = isCriticalMachine(topic.machine_mention);
+  const stmt = getDb().prepare(
+    `INSERT INTO report_topics (store_name, description, severity, machine_mention, is_critical_machine, photo_path, created_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
   const created = [];
-  for (const storeName of targetStores) {
-    const critical = isCriticalMachine(topic.machine_mention);
-    const info = getDb().prepare(
-      `INSERT INTO report_topics (store_name, description, severity, machine_mention, is_critical_machine, photo_path, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(storeName, topic.description, topic.severity, topic.machine_mention, critical ? 1 : 0, topic.photo_path, now, topic.created_by || 'TI');
-    created.push({ id: info.lastInsertRowid, store_name: storeName });
-  }
+  const run = getDb().transaction(() => {
+    for (const storeName of targetStores) {
+      const info = stmt.run(storeName, topic.description, topic.severity, topic.machine_mention, critical ? 1 : 0, topic.photo_path, now, topic.created_by || 'TI');
+      created.push({ id: info.lastInsertRowid, store_name: storeName });
+    }
+  });
+  run();
   return created;
 }
 

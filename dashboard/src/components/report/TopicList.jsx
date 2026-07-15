@@ -99,7 +99,7 @@ export function TopicList({ topics, onResolve, onEdit, allStores = [], onMove, o
                 )}
                 {allStores.length > 0 && (
                   <button
-                    onClick={() => { setReplicatingId(isReplicating ? null : t.id); setReplicateSelected([]); setMovingId(null) }}
+                    onClick={() => { setReplicatingId(isReplicating ? null : t.id); setReplicateSelected([]); setMovingId(null); }}
                     style={BTN_BLUE} title="Replicar para outras lojas">🔁 Replicar</button>
                 )}
                 <button onClick={() => onResolve(t.id)}
