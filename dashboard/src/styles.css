@@ -40,7 +40,11 @@ body {
   padding: 0 16px; height: 56px;
   background: var(--bg-2); border-bottom: 1px solid var(--border);
   flex-shrink: 0; -webkit-app-region: drag;
+  overflow-x: auto; overflow-y: hidden;
 }
+.topbar::-webkit-scrollbar { height: 3px; }
+.topbar::-webkit-scrollbar-track { background: transparent; }
+.topbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 .topbar * { -webkit-app-region: no-drag; }
 
 /* ── Pills (topbar buttons) ─────────────────────────────────────────────── */
@@ -105,7 +109,7 @@ body {
 .pill-group-modules .pill-btn:hover { background: #6366f122; color: #a5b4fc; }
 
 .topbar-left  { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-.topbar-center { display: flex; gap: 8px; flex: 1; min-width: 310px; max-width: 420px; justify-content: center; }
+.topbar-center { display: flex; gap: 8px; width: 310px; flex-shrink: 0; justify-content: center; }
 .topbar-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
 .logo { font-weight: 700; font-size: 15px; color: var(--text); white-space: nowrap; }

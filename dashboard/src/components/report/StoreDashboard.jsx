@@ -10,7 +10,7 @@ import { ZamakThreatsSection }     from './ZamakThreatsSection'
 import { ZamakPerformanceSection } from './ZamakPerformanceSection'
 import { ZamakOutagesSection }     from './ZamakOutagesSection'
 
-export function StoreDashboard({ storeName, onStoreListRefresh }) {
+export function StoreDashboard({ storeName, onStoreListRefresh, allStores = [] }) {
   const [topics,        setTopics]       = useState([])
   const [latestRun,     setLatestRun]    = useState(null)
   const [loading,       setLoading]      = useState(true)
@@ -37,6 +37,15 @@ export function StoreDashboard({ storeName, onStoreListRefresh }) {
     if (!confirm('Marcar este tópico como resolvido? Ele irá para o histórico.')) return
     await api.relatorio.resolveTopic(id).catch(() => {})
     load()
+  }
+
+  async function handleMove(topicId, targetStore) {
+    await api.relatorio.moveTopic(topicId, targetStore).catch(() => {})
+    load()
+  }
+
+  async function handleReplicate(topicId, targetStores) {
+    await api.relatorio.replicateTopic(topicId, targetStores).catch(() => {})
   }
 
   const scores = latestRun ? {
@@ -86,7 +95,7 @@ export function StoreDashboard({ storeName, onStoreListRefresh }) {
         </div>
         {loading
           ? <p style={{ color: '#4a5568', fontSize: '0.78rem' }}>Carregando...</p>
-          : <TopicList topics={topics} onResolve={handleResolve} onEdit={t => setEditingTopic(t)} />
+          : <TopicList topics={topics} onResolve={handleResolve} onEdit={t => setEditingTopic(t)} allStores={allStores} onMove={handleMove} onReplicate={handleReplicate} />
         }
       </div>
 

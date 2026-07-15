@@ -156,6 +156,38 @@ router.delete('/topics/:id', (req, res) => {
   }
 });
 
+// PATCH /api/relatorio/topics/:id/move — mover tópico para outra loja
+router.patch('/topics/:id/move', (req, res) => {
+  try {
+    const { store_name } = req.body;
+    if (!store_name || typeof store_name !== 'string') {
+      return res.status(400).json({ error: 'store_name é obrigatório' });
+    }
+    const topic = db.moveTopic(Number(req.params.id), store_name.trim());
+    if (!topic) return res.status(404).json({ error: 'Tópico não encontrado' });
+    res.json({ ...topic, photo_paths: parsePhotoPaths(topic.photo_path) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/relatorio/topics/:id/replicate — replicar tópico para outras lojas
+router.post('/topics/:id/replicate', (req, res) => {
+  try {
+    const { target_stores } = req.body;
+    if (!Array.isArray(target_stores) || !target_stores.length) {
+      return res.status(400).json({ error: 'target_stores deve ser array não vazio' });
+    }
+    const sanitized = target_stores.map(s => String(s).trim()).filter(Boolean);
+    if (!sanitized.length) return res.status(400).json({ error: 'target_stores sem valores válidos' });
+    const result = db.replicateTopic(Number(req.params.id), sanitized);
+    if (!result) return res.status(404).json({ error: 'Tópico não encontrado' });
+    res.status(201).json({ created: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/relatorio/generate
 router.post('/generate', async (req, res) => {
   try {

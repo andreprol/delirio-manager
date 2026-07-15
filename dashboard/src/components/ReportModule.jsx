@@ -76,7 +76,7 @@ export function ReportModule({ onClose }) {
                 zamakByStore={zamakByStore}
               />
               {selectedStore
-                ? <StoreDashboard key={selectedStore} storeName={selectedStore} onStoreListRefresh={loadStores} />
+                ? <StoreDashboard key={selectedStore} storeName={selectedStore} onStoreListRefresh={loadStores} allStores={stores.map(s => s.name).filter(n => n !== selectedStore)} />
                 : <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4a5568' }}>Selecione uma loja</div>
               }
             </>
