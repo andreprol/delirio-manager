@@ -1689,7 +1689,7 @@ function ncrGetPendingRetries() {
     WHERE danfe_found IS NULL
       AND retry_count < 3
       AND machine_id IS NOT NULL
-      AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
+      AND (next_retry_at IS NULL OR datetime(next_retry_at) <= datetime('now'))
       AND command_id IS NOT NULL
   `).all();
 }
