@@ -106,7 +106,7 @@ async function sendHealthAlert(stage, detail) {
       method:  'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from:    'NCR Monitor <noreply@delirio.com.br>',
+        from:    'NCR Monitor <onboarding@resend.dev>',
         to:      ['andre@delirio.com.br'],
         subject: `🚨 NCR Monitor — Falha: ${stage}`,
         html,
