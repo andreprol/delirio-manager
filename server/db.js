@@ -445,10 +445,8 @@ function registerMachine({ machineId, hostname, agentVersion }) {
     return existing.token;
   }
 
-  // 2. UUID desconhecido mas hostname conhecido.
-  //    Se a canônica está ativa (last_seen < 5 min) → máquina física diferente com mesmo hostname
-  //    → cai no passo 3 (Temporário). Caso contrário → reinstall (config.json corrompido) →
-  //    re-key atômico: migra filhos, troca PK, deleta duplicatas, preserva localidade e histórico.
+  // 2. UUID desconhecido mas hostname conhecido → re-key atômico:
+  //    migra filhos, troca PK, deleta duplicatas, preserva localidade e histórico.
   const canonical = d.prepare(
     `SELECT * FROM machines WHERE UPPER(hostname) = UPPER(?)
      ORDER BY CASE WHEN location != 'Temporário' THEN 0 ELSE 1 END,
@@ -456,12 +454,15 @@ function registerMachine({ machineId, hostname, agentVersion }) {
   ).get(hostname);
 
   if (canonical) {
-    // Se canonical.id === hostname (case-insensitive) → machineId era hostname-based (pré-v1.5.18).
-    // Neste caso é migração automática (mesma máquina física), não outra máquina: re-key incondicional.
-    const isHostnameBased = canonical.id.toUpperCase() === hostname.toUpperCase();
-    const recentThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    if (isHostnameBased || canonical.last_seen < recentThreshold) {
-      // Reinstall ou migração hostname→UUID: re-key atômico
+    // Re-key atômico sempre que hostname bate: cobre migração hostname→UUID (v1.5.26),
+    // config.json regenerado/corrompido e reinstalls. A guard "canonical ativa < 5 min"
+    // foi removida: protegia contra duas máquinas físicas com mesmo hostname, mas
+    // hostnames na Delírio são únicos por localidade — o edge case teórico causava
+    // problema real recorrente (Temporário após cada UUID rotation).
+    // Se duas máquinas distintas tiverem mesmo hostname: a segunda vai a Temporário e
+    // o operador renomeia uma delas.
+    {
+      // Re-key atômico
       const oldId = canonical.id;
       d.pragma('foreign_keys = OFF');
       try {
@@ -493,7 +494,6 @@ function registerMachine({ machineId, hostname, agentVersion }) {
         `UUID atualizado (config recuperado de ${oldId.slice(0, 8)}): agente v${agentVersion || '?'}`);
       return canonical.token;
     }
-    // Canônica ativa (< 5 min) → máquina física diferente com mesmo hostname → cai no passo 3
   }
 
   // 3. Máquina genuinamente nova

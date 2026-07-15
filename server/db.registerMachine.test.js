@@ -1,7 +1,9 @@
 'use strict';
 
 /**
- * Unit tests para registerMachine — cobre os 3 passos e o guard de máquina ativa.
+ * Unit tests para registerMachine — cobre os 3 passos.
+ * Nota: a guard "canonical ativa < 5 min" foi removida (fix 15/07/2026).
+ * Re-key ocorre sempre que hostname bate, independente de last_seen.
  */
 
 function makeDb() {
@@ -33,7 +35,7 @@ describe('registerMachine — passo 3 e passo 1', () => {
   });
 });
 
-describe('registerMachine — passo 2a: reinstall (offline > 5 min)', () => {
+describe('registerMachine — passo 2a: reinstall', () => {
   it('re-key preserva location e remove entrada antiga', () => {
     const { registerMachine, getDb } = makeDb();
     registerMachine({ machineId: 'uuid-OLD', hostname: 'REINSTALL', agentVersion: '1.5.23' });
@@ -69,8 +71,8 @@ describe('registerMachine — passo 2c: migração hostname→UUID (isHostnameBa
   });
 });
 
-describe('registerMachine — passo 2b: guard máquina ativa (< 5 min)', () => {
-  it('máquina diferente com mesmo hostname vai para Temporário sem re-key', () => {
+describe('registerMachine — passo 2b: re-key por hostname mesmo com canonical ativa', () => {
+  it('novo UUID com mesmo hostname de canônica ativa → re-key herda localidade', () => {
     const { registerMachine, getDb } = makeDb();
     registerMachine({ machineId: 'uuid-EC', hostname: 'NUTRICIONISTA', agentVersion: '1.5.23' });
     getDb().prepare("UPDATE machines SET location='Escritório Central', last_seen=? WHERE id=?")
@@ -78,23 +80,27 @@ describe('registerMachine — passo 2b: guard máquina ativa (< 5 min)', () => {
 
     const token = registerMachine({ machineId: 'uuid-HOME', hostname: 'NUTRICIONISTA', agentVersion: '1.5.24' });
     expect(token).toBeTruthy();
-    const ec = getDb().prepare('SELECT * FROM machines WHERE id=?').get('uuid-EC');
-    expect(ec.location).toBe('Escritório Central');
+    // uuid-HOME herda localidade de uuid-EC via re-key
     const home = getDb().prepare('SELECT * FROM machines WHERE id=?').get('uuid-HOME');
-    expect(home.location).toBe('Temporário');
+    expect(home.location).toBe('Escritório Central');
+    // uuid-EC não existe mais (foi re-keyed para uuid-HOME)
+    const ec = getDb().prepare('SELECT * FROM machines WHERE id=?').get('uuid-EC');
+    expect(ec).toBeUndefined();
   });
 
-  it('EC heartbeat normal após home em Temporário', () => {
+  it('múltiplos re-registros convergem: UUID mais recente herda localidade', () => {
     const { registerMachine, getDb } = makeDb();
     registerMachine({ machineId: 'uuid-EC', hostname: 'NUTRICIONISTA', agentVersion: '1.5.23' });
     getDb().prepare("UPDATE machines SET location='Escritório Central', last_seen=? WHERE id=?")
       .run(new Date().toISOString(), 'uuid-EC');
+    // uuid-HOME re-keya para EC location
     registerMachine({ machineId: 'uuid-HOME', hostname: 'NUTRICIONISTA', agentVersion: '1.5.24' });
-
+    // uuid-EC re-registra → passo 1 (uuid-EC não existe mais) → re-key de uuid-HOME para uuid-EC
     registerMachine({ machineId: 'uuid-EC', hostname: 'NUTRICIONISTA', agentVersion: '1.5.23' });
     const ec = getDb().prepare('SELECT * FROM machines WHERE id=?').get('uuid-EC');
     expect(ec.location).toBe('Escritório Central');
+    // uuid-HOME não existe mais (re-keyed)
     const home = getDb().prepare('SELECT * FROM machines WHERE id=?').get('uuid-HOME');
-    expect(home.location).toBe('Temporário');
+    expect(home).toBeUndefined();
   });
 });
