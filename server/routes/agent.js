@@ -10,9 +10,26 @@ const { readVersionInfo } = require('./update');
 const { clearOfflineCooldown } = require('../services/alertEngine');
 const ncrMonitor = require('../services/ncrMonitor');
 
+// Rate limit de registro: máximo 10 por IP a cada 30 min
+// Mitiga token theft via POST /api/register (endpoint sem auth).
+const _regAttempts = new Map();
+function _checkRegRateLimit(ip) {
+  const now = Date.now();
+  const e = _regAttempts.get(ip) || { n: 0, since: now };
+  if (now - e.since > 30 * 60 * 1000) { e.n = 0; e.since = now; }
+  e.n++;
+  _regAttempts.set(ip, e);
+  return e.n <= 10;
+}
+
 // POST /api/register
 // Registra nova maquina ou atualiza existente. Retorna token.
 router.post('/register', (req, res) => {
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (!_checkRegRateLimit(ip)) {
+    return res.status(429).json({ error: 'Rate limit: muitos registros deste IP. Aguarde 30 min.' });
+  }
+
   const { machineId, hostname, version } = req.body;
 
   if (!machineId || !hostname) {

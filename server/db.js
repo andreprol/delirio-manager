@@ -457,10 +457,12 @@ function registerMachine({ machineId, hostname, agentVersion }) {
     // Re-key atômico sempre que hostname bate: cobre migração hostname→UUID (v1.5.26),
     // config.json regenerado/corrompido e reinstalls. A guard "canonical ativa < 5 min"
     // foi removida: protegia contra duas máquinas físicas com mesmo hostname, mas
-    // hostnames na Delírio são únicos por localidade — o edge case teórico causava
+    // hostnames na Delírio são únicos por domínio Windows — o edge case teórico causava
     // problema real recorrente (Temporário após cada UUID rotation).
-    // Se duas máquinas distintas tiverem mesmo hostname: a segunda vai a Temporário e
-    // o operador renomeia uma delas.
+    // Edge case: se duas máquinas físicas distintas tiverem mesmo hostname, ambas herdam
+    // o mesmo token (canonical.token) e ambos os heartbeats atualizam o mesmo registro
+    // no DB — dashboard exibe métricas intercaladas de dois PCs. Resolução: renomear um
+    // dos hostnames no Windows. Não deve ocorrer na Delírio (domínio garante unicidade).
     {
       // Re-key atômico
       const oldId = canonical.id;
