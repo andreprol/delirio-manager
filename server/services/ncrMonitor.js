@@ -6,7 +6,12 @@ const path = require('path');
 const fs   = require('fs');
 const db   = require('../db');
 
-const POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos
+const POLL_INTERVAL_MS     = 2 * 60 * 1000;  // 2 minutos
+const ALERT_THRESHOLD      = 3;              // falhas consecutivas antes de alertar
+const ALERT_COOLDOWN_MS    = 30 * 60 * 1000; // 30 min entre alertas da mesma etapa
+const WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;  // watchdog verifica a cada 5 min
+const WATCHDOG_MAX_SILENT  = 10 * 60 * 1000; // alerta se tick parou por > 10 min
+const ACK_TIMEOUT_MINUTES  = 30;             // alerta se BOH não ACKou em 30 min
 
 // ── Mapeamento enterpriseUnitId → hostname BOH ────────────────────────────────
 
@@ -41,6 +46,107 @@ function resolveBoh(enterpriseUnitId, storeName) {
     if (normalized.includes(keyNorm)) return val;
   }
   return null;
+}
+
+// ── Health state ─────────────────────────────────────────────────────────────
+
+const health = {
+  tokenFailures:  0,
+  fetchFailures:  0,
+  lastTickAt:     Date.now(),
+  lastAlert:      {},
+};
+
+function canAlert(stage) {
+  const now  = Date.now();
+  const last = health.lastAlert[stage] || 0;
+  return now - last >= ALERT_COOLDOWN_MS;
+}
+
+function markAlerted(stage) {
+  health.lastAlert[stage] = Date.now();
+}
+
+function loadResendKey() {
+  try {
+    const conf = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
+    return conf.resendApiKey || process.env.RESEND_API_KEY || null;
+  } catch {
+    return process.env.RESEND_API_KEY || null;
+  }
+}
+
+async function sendHealthAlert(stage, detail) {
+  if (!canAlert(stage)) return;
+
+  const apiKey = loadResendKey();
+  if (!apiKey) {
+    console.error(`[NCR-HEALTH] sem resendApiKey — alerta ${stage}: ${detail}`);
+    return;
+  }
+
+  markAlerted(stage);
+
+  const esc    = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const html = `<!DOCTYPE html><html lang="pt-BR"><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+<div style="background:#c0392b;color:#fff;padding:14px 20px;border-radius:6px 6px 0 0">
+  <h2 style="margin:0;font-size:16px">🚨 NCR Monitor — Falha Detectada</h2>
+  <p style="margin:4px 0 0;font-size:13px;opacity:0.85">Delirio Manager — Health Alert</p>
+</div>
+<div style="border:1px solid #ddd;border-top:none;padding:16px 20px;border-radius:0 0 6px 6px">
+  <p style="margin:0 0 8px"><b>Etapa com falha:</b> ${esc(stage)}</p>
+  <p style="background:#fff5f5;border-left:4px solid #c0392b;padding:10px 14px;font-size:13px;margin:0 0 12px">${esc(detail)}</p>
+  <p style="color:#718096;font-size:11px;margin:0">Delirio Manager NCR Monitor — ${nowStr} UTC</p>
+</div>
+</body></html>`;
+
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from:    'NCR Monitor <noreply@send.delirio.com.br>',
+        to:      ['andre@delirio.com.br'],
+        subject: `🚨 NCR Monitor — Falha: ${stage}`,
+        html,
+      }),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      console.error(`[NCR-HEALTH] Resend ${res.status}: ${txt.slice(0, 200)}`);
+    } else {
+      console.log(`[NCR-HEALTH] Alerta enviado — stage=${stage}`);
+    }
+  } catch (e) {
+    console.error('[NCR-HEALTH] Erro ao enviar alerta:', e.message);
+  }
+}
+
+async function checkAckTimeouts() {
+  const cutoff = new Date(Date.now() - ACK_TIMEOUT_MINUTES * 60000).toISOString();
+  const timedOut = db.ncrGetAckTimedOut(cutoff);
+  if (timedOut.length === 0) return;
+  const sample = timedOut[0];
+  const detail = timedOut.length === 1
+    ? `Pedido #${sample.order_ref} (${sample.boh_hostname || 'BOH desconhecido'}) ` +
+      `sem resposta do agente por mais de ${ACK_TIMEOUT_MINUTES} minutos. command_id=${sample.command_id}`
+    : `${timedOut.length} pedido(s) sem resposta do agente por mais de ${ACK_TIMEOUT_MINUTES} minutos. ` +
+      `Exemplo: #${sample.order_ref} (${sample.boh_hostname || 'BOH desconhecido'})`;
+  await sendHealthAlert('BOH ACK Timeout', detail);
+}
+
+function startWatchdog() {
+  setInterval(async () => {
+    const silentMs = Date.now() - health.lastTickAt;
+    if (silentMs > WATCHDOG_MAX_SILENT) {
+      await sendHealthAlert(
+        'Loop Silencioso',
+        `NCR Monitor não executou tick por ${Math.round(silentMs / 60000)} minutos. ` +
+        `Verifique se o processo Node.js (PM2) ainda está rodando.`
+      );
+    }
+  }, WATCHDOG_INTERVAL_MS);
 }
 
 // ── MS Graph config + token ───────────────────────────────────────────────────
@@ -442,28 +548,56 @@ async function processNcrEmail(msg, since) {
   return 0;
 }
 
+async function getTokenTracked(cfg) {
+  try {
+    const token = await getAccessToken(cfg);
+    health.tokenFailures = 0;
+    return token;
+  } catch (e) {
+    health.tokenFailures++;
+    console.error('[NCR] Falha ao obter token:', e.message);
+    if (health.tokenFailures >= ALERT_THRESHOLD) {
+      await sendHealthAlert(
+        'Graph Auth',
+        `Falha ao obter token MS Graph: ${e.message} (${health.tokenFailures}× consecutivas)`
+      );
+    }
+    return null;
+  }
+}
+
+async function fetchEmailsTracked(token) {
+  try {
+    const emails = await fetchNewNcrEmails(token);
+    health.fetchFailures = 0;
+    return emails;
+  } catch (e) {
+    health.fetchFailures++;
+    console.error('[NCR] Falha ao buscar emails:', e.message);
+    if (health.fetchFailures >= ALERT_THRESHOLD) {
+      await sendHealthAlert(
+        'Email Fetch',
+        `Falha ao buscar emails no MS Graph: ${e.message} (${health.fetchFailures}× consecutivas)`
+      );
+    }
+    return null;
+  }
+}
+
 async function tick() {
+  health.lastTickAt = Date.now();
+
   const cfg = loadGraphConfig();
   if (!cfg.refreshToken) {
     console.warn('[NCR] msGraph.refreshToken ausente — monitor inativo');
     return;
   }
 
-  let token;
-  try {
-    token = await getAccessToken(cfg);
-  } catch (e) {
-    console.error('[NCR] Falha ao obter token:', e.message);
-    return;
-  }
+  const token = await getTokenTracked(cfg);
+  if (!token) return;
 
-  let emails = [];
-  try {
-    emails = await fetchNewNcrEmails(token);
-  } catch (e) {
-    console.error('[NCR] Falha ao buscar emails:', e.message);
-    return;
-  }
+  const emails = await fetchEmailsTracked(token);
+  if (!emails) return;
 
   const since = loadNcrSince();
   let newCount = 0;
@@ -484,6 +618,12 @@ async function tick() {
   } catch (e) {
     console.error('[NCR] processRetries erro:', e.message);
   }
+
+  try {
+    await checkAckTimeouts();
+  } catch (e) {
+    console.error('[NCR-HEALTH] checkAckTimeouts erro:', e.message);
+  }
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
@@ -493,6 +633,7 @@ function start() {
   setInterval(() => {
     tick().catch(e => console.error('[NCR] tick erro:', e.message));
   }, POLL_INTERVAL_MS);
+  startWatchdog();
 }
 
 module.exports = { start, sendNcrResultEmail };

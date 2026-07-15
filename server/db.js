@@ -1694,6 +1694,21 @@ function ncrGetPendingRetries() {
   `).all();
 }
 
+function ncrGetAckTimedOut(cutoffIso) {
+  return getDb().prepare(`
+    SELECT e.id, e.order_ref, e.boh_hostname, e.command_id,
+           c.created_at AS cmd_created_at
+    FROM ncr_monitor_emails e
+    JOIN commands c ON c.id = e.command_id
+    WHERE e.danfe_found IS NULL
+      AND e.machine_id IS NOT NULL
+      AND e.command_id IS NOT NULL
+      AND e.notified_at IS NULL
+      AND c.acked_at IS NULL
+      AND datetime(c.created_at) < datetime(?)
+  `).all(cutoffIso);
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -1754,4 +1769,5 @@ module.exports = {
   replaceZamakOutages, getZamakOutages,
   // ncr monitor
   ncrInsertEmail, ncrGetByMessageId, ncrGetByCommandId, ncrUpdate, ncrGetPendingRetries,
+  ncrGetAckTimedOut,
 };
