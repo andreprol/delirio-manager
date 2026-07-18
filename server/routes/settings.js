@@ -27,6 +27,9 @@ router.get('/', (req, res) => {
       autoWake: {
         enabled: cfg.autoWake?.enabled === true,
       },
+      alerts: {
+        offlineEnabled: cfg.alerts?.offlineEnabled !== false,
+      },
       insights: {
         enabled:   cfg.insights?.enabled === true,
         hasApiKey: !!(cfg.insights?.claude_api_key),
@@ -61,6 +64,13 @@ router.put('/', (req, res) => {
       cfg.autoWake = {
         ...(cfg.autoWake || {}),
         enabled: req.body.autoWake.enabled === true,
+      };
+    }
+
+    if (req.body.alerts !== undefined) {
+      cfg.alerts = {
+        ...(cfg.alerts || {}),
+        offlineEnabled: req.body.alerts.offlineEnabled !== false,
       };
     }
 

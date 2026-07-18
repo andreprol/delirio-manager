@@ -39,6 +39,8 @@ export default function App() {
   const [configLoaded, setConfigLoaded] = useState(false)
   const [autoWakeEnabled, setAutoWakeEnabled] = useState(false)
   const [autoWakeLoading, setAutoWakeLoading] = useState(false)
+  const [offlineAlertsEnabled, setOfflineAlertsEnabled] = useState(true)
+  const [offlineAlertsLoading, setOfflineAlertsLoading] = useState(false)
   const [generating,      setGenerating]      = useState(false)
   const [generateMsg,     setGenerateMsg]     = useState(null)
   const [updateStatus,    setUpdateStatus]    = useState(null) // null | 'checking' | 'downloading' | 'up-to-date' | 'error'
@@ -176,6 +178,7 @@ export default function App() {
       try {
         const settings = await api.getSettings()
         setAutoWakeEnabled(settings.autoWake?.enabled === true)
+        setOfflineAlertsEnabled(settings.alerts?.offlineEnabled !== false)
       } catch {}
     }
     load()
@@ -193,6 +196,19 @@ export default function App() {
     } catch {}
     setShowSettings(false)
     refresh()
+  }
+
+  async function toggleOfflineAlerts() {
+    setOfflineAlertsLoading(true)
+    try {
+      const newVal = !offlineAlertsEnabled
+      await api.updateSettings({ alerts: { offlineEnabled: newVal } })
+      setOfflineAlertsEnabled(newVal)
+    } catch (err) {
+      alert(`Erro ao alterar alertas offline: ${err.message}`)
+    } finally {
+      setOfflineAlertsLoading(false)
+    }
   }
 
   async function toggleAutoWake() {
@@ -383,6 +399,15 @@ export default function App() {
               : biosState === 'done'  ? '✅ Salvo — 📂 Mostrar'
               : biosState === 'error' ? '✕ Erro'
               : '📋 Rel. BIOS'}
+          </button>
+
+          <button
+            className={`pill-solo ${offlineAlertsEnabled ? 'pill-solo-green' : ''}`}
+            onClick={toggleOfflineAlerts}
+            disabled={offlineAlertsLoading}
+            title={offlineAlertsEnabled ? 'Alertas offline ativados — clique para desativar' : 'Alertas offline desativados — clique para ativar'}
+          >
+            {offlineAlertsLoading ? '...' : offlineAlertsEnabled ? '🔔 Alertas ON' : '🔕 Alertas'}
           </button>
 
           <button

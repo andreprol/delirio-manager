@@ -103,6 +103,27 @@ function checkAll() {
   checkDRBackups();
 }
 
+function maybeSendOfflineNotification(machineId, displayName, location, lastSeen, lastMetrics) {
+  const cfg            = loadConfig();
+  const offlineEnabled = cfg.alerts?.offlineEnabled !== false;
+  const now            = Date.now();
+  const lastAlert      = offlineAlertCooldown.get(machineId) || 0;
+  const inCooldown     = (now - lastAlert) < OFFLINE_ALERT_COOLDOWN_MS;
+
+  if (!offlineEnabled) {
+    console.log(`[AlertEngine] Offline: ${machineId} (alertas desabilitados)`);
+    return;
+  }
+  if (inCooldown) {
+    console.log(`[AlertEngine] Offline: ${machineId} (email/Teams suprimido — cooldown 30min)`);
+    return;
+  }
+  offlineAlertCooldown.set(machineId, now);
+  sendOfflineEmail(displayName, location, lastSeen, lastMetrics);
+  sendOfflineTeams(displayName, location, lastSeen, lastMetrics);
+  console.log(`[AlertEngine] Offline: ${machineId}`);
+}
+
 // Detecta maquinas que pararam de enviar heartbeat
 function checkOffline() {
   const threshold = new Date(Date.now() - 90 * 1000).toISOString();
@@ -112,7 +133,6 @@ function checkOffline() {
     db.setMachineStatus(machine.id, 'offline');
     db.addEvent(machine.id, 'offline', 'Sem heartbeat por mais de 5 minutos');
 
-    // Fetch last known health metrics
     let lastMetrics = null;
     try {
       const raw = db.getMetrics(machine.id, 1);
@@ -122,7 +142,6 @@ function checkOffline() {
     const displayName = machine.display_name || machine.hostname;
     const location    = machine.location || 'Sem localidade';
 
-    // 1. In-app via WebSocket (sempre — UI precisa saber)
     broadcast('machine:offline', {
       machineId:   machine.id,
       displayName,
@@ -132,22 +151,9 @@ function checkOffline() {
       lastMetrics,
     });
 
-    // 2–3. Email + Teams: apenas se fora do cooldown de 30 min
-    const now       = Date.now();
-    const lastAlert = offlineAlertCooldown.get(machine.id) || 0;
-    const inCooldown = (now - lastAlert) < OFFLINE_ALERT_COOLDOWN_MS;
+    maybeSendOfflineNotification(machine.id, displayName, location, machine.last_seen, lastMetrics);
 
-    if (!inCooldown) {
-      offlineAlertCooldown.set(machine.id, now);
-      sendOfflineEmail(displayName, location, machine.last_seen, lastMetrics);
-      sendOfflineTeams(displayName, location, machine.last_seen, lastMetrics);
-    }
-
-    // 4. fireAlert in-app (sempre)
-    fireAlert(machine.id, 'offline',
-      `${displayName} ficou offline`);
-
-    console.log(`[AlertEngine] Offline: ${machine.id}${inCooldown ? ' (email/Teams suprimido — cooldown 30min)' : ''}`);
+    fireAlert(machine.id, 'offline', `${displayName} ficou offline`);
   }
 }
 
