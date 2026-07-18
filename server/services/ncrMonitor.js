@@ -491,8 +491,9 @@ async function fetchNewNcrEmails(token) {
   });
   if (!res.ok) throw new Error(`Graph search falhou: ${res.status}`);
   const { value } = await res.json();
+  const NCR_SENDERS = ['delirio@i9vando.com.br', 'delirio@delirio.com.br'];
   return (value || []).filter(msg =>
-    msg.from?.emailAddress?.address?.toLowerCase() === 'delirio@i9vando.com.br'
+    NCR_SENDERS.includes(msg.from?.emailAddress?.address?.toLowerCase())
   );
 }
 
