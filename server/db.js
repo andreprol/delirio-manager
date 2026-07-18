@@ -1716,6 +1716,7 @@ function ncrGetPendingRetries() {
   return getDb().prepare(`
     SELECT * FROM ncr_monitor_emails
     WHERE danfe_found IS NULL
+      AND retry_count > 0
       AND retry_count < 3
       AND machine_id IS NOT NULL
       AND (next_retry_at IS NULL OR datetime(next_retry_at) <= datetime('now'))
