@@ -730,4 +730,4 @@ function start() {
   startWatchdog();
 }
 
-module.exports = { start, sendNcrResultEmail };
+module.exports = { start, sendNcrResultEmail, buildStoreUnresolvableEmail, sendStoreUnresolvableAlert, processNcrEmail };
