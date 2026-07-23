@@ -424,6 +424,95 @@ function buildNotFoundEmail(emailRow) {
 </body></html>`;
 }
 
+function buildStoreUnresolvableEmail(row) {
+  const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const dtFormatted = fmtEmailDate(row.date_brt);
+  const value       = fmtEmailValue(row.total_value);
+  const products    = JSON.parse(row.products_json || '[]');
+
+  const diagLines = [];
+  if (row.enterprise_unit_id) {
+    diagLines.push(`<b>enterprise_unit_id:</b> <code>${esc(row.enterprise_unit_id)}</code> → não mapeado em UNIT_TO_BOH`);
+  } else {
+    diagLines.push('<b>enterprise_unit_id:</b> (ausente no e-mail)');
+  }
+  if (row.store_name) {
+    diagLines.push(`<b>store_name:</b> "${esc(row.store_name)}" → não corresponde a nenhuma entrada em STORE_NAME_TO_BOH`);
+  } else {
+    diagLines.push('<b>store_name:</b> (ausente no e-mail — campo não foi preenchido pelo NCR)');
+  }
+
+  return `<!DOCTYPE html><html lang="pt-BR"><body style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto;color:#222">
+<div style="background:#d69e2e;color:#fff;padding:14px 20px;border-radius:6px 6px 0 0">
+  <h2 style="margin:0;font-size:16px">⚠️ Pedido NCR — Loja não identificada</h2>
+  <p style="margin:4px 0 0;font-size:13px;opacity:0.85">Delirio Manager — Check de Encomendas</p>
+</div>
+<div style="border:1px solid #ddd;border-top:none;padding:16px 20px;border-radius:0 0 6px 6px">
+  <table style="border-collapse:collapse;width:100%">
+    <tr style="background:#f7f7f7">
+      <td style="padding:8px 12px;font-size:14px;width:40%"><b>Pedido</b></td>
+      <td style="padding:8px 12px;font-size:14px">#${esc(row.order_ref)}</td>
+    </tr>
+    <tr>
+      <td style="padding:8px 12px;font-size:14px"><b>Valor</b></td>
+      <td style="padding:8px 12px;font-size:14px">${value}</td>
+    </tr>
+    <tr style="background:#f7f7f7">
+      <td style="padding:8px 12px;font-size:14px"><b>Data</b></td>
+      <td style="padding:8px 12px;font-size:14px">${dtFormatted}</td>
+    </tr>
+    ${products.length ? `<tr>
+      <td style="padding:8px 12px;font-size:14px;vertical-align:top"><b>Produtos</b></td>
+      <td style="padding:8px 12px;font-size:13px">${products.map(p => esc(p)).join('<br>')}</td>
+    </tr>` : ''}
+  </table>
+  <div style="background:#fffbeb;border-left:4px solid #d69e2e;padding:12px 16px;margin-top:16px;font-size:13px">
+    <p style="margin:0 0 8px"><b>Por que a loja não foi identificada:</b></p>
+    <ul style="margin:0;padding-left:20px">
+      ${diagLines.map(l => `<li style="margin-bottom:6px">${l}</li>`).join('\n      ')}
+    </ul>
+  </div>
+  <div style="background:#ebf4ff;border-left:4px solid #3182ce;padding:12px 16px;margin-top:12px;font-size:13px">
+    <p style="margin:0 0 6px"><b>Ação necessária:</b></p>
+    <p style="margin:0">Adicione o mapeamento em <code>server/services/ncrMonitor.js</code> → <code>UNIT_TO_BOH</code>:</p>
+    <pre style="background:#e2e8f0;padding:8px;border-radius:4px;font-size:12px;margin:8px 0 0">'${esc(row.enterprise_unit_id || '?')}': 'BOH_DA_LOJA',</pre>
+  </div>
+  <p style="color:#718096;font-size:11px;margin-top:16px">Delirio Manager — Check de Encomendas</p>
+</div>
+</body></html>`;
+}
+
+async function sendStoreUnresolvableAlert(row) {
+  try {
+    const cfg = loadGraphConfig();
+    if (!cfg.tenantId) {
+      console.error('[NCR] sendStoreUnresolvableAlert: msGraph não configurado');
+      return;
+    }
+    const token = await getAccessToken(cfg);
+    const subject = `⚠️ Pedido NCR — Loja não identificada | #${row.order_ref}`;
+    const r = await fetch('https://graph.microsoft.com/v1.0/users/andre@delirio.com.br/sendMail', {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: {
+        subject,
+        body: { contentType: 'HTML', content: buildStoreUnresolvableEmail(row) },
+        toRecipients: [{ emailAddress: { address: 'andre@delirio.com.br' } }],
+      }}),
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      console.error(`[NCR] sendStoreUnresolvableAlert sendMail falhou: ${r.status} — ${txt.slice(0, 200)}`);
+    } else {
+      console.log(`[NCR] Alerta loja não identificada enviado — Pedido #${row.order_ref} enterprise_unit_id=${row.enterprise_unit_id}`);
+    }
+  } catch (e) {
+    console.error('[NCR] sendStoreUnresolvableAlert erro:', e.message);
+  } finally {
+    db.ncrUpdate(row.id, { danfe_found: -1, notified_at: new Date().toISOString() });
+  }
+}
+
 function buildNcrEmailPayload(emailRow, result) {
   const found     = !!result.found;
   const storeName = emailRow.store_name || emailRow.boh_hostname || 'loja';
@@ -544,7 +633,11 @@ async function processNcrEmail(msg, since) {
       await dispatchNcrCheck(row);
       return 1;
     }
-    console.warn(`[NCR] BOH não mapeado — Pedido #${parsed.order_ref} enterpriseUnitId=${parsed.enterprise_unit_id}`);
+    if (row) {
+      await sendStoreUnresolvableAlert(row);
+    } else {
+      console.warn(`[NCR] BOH não mapeado — Pedido #${parsed.order_ref} enterpriseUnitId=${parsed.enterprise_unit_id}`);
+    }
   }
   return 0;
 }
