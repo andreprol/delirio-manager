@@ -8,10 +8,18 @@ import (
 	"time"
 )
 
+// ncrService associa o nome de registro do serviço Windows (key, usado no sc.exe)
+// ao display name reportado ao servidor e exibido no email.
+type ncrService struct {
+	key         string // nome curto do serviço — sc.exe query/start <key>
+	displayName string // nome legível reportado ao servidor e exibido no email
+}
+
 // Serviços NCR Voyix a monitorar em máquinas BOH.
-var ncrServices = []string{
-	"NCR Voyix Takeout and Delivery",
-	"NCR Voyix Takeout Service Monitor",
+// key: nome de registro conforme Get-Service | Select-Object Name, DisplayName.
+var ncrServices = []ncrService{
+	{key: "RadiantTakeout",        displayName: "NCR Voyix Takeout and Delivery"},
+	{key: "RadiantTakeoutMonitor", displayName: "NCR Voyix Takeout Service Monitor"},
 }
 
 type serviceStatusPayload struct {
@@ -136,42 +144,44 @@ func (a *Agent) checkNCRServices() {
 	entries := make([]serviceStatusEntry, 0, len(ncrServices))
 
 	for _, svc := range ncrServices {
-		entry := checkService(svc)
+		entry := checkService(svc.key, svc.displayName)
 		entries = append(entries, entry)
 	}
 
 	a.reportServiceStatus(entries)
 }
 
-func checkService(name string) serviceStatusEntry {
-	entry := serviceStatusEntry{Name: name}
+// checkService verifica e, se necessário, reinicia um serviço.
+// key: nome de registro para sc.exe; displayName: nome no payload/email.
+func checkService(key, displayName string) serviceStatusEntry {
+	entry := serviceStatusEntry{Name: displayName}
 
-	switch queryServiceState(name) {
+	switch queryServiceState(key) {
 	case svcRunning:
 		entry.Status = "running"
 
 	case svcPending:
 		// Serviço em transição (START_PENDING / STOP_PENDING) — não reiniciar agora
 		entry.Status = "running"
-		logInfo(fmt.Sprintf("serviceMonitor: '%s' em transição (PENDING) — aguardando próximo ciclo", name))
+		logInfo(fmt.Sprintf("serviceMonitor: '%s' em transição (PENDING) — aguardando próximo ciclo", displayName))
 
 	default: // svcStopped
 		entry.Status = "stopped"
-		logWarn(fmt.Sprintf("serviceMonitor: '%s' parado — tentando reiniciar", name))
+		logWarn(fmt.Sprintf("serviceMonitor: '%s' parado — tentando reiniciar", displayName))
 
 		now := time.Now().UTC().Format(time.RFC3339)
 		entry.LastRestartAt = &now
 
-		err := restartService(name)
+		err := restartService(key)
 		ok := err == nil
 		entry.LastRestartOk = &ok
 
 		if err != nil {
-			logError(fmt.Sprintf("serviceMonitor: falha ao reiniciar '%s': %v", name, err))
+			logError(fmt.Sprintf("serviceMonitor: falha ao reiniciar '%s': %v", displayName, err))
 		} else {
-			logInfo(fmt.Sprintf("serviceMonitor: '%s' reiniciado — aguardando 5s para confirmar", name))
+			logInfo(fmt.Sprintf("serviceMonitor: '%s' reiniciado — aguardando 5s para confirmar", displayName))
 			time.Sleep(5 * time.Second)
-			if queryServiceState(name) == svcRunning {
+			if queryServiceState(key) == svcRunning {
 				entry.Status = "running"
 			}
 		}

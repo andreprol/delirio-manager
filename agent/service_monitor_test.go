@@ -138,25 +138,48 @@ func TestNCRServicesNotEmpty(t *testing.T) {
 		t.Error("ncrServices não pode ser vazio")
 	}
 	for _, svc := range ncrServices {
-		if svc == "" {
-			t.Error("ncrServices contém nome vazio")
+		if svc.key == "" {
+			t.Errorf("ncrServices contém key vazio (displayName=%q)", svc.displayName)
+		}
+		if svc.displayName == "" {
+			t.Errorf("ncrServices contém displayName vazio (key=%q)", svc.key)
 		}
 	}
 }
 
-func TestNCRServicesExpectedNames(t *testing.T) {
-	expected := map[string]bool{
+func TestNCRServicesExpectedKeys(t *testing.T) {
+	// Testa os nomes de registro reais (sc.exe key) — confirmados via
+	// Get-Service | Where DisplayName -like '*NCR Voyix*' | Select Name,DisplayName
+	// na ASSBOH em 2026-07-24.
+	expectedKeys := map[string]bool{
+		"RadiantTakeout":        false,
+		"RadiantTakeoutMonitor": false,
+	}
+	for _, svc := range ncrServices {
+		if _, ok := expectedKeys[svc.key]; ok {
+			expectedKeys[svc.key] = true
+		}
+	}
+	for key, found := range expectedKeys {
+		if !found {
+			t.Errorf("key esperado não encontrado em ncrServices: %q", key)
+		}
+	}
+}
+
+func TestNCRServicesExpectedDisplayNames(t *testing.T) {
+	expectedDisplay := map[string]bool{
 		"NCR Voyix Takeout and Delivery":    false,
 		"NCR Voyix Takeout Service Monitor": false,
 	}
 	for _, svc := range ncrServices {
-		if _, ok := expected[svc]; ok {
-			expected[svc] = true
+		if _, ok := expectedDisplay[svc.displayName]; ok {
+			expectedDisplay[svc.displayName] = true
 		}
 	}
-	for name, found := range expected {
+	for name, found := range expectedDisplay {
 		if !found {
-			t.Errorf("serviço esperado não encontrado em ncrServices: %q", name)
+			t.Errorf("displayName esperado não encontrado em ncrServices: %q", name)
 		}
 	}
 }
