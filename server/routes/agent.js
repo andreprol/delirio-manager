@@ -452,5 +452,39 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
   }
 });
 
+function _upsertServiceEntries(machineId, services) {
+  let written = 0;
+  for (const svc of services) {
+    if (typeof svc.name !== 'string' || !svc.name) continue;
+    if (svc.status !== 'running' && svc.status !== 'stopped') continue;
+    const restartOk = svc.lastRestartOk != null ? (svc.lastRestartOk ? 1 : 0) : null;
+    db.upsertServiceStatus(machineId, svc.name, svc.status, svc.lastRestartAt || null, restartOk);
+    written++;
+  }
+  return written;
+}
+
+// POST /api/machines/:id/service-status
+// Agente BOH reporta status dos serviços NCR Voyix a cada 60s.
+// Usa agentAuthNoLimit para evitar conflito com o rate-limit de 5s do heartbeat.
+router.post('/machines/:id/service-status', agentAuthNoLimit, (req, res) => {
+  const { id } = req.params;
+  if (req.machine.id !== id) return res.status(403).json({ error: 'Token não corresponde ao machineId' });
+
+  const { services } = req.body;
+  if (!Array.isArray(services) || services.length === 0) {
+    return res.status(400).json({ error: 'services obrigatório' });
+  }
+
+  try {
+    const written = _upsertServiceEntries(id, services);
+    if (written === 0) return res.status(400).json({ error: 'Nenhuma entrada válida em services' });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[ServiceStatus] Erro:', err.message);
+    return res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
 module.exports = router;
 module.exports.validateHeartbeat = validateHeartbeat;

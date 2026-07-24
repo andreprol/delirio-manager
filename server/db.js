@@ -418,6 +418,16 @@ function migrate(db) {
       notified_at        TEXT,
       created_at         TEXT DEFAULT (datetime('now'))
     )`,
+    // ── Monitoramento de serviços NCR Voyix (BOH) ─────────────────────────────
+    `CREATE TABLE IF NOT EXISTS service_status (
+      machine_id       TEXT NOT NULL,
+      service_name     TEXT NOT NULL,
+      status           TEXT NOT NULL,
+      last_restart_at  TEXT,
+      last_restart_ok  INTEGER,
+      updated_at       TEXT NOT NULL,
+      PRIMARY KEY (machine_id, service_name)
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -430,7 +440,7 @@ function migrate(db) {
 const _MACHINE_CHILD_TABLES = [
   'metrics', 'commands', 'events', 'machine_metrics_hourly',
   'machine_offline_events', 'reading_miss_events', 'win_events',
-  'nfce_index', 'dr_backups',
+  'nfce_index', 'dr_backups', 'service_status',
 ];
 
 function registerMachine({ machineId, hostname, agentVersion }) {
@@ -1739,6 +1749,32 @@ function ncrGetAckTimedOut(cutoffIso) {
   `).all(cutoffIso);
 }
 
+// ── Monitoramento de serviços NCR Voyix (BOH) ────────────────────────────────
+
+function upsertServiceStatus(machineId, serviceName, status, lastRestartAt, lastRestartOk) {
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO service_status (machine_id, service_name, status, last_restart_at, last_restart_ok, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(machine_id, service_name) DO UPDATE SET
+      status          = excluded.status,
+      last_restart_at = COALESCE(excluded.last_restart_at, service_status.last_restart_at),
+      last_restart_ok = COALESCE(excluded.last_restart_ok, service_status.last_restart_ok),
+      updated_at      = excluded.updated_at
+  `).run(machineId, serviceName, status, lastRestartAt ?? null, lastRestartOk ?? null, now);
+}
+
+function getServiceStatusBOH() {
+  return getDb().prepare(`
+    SELECT s.machine_id, s.service_name, s.status AS service_status,
+           s.last_restart_at, s.last_restart_ok, s.updated_at
+    FROM service_status s
+    JOIN machines m ON m.id = s.machine_id
+    WHERE UPPER(m.hostname) LIKE '%BOH'
+    ORDER BY m.hostname, s.service_name
+  `).all();
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -1800,4 +1836,6 @@ module.exports = {
   // ncr monitor
   ncrInsertEmail, ncrGetByMessageId, ncrGetByCommandId, ncrUpdate, ncrGetPendingRetries,
   ncrGetAckTimedOut,
+  // service status (NCR BOH)
+  upsertServiceStatus, getServiceStatusBOH,
 };

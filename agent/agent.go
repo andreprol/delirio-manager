@@ -121,6 +121,9 @@ func (a *Agent) start() error {
 	// Loop de snapshot horário (24x/dia)
 	go a.hourlySnapshotLoop()
 
+	// Monitoramento de serviços NCR Voyix (apenas máquinas BOH)
+	go a.serviceMonitorLoop()
+
 	safeGo("lhm",        func() { ensureLHM(a.cfg.ServerURL) })
 	safeGo("bootEvents", a.collectAndSendBootEvents)
 	safeGo("wolStatus",  a.collectWolStatus)

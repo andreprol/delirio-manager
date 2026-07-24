@@ -8,8 +8,9 @@ const { initWebSocket } = require('./services/websocket');
 const alertEngine       = require('./services/alertEngine');
 const insightEngine     = require('./services/insightEngine');
 const zamakService      = require('./services/zamak');
-const metricsEmail      = require('./services/metricsEmailReport');
-const ncrMonitor        = require('./services/ncrMonitor');
+const metricsEmail       = require('./services/metricsEmailReport');
+const ncrMonitor         = require('./services/ncrMonitor');
+const serviceStatusEmail = require('./services/serviceStatusEmail');
 
 const PORT = process.env.PORT || 3847;
 
@@ -29,6 +30,7 @@ server.listen(PORT, () => {
   metricsEmail.scheduleDailyMetricsEmail();
   ncrMonitor.start();
   logger.info('NCR monitor iniciado', { interval: '2min' });
+  serviceStatusEmail.scheduleServiceStatusEmails();
   _scheduleHourlyMetricsMonitor();
 });
 
