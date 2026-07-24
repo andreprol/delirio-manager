@@ -37,18 +37,17 @@ describe('upsertServiceStatus — insert e update', () => {
     expect(row.last_restart_ok).toBe(0);
   });
 
-  it('update: status muda, last_restart_at null preserva valor anterior', () => {
+  it('update: running com null limpa last_restart anterior (sem COALESCE)', () => {
     const { upsertServiceStatus, getDb } = makeDb();
     const ts = '2026-07-24T10:00:00.000Z';
     upsertServiceStatus('machine-3', 'NCR Voyix Takeout and Delivery', 'stopped', ts, 1);
-    // segunda chamada sem restart (running normal)
+    // segunda chamada com running — deve zerar last_restart para evitar dados podres de ciclos anteriores
     upsertServiceStatus('machine-3', 'NCR Voyix Takeout and Delivery', 'running', null, null);
     const row = getDb().prepare('SELECT * FROM service_status WHERE machine_id=? AND service_name=?')
       .get('machine-3', 'NCR Voyix Takeout and Delivery');
     expect(row.status).toBe('running');
-    // COALESCE preserva valor anterior quando novo é null
-    expect(row.last_restart_at).toBe(ts);
-    expect(row.last_restart_ok).toBe(1);
+    expect(row.last_restart_at).toBeNull();
+    expect(row.last_restart_ok).toBeNull();
   });
 
   it('update: novo lastRestartAt substitui o anterior', () => {

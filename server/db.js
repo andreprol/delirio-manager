@@ -1758,8 +1758,8 @@ function upsertServiceStatus(machineId, serviceName, status, lastRestartAt, last
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(machine_id, service_name) DO UPDATE SET
       status          = excluded.status,
-      last_restart_at = COALESCE(excluded.last_restart_at, service_status.last_restart_at),
-      last_restart_ok = COALESCE(excluded.last_restart_ok, service_status.last_restart_ok),
+      last_restart_at = excluded.last_restart_at,
+      last_restart_ok = excluded.last_restart_ok,
       updated_at      = excluded.updated_at
   `).run(machineId, serviceName, status, lastRestartAt ?? null, lastRestartOk ?? null, now);
 }
