@@ -13,6 +13,7 @@ function makeDb() {
 
 afterEach(() => { delete process.env.DB_PATH; });
 
+// eslint-disable-next-line max-lines-per-function
 describe('upsertServiceStatus — insert e update', () => {
   it('insere novo registro com status running', () => {
     const { upsertServiceStatus, getDb } = makeDb();

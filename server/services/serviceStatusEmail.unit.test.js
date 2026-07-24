@@ -5,20 +5,8 @@
  * Sem dependência de DB, Graph ou filesystem.
  */
 
-// Extrair funções puras do módulo sem inicializar o scheduler
-// (require direto funciona pois o módulo não tem side effects no load)
-const { sendServiceStatusEmail } = jest.requireActual('./serviceStatusEmail');
-
-// Reimportar as funções puras via reset de módulos para testá-las isoladamente
-function getBuildFunctions() {
-  jest.resetModules();
-  const mod = require('./serviceStatusEmail');
-  return mod;
-}
-
 // ── buildMachineMap ───────────────────────────────────────────────────────────
-// Como buildMachineMap não é exportada, testamos via sendServiceStatusEmail mockado
-// ou extraímos a lógica para um helper inline nos testes.
+// buildMachineMap não é exportada — reimplementamos a lógica para testar isolada.
 
 // Reimplementação local para testar a lógica isolada:
 const SERVICE_NAMES = [
@@ -49,7 +37,7 @@ function buildMachineMap(statusRows, allBOH) {
   return Object.values(map).sort((a, b) => a.hostname.localeCompare(b.hostname));
 }
 
-function buildEmailHtml(machines, dtBRT) {
+function buildEmailHtml(machines, _dtBRT) {
   const anyProblem = machines.some(m =>
     SERVICE_NAMES.some(svc => {
       const s = m.services[svc];
@@ -62,6 +50,7 @@ function buildEmailHtml(machines, dtBRT) {
   return { anyProblem, headerColor, headerIcon };
 }
 
+// eslint-disable-next-line max-lines-per-function
 describe('buildMachineMap', () => {
   const allBOH = [
     { id: 'boh-1', hostname: 'CAXIASBOH', display_name: 'Caxias BOH', location: 'Caxias', status: 'online' },
@@ -150,6 +139,7 @@ describe('buildEmailHtml — header verde vs vermelho', () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function
 describe('_upsertServiceEntries — validação inline', () => {
   // Testa a lógica de filtragem de entries (extraída da rota)
   function upsertServiceEntriesLogic(services) {
