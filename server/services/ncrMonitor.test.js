@@ -19,6 +19,7 @@ const {
   sendStoreUnresolvableAlert,
   processNcrEmail,
   parseLeadMinutes,
+  parseDateBrt,
 } = require('./ncrMonitor');
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -312,6 +313,61 @@ describe('processNcrEmail — store unresolvable', () => {
 
     expect(db.ncrInsertEmail).not.toHaveBeenCalled();
     expect(result).toBe(0);
+  });
+});
+
+// ── parseDateBrt ─────────────────────────────────────────────────────────────
+
+describe('parseDateBrt', () => {
+  const msg = { receivedDateTime: '2026-07-28T12:00:00Z' };
+
+  it('usa dateCreated quando pickupDate ausente', () => {
+    expect(parseDateBrt({ dateCreated: '2026-07-24T16:00:00Z' }, msg)).toBe('2026-07-24');
+  });
+
+  it('usa dateCreated quando pickupDate no mesmo dia BRT', () => {
+    expect(parseDateBrt({
+      dateCreated: '2026-07-24T16:00:00Z',
+      fulfillment: { pickupDate: '2026-07-24T20:00:00Z' },
+    }, msg)).toBe('2026-07-24');
+  });
+
+  it('usa pickupDate quando é dia BRT posterior ao dateCreated', () => {
+    expect(parseDateBrt({
+      dateCreated: '2026-07-24T16:00:00Z',
+      fulfillment: { pickupDate: '2026-07-26T15:00:00Z' },
+    }, msg)).toBe('2026-07-26');
+  });
+
+  it('ignora pickupDate anterior ao dateCreated', () => {
+    expect(parseDateBrt({
+      dateCreated: '2026-07-26T16:00:00Z',
+      fulfillment: { pickupDate: '2026-07-24T15:00:00Z' },
+    }, msg)).toBe('2026-07-26');
+  });
+
+  it('usa msg.receivedDateTime quando dateCreated ausente', () => {
+    // 2026-07-28T02:00Z → BRT 2026-07-27T23:00 → dia 27
+    expect(parseDateBrt({}, { receivedDateTime: '2026-07-28T02:00:00Z' })).toBe('2026-07-27');
+  });
+
+  it('BRT crossing midnight — UTC 2h = dia anterior em BRT', () => {
+    // 2026-07-25T02:00Z → BRT 2026-07-24T23:00 → dia 24
+    expect(parseDateBrt({ dateCreated: '2026-07-25T02:00:00Z' }, msg)).toBe('2026-07-24');
+  });
+
+  it('pickupDate inválido é ignorado, usa dateCreated', () => {
+    expect(parseDateBrt({
+      dateCreated: '2026-07-24T16:00:00Z',
+      fulfillment: { pickupDate: 'not-a-date' },
+    }, msg)).toBe('2026-07-24');
+  });
+
+  it('fulfillment presente mas sem pickupDate usa dateCreated', () => {
+    expect(parseDateBrt({
+      dateCreated: '2026-07-24T16:00:00Z',
+      fulfillment: { type: 'Pickup' },
+    }, msg)).toBe('2026-07-24');
   });
 });
 

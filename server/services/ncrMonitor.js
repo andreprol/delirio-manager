@@ -240,8 +240,21 @@ function parseTotalValue(payload) {
 }
 
 function parseDateBrt(payload, msg) {
-  const dtUTC = new Date(payload.dateCreated || msg.receivedDateTime);
-  const brtMs = dtUTC.getTime() - 3 * 3600 * 1000;
+  const createdUtc = new Date(payload.dateCreated || msg.receivedDateTime);
+  let dtUTC = createdUtc;
+
+  const pickupStr = payload.fulfillment?.pickupDate;
+  if (pickupStr) {
+    const pickupUtc = new Date(pickupStr);
+    if (!isNaN(pickupUtc.getTime())) {
+      const BRT_OFFSET = 3 * 3600 * 1000;
+      const createdBrtDay = Math.floor((createdUtc.getTime() - BRT_OFFSET) / 86400000);
+      const pickupBrtDay  = Math.floor((pickupUtc.getTime()  - BRT_OFFSET) / 86400000);
+      if (pickupBrtDay > createdBrtDay) dtUTC = pickupUtc;
+    }
+  }
+
+  const brtMs   = dtUTC.getTime() - 3 * 3600 * 1000;
   const brtDate = new Date(brtMs);
   return [
     brtDate.getUTCFullYear(),
@@ -742,4 +755,4 @@ function start() {
   startWatchdog();
 }
 
-module.exports = { start, sendNcrResultEmail, buildStoreUnresolvableEmail, sendStoreUnresolvableAlert, processNcrEmail, parseLeadMinutes };
+module.exports = { start, sendNcrResultEmail, buildStoreUnresolvableEmail, sendStoreUnresolvableAlert, processNcrEmail, parseLeadMinutes, parseDateBrt };
