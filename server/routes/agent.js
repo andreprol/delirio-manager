@@ -352,11 +352,17 @@ function postProcessNfceIndex(machineId, message) {
 }
 
 function handleNfceFindNotFound(emailRow) {
-  const retryDelays = [5, 15];
-  if (emailRow.retry_count < 2) {
-    const nextAt = new Date(Date.now() + retryDelays[emailRow.retry_count] * 60000).toISOString();
+  const retryDelays = [15, 45, 90, 180];
+  if (emailRow.retry_count < retryDelays.length) {
+    const baseDelay = retryDelays[emailRow.retry_count];
+    const leadMinutes = emailRow.lead_minutes || 0;
+    const orderTime = new Date(emailRow.received_at).getTime();
+    const leadExpiry = orderTime + leadMinutes * 60000;
+    const retryTime = Date.now() + baseDelay * 60000;
+    const nextAt = new Date(Math.max(retryTime, leadExpiry)).toISOString();
+    const waitMin = Math.round((Math.max(retryTime, leadExpiry) - Date.now()) / 60000);
     db.ncrUpdate(emailRow.id, { retry_count: emailRow.retry_count + 1, next_retry_at: nextAt });
-    console.log(`[NCR] Pedido #${emailRow.order_ref} — retry ${emailRow.retry_count + 1} agendado em ${retryDelays[emailRow.retry_count]}min`);
+    console.log(`[NCR] Pedido #${emailRow.order_ref} — retry ${emailRow.retry_count + 1} agendado em ${waitMin}min`);
   } else {
     db.ncrUpdate(emailRow.id, { danfe_found: 0 });
     ncrMonitor.sendNcrResultEmail(emailRow, { found: false }).catch(e =>

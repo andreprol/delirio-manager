@@ -18,6 +18,7 @@ const {
   buildStoreUnresolvableEmail,
   sendStoreUnresolvableAlert,
   processNcrEmail,
+  parseLeadMinutes,
 } = require('./ncrMonitor');
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -311,5 +312,54 @@ describe('processNcrEmail — store unresolvable', () => {
 
     expect(db.ncrInsertEmail).not.toHaveBeenCalled();
     expect(result).toBe(0);
+  });
+});
+
+// ── parseLeadMinutes ──────────────────────────────────────────────────────────
+
+describe('parseLeadMinutes', () => {
+  it('retorna 0 quando fulfillment ausente', () => {
+    expect(parseLeadMinutes({})).toBe(0);
+  });
+
+  it('retorna 0 quando leadTimes vazio', () => {
+    expect(parseLeadMinutes({ fulfillment: { leadTimes: [] } })).toBe(0);
+  });
+
+  it('retorna 0 quando interval não é número', () => {
+    expect(parseLeadMinutes({ fulfillment: { leadTimes: [{ interval: 'fast', intervalUnits: 'Minutes' }] } })).toBe(0);
+  });
+
+  it('retorna minutos quando intervalUnits=Minutes', () => {
+    expect(parseLeadMinutes({
+      fulfillment: { leadTimes: [{ interval: 60, intervalUnits: 'Minutes' }] },
+    })).toBe(60);
+  });
+
+  it('converte horas para minutos quando intervalUnits=Hours', () => {
+    expect(parseLeadMinutes({
+      fulfillment: { leadTimes: [{ interval: 2, intervalUnits: 'Hours' }] },
+    })).toBe(120);
+  });
+
+  it('assume Minutes quando intervalUnits ausente', () => {
+    expect(parseLeadMinutes({
+      fulfillment: { leadTimes: [{ interval: 30 }] },
+    })).toBe(30);
+  });
+
+  it('usa apenas o primeiro leadTime', () => {
+    expect(parseLeadMinutes({
+      fulfillment: { leadTimes: [
+        { interval: 45, intervalUnits: 'Minutes' },
+        { interval: 999, intervalUnits: 'Minutes' },
+      ]},
+    })).toBe(45);
+  });
+
+  it('case-insensitive em intervalUnits', () => {
+    expect(parseLeadMinutes({
+      fulfillment: { leadTimes: [{ interval: 1, intervalUnits: 'HOURS' }] },
+    })).toBe(60);
   });
 });

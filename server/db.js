@@ -428,6 +428,7 @@ function migrate(db) {
       updated_at       TEXT NOT NULL,
       PRIMARY KEY (machine_id, service_name)
     )`,
+    `ALTER TABLE ncr_monitor_emails ADD COLUMN lead_minutes INTEGER DEFAULT 0`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -1693,14 +1694,15 @@ function ncrInsertEmail(row) {
   const r = getDb().prepare(`
     INSERT OR IGNORE INTO ncr_monitor_emails
       (message_id, received_at, order_ref, enterprise_unit_id, store_name,
-       boh_hostname, machine_id, total_value, date_brt, products_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       boh_hostname, machine_id, total_value, date_brt, lead_minutes, products_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     row.message_id, row.received_at, row.order_ref || null,
     row.enterprise_unit_id || null, row.store_name || null,
     row.boh_hostname || null, row.machine_id || null,
     row.total_value != null ? row.total_value : null,
     row.date_brt || null,
+    row.lead_minutes || 0,
     row.products_json || null
   );
   return r.changes;
@@ -1727,7 +1729,7 @@ function ncrGetPendingRetries() {
     SELECT * FROM ncr_monitor_emails
     WHERE danfe_found IS NULL
       AND retry_count > 0
-      AND retry_count < 3
+      AND retry_count < 5
       AND machine_id IS NOT NULL
       AND (next_retry_at IS NULL OR datetime(next_retry_at) <= datetime('now'))
       AND command_id IS NOT NULL

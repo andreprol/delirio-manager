@@ -250,6 +250,16 @@ function parseDateBrt(payload, msg) {
   ].join('-');
 }
 
+function parseLeadMinutes(payload) {
+  const lt = payload.fulfillment?.leadTimes;
+  if (!Array.isArray(lt) || !lt.length) return 0;
+  const entry = lt[0];
+  if (!entry || typeof entry.interval !== 'number') return 0;
+  const units = (entry.intervalUnits || 'Minutes').toLowerCase();
+  if (units === 'hours') return entry.interval * 60;
+  return entry.interval; // Minutes (default)
+}
+
 function resolveMachineForPayload(enterpriseUnitId, storeName) {
   const bohHostname = resolveBoh(enterpriseUnitId, storeName);
   const machine = bohHostname ? db.getMachineByHostname(bohHostname) : null;
@@ -275,6 +285,7 @@ function parseNcrEmail(msg) {
       .map(l => l.description || l.name || '')
       .filter(Boolean);
     const dateBRT          = parseDateBrt(payload, msg);
+    const leadMinutes      = parseLeadMinutes(payload);
     const { bohHostname, machineId } = resolveMachineForPayload(enterpriseUnitId, storeName);
 
     return {
@@ -285,6 +296,7 @@ function parseNcrEmail(msg) {
       machine_id:         machineId,
       total_value:        totalValue,
       date_brt:           dateBRT,
+      lead_minutes:       leadMinutes,
       products_json:      JSON.stringify(products),
     };
   } catch (e) {
@@ -730,4 +742,4 @@ function start() {
   startWatchdog();
 }
 
-module.exports = { start, sendNcrResultEmail, buildStoreUnresolvableEmail, sendStoreUnresolvableAlert, processNcrEmail };
+module.exports = { start, sendNcrResultEmail, buildStoreUnresolvableEmail, sendStoreUnresolvableAlert, processNcrEmail, parseLeadMinutes };
