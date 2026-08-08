@@ -154,11 +154,11 @@ CREATE TABLE output_queue (
 ### Custos vs receita (cenário moderado)
 | Período | Receita | Custo | Saldo |
 |---|---|---|---|
-| Meses 1–3 | R$0 (sem YPP) | R$420 | -R$420 |
+| Meses 1–3 | R$0 (sem YPP) | R$140/mês | -R$140/mês (total acumulado: -R$420) |
 | Meses 4–6 | R$1.540/mês | R$140/mês | +R$1.400/mês |
 | Mês 12 | R$3.080/mês | R$140/mês | +R$2.940/mês |
 
-**Payback total do investimento inicial (~R$420): atingido no mês 4.**
+**Custo fixo: R$140/mês o tempo todo. Payback do investimento acumulado (R$420): atingido no mês 4.**
 
 ---
 
