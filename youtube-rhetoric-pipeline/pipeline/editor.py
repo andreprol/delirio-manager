@@ -14,22 +14,24 @@ def build_video(source_path: str, narration_path: str, intro_path: str | None,
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    # 1. Narration segment: black screen + ElevenLabs narration audio
+    # 1. Narration segment: source video as background (muted, no rotation applied)
     narration_seg = out / f"{video_id}_narration_seg.mp4"
     _run([
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "color=c=black:size=1920x1080:rate=30",
+        "-noautorotate", "-stream_loop", "-1", "-i", source_path,
         "-i", narration_path,
+        "-map", "0:v", "-map", "1:a",
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-c:a", "aac", "-shortest",
         str(narration_seg),
     ])
 
-    # 2. Clip original source WITH original audio (no audio replacement)
+    # 2. Clip original source WITH original audio, preserve portrait (no autorotate)
     clipped = out / f"{video_id}_clip.mp4"
     duration = clip_end - clip_start
     _run([
-        "ffmpeg", "-y", "-ss", str(clip_start), "-i", source_path,
+        "ffmpeg", "-y", "-noautorotate",
+        "-ss", str(clip_start), "-i", source_path,
         "-t", str(duration), "-c:v", "libx264", "-preset", "fast", "-crf", "20",
         "-c:a", "aac", str(clipped),
     ])
