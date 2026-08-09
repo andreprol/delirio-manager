@@ -1,9 +1,15 @@
+import isodate
 from googleapiclient.discovery import build
 
 
-def fetch_new_videos(api_key: str, channel_id: str, max_results: int = 10) -> list[dict]:
+def fetch_new_videos(
+    api_key: str,
+    channel_id: str,
+    max_results: int = 10,
+    max_duration_seconds: int = 1800,
+) -> list[dict]:
     service = build("youtube", "v3", developerKey=api_key)
-    response = (
+    search_resp = (
         service.search()
         .list(
             part="snippet",
@@ -14,11 +20,28 @@ def fetch_new_videos(api_key: str, channel_id: str, max_results: int = 10) -> li
         )
         .execute()
     )
-    return [
-        {
-            "id": item["id"]["videoId"],
-            "title": item["snippet"]["title"],
-            "published_at": item["snippet"]["publishedAt"],
-        }
-        for item in response.get("items", [])
-    ]
+    video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
+    if not video_ids:
+        return []
+
+    details_resp = (
+        service.videos()
+        .list(part="contentDetails,snippet", id=",".join(video_ids))
+        .execute()
+    )
+
+    results = []
+    for item in details_resp.get("items", []):
+        duration_iso = item["contentDetails"]["duration"]
+        duration_secs = int(isodate.parse_duration(duration_iso).total_seconds())
+        if duration_secs > max_duration_seconds:
+            continue
+        results.append(
+            {
+                "id": item["id"],
+                "title": item["snippet"]["title"],
+                "published_at": item["snippet"]["publishedAt"],
+                "duration_seconds": duration_secs,
+            }
+        )
+    return results

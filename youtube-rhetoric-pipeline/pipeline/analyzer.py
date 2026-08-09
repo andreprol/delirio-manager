@@ -15,6 +15,11 @@ def analyze_rhetoric(segments: list[dict], api_key: str,
         messages=[{"role": "user", "content": prompt}],
     )
     raw = message.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```", 2)[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip().rstrip("`").strip()
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:

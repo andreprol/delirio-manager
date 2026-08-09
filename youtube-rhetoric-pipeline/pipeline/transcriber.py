@@ -2,7 +2,7 @@ from pathlib import Path
 import whisper
 
 
-def transcribe(video_path: str, model_size: str = "medium") -> list[dict]:
+def transcribe(video_path: str, model_size: str = "base") -> list[dict]:
     path = Path(video_path)
     if not path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")

@@ -11,6 +11,7 @@ def download_video(video_id: str, output_dir: str) -> Path:
         "outtmpl": str(out / f"{video_id}.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
+        "match_filter": yt_dlp.utils.match_filter_func("duration <= 1800"),
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

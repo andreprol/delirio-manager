@@ -33,7 +33,8 @@ def build_video(source_path: str, narration_path: str, intro_path: str | None,
     if outro_path:
         parts.append(outro_path)
     concat_list = out / f"{video_id}_concat.txt"
-    concat_list.write_text("\n".join(f"file '{p}'" for p in parts))
+    abs_parts = [str(Path(p).resolve()) for p in parts]
+    concat_list.write_text("\n".join(f"file '{p}'" for p in abs_parts))
     landscape = out / f"{video_id}_landscape.mp4"
     _run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",

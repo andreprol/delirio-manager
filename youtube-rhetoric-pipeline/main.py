@@ -64,7 +64,7 @@ def run_pipeline(creator_handle: str = None, channel_id: str = None):
 
             try:
                 vid_path = download_video(video["id"], str(temp_dir / video["id"]))
-                segments = transcribe(str(vid_path), model_size="medium")
+                segments = transcribe(str(vid_path), model_size="base")
                 analysis = analyze_rhetoric(
                     segments=segments,
                     api_key=os.environ["ANTHROPIC_API_KEY"],
