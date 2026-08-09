@@ -18,7 +18,7 @@ def build_video(source_path: str, narration_path: str, intro_path: str | None,
     _run([
         "ffmpeg", "-y", "-ss", str(clip_start), "-i", source_path,
         "-t", str(duration), "-c:v", "libx264", "-c:a", "aac",
-        "-preset", "ultrafast", str(clipped),
+        "-preset", "fast", "-crf", "20", str(clipped),
     ])
     narrated = out / f"{video_id}_narrated.mp4"
     _run([
