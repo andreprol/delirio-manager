@@ -32,9 +32,12 @@ def fetch_new_videos(
 
     results = []
     for item in details_resp.get("items", []):
+        live_status = item["snippet"].get("liveBroadcastContent", "none")
+        if live_status in ("upcoming", "live"):
+            continue
         duration_iso = item["contentDetails"]["duration"]
         duration_secs = int(isodate.parse_duration(duration_iso).total_seconds())
-        if duration_secs > max_duration_seconds:
+        if duration_secs == 0 or duration_secs > max_duration_seconds:
             continue
         results.append(
             {
