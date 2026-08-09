@@ -1,0 +1,8 @@
+{
+  "name": "Prof. Retórica",
+  "channel_name": "Anatomia do Discurso",
+  "channel_handle": "@anatomiadodiscurso",
+  "voice_id": "REPLACE_WITH_ELEVENLABS_VOICE_ID",
+  "tone": "analytical, educational, Brazilian Portuguese",
+  "max_narration_chars": 800
+}

@@ -1,0 +1,9 @@
+.env
+data/
+*.mp4
+*.mp3
+__pycache__/
+.venv/
+*.pyc
+config/client_secrets.json
+data/youtube_token.pkl
