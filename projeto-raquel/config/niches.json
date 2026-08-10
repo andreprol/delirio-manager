@@ -1,0 +1,60 @@
+{
+  "niches": [
+    {
+      "id": "review",
+      "label": "Review de Drama",
+      "keywords_trigger": ["assistindo", "terminei", "drama", "série", "kdrama", "dorama", "sageuk", "romance", "netflix", "viki"],
+      "target_duration_min": 8,
+      "target_duration_max": 15,
+      "shorts_count": 2,
+      "evergreen": true
+    },
+    {
+      "id": "fanmeeting",
+      "label": "Vlog de Fan Meeting",
+      "keywords_trigger": ["fan meeting", "fanmeeting", "show", "concerto", "evento", "fansign", "ingresso", "fila"],
+      "target_duration_min": 12,
+      "target_duration_max": 20,
+      "shorts_count": 3,
+      "evergreen": false
+    },
+    {
+      "id": "ranking",
+      "label": "Ranking / Lista",
+      "keywords_trigger": ["top", "ranking", "melhores", "favoritos", "lista", "indicação"],
+      "target_duration_min": 6,
+      "target_duration_max": 12,
+      "shorts_count": 1,
+      "evergreen": true
+    },
+    {
+      "id": "short",
+      "label": "Short Avulso",
+      "keywords_trigger": [],
+      "target_duration_min": 0,
+      "target_duration_max": 1,
+      "shorts_count": 0,
+      "evergreen": true
+    }
+  ],
+  "platforms": [
+    {
+      "id": "viki",
+      "name": "Viki",
+      "affiliate_base_url": "https://www.viki.com",
+      "note": "Inserir link de afiliado quando disponível"
+    },
+    {
+      "id": "netflix",
+      "name": "Netflix",
+      "affiliate_base_url": "https://www.netflix.com",
+      "note": "Sem programa de afiliados — mencionar organicamente"
+    },
+    {
+      "id": "kocowa",
+      "name": "Kocowa",
+      "affiliate_base_url": "https://www.kocowa.com",
+      "note": "Inserir link de afiliado quando disponível"
+    }
+  ]
+}

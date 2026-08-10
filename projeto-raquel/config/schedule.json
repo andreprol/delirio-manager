@@ -1,0 +1,8 @@
+{
+  "upload_slots_brt": ["12:00", "18:00"],
+  "max_uploads_per_day": 1,
+  "max_shorts_per_day": 2,
+  "preferred_days_long": ["quarta", "sabado"],
+  "preferred_days_shorts": ["segunda", "quarta", "sexta"],
+  "timezone": "America/Sao_Paulo"
+}

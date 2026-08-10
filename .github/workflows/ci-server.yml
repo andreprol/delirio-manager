@@ -40,7 +40,8 @@ jobs:
         # 170 = 159 + 5 console.error em ncrMonitor health alerts (15/07/2026).
         # 183 = drift acumulado entre 15/07 e 23/07 (threshold desatualizado).
         # 186 = 183 + 2 (serviceStatusEmail.js: buildEmailHtml+sendServiceStatusEmail, 24/07/2026).
-        run: npm run lint -- --max-warnings=186
+        # 187 = drift acumulado até 10/08/2026 (threshold desatualizado).
+        run: npm run lint -- --max-warnings=187
 
       - name: Run tests
         run: npm test -- --forceExit

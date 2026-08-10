@@ -1,0 +1,21 @@
+{
+  "enabled": false,
+  "blog_name": "Raquel Pires",
+  "blog_url": "https://raquelpires.com.br",
+  "publish_webhook_url": "",
+  "publish_method": "webhook",
+  "articles_per_month": 8,
+  "target_keywords": [
+    "melhores doramas",
+    "vale a pena assistir",
+    "review kdrama",
+    "doramas netflix brasil",
+    "fan meeting brasil",
+    "como ir a fan meeting",
+    "doramas romance",
+    "doramas para chorar",
+    "doramas legendados português",
+    "kdrama indicação"
+  ],
+  "note": "Ativar após configurar o blog. Setar enabled=true e publish_webhook_url."
+}
