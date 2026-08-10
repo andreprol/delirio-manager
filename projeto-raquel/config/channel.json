@@ -1,0 +1,17 @@
+{
+  "channel_name": "Raquel Pires",
+  "channel_handle": "@raquelpires",
+  "instagram_handle": "@raquelpiiires",
+  "language": "pt-BR",
+  "country": "BR",
+  "default_category_id": "24",
+  "persona": {
+    "tone": "caloroso, autêntico, carioca, apaixonado por K-dramas",
+    "intro_style": "pessoal e direto — começa contando uma experiência, não explicando o vídeo",
+    "cta_style": "natural, não forçado — integrado no final do conteúdo"
+  },
+  "branding": {
+    "channel_description": "Dorameira Carioca 💜 | Reviews, rankings e vlogs de fan meeting | Compartilhando cada drama assistido e cada evento vivido",
+    "default_hashtags": ["#kdrama", "#dorama", "#doramas", "#kdramabrasileiro", "#raquelpires"]
+  }
+}
