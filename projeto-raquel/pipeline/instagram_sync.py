@@ -23,7 +23,7 @@ def fetch_profile_videos(handle: str, max_videos: int = 10) -> list[dict]:
     Retorna lista de dicts com: id, url, title, description, timestamp, duration.
     """
     _ensure_ytdlp()
-    import yt_dlp
+    from yt_dlp import YoutubeDL
 
     profile_url = f"https://www.instagram.com/{handle.lstrip('@')}/"
 
@@ -34,7 +34,7 @@ def fetch_profile_videos(handle: str, max_videos: int = 10) -> list[dict]:
         "playlistend": max_videos,
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(profile_url, download=False)
 
     entries = info.get("entries", []) if info else []
@@ -59,7 +59,7 @@ def download_video(instagram_url: str, output_dir: Path) -> Path:
     Retorna o caminho do arquivo baixado.
     """
     _ensure_ytdlp()
-    import yt_dlp
+    from yt_dlp import YoutubeDL
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(output_dir / "%(id)s.%(ext)s")
@@ -72,7 +72,7 @@ def download_video(instagram_url: str, output_dir: Path) -> Path:
         "merge_output_format": "mp4",
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(instagram_url, download=True)
         filename = ydl.prepare_filename(info)
 
