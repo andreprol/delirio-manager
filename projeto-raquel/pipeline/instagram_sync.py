@@ -1,7 +1,8 @@
 """
 Baixa vídeos públicos do Instagram usando instaloader.
-Funciona sem login para perfis públicos.
+Suporta session autenticada via INSTAGRAM_USERNAME no .env para evitar rate limit.
 """
+import os
 import re
 import subprocess
 import sys
@@ -18,9 +19,9 @@ def _ensure_instaloader():
 
 def fetch_and_download_profile(handle: str, output_dir: Path) -> list[dict]:
     """
-    Baixa todos os vídeos/reels de um perfil público do Instagram.
+    Baixa todos os vídeos/reels de um perfil do Instagram.
+    Se INSTAGRAM_USERNAME estiver no .env, carrega session autenticada (evita rate limit).
     Retorna lista de dicts com: instagram_id, file_path, caption, timestamp.
-    Pula posts que já existem na pasta (instaloader faz isso nativamente).
     """
     _ensure_instaloader()
     import instaloader
@@ -40,6 +41,15 @@ def fetch_and_download_profile(handle: str, output_dir: Path) -> list[dict]:
         dirname_pattern=str(output_dir / "{profile}"),
         filename_pattern="{date_utc:%Y%m%d}_{mediaid}",
     )
+
+    ig_username = os.environ.get("INSTAGRAM_USERNAME", "").strip()
+    if ig_username:
+        try:
+            L.load_session_from_file(ig_username)
+            print(f"  Session Instagram carregada para @{ig_username}")
+        except Exception as e:
+            print(f"  Aviso: session não encontrada para @{ig_username}: {e}")
+            print(f"  Rodando sem autenticação. Para autenticar: instaloader --login={ig_username}")
 
     profile = instaloader.Profile.from_username(L.context, username)
     results = []
