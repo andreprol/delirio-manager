@@ -53,7 +53,8 @@ def generate_script(brief: dict, api_key: str) -> dict:
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw = message.content[0].text.strip()
+    text_block = next(b for b in message.content if hasattr(b, "text"))
+    raw = text_block.text.strip()
     raw = _strip_code_fences(raw)
 
     try:

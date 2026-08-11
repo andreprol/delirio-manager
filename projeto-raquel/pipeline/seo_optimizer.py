@@ -44,7 +44,8 @@ def generate_blog_article(
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw = message.content[0].text.strip()
+    text_block = next(b for b in message.content if hasattr(b, "text"))
+    raw = text_block.text.strip()
     if raw.startswith("```"):
         lines = raw.split("\n")
         if lines[0].startswith("```"):
