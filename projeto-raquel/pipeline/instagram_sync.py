@@ -1,103 +1,85 @@
 """
-Baixa vídeos públicos do Instagram e prepara para upload no YouTube.
-Usa yt-dlp via subprocess — evita problemas de import da API Python.
+Baixa vídeos públicos do Instagram usando instaloader.
+Funciona sem login para perfis públicos.
 """
-import json
 import re
 import subprocess
 import sys
 from pathlib import Path
+from datetime import datetime
 
 
-def _ytdlp_cmd() -> list[str]:
-    """Retorna o comando yt-dlp disponível no sistema."""
-    for cmd in ["yt-dlp", "yt_dlp", sys.executable + " -m yt_dlp"]:
-        try:
-            subprocess.run(cmd.split() + ["--version"], capture_output=True, check=True)
-            return cmd.split()
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            continue
-    # Fallback: instalar e usar via python -m
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "yt-dlp", "-q"])
-    return [sys.executable, "-m", "yt_dlp"]
+def _ensure_instaloader():
+    try:
+        import instaloader  # noqa: F401
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "instaloader", "-q"])
 
 
-def fetch_profile_videos(handle: str, max_videos: int = None) -> list[dict]:
+def fetch_and_download_profile(handle: str, output_dir: Path) -> list[dict]:
     """
-    Busca metadados dos vídeos de um perfil público do Instagram.
-    max_videos=None busca todos. Retorna lista de dicts com id, url, title, description.
+    Baixa todos os vídeos/reels de um perfil público do Instagram.
+    Retorna lista de dicts com: instagram_id, file_path, caption, timestamp.
+    Pula posts que já existem na pasta (instaloader faz isso nativamente).
     """
-    profile_url = f"https://www.instagram.com/{handle.lstrip('@')}/"
-    cmd = _ytdlp_cmd()
+    _ensure_instaloader()
+    import instaloader
 
-    args = cmd + [
-        "--flat-playlist",
-        "--dump-single-json",
-        "--no-warnings",
-        "--quiet",
-        profile_url,
-    ]
-    if max_videos is not None:
-        args += ["--playlist-end", str(max_videos)]
-
-    result = subprocess.run(args, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp erro: {result.stderr[:300]}")
-
-    info = json.loads(result.stdout)
-    entries = info.get("entries", [])
-
-    videos = []
-    for e in (entries or []):
-        if not e:
-            continue
-        ig_id = e.get("id", "")
-        url = e.get("url") or e.get("webpage_url") or f"https://www.instagram.com/p/{ig_id}/"
-        videos.append({
-            "instagram_id": ig_id,
-            "url": url,
-            "title": e.get("title", ""),
-            "description": e.get("description") or e.get("title", ""),
-            "timestamp": e.get("timestamp"),
-            "duration": e.get("duration"),
-        })
-    return videos
-
-
-def download_video(instagram_url: str, output_dir: Path) -> Path:
-    """
-    Baixa um vídeo do Instagram para output_dir.
-    Retorna o caminho do arquivo baixado.
-    """
+    username = handle.lstrip("@")
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_template = str(output_dir / "%(id)s.%(ext)s")
-    cmd = _ytdlp_cmd()
 
-    args = cmd + [
-        "--no-warnings",
-        "--quiet",
-        "-o", output_template,
-        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "--print", "after_move:filepath",
-        instagram_url,
-    ]
+    L = instaloader.Instaloader(
+        download_pictures=False,
+        download_videos=True,
+        download_video_thumbnails=False,
+        download_geotags=False,
+        download_comments=False,
+        save_metadata=True,
+        compress_json=False,
+        quiet=True,
+        dirname_pattern=str(output_dir / "{profile}"),
+        filename_pattern="{date_utc:%Y%m%d}_{mediaid}",
+    )
 
-    result = subprocess.run(args, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp download erro: {result.stderr[:300]}")
+    profile = instaloader.Profile.from_username(L.context, username)
+    results = []
 
-    filepath = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
-    if filepath and Path(filepath).exists():
-        return Path(filepath)
+    for post in profile.get_posts():
+        if not post.is_video:
+            continue
 
-    # Fallback: encontrar o arquivo pelo ID na pasta
-    ig_id = instagram_url.rstrip("/").split("/")[-1]
-    matches = list(output_dir.glob(f"{ig_id}.*"))
-    if matches:
-        return matches[0]
+        media_id = str(post.mediaid)
+        timestamp = post.date_utc
 
-    raise FileNotFoundError(f"Arquivo baixado não encontrado em {output_dir}")
+        # Verifica se já foi baixado
+        profile_dir = output_dir / username
+        existing = list(profile_dir.glob(f"*_{media_id}.mp4")) if profile_dir.exists() else []
+
+        if not existing:
+            try:
+                L.download_post(post, target=str(profile_dir))
+            except Exception as e:
+                print(f"  Erro ao baixar post {media_id}: {e}")
+                continue
+
+        # Encontra o arquivo baixado
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        video_files = list(profile_dir.glob(f"*_{media_id}.mp4"))
+        if not video_files:
+            video_files = list(profile_dir.glob(f"*{media_id}*.mp4"))
+
+        if not video_files:
+            continue
+
+        results.append({
+            "instagram_id": media_id,
+            "file_path": str(video_files[0]),
+            "caption": post.caption or "",
+            "timestamp": timestamp.isoformat(),
+            "url": f"https://www.instagram.com/p/{post.shortcode}/",
+        })
+
+    return results
 
 
 def caption_to_youtube_title(caption: str, max_len: int = 80) -> str:
@@ -107,7 +89,7 @@ def caption_to_youtube_title(caption: str, max_len: int = 80) -> str:
     clean = re.sub(r"\s+", " ", clean).strip()
     if not clean:
         clean = first_line
-    return clean[:max_len]
+    return clean[:max_len] if clean else "Vídeo"
 
 
 def build_youtube_description(caption: str, instagram_url: str) -> str:

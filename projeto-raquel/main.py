@@ -33,7 +33,7 @@ from pipeline.content_intake import (
     parse_instagram_post, create_manual_brief, detect_content_type,
 )
 from pipeline.instagram_sync import (
-    fetch_profile_videos, download_video,
+    fetch_and_download_profile,
     caption_to_youtube_title, build_youtube_description as build_ig_description,
 )
 from pipeline.script_generator import generate_script
@@ -83,43 +83,41 @@ def cmd_sync_instagram(max_videos: int = None):
     temp_dir = Path(os.getenv("TEMP_DIR", "data/temp"))
 
     label = f"até {max_videos}" if max_videos else "todos os"
-    print(f"\nBuscando {label} vídeos de {handle}...")
+    print(f"\nBuscando e baixando {label} vídeos de {handle}...")
+    print("(instaloader vai baixar apenas os que ainda não existem localmente)\n")
+
     try:
-        videos = fetch_profile_videos(handle, max_videos=max_videos)
+        videos = fetch_and_download_profile(handle, temp_dir)
     except Exception as e:
         print(f"Erro ao buscar vídeos do Instagram: {e}")
         return
 
     if not videos:
-        print("Nenhum vídeo encontrado.")
+        print("Nenhum vídeo novo encontrado.")
         return
 
+    if max_videos:
+        videos = videos[:max_videos]
+
+    tags = channel.get("branding", {}).get("default_hashtags", [])
     new_count = 0
+
     for video in videos:
         ig_id = video["instagram_id"]
         if is_instagram_synced(ig_id):
-            print(f"  [já sincronizado] {ig_id}")
+            print(f"  [já no YouTube] {ig_id}")
             continue
 
-        title = caption_to_youtube_title(video["description"] or video["title"])
-        description = build_ig_description(video["description"] or video["title"], video["url"])
-        tags = channel.get("branding", {}).get("default_hashtags", [])
+        title = caption_to_youtube_title(video["caption"])
+        description = build_ig_description(video["caption"], video["url"])
 
-        print(f"\n→ Baixando: {title[:60]}...")
-        try:
-            video_path = download_video(video["url"], temp_dir)
-        except Exception as e:
-            print(f"  Erro ao baixar {ig_id}: {e}")
-            continue
+        print(f"→ Upload: {title[:60]}...")
+        queue_id = enqueue_instagram_video(ig_id, title, description, tags, video["file_path"])
 
-        queue_id = enqueue_instagram_video(ig_id, title, description, tags, str(video_path))
-        print(f"  ✓ Enfileirado (#{queue_id}): {title[:60]}")
-
-        print(f"  Fazendo upload no YouTube...")
         try:
             from pipeline.uploader import upload_video
             yt_id = upload_video(
-                file_path=str(video_path),
+                file_path=video["file_path"],
                 title=title,
                 description=description,
                 tags=[t.lstrip("#") for t in tags],
