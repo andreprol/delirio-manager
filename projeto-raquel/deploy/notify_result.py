@@ -8,6 +8,9 @@ from pathlib import Path
 from datetime import datetime
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 LOG_PATH = Path(__file__).parent.parent / "data" / "sync.log"
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
