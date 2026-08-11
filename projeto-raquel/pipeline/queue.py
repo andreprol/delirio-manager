@@ -37,6 +37,12 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'pending'
         );
 
+        CREATE TABLE IF NOT EXISTS instagram_synced (
+            instagram_id TEXT PRIMARY KEY,
+            synced_at TEXT NOT NULL,
+            youtube_video_id TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS upload_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             brief_id INTEGER NOT NULL,
@@ -204,6 +210,60 @@ def mark_uploaded(queue_id: int, youtube_video_id: str):
     )
     con.commit()
     con.close()
+
+
+def is_instagram_synced(instagram_id: str) -> bool:
+    con = _conn()
+    row = con.execute(
+        "SELECT 1 FROM instagram_synced WHERE instagram_id = ?", (instagram_id,)
+    ).fetchone()
+    con.close()
+    return row is not None
+
+
+def mark_instagram_synced(instagram_id: str, youtube_video_id: str = None):
+    con = _conn()
+    con.execute(
+        "INSERT OR REPLACE INTO instagram_synced (instagram_id, synced_at, youtube_video_id) VALUES (?, ?, ?)",
+        (instagram_id, datetime.utcnow().isoformat(), youtube_video_id),
+    )
+    con.commit()
+    con.close()
+
+
+def enqueue_instagram_video(instagram_id: str, title: str, description: str, tags: list, video_path: str) -> int:
+    """Cria um brief 'instagram' e enfileira o vídeo para upload."""
+    con = _conn()
+    now = datetime.utcnow().isoformat()
+    cur = con.execute(
+        """INSERT INTO content_briefs (type, source, source_ref, raw_notes, created_at, status)
+           VALUES ('instagram', 'instagram', ?, ?, ?, 'scripted')""",
+        (instagram_id, title, now),
+    )
+    brief_id = cur.lastrowid
+    cur2 = con.execute(
+        """INSERT INTO upload_queue (brief_id, video_type, title, description, tags, status)
+           VALUES (?, 'long', ?, ?, ?, 'ready')""",
+        (brief_id, title, description, json.dumps(tags)),
+    )
+    queue_id = cur2.lastrowid
+    con.commit()
+    con.close()
+    return queue_id
+
+
+def get_ready_uploads() -> list[dict]:
+    """Retorna uploads com status 'ready' (prontos para upload imediato)."""
+    con = _conn()
+    rows = con.execute(
+        """SELECT q.*, b.type as brief_type, b.source_ref as instagram_id
+           FROM upload_queue q
+           JOIN content_briefs b ON q.brief_id = b.id
+           WHERE q.status = 'ready'
+           ORDER BY q.id"""
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
 
 
 def next_upload_slot(upload_slots_brt: list[str], max_per_day: int = 1) -> str:

@@ -4,6 +4,7 @@ Canal: Raquel Pires (@raquelpires)
 
 Uso:
   python main.py status                    Mostra todos os itens na fila
+  python main.py sync-instagram [N]        Baixa vídeos do Instagram e faz upload no YouTube (padrão: 10)
   python main.py add-review               Adiciona review de drama (interativo)
   python main.py add-fanmeeting           Adiciona vlog de fan meeting (interativo)
   python main.py add-instagram <url>      Importa post do Instagram (cola a legenda)
@@ -23,11 +24,17 @@ from dotenv import load_dotenv
 from pipeline.queue import (
     init_db, add_brief, get_pending_briefs, get_brief,
     get_all_queue, mark_brief_scripted, mark_brief_done,
-    enqueue_upload, schedule_upload, get_due_uploads,
-    mark_uploaded, next_upload_slot, set_blog_article,
+    enqueue_upload, enqueue_instagram_video, schedule_upload,
+    get_due_uploads, get_ready_uploads,
+    mark_uploaded, mark_instagram_synced, is_instagram_synced,
+    next_upload_slot, set_blog_article,
 )
 from pipeline.content_intake import (
     parse_instagram_post, create_manual_brief, detect_content_type,
+)
+from pipeline.instagram_sync import (
+    fetch_profile_videos, download_video,
+    caption_to_youtube_title, build_youtube_description as build_ig_description,
 )
 from pipeline.script_generator import generate_script
 from pipeline.seo_optimizer import generate_blog_article, build_youtube_description
@@ -67,6 +74,64 @@ def cmd_status():
         scheduled = item.get("scheduled_time", "—")[:16] if item.get("scheduled_time") else "—"
         print(f"{item['id']:<4} {brief_type:<12} {title:<45} {status:<12} {scheduled}")
     print()
+
+
+def cmd_sync_instagram(max_videos: int = 10):
+    channel = _load_channel()
+    handle = channel.get("instagram_handle", "@raquelpiiires")
+    secrets_file = os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json")
+    temp_dir = Path(os.getenv("TEMP_DIR", "data/temp"))
+
+    print(f"\nBuscando até {max_videos} vídeos recentes de {handle}...")
+    try:
+        videos = fetch_profile_videos(handle, max_videos=max_videos)
+    except Exception as e:
+        print(f"Erro ao buscar vídeos do Instagram: {e}")
+        return
+
+    if not videos:
+        print("Nenhum vídeo encontrado.")
+        return
+
+    new_count = 0
+    for video in videos:
+        ig_id = video["instagram_id"]
+        if is_instagram_synced(ig_id):
+            print(f"  [já sincronizado] {ig_id}")
+            continue
+
+        title = caption_to_youtube_title(video["description"] or video["title"])
+        description = build_ig_description(video["description"] or video["title"], video["url"])
+        tags = channel.get("branding", {}).get("default_hashtags", [])
+
+        print(f"\n→ Baixando: {title[:60]}...")
+        try:
+            video_path = download_video(video["url"], temp_dir)
+        except Exception as e:
+            print(f"  Erro ao baixar {ig_id}: {e}")
+            continue
+
+        queue_id = enqueue_instagram_video(ig_id, title, description, tags, str(video_path))
+        print(f"  ✓ Enfileirado (#{queue_id}): {title[:60]}")
+
+        print(f"  Fazendo upload no YouTube...")
+        try:
+            from pipeline.uploader import upload_video
+            yt_id = upload_video(
+                file_path=str(video_path),
+                title=title,
+                description=description,
+                tags=[t.lstrip("#") for t in tags],
+                secrets_file=secrets_file,
+            )
+            mark_instagram_synced(ig_id, yt_id)
+            print(f"  ✓ Publicado: https://youtu.be/{yt_id}")
+            new_count += 1
+        except Exception as e:
+            print(f"  Erro no upload: {e}")
+            mark_instagram_synced(ig_id)
+
+    print(f"\nSincronização concluída. {new_count} vídeo(s) publicado(s).")
 
 
 def cmd_add_review():
@@ -298,6 +363,10 @@ def main():
 
     if cmd == "status":
         cmd_status()
+
+    elif cmd == "sync-instagram":
+        max_videos = int(args[1]) if len(args) > 1 else 10
+        cmd_sync_instagram(max_videos)
 
     elif cmd == "add-review":
         cmd_add_review()
