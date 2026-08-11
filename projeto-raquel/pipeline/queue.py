@@ -212,6 +212,13 @@ def mark_uploaded(queue_id: int, youtube_video_id: str):
     con.close()
 
 
+def get_all_synced_instagram_ids() -> set:
+    con = _conn()
+    rows = con.execute("SELECT instagram_id FROM instagram_synced").fetchall()
+    con.close()
+    return {row[0] for row in rows}
+
+
 def is_instagram_synced(instagram_id: str) -> bool:
     con = _conn()
     row = con.execute(

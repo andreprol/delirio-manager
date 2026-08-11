@@ -26,7 +26,7 @@ from pipeline.queue import (
     get_all_queue, mark_brief_scripted, mark_brief_done,
     enqueue_upload, enqueue_instagram_video, schedule_upload,
     get_due_uploads, get_ready_uploads,
-    mark_uploaded, mark_instagram_synced, is_instagram_synced,
+    mark_uploaded, mark_instagram_synced, is_instagram_synced, get_all_synced_instagram_ids,
     next_upload_slot, set_blog_article,
 )
 from pipeline.content_intake import (
@@ -86,8 +86,11 @@ def cmd_sync_instagram(max_videos: int = None):
     print(f"\nBuscando e baixando {label} vídeos de {handle}...")
     print("(instaloader vai baixar apenas os que ainda não existem localmente)\n")
 
+    synced_ids = get_all_synced_instagram_ids()
+    print(f"  {len(synced_ids)} posts já sincronizados no banco — early exit após {3} consecutivos vistos")
+
     try:
-        videos = fetch_and_download_profile(handle, temp_dir)
+        videos = fetch_and_download_profile(handle, temp_dir, already_synced_ids=synced_ids)
     except Exception as e:
         print(f"Erro ao buscar vídeos do Instagram: {e}")
         return
