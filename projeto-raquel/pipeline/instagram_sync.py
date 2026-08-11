@@ -17,10 +17,10 @@ def _ensure_ytdlp():
         subprocess.check_call([sys.executable, "-m", "pip", "install", "yt-dlp", "-q"])
 
 
-def fetch_profile_videos(handle: str, max_videos: int = 10) -> list[dict]:
+def fetch_profile_videos(handle: str, max_videos: int = None) -> list[dict]:
     """
-    Busca metadados dos vídeos mais recentes de um perfil público do Instagram.
-    Retorna lista de dicts com: id, url, title, description, timestamp, duration.
+    Busca metadados dos vídeos de um perfil público do Instagram.
+    max_videos=None busca todos. Retorna lista de dicts com id, url, title, description.
     """
     _ensure_ytdlp()
     from yt_dlp import YoutubeDL
@@ -31,8 +31,9 @@ def fetch_profile_videos(handle: str, max_videos: int = 10) -> list[dict]:
         "quiet": True,
         "no_warnings": True,
         "extract_flat": True,
-        "playlistend": max_videos,
     }
+    if max_videos is not None:
+        ydl_opts["playlistend"] = max_videos
 
     with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(profile_url, download=False)

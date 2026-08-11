@@ -76,13 +76,14 @@ def cmd_status():
     print()
 
 
-def cmd_sync_instagram(max_videos: int = 10):
+def cmd_sync_instagram(max_videos: int = None):
     channel = _load_channel()
     handle = channel.get("instagram_handle", "@raquelpiiires")
     secrets_file = os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json")
     temp_dir = Path(os.getenv("TEMP_DIR", "data/temp"))
 
-    print(f"\nBuscando até {max_videos} vídeos recentes de {handle}...")
+    label = f"até {max_videos}" if max_videos else "todos os"
+    print(f"\nBuscando {label} vídeos de {handle}...")
     try:
         videos = fetch_profile_videos(handle, max_videos=max_videos)
     except Exception as e:
@@ -365,7 +366,7 @@ def main():
         cmd_status()
 
     elif cmd == "sync-instagram":
-        max_videos = int(args[1]) if len(args) > 1 else 10
+        max_videos = int(args[1]) if len(args) > 1 else None
         cmd_sync_instagram(max_videos)
 
     elif cmd == "add-review":
