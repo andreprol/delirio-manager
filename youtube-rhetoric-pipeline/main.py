@@ -51,7 +51,6 @@ def run_pipeline(creator_handle: str = None, channel_id: str = None):
         videos = fetch_new_videos(
             api_key=os.environ["YOUTUBE_API_KEY"],
             channel_id=creator["channel_id"],
-            max_results=10,
         )
 
         for video in videos:

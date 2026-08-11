@@ -5,7 +5,7 @@ from googleapiclient.discovery import build
 def fetch_new_videos(
     api_key: str,
     channel_id: str,
-    max_results: int = 10,
+    max_results: int = 50,
     max_duration_seconds: int = 1800,
 ) -> list[dict]:
     service = build("youtube", "v3", developerKey=api_key)
@@ -14,7 +14,7 @@ def fetch_new_videos(
         .list(
             part="snippet",
             channelId=channel_id,
-            order="date",
+            order="viewCount",
             type="video",
             maxResults=max_results,
         )
