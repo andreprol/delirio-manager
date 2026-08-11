@@ -41,6 +41,8 @@ def fetch_and_download_profile(handle: str, output_dir: Path) -> list[dict]:
         dirname_pattern=str(output_dir / "{profile}"),
         filename_pattern="{date_utc:%Y%m%d}_{mediaid}",
     )
+    # Fail fast on 429 — sem retry infinito (padrão dormia 666s por tentativa)
+    L.context.max_connection_attempts = 1
 
     ig_username = os.environ.get("INSTAGRAM_USERNAME", "").strip()
     if ig_username:
@@ -51,7 +53,13 @@ def fetch_and_download_profile(handle: str, output_dir: Path) -> list[dict]:
             print(f"  Aviso: session não encontrada para @{ig_username}: {e}")
             print(f"  Rodando sem autenticação. Para autenticar: instaloader --login={ig_username}")
 
-    profile = instaloader.Profile.from_username(L.context, username)
+    try:
+        profile = instaloader.Profile.from_username(L.context, username)
+    except instaloader.exceptions.ConnectionException as e:
+        msg = str(e)
+        if "429" in msg or "Too Many Requests" in msg:
+            raise RuntimeError(f"Instagram 429 Too Many Requests — IP rate-limited. Tente novamente mais tarde.\n{msg}")
+        raise
     results = []
 
     for post in profile.get_posts():
