@@ -50,12 +50,8 @@ def fetch_and_download_profile(handle: str, output_dir: Path, already_synced_ids
     # Fail fast on 429 — sem retry infinito (padrão dormia 666s por tentativa)
     L.context.max_connection_attempts = 1
 
-    # Proxy WARP (ou qualquer SOCKS5/HTTP) via env INSTAGRAM_PROXY
-    proxy = os.environ.get("INSTAGRAM_PROXY", "").strip()
-    if proxy:
-        L.context._session.proxies.update({"http": proxy, "https": proxy})
-        print(f"  Proxy configurado: {proxy}")
-
+    # Carregar session antes de configurar proxy — load_session_from_file pode
+    # substituir o objeto _session, apagando proxies definidos antes.
     ig_username = os.environ.get("INSTAGRAM_USERNAME", "").strip()
     if ig_username:
         try:
@@ -64,6 +60,12 @@ def fetch_and_download_profile(handle: str, output_dir: Path, already_synced_ids
         except Exception as e:
             print(f"  Aviso: session não encontrada para @{ig_username}: {e}")
             print(f"  Rodando sem autenticação. Para autenticar: instaloader --login={ig_username}")
+
+    # Proxy aplicado APÓS load_session_from_file para não ser sobrescrito
+    proxy = os.environ.get("INSTAGRAM_PROXY", "").strip()
+    if proxy:
+        L.context._session.proxies.update({"http": proxy, "https": proxy})
+        print(f"  Proxy configurado: {proxy}")
 
     try:
         profile = instaloader.Profile.from_username(L.context, username)
