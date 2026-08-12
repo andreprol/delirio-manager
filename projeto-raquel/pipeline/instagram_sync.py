@@ -51,6 +51,8 @@ def _fetch_user_id(handle: str, cffi_session) -> str:
         f"https://www.instagram.com/api/v1/users/web_profile_info/?username={handle}",
         timeout=15,
     )
+    if r.status_code == 429:
+        raise RuntimeError(f"Instagram 429 Too Many Requests — IP rate-limited. Tente novamente mais tarde.")
     if r.status_code != 200:
         raise RuntimeError(f"Instagram {r.status_code} ao buscar user_id de @{handle}: {r.text[:200]}")
     return r.json()["data"]["user"]["id"]
@@ -65,6 +67,8 @@ def _fetch_recent_posts(username: str, cffi_session) -> list[dict]:
         f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}",
         timeout=15,
     )
+    if r.status_code == 429:
+        raise RuntimeError(f"Instagram 429 Too Many Requests — IP rate-limited. Tente novamente mais tarde.")
     if r.status_code != 200:
         raise RuntimeError(f"Instagram {r.status_code} ao buscar posts de @{username}: {r.text[:200]}")
     user = r.json().get("data", {}).get("user", {})
@@ -105,19 +109,26 @@ def fetch_and_download_profile(handle: str, output_dir: Path, already_synced_ids
     output_dir.mkdir(parents=True, exist_ok=True)
     already_synced_ids = already_synced_ids or set()
 
-    # Carregar session do instaloader para obter cookies de autenticação
-    L = instaloader.Instaloader(quiet=True)
+    # Criar sessão curl_cffi com Chrome TLS
+    # Tenta carregar cookies do instaloader para auth; fallback anônimo se falhar
+    from curl_cffi import requests as cffi_requests
+
+    cffi_session = None
     ig_username = os.environ.get("INSTAGRAM_USERNAME", "").strip()
     if ig_username:
         try:
+            L = instaloader.Instaloader(quiet=True)
             L.load_session_from_file(ig_username)
             print(f"  Session Instagram carregada para @{ig_username}")
+            cffi_session = _get_cffi_session(L)
+            print("  TLS Chrome impersonation ativado (curl_cffi + cookies auth)")
         except Exception as e:
-            print(f"  Aviso: session não encontrada para @{ig_username}: {e}")
+            print(f"  Aviso: session auth falhou ({type(e).__name__}): {e}")
 
-    # Criar sessão curl_cffi com Chrome TLS + cookies do instaloader
-    cffi_session = _get_cffi_session(L)
-    print("  TLS Chrome impersonation ativado (curl_cffi)")
+    if cffi_session is None:
+        cffi_session = cffi_requests.Session(impersonate="chrome120")
+        cffi_session.headers.update({"X-IG-App-ID": "936619743392459"})
+        print("  TLS Chrome impersonation ativado (curl_cffi anônimo)")
 
     # Buscar posts recentes do perfil
     try:
