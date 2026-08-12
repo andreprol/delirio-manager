@@ -76,21 +76,23 @@ def cmd_status():
     print()
 
 
-def cmd_sync_instagram(max_videos: int = None):
+def cmd_sync_instagram(max_videos: int = 5):
     channel = _load_channel()
     handle = channel.get("instagram_handle", "@raquelpiiires")
     secrets_file = os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json")
     temp_dir = Path(os.getenv("TEMP_DIR", "data/temp"))
 
-    label = f"até {max_videos}" if max_videos else "todos os"
-    print(f"\nBuscando e baixando {label} vídeos de {handle}...")
-    print("(instaloader vai baixar apenas os que ainda não existem localmente)\n")
+    print(f"\nBuscando vídeos de {handle} (máx {max_videos} novos por rodada)...")
 
     synced_ids = get_all_synced_instagram_ids()
-    print(f"  {len(synced_ids)} posts já sincronizados no banco — early exit após {3} consecutivos vistos")
+    print(f"  {len(synced_ids)} posts já sincronizados no banco\n")
 
     try:
-        videos = fetch_and_download_profile(handle, temp_dir, already_synced_ids=synced_ids)
+        videos = fetch_and_download_profile(
+            handle, temp_dir,
+            already_synced_ids=synced_ids,
+            max_new=max_videos,
+        )
     except Exception as e:
         print(f"Erro ao buscar vídeos do Instagram: {e}")
         return
@@ -98,9 +100,6 @@ def cmd_sync_instagram(max_videos: int = None):
     if not videos:
         print("Nenhum vídeo novo encontrado.")
         return
-
-    if max_videos:
-        videos = videos[:max_videos]
 
     tags = channel.get("branding", {}).get("default_hashtags", [])
     new_count = 0
@@ -115,10 +114,9 @@ def cmd_sync_instagram(max_videos: int = None):
         description = build_ig_description(video["caption"], video["url"])
 
         print(f"→ Upload: {title[:60]}...")
-        queue_id = enqueue_instagram_video(ig_id, title, description, tags, video["file_path"])
+        enqueue_instagram_video(ig_id, title, description, tags, video["file_path"])
 
         try:
-            from pipeline.uploader import upload_video
             yt_id = upload_video(
                 file_path=video["file_path"],
                 title=title,
