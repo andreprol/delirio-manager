@@ -1,7 +1,9 @@
 """
 Baixa vídeos públicos do Instagram usando instaloader.
 Suporta session autenticada via INSTAGRAM_USERNAME no .env para evitar rate limit.
-Suporta proxy via INSTAGRAM_PROXY no .env (ex: socks5://127.0.0.1:1080 para WARP).
+
+Usa curl_cffi para imitar TLS fingerprint do Chrome — contorna o 429 do Instagram
+que é causado pelo fingerprint TLS do Python/requests (não pelo IP).
 """
 import os
 import re
@@ -15,11 +17,75 @@ from datetime import datetime
 MAX_ALREADY_SEEN_CONSECUTIVE = 3
 
 
-def _ensure_instaloader():
+def _ensure_deps():
+    for pkg, import_name in [("instaloader", "instaloader"), ("curl_cffi", "curl_cffi")]:
+        try:
+            __import__(import_name)
+        except ImportError:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "-q"])
+
+
+def _get_cffi_session(L):
+    """
+    Cria uma curl_cffi.Session com TLS Chrome120, copiando cookies e UA do instaloader.
+    Retorna a sessão para uso direto nas chamadas de API Instagram.
+    """
+    from curl_cffi import requests as cffi_requests
+
+    old = L.context._session
+    cookies = dict(old.cookies)
+    ua = old.headers.get("User-Agent", "")
+
+    s = cffi_requests.Session(impersonate="chrome120")
+    for name, value in cookies.items():
+        s.cookies.set(name, value, domain=".instagram.com")
+    if ua:
+        s.headers.update({"User-Agent": ua})
+    s.headers.update({"X-IG-App-ID": "936619743392459"})
+    return s
+
+
+def _fetch_user_id(handle: str, cffi_session) -> str:
+    """Busca user_id de um perfil público via curl_cffi (Chrome TLS)."""
+    r = cffi_session.get(
+        f"https://www.instagram.com/api/v1/users/web_profile_info/?username={handle}",
+        timeout=15,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Instagram {r.status_code} ao buscar user_id de @{handle}: {r.text[:200]}")
+    return r.json()["data"]["user"]["id"]
+
+
+def _fetch_recent_posts(username: str, cffi_session) -> list[dict]:
+    """
+    Busca posts recentes do perfil via web_profile_info (retorna ~12 mais recentes).
+    Suficiente para sync diário — perfis não postam 12+ vídeos por dia.
+    """
+    r = cffi_session.get(
+        f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}",
+        timeout=15,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Instagram {r.status_code} ao buscar posts de @{username}: {r.text[:200]}")
+    user = r.json().get("data", {}).get("user", {})
+    edges = user.get("edge_owner_to_timeline_media", {}).get("edges", [])
+    return [e["node"] for e in edges]
+
+
+def _download_video(url: str, dest: Path, cffi_session) -> bool:
+    """Baixa arquivo de vídeo da CDN do Instagram."""
     try:
-        import instaloader  # noqa: F401
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "instaloader", "-q"])
+        r = cffi_session.get(url, stream=True, timeout=60)
+        r.raise_for_status()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+        return True
+    except Exception as e:
+        print(f"  Erro download {dest.name}: {e}")
+        return False
 
 
 def fetch_and_download_profile(handle: str, output_dir: Path, already_synced_ids: set | None = None) -> list[dict]:
@@ -27,31 +93,20 @@ def fetch_and_download_profile(handle: str, output_dir: Path, already_synced_ids
     Baixa vídeos/reels novos de um perfil do Instagram.
     Para de iterar após MAX_ALREADY_SEEN_CONSECUTIVE posts já vistos consecutivos.
     Retorna lista de dicts com: instagram_id, file_path, caption, timestamp.
+
+    Usa curl_cffi com Chrome TLS fingerprint para contornar 429 do Instagram.
+    O sessionid do @andreprol (via instaloader session file) é usado para auth.
     """
-    _ensure_instaloader()
+    _ensure_deps()
     import instaloader
+    from datetime import timezone
 
     username = handle.lstrip("@")
     output_dir.mkdir(parents=True, exist_ok=True)
     already_synced_ids = already_synced_ids or set()
 
-    L = instaloader.Instaloader(
-        download_pictures=False,
-        download_videos=True,
-        download_video_thumbnails=False,
-        download_geotags=False,
-        download_comments=False,
-        save_metadata=True,
-        compress_json=False,
-        quiet=True,
-        dirname_pattern=str(output_dir / "{profile}"),
-        filename_pattern="{date_utc:%Y%m%d}_{mediaid}",
-    )
-    # Fail fast on 429 — sem retry infinito (padrão dormia 666s por tentativa)
-    L.context.max_connection_attempts = 1
-
-    # Carregar session antes de configurar proxy — load_session_from_file pode
-    # substituir o objeto _session, apagando proxies definidos antes.
+    # Carregar session do instaloader para obter cookies de autenticação
+    L = instaloader.Instaloader(quiet=True)
     ig_username = os.environ.get("INSTAGRAM_USERNAME", "").strip()
     if ig_username:
         try:
@@ -59,65 +114,72 @@ def fetch_and_download_profile(handle: str, output_dir: Path, already_synced_ids
             print(f"  Session Instagram carregada para @{ig_username}")
         except Exception as e:
             print(f"  Aviso: session não encontrada para @{ig_username}: {e}")
-            print(f"  Rodando sem autenticação. Para autenticar: instaloader --login={ig_username}")
 
-    # Proxy aplicado APÓS load_session_from_file para não ser sobrescrito
-    proxy = os.environ.get("INSTAGRAM_PROXY", "").strip()
-    if proxy:
-        L.context._session.proxies.update({"http": proxy, "https": proxy})
-        print(f"  Proxy configurado: {proxy}")
+    # Criar sessão curl_cffi com Chrome TLS + cookies do instaloader
+    cffi_session = _get_cffi_session(L)
+    print("  TLS Chrome impersonation ativado (curl_cffi)")
 
+    # Buscar posts recentes do perfil
     try:
-        profile = instaloader.Profile.from_username(L.context, username)
-    except instaloader.exceptions.ConnectionException as e:
-        msg = str(e)
-        if "429" in msg or "Too Many Requests" in msg:
-            raise RuntimeError(f"Instagram 429 Too Many Requests — IP rate-limited. Tente novamente mais tarde.\n{msg}")
-        raise
+        nodes = _fetch_recent_posts(username, cffi_session)
+    except Exception as e:
+        raise RuntimeError(f"Erro ao buscar vídeos do Instagram: {e}")
 
     results = []
     consecutive_seen = 0
+    profile_dir = output_dir / username
+    profile_dir.mkdir(parents=True, exist_ok=True)
 
-    for post in profile.get_posts():
-        if not post.is_video:
+    for node in nodes:
+        # Suporte a posts simples e carrosséis com vídeo
+        is_video = node.get("is_video", False)
+        children = node.get("edge_sidecar_to_children", {}).get("edges", [])
+        video_nodes = []
+        if is_video:
+            video_nodes = [node]
+        elif children:
+            video_nodes = [e["node"] for e in children if e["node"].get("is_video")]
+
+        if not video_nodes:
             continue
 
-        media_id = str(post.mediaid)
+        for vnode in video_nodes:
+            media_id = str(vnode.get("id") or node.get("id"))
+            shortcode = vnode.get("shortcode") or node.get("shortcode", "")
 
-        # Early exit: N posts consecutivos já conhecidos → perfil está em dia
-        if media_id in already_synced_ids:
-            consecutive_seen += 1
-            if consecutive_seen >= MAX_ALREADY_SEEN_CONSECUTIVE:
-                print(f"  {MAX_ALREADY_SEEN_CONSECUTIVE} posts já sincronizados consecutivos — parando varredura")
-                break
-            continue
-
-        consecutive_seen = 0
-        timestamp = post.date_utc
-        profile_dir = output_dir / username
-
-        existing = list(profile_dir.glob(f"*_{media_id}.mp4")) if profile_dir.exists() else []
-        if not existing:
-            try:
-                L.download_post(post, target=str(profile_dir))
-            except Exception as e:
-                print(f"  Erro ao baixar post {media_id}: {e}")
+            if media_id in already_synced_ids:
+                consecutive_seen += 1
+                if consecutive_seen >= MAX_ALREADY_SEEN_CONSECUTIVE:
+                    print(f"  {MAX_ALREADY_SEEN_CONSECUTIVE} posts consecutivos já sincronizados — parando")
+                    return results
                 continue
 
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        video_files = list(profile_dir.glob(f"*_{media_id}.mp4"))
-        if not video_files:
-            video_files = list(profile_dir.glob(f"*{media_id}*.mp4"))
-        if not video_files:
-            continue
+            consecutive_seen = 0
 
-        results.append({
-            "instagram_id": media_id,
-            "file_path": str(video_files[0]),
-            "caption": post.caption or "",
-            "timestamp": timestamp.isoformat(),
-            "url": f"https://www.instagram.com/p/{post.shortcode}/",
-        })
+            video_url = vnode.get("video_url")
+            if not video_url:
+                continue
+
+            timestamp_raw = node.get("taken_at_timestamp", 0)
+            timestamp = datetime.fromtimestamp(timestamp_raw, tz=timezone.utc)
+            caption_edges = node.get("edge_media_to_caption", {}).get("edges", [])
+            caption = caption_edges[0]["node"]["text"] if caption_edges else ""
+
+            date_str = timestamp.strftime("%Y%m%d")
+            dest = profile_dir / f"{date_str}_{media_id}.mp4"
+
+            if not dest.exists():
+                print(f"  Baixando {dest.name}...")
+                if not _download_video(video_url, dest, cffi_session):
+                    continue
+
+            results.append({
+                "instagram_id": media_id,
+                "file_path": str(dest),
+                "caption": caption,
+                "timestamp": timestamp.isoformat(),
+                "url": f"https://www.instagram.com/p/{shortcode}/",
+            })
 
     return results
 
