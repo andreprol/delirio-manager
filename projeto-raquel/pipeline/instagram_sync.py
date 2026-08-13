@@ -1,22 +1,29 @@
 """
-Baixa vídeos do Instagram usando instaloader (paginação completa) + curl_cffi (download Chrome TLS).
+Baixa vídeos do Instagram usando curl_cffi Chrome TLS para TUDO
+(profile lookup + paginação + download de vídeos).
 
 Fluxo:
-  - instaloader.Profile.get_posts() itera TODOS os posts do perfil (mais recente → mais antigo)
-  - curl_cffi baixa os arquivos de vídeo com TLS Chrome120 (evita 429 por fingerprint)
+  - curl_cffi obtém user_id via web_profile_info (Chrome TLS — sem 429)
+  - Mobile API /api/v1/feed/user/{user_id}/ pagina TODOS os posts
+  - curl_cffi baixa os arquivos de vídeo
   - Para após MAX_NEW uploads novos (padrão: 5)
   - Para após MAX_CONSECUTIVE posts já sincronizados consecutivos (steady state)
+
+Instaloader é usado APENAS para carregar os cookies da session auth.
+Sem instaloader no path crítico → sem rate limit de fingerprint TLS.
 """
 import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from datetime import datetime
 
-# Em steady state (todo backlog sincronizado), para após N consecutivos vistos.
-# Valor alto para não interromper busca em backlog (onde N recentes já estão no banco).
+# Em steady state, para após N posts consecutivos já sincronizados.
 MAX_ALREADY_SEEN_CONSECUTIVE = 20
+
+# user_id fixo de @raquelpiiires (evita lookup em web_profile_info)
+_RAQUEL_USER_ID = 46251461
 
 
 def _ensure_deps():
@@ -27,30 +34,100 @@ def _ensure_deps():
             subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "-q"])
 
 
-def _get_cffi_session(L):
+def _build_cffi_session() -> object:
     """
-    Cria uma curl_cffi.Session com TLS Chrome120, copiando cookies e UA do instaloader.
-    Retorna a sessão para uso direto nas chamadas de API Instagram.
+    Cria curl_cffi Session Chrome120 com cookies do instaloader.
+    Retorna session pronta para chamadas à API do Instagram.
     """
     from curl_cffi import requests as cffi_requests
-
-    old = L.context._session
-    cookies = dict(old.cookies)
-    ua = old.headers.get("User-Agent", "")
+    import instaloader
 
     s = cffi_requests.Session(impersonate="chrome120")
-    for name, value in cookies.items():
-        s.cookies.set(name, value, domain=".instagram.com")
-    if ua:
-        s.headers.update({"User-Agent": ua})
     s.headers.update({"X-IG-App-ID": "936619743392459"})
+
+    ig_username = os.environ.get("INSTAGRAM_USERNAME", "").strip()
+    if ig_username:
+        try:
+            L = instaloader.Instaloader(quiet=True, max_connection_attempts=1)
+            L.load_session_from_file(ig_username)
+            for cookie in L.context._session.cookies:
+                s.cookies.set(cookie.name, cookie.value, domain=cookie.domain)
+            print(f"  Cookies instaloader @{ig_username} carregados")
+        except Exception as e:
+            print(f"  Aviso: cookies não carregados ({type(e).__name__}): {e}")
+
     return s
 
 
-def _download_video(url: str, dest: Path, cffi_session) -> bool:
+def _get_user_id(handle: str, session) -> int:
+    """
+    Retorna user_id do perfil via web_profile_info (curl_cffi Chrome TLS).
+    Usa cache fixo para @raquelpiiires para evitar chamada desnecessária.
+    """
+    username = handle.lstrip("@")
+    if username == "raquelpiiires":
+        return _RAQUEL_USER_ID
+
+    r = session.get(
+        f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}",
+        timeout=15,
+    )
+    r.raise_for_status()
+    uid = r.json()["data"]["user"]["id"]
+    return int(uid)
+
+
+def _iter_posts(user_id: int, session):
+    """
+    Gera items de posts via mobile API, paginando até o fim do perfil.
+    Cada item é o dict bruto da API do Instagram.
+    """
+    url = f"https://i.instagram.com/api/v1/feed/user/{user_id}/?count=12"
+    while url:
+        r = session.get(url, timeout=20)
+        if r.status_code != 200:
+            raise RuntimeError(
+                f"Instagram {r.status_code} ao paginar posts. "
+                f"{'IP rate-limited. Tente mais tarde.' if r.status_code == 429 else r.text[:120]}"
+            )
+        data = r.json()
+        for item in data.get("items", []):
+            yield item
+        next_cursor = data.get("next_max_id")
+        url = (
+            f"https://i.instagram.com/api/v1/feed/user/{user_id}/?count=12&max_id={next_cursor}"
+            if next_cursor
+            else None
+        )
+
+
+def _extract_video_nodes(item: dict) -> list[tuple[str, str, str]]:
+    """
+    Extrai (media_id, video_url, shortcode) de um item da mobile API.
+    media_type: 2=vídeo, 8=carousel, 1=foto (ignorada).
+    """
+    nodes = []
+    mt = item.get("media_type")
+
+    if mt == 2:  # vídeo simples
+        vv = item.get("video_versions", [])
+        if vv:
+            nodes.append((str(item["pk"]), vv[0]["url"], item.get("code", "")))
+
+    elif mt == 8:  # carousel
+        for child in item.get("carousel_media", []):
+            if child.get("media_type") == 2:
+                vv = child.get("video_versions", [])
+                if vv:
+                    nodes.append((str(child["pk"]), vv[0]["url"], item.get("code", "")))
+
+    return nodes
+
+
+def _download_video(url: str, dest: Path, session) -> bool:
     """Baixa arquivo de vídeo da CDN do Instagram."""
     try:
-        r = cffi_session.get(url, stream=True, timeout=60)
+        r = session.get(url, stream=True, timeout=60)
         r.raise_for_status()
         dest.parent.mkdir(parents=True, exist_ok=True)
         with open(dest, "wb") as f:
@@ -70,48 +147,26 @@ def fetch_and_download_profile(
     max_new: int | None = None,
 ) -> list[dict]:
     """
-    Baixa vídeos/reels de um perfil do Instagram usando paginação completa.
+    Baixa vídeos/reels de um perfil do Instagram com curl_cffi Chrome TLS.
 
-    - Itera TODOS os posts (mais recente → mais antigo) via instaloader Profile.get_posts()
+    - Usa mobile API /api/v1/feed/user/ para paginação (sem web_profile_info rate limit)
     - Para após `max_new` vídeos novos baixados (backlog mode)
     - Para após MAX_ALREADY_SEEN_CONSECUTIVE posts vistos consecutivos (steady state)
     - Nunca sobe duplicatas: checa already_synced_ids antes de baixar
-    - Download via curl_cffi Chrome TLS (evita 429 por fingerprint TLS)
     """
     _ensure_deps()
-    import instaloader
-    from datetime import timezone
-    from curl_cffi import requests as cffi_requests
 
     username = handle.lstrip("@")
     output_dir.mkdir(parents=True, exist_ok=True)
     already_synced_ids = already_synced_ids or set()
 
-    # --- Setup instaloader (paginação) ---
-    # max_connection_attempts=1: falha imediato em 429, sem retry loop de 666s
-    L = instaloader.Instaloader(quiet=True, max_connection_attempts=1)
-    ig_username = os.environ.get("INSTAGRAM_USERNAME", "").strip()
-    if ig_username:
-        try:
-            L.load_session_from_file(ig_username)
-            print(f"  Session Instagram carregada para @{ig_username}")
-        except Exception as e:
-            print(f"  Aviso: session não carregada ({type(e).__name__}): {e}")
+    session = _build_cffi_session()
 
-    # --- Setup curl_cffi para download dos arquivos ---
     try:
-        cffi_session = _get_cffi_session(L)
-        print("  curl_cffi Chrome TLS ativado (cookies auth)")
+        user_id = _get_user_id(handle, session)
+        print(f"  user_id={user_id}")
     except Exception as e:
-        print(f"  curl_cffi fallback anônimo ({type(e).__name__}): {e}")
-        cffi_session = cffi_requests.Session(impersonate="chrome120")
-        cffi_session.headers.update({"X-IG-App-ID": "936619743392459"})
-
-    # --- Iterar posts via instaloader (paginação completa) ---
-    try:
-        profile = instaloader.Profile.from_username(L.context, username)
-    except Exception as e:
-        raise RuntimeError(f"Erro ao acessar perfil @{username}: {e}")
+        raise RuntimeError(f"Erro ao obter user_id de @{username}: {e}")
 
     profile_dir = output_dir / username
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -119,42 +174,29 @@ def fetch_and_download_profile(
     results = []
     consecutive_seen = 0
 
-    for post in profile.get_posts():
-        # Coletar nós de vídeo: post simples ou carousel
-        video_nodes: list[tuple[str, str, str]] = []  # (media_id, video_url, shortcode)
-
-        if post.is_video:
-            video_nodes = [(str(post.mediaid), post.video_url, post.shortcode)]
-        elif post.typename == "GraphSidecar":
-            try:
-                for node in post.get_sidecar_nodes():
-                    if node.is_video:
-                        video_nodes.append((str(node.mediaid), node.video_url, node.shortcode))
-            except Exception:
-                pass
+    for item in _iter_posts(user_id, session):
+        video_nodes = _extract_video_nodes(item)
 
         if not video_nodes:
             continue
 
-        # Verificar se o post pai já foi sincronizado (pelo mediaid do post)
-        post_id = str(post.mediaid)
         all_synced = all(mid in already_synced_ids for (mid, _, _) in video_nodes)
 
         if all_synced:
             consecutive_seen += 1
             if consecutive_seen >= MAX_ALREADY_SEEN_CONSECUTIVE:
-                print(f"  {MAX_ALREADY_SEEN_CONSECUTIVE} posts consecutivos já sincronizados — steady state, parando")
+                print(f"  {MAX_ALREADY_SEEN_CONSECUTIVE} posts consecutivos já sincronizados — parando")
                 break
             continue
 
         consecutive_seen = 0
-        caption = post.caption or ""
-        timestamp = post.date_utc
+        caption_obj = item.get("caption") or {}
+        caption = caption_obj.get("text", "") if isinstance(caption_obj, dict) else ""
+        taken_at = item.get("taken_at", 0)
+        timestamp = datetime.fromtimestamp(taken_at, tz=timezone.utc)
 
         for (media_id, video_url, shortcode) in video_nodes:
             if media_id in already_synced_ids:
-                continue
-            if not video_url:
                 continue
 
             date_str = timestamp.strftime("%Y%m%d")
@@ -162,7 +204,7 @@ def fetch_and_download_profile(
 
             if not dest.exists():
                 print(f"  Baixando {dest.name}...")
-                if not _download_video(video_url, dest, cffi_session):
+                if not _download_video(video_url, dest, session):
                     continue
 
             results.append({
