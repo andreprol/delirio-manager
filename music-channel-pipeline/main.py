@@ -67,10 +67,16 @@ def run_generate():
 
     # Audio: scan pending folder
     audio_dir = Path(os.getenv("AUDIO_PENDING_DIR", "data/audio/pending"))
-    audio_files = sorted(audio_dir.glob("*.mp3")) + sorted(audio_dir.glob("*.wav"))
-    if not audio_files:
+    all_audio = sorted(audio_dir.glob("*.mp3")) + sorted(audio_dir.glob("*.wav"))
+    if not all_audio:
         log.warning("Nenhum áudio em %s — coloque arquivos MP3 do Suno e rode novamente.", audio_dir)
         sys.exit(0)
+
+    tracks_per_video = int(channel.get("tracks_per_video", 5))
+    audio_files = all_audio[:tracks_per_video]
+    if len(audio_files) < tracks_per_video:
+        log.warning("Apenas %d track(s) disponível — ideal ter %d. Continuando.", len(audio_files), tracks_per_video)
+    log.info("Usando %d track(s): %s", len(audio_files), [f.name for f in audio_files])
 
     theme = get_next_theme(themes)
     comp_id, comp_desc = get_next_composition()
