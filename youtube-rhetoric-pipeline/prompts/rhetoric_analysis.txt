@@ -1,0 +1,28 @@
+Você é um especialista em retórica e comunicação persuasiva. Analise a transcrição abaixo de um vídeo de Pablo Marçal.
+
+REGRA CRÍTICA — leia antes de tudo:
+O clipe selecionado DEVE mostrar Pablo Marçal FALANDO diretamente para a audiência.
+A duração (clip_end - clip_start) DEVE ser de no mínimo 60 segundos. Sem isso o vídeo não tem valor.
+
+TAREFA:
+1. Identifique o trecho onde Marçal está FALANDO continuamente — mínimo 60 segundos, idealmente 90–120 segundos
+2. Priorize momentos onde ele argumenta, conta histórias ou convence a audiência com a própria voz
+3. Nomeie as técnicas retóricas usadas (ex: apelo à autoridade, ethos, storytelling, urgência, prova social)
+4. Escreva um script de narração em português BR explicando essas técnicas (máximo 800 caracteres)
+5. Crie um título chamativo para o YouTube (máximo 70 caracteres)
+6. Crie uma descrição SEO (máximo 300 caracteres)
+7. Liste 5 tags relevantes
+
+TRANSCRIÇÃO:
+{transcription}
+
+Responda APENAS com JSON válido no formato:
+{
+  "clip_start": <float, segundos — início do trecho onde Marçal fala>,
+  "clip_end": <float, segundos — OBRIGATÓRIO: mínimo clip_start + 60>,
+  "techniques": ["técnica1", "técnica2"],
+  "narration_script": "<texto de narração, máx 800 chars>",
+  "title": "<título YouTube, máx 70 chars>",
+  "description": "<descrição SEO, máx 300 chars>",
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
+}

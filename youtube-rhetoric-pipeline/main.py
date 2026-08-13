@@ -70,6 +70,12 @@ def run_pipeline(creator_handle: str = None, channel_id: str = None):
                     prompt_template=prompt,
                     max_narration_chars=persona["max_narration_chars"],
                 )
+                clip_duration = analysis["clip_end"] - analysis["clip_start"]
+                if clip_duration < 60.0:
+                    log.warning(
+                        f"Clip {clip_duration:.1f}s < 60s mínimo — estendendo clip_end para 60s"
+                    )
+                    analysis["clip_end"] = analysis["clip_start"] + 60.0
                 narration_path = synthesize_speech(
                     text=analysis["narration_script"],
                     voice_id=persona["voice_id"],
