@@ -43,6 +43,70 @@ def _loop_audio_to_duration(audio: Path, target_seconds: float, output: Path) ->
     return output
 
 
+def _concat_clips(clip_paths: list[Path], output: Path) -> Path:
+    concat_list = output.parent / "clips_list.txt"
+    concat_list.write_text(
+        "\n".join(f"file '{p.resolve()}'" for p in clip_paths),
+        encoding="utf-8"
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+         "-i", str(concat_list),
+         "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
+         "-an",
+         str(output)],
+        check=True, capture_output=True,
+    )
+    return output
+
+
+def build_video_from_clips(
+    clip_paths: list[Path],
+    audio_files: list[Path],
+    output_dir: Path,
+    video_id: str,
+    target_minutes: int = 60,
+) -> Path:
+    """Build 60-min video by looping animated clips over audio."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target_seconds = target_minutes * 60
+
+    # Concat clips into base loop video (no audio)
+    loop_base = output_dir / f"{video_id}_loop_base.mp4"
+    _concat_clips(clip_paths, loop_base)
+
+    # Prepare audio
+    if len(audio_files) == 1:
+        raw_audio = audio_files[0]
+    else:
+        raw_audio = output_dir / f"{video_id}_concat.mp3"
+        _concat_audio(audio_files, raw_audio)
+
+    duration = _get_audio_duration(raw_audio)
+    if duration < target_seconds:
+        final_audio = output_dir / f"{video_id}_looped.mp3"
+        _loop_audio_to_duration(raw_audio, target_seconds, final_audio)
+    else:
+        final_audio = raw_audio
+
+    # Loop video to target duration, mix audio
+    output_path = output_dir / f"{video_id}.mp4"
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-stream_loop", "-1", "-i", str(loop_base),
+        "-i", str(final_audio),
+        "-t", str(int(target_seconds)),
+        "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,"
+               "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+        "-c:v", "libx264", "-preset", "slow", "-crf", "18",
+        "-c:a", "aac", "-b:a", "256k",
+        "-shortest",
+        str(output_path),
+    ], check=True, capture_output=True)
+
+    return output_path
+
+
 def build_video(
     image_path: Path,
     audio_files: list[Path],

@@ -18,7 +18,8 @@ from pipeline.queue import (
     next_upload_slot, enqueue_video, get_due_uploads, mark_uploaded,
 )
 from pipeline.image_gen import generate_thumbnail
-from pipeline.video_builder import build_video
+from pipeline.clip_gen import generate_clips
+from pipeline.video_builder import build_video, build_video_from_clips
 from pipeline.uploader import upload_video
 
 CHANNEL_FILE  = Path("config/channel.json")
@@ -103,15 +104,38 @@ def run_generate():
     )
     log.info("Thumbnail: %s", img_path)
 
-    # Build video
-    log.info("Montando vídeo %d min...", channel["video_duration_minutes"])
-    video_path = build_video(
-        image_path=img_path,
-        audio_files=audio_files,
-        output_dir=temp_dir,
-        video_id=video_id,
-        target_minutes=channel["video_duration_minutes"],
-    )
+    # Build video — animated clips or static image
+    animate = channel.get("animate_video", False)
+    log.info("Montando vídeo %d min... (animado=%s)", channel["video_duration_minutes"], animate)
+
+    if animate:
+        clip_model = channel.get("clip_model", "minimax/video-01")
+        n_clips = int(channel.get("clips_per_video", 5))
+        log.info("Gerando %d clips animados via %s...", n_clips, clip_model)
+        clips_dir = temp_dir / "clips"
+        clip_paths = generate_clips(
+            thumbnail_path=img_path,
+            output_dir=clips_dir,
+            video_id=video_id,
+            model=clip_model,
+            n_clips=n_clips,
+        )
+        log.info("Clips gerados: %s", [c.name for c in clip_paths])
+        video_path = build_video_from_clips(
+            clip_paths=clip_paths,
+            audio_files=audio_files,
+            output_dir=temp_dir,
+            video_id=video_id,
+            target_minutes=channel["video_duration_minutes"],
+        )
+    else:
+        video_path = build_video(
+            image_path=img_path,
+            audio_files=audio_files,
+            output_dir=temp_dir,
+            video_id=video_id,
+            target_minutes=channel["video_duration_minutes"],
+        )
     log.info("Vídeo: %s", video_path)
 
     # Metadata

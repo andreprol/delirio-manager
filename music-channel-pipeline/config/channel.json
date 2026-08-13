@@ -7,5 +7,8 @@
   "replicate_model": "black-forest-labs/flux-1.1-pro",
   "canonical_face": "config/dj_canonical.jpg",
   "prompt_strength": 0.85,
-  "safety_tolerance": 5
+  "safety_tolerance": 5,
+  "animate_video": true,
+  "clip_model": "minimax/video-01",
+  "clips_per_video": 5
 }
