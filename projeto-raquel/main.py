@@ -125,8 +125,13 @@ def cmd_sync_instagram(max_videos: int = 5):
                 secrets_file=secrets_file,
             )
             mark_instagram_synced(ig_id, yt_id)
-            print(f"  ✓ Publicado: https://youtu.be/{yt_id}")
+            print(f"  OK Publicado: https://youtu.be/{yt_id}")
             new_count += 1
+            # Limpa arquivo local após upload bem-sucedido
+            try:
+                Path(video["file_path"]).unlink(missing_ok=True)
+            except Exception:
+                pass
         except Exception as e:
             print(f"  Erro no upload: {e}")
             mark_instagram_synced(ig_id)

@@ -102,11 +102,16 @@ def _iter_posts(user_id: int, session):
     url = f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count=12"
     while url:
         r = session.get(url, timeout=20)
-        if r.status_code != 200:
+        if r.status_code == 401:
             raise RuntimeError(
-                f"Instagram {r.status_code} ao paginar posts. "
-                f"{'IP rate-limited. Tente mais tarde.' if r.status_code == 429 else r.text[:120]}"
+                "SESSION_EXPIRADA: Instagram retornou 401. "
+                "Renovar INSTAGRAM_SESSION_ID no .env: "
+                "Chrome > DevTools (F12) > Application > Cookies > instagram.com > sessionid"
             )
+        if r.status_code == 429:
+            raise RuntimeError("Instagram 429 Too Many Requests — IP rate-limited. Tente mais tarde.")
+        if r.status_code != 200:
+            raise RuntimeError(f"Instagram {r.status_code} ao paginar posts: {r.text[:120]}")
         data = r.json()
         for item in data.get("items", []):
             yield item
