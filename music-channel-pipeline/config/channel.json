@@ -1,0 +1,10 @@
+{
+  "channel_name": "Umbra Sessions",
+  "dj_name": "DJ Umbra",
+  "youtube_channel_id": "",
+  "video_duration_minutes": 60,
+  "replicate_model": "black-forest-labs/flux-1.1-pro",
+  "canonical_face": "config/dj_canonical.jpg",
+  "prompt_strength": 0.85,
+  "safety_tolerance": 5
+}

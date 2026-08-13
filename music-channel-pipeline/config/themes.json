@@ -1,0 +1,98 @@
+[
+  {
+    "id": "ibiza",
+    "name": "Ibiza",
+    "location": "Ibiza Spain",
+    "landmark": "Dalt Vila fortress white limestone cliffs",
+    "sea": "turquoise Mediterranean sea",
+    "party_style": "luxury beach club terrace"
+  },
+  {
+    "id": "santorini",
+    "name": "Santorini",
+    "location": "Santorini Greece",
+    "landmark": "white-washed buildings iconic blue domed churches caldera cliff",
+    "sea": "deep blue Aegean sea",
+    "party_style": "rooftop terrace overlooking the caldera"
+  },
+  {
+    "id": "maldives",
+    "name": "Maldives",
+    "location": "Maldives Indian Ocean",
+    "landmark": "luxury overwater bungalows crystal lagoon sandbank",
+    "sea": "crystal clear turquoise Indian Ocean",
+    "party_style": "overwater deck sunset party"
+  },
+  {
+    "id": "bali",
+    "name": "Bali",
+    "location": "Bali Indonesia",
+    "landmark": "lush jungle rice terraces Hindu temple with fire torches",
+    "sea": "Indian Ocean waves Uluwatu cliffs",
+    "party_style": "clifftop jungle open-air venue"
+  },
+  {
+    "id": "monaco",
+    "name": "Monaco",
+    "location": "Monaco French Riviera",
+    "landmark": "Monaco harbor mega yachts rocky cliffs Prince Palace",
+    "sea": "Mediterranean sea",
+    "party_style": "luxury rooftop terrace with harbor view"
+  },
+  {
+    "id": "mykonos",
+    "name": "Mykonos",
+    "location": "Mykonos Greece",
+    "landmark": "iconic white windmills Little Venice waterfront",
+    "sea": "crystal Aegean sea",
+    "party_style": "famous beach club waterfront terrace"
+  },
+  {
+    "id": "amalfi",
+    "name": "Amalfi Coast",
+    "location": "Amalfi Coast Italy",
+    "landmark": "colorful cliffside villages Positano cascading down cliffs",
+    "sea": "deep blue Tyrrhenian sea",
+    "party_style": "clifftop terrace with coastal panorama"
+  },
+  {
+    "id": "dubai",
+    "name": "Dubai",
+    "location": "Dubai UAE",
+    "landmark": "Burj Khalifa glass skyscrapers golden desert dunes at sunset",
+    "sea": "Persian Gulf sparkling water",
+    "party_style": "ultra-luxury rooftop with city skyline"
+  },
+  {
+    "id": "tulum",
+    "name": "Tulum",
+    "location": "Tulum Mexico",
+    "landmark": "ancient Mayan ruins on cliffs jungle palm trees cenote",
+    "sea": "Caribbean turquoise sea",
+    "party_style": "eco-chic jungle beach club"
+  },
+  {
+    "id": "rio",
+    "name": "Rio de Janeiro",
+    "location": "Rio de Janeiro Brazil",
+    "landmark": "Sugarloaf mountain Christ the Redeemer Copacabana panorama",
+    "sea": "Atlantic ocean Ipanema beach",
+    "party_style": "hillside luxury venue with bay view"
+  },
+  {
+    "id": "capri",
+    "name": "Capri",
+    "location": "Capri Island Italy",
+    "landmark": "Faraglioni rock stacks dramatic sea cliffs luxury villas",
+    "sea": "emerald Mediterranean sea",
+    "party_style": "exclusive clifftop terrace with rock formations"
+  },
+  {
+    "id": "hawaii",
+    "name": "Hawaii",
+    "location": "Maui Hawaii USA",
+    "landmark": "volcanic black lava cliffs lush tropical waterfalls",
+    "sea": "deep Pacific ocean turquoise waves",
+    "party_style": "tropical open-air beach venue"
+  }
+]
