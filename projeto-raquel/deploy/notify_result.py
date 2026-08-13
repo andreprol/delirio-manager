@@ -12,7 +12,8 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-LOG_PATH = Path(__file__).parent.parent / "data" / "sync.log"
+LOG_PATH = Path(__file__).parent.parent / "data" / "run_current.log"
+ARCHIVE_LOG = Path(__file__).parent.parent / "data" / "sync.log"
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 TO_EMAIL = "andreprol1980@gmail.com"
 FROM_EMAIL = "onboarding@resend.dev"
@@ -20,10 +21,8 @@ FROM_EMAIL = "onboarding@resend.dev"
 
 def read_last_run_log() -> str:
     if not LOG_PATH.exists():
-        return "(sync.log não encontrado)"
-    lines = LOG_PATH.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-    # Últimas 50 linhas
-    return "\n".join(lines[-50:])
+        return "(run_current.log não encontrado)"
+    return LOG_PATH.read_text(encoding="utf-8", errors="replace").strip()
 
 
 def detect_outcome(log: str) -> tuple[str, str]:
