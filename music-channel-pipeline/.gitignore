@@ -6,3 +6,4 @@ __pycache__/
 pipeline/__pycache__/
 *.pyc
 .env
+config/client_secrets.json
