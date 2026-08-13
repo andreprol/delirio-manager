@@ -4,9 +4,13 @@ Each clip has a different motion prompt to create varied loop content.
 """
 import base64
 import time
+import logging
 import requests
 import replicate
+from replicate.exceptions import ReplicateError
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 CLIP_MOTIONS = [
     (
@@ -68,18 +72,30 @@ def generate_clips(
     for i, motion in enumerate(motions):
         clip_path = output_dir / f"clip_{i:02d}.mp4"
 
-        output = replicate.run(
-            model,
-            input={
-                "prompt": motion,
-                "first_frame_image": b64_image,
-            },
-        )
+        # retry with exponential backoff for 429 rate limit
+        for attempt in range(5):
+            try:
+                output = replicate.run(
+                    model,
+                    input={
+                        "prompt": motion,
+                        "first_frame_image": b64_image,
+                    },
+                )
+                break
+            except ReplicateError as e:
+                if "429" in str(e) and attempt < 4:
+                    wait = 15 * (2 ** attempt)
+                    log.warning("Rate limit clip %d, aguardando %ds...", i, wait)
+                    time.sleep(wait)
+                else:
+                    raise
+
         _save_video(output, clip_path)
         clips.append(clip_path)
+        log.info("Clip %d/%d gerado: %s", i + 1, len(motions), clip_path.name)
 
-        # rate limit between requests
         if i < len(motions) - 1:
-            time.sleep(8)
+            time.sleep(10)
 
     return clips

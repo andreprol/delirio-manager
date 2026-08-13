@@ -8,7 +8,7 @@
   "canonical_face": "config/dj_canonical.jpg",
   "prompt_strength": 0.85,
   "safety_tolerance": 5,
-  "animate_video": true,
+  "animate_video": false,
   "clip_model": "minimax/video-01",
   "clips_per_video": 5
 }
