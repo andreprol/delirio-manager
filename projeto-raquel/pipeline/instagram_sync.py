@@ -36,23 +36,40 @@ def _ensure_deps():
 
 def _build_cffi_session() -> object:
     """
-    Cria curl_cffi Session Chrome120 com cookies do instaloader.
-    Retorna session pronta para chamadas à API do Instagram.
+    Cria curl_cffi Session Chrome120 com cookies de auth do Instagram.
+
+    Prioridade:
+    1. INSTAGRAM_SESSION_ID no .env (Chrome cookies — sempre fresh)
+    2. Instaloader session file (fallback — pode expirar em dias)
     """
     from curl_cffi import requests as cffi_requests
-    import instaloader
+    from urllib.parse import unquote
 
     s = cffi_requests.Session(impersonate="chrome120")
     s.headers.update({"X-IG-App-ID": "936619743392459"})
 
+    session_id = os.environ.get("INSTAGRAM_SESSION_ID", "").strip()
+    if session_id:
+        s.cookies.set("sessionid", unquote(session_id), domain=".instagram.com")
+        csrftoken = os.environ.get("INSTAGRAM_CSRFTOKEN", "").strip()
+        ds_user_id = os.environ.get("INSTAGRAM_DS_USER_ID", "").strip()
+        if csrftoken:
+            s.cookies.set("csrftoken", csrftoken, domain=".instagram.com")
+        if ds_user_id:
+            s.cookies.set("ds_user_id", ds_user_id, domain=".instagram.com")
+        print("  Cookies Chrome carregados (INSTAGRAM_SESSION_ID)")
+        return s
+
+    # Fallback: instaloader session file
+    import instaloader
     ig_username = os.environ.get("INSTAGRAM_USERNAME", "").strip()
     if ig_username:
         try:
             L = instaloader.Instaloader(quiet=True, max_connection_attempts=1)
             L.load_session_from_file(ig_username)
             for cookie in L.context._session.cookies:
-                s.cookies.set(cookie.name, cookie.value, domain=cookie.domain)
-            print(f"  Cookies instaloader @{ig_username} carregados")
+                s.cookies.set(cookie.name, cookie.value, domain=".instagram.com")
+            print(f"  Cookies instaloader @{ig_username} carregados (fallback)")
         except Exception as e:
             print(f"  Aviso: cookies não carregados ({type(e).__name__}): {e}")
 
@@ -82,7 +99,7 @@ def _iter_posts(user_id: int, session):
     Gera items de posts via mobile API, paginando até o fim do perfil.
     Cada item é o dict bruto da API do Instagram.
     """
-    url = f"https://i.instagram.com/api/v1/feed/user/{user_id}/?count=12"
+    url = f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count=12"
     while url:
         r = session.get(url, timeout=20)
         if r.status_code != 200:
@@ -95,7 +112,7 @@ def _iter_posts(user_id: int, session):
             yield item
         next_cursor = data.get("next_max_id")
         url = (
-            f"https://i.instagram.com/api/v1/feed/user/{user_id}/?count=12&max_id={next_cursor}"
+            f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count=12&max_id={next_cursor}"
             if next_cursor
             else None
         )
