@@ -99,7 +99,7 @@ def get_due_uploads() -> list[dict]:
     con = _conn()
     now = datetime.utcnow().isoformat()
     rows = con.execute(
-        "SELECT * FROM output_queue WHERE status = 'queued' AND scheduled_time <= ? ORDER BY scheduled_time",
+        "SELECT * FROM output_queue WHERE status = 'queued' AND scheduled_time <= ? ORDER BY scheduled_time LIMIT 1",
         (now,),
     ).fetchall()
     con.close()

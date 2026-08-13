@@ -1,0 +1,11 @@
+yt-dlp>=2026.7.4
+openai-whisper>=20250625
+anthropic==0.40.0
+elevenlabs==1.9.0
+google-api-python-client==2.155.0
+google-auth-oauthlib==1.2.1
+ffmpeg-python==0.2.0
+python-dotenv==1.0.1
+isodate>=0.7.2
+pytest==8.3.4
+pytest-mock==3.14.0
