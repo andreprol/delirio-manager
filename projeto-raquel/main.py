@@ -365,8 +365,10 @@ def main():
         cmd_status()
 
     elif cmd == "sync-instagram":
-        max_videos = int(args[1]) if len(args) > 1 else None
-        cmd_sync_instagram(max_videos)
+        if len(args) > 1:
+            cmd_sync_instagram(int(args[1]))
+        else:
+            cmd_sync_instagram()
 
     elif cmd == "add-review":
         cmd_add_review()

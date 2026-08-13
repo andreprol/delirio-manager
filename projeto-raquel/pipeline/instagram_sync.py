@@ -88,7 +88,8 @@ def fetch_and_download_profile(
     already_synced_ids = already_synced_ids or set()
 
     # --- Setup instaloader (paginação) ---
-    L = instaloader.Instaloader(quiet=True)
+    # max_connection_attempts=1: falha imediato em 429, sem retry loop de 666s
+    L = instaloader.Instaloader(quiet=True, max_connection_attempts=1)
     ig_username = os.environ.get("INSTAGRAM_USERNAME", "").strip()
     if ig_username:
         try:
