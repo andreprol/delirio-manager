@@ -104,7 +104,7 @@ def cmd_sync_instagram(max_videos: int = 5):
                 handle, temp_dir,
                 already_synced_ids=synced_ids,
                 max_new=max_videos,
-                max_consecutive_seen=9999,
+                max_consecutive_seen=60,
             )
         except Exception as e:
             print(f"Erro ao buscar backlog histórico: {e}")
