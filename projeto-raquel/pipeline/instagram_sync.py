@@ -45,8 +45,12 @@ def _build_cffi_session() -> object:
     from curl_cffi import requests as cffi_requests
     from urllib.parse import unquote
 
-    s = cffi_requests.Session(impersonate="chrome120")
+    proxy_url = os.environ.get("INSTAGRAM_PROXY", "").strip()
+    proxies = {"https": proxy_url, "http": proxy_url} if proxy_url else None
+    s = cffi_requests.Session(impersonate="chrome120", proxies=proxies)
     s.headers.update({"X-IG-App-ID": "936619743392459"})
+    if proxy_url:
+        print(f"  Proxy ativo: {proxy_url.split('@')[-1]}")
 
     session_id = os.environ.get("INSTAGRAM_SESSION_ID", "").strip()
     if session_id:

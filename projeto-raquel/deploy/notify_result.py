@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 LOG_PATH = Path(__file__).parent.parent / "data" / "run_current.log"
-ARCHIVE_LOG = Path(__file__).parent.parent / "data" / "sync.log"
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 TO_EMAIL = "andreprol1980@gmail.com"
 FROM_EMAIL = "onboarding@resend.dev"
@@ -28,87 +27,178 @@ def read_last_run_log() -> str:
 def parse_run(log: str) -> dict:
     """Extrai métricas estruturadas do log da run."""
     result = {
-        "uploaded": [],
-        "errors": [],
-        "no_new": False,
-        "session_expired": False,
-        "rate_limited": False,
-        "already_synced": 0,
+        "uploaded": [],           # URLs YouTube publicados com sucesso
+        "yt_errors": [],          # linhas de erro de upload YouTube
+        "ig_fetch_error": None,   # mensagem de erro ao buscar IG (ou None se OK)
+        "ig_error_type": None,    # "401" | "429" | "other"
+        "session_expired": False, # True se autenticação foi rejeitada
+        "no_new": False,          # True se não havia vídeos novos
+        "sync_done": False,       # True se sync completou normalmente
+        "new_count": 0,           # vídeos publicados (do resumo final)
+        "already_synced": 0,      # posts já no banco antes da run
         "raw": log,
     }
 
     for line in log.splitlines():
-        line_lower = line.lower()
-        if "ok publicado: https://youtu.be/" in line_lower:
-            url = re.search(r"https://youtu\.be/\S+", line)
+        l = line.strip()
+        ll = l.lower()
+
+        # Upload YouTube bem-sucedido
+        if "✓ publicado:" in ll or "ok publicado:" in ll:
+            url = re.search(r"https://youtu\.be/\S+", l)
             if url:
                 result["uploaded"].append(url.group())
-        elif "session_expirada" in line_lower or "401" in line and "session" in line_lower:
+
+        # Erro de upload YouTube
+        elif "erro no upload" in ll:
+            result["yt_errors"].append(l)
+
+        # Erro ao buscar Instagram (fetch/paginação falhou)
+        elif ("erro ao buscar" in ll and "instagram" in ll) or \
+             ("erro ao buscar backlog" in ll):
+            result["ig_fetch_error"] = l
+            if "401" in l:
+                result["ig_error_type"] = "401"
+                # require_login = session rejeitada pela API
+                if "require_login" in l or "session" in ll:
+                    result["session_expired"] = True
+            elif "429" in l or "rate-limit" in ll:
+                result["ig_error_type"] = "429"
+            else:
+                result["ig_error_type"] = "other"
+
+        # Session explicitamente marcada como expirada
+        elif "session_expirada" in ll or "sessionexpired" in ll:
             result["session_expired"] = True
-        elif "429" in line or "rate-limited" in line_lower:
-            result["rate_limited"] = True
-        elif "nenhum vídeo novo" in line_lower:
+
+        # Sem vídeos novos
+        elif "nenhum vídeo novo" in ll or "nenhum vídeo encontrado" in ll:
             result["no_new"] = True
-        elif "erro" in line_lower and ("upload" in line_lower or "traceback" in line_lower):
-            result["errors"].append(line.strip())
-        elif "posts já sincronizados no banco" in line_lower:
-            m = re.search(r"(\d+) posts", line)
+
+        # Linha de conclusão do sync
+        elif "sincronização concluída" in ll:
+            result["sync_done"] = True
+            m = re.search(r"(\d+) vídeo\(s\) publicado", l)
+            if m:
+                result["new_count"] = int(m.group(1))
+
+        # Contador de posts já sincronizados no banco
+        elif "posts já sincronizados no banco" in ll:
+            m = re.search(r"(\d+) posts", l)
             if m:
                 result["already_synced"] = int(m.group(1))
+
+    # Garantir coerência: se uploaded tem itens, new_count reflete isso
+    if result["uploaded"] and result["new_count"] == 0:
+        result["new_count"] = len(result["uploaded"])
 
     return result
 
 
 def detect_outcome(r: dict) -> tuple[str, str]:
-    if r["session_expired"]:
-        return "🔑 SESSION EXPIRADA — ação necessária", "critical"
+    # Prioridade 1: autenticação rejeitada (401 / require_login)
+    if r["session_expired"] or r["ig_error_type"] == "401":
+        return "🔑 SESSION BLOQUEADA — ação necessária", "critical"
+    # Prioridade 2: uploads OK (mesmo que parcial)
     if r["uploaded"]:
         return f"✅ {len(r['uploaded'])} vídeo(s) publicado(s)", "success"
-    if r["rate_limited"]:
-        return "⚠️ Rate limit Instagram (429)", "warning"
-    if r["errors"]:
-        return "❌ Erro no upload", "error"
-    if r["no_new"]:
-        return "ℹ️ Nenhum vídeo novo", "info"
+    # Prioridade 3: sync concluído com publicações
+    if r["sync_done"] and r["new_count"] > 0:
+        return f"✅ {r['new_count']} vídeo(s) publicado(s)", "success"
+    # Rate limit por IP
+    if r["ig_error_type"] == "429":
+        return "⏸️ Rate limit Instagram (IP bloqueado)", "warning"
+    # Outro erro no Instagram
+    if r["ig_fetch_error"]:
+        return "❌ Falha ao buscar Instagram", "error"
+    # Erro no YouTube
+    if r["yt_errors"]:
+        return "❌ Erro no upload YouTube", "error"
+    # Sem conteúdo novo
+    if r["no_new"] or (r["sync_done"] and r["new_count"] == 0):
+        return "ℹ️ Sem vídeos novos", "info"
     return "⚠️ Resultado incerto", "warning"
 
 
 def build_body(r: dict, status_label: str, date_str: str) -> str:
+    SEP = "─" * 50
+
+    # ── Resumo operacional ──
+    if r["ig_fetch_error"]:
+        ig_status = f"FALHOU ({r['ig_error_type'] or 'erro'})"
+    elif r["uploaded"] or r["sync_done"]:
+        ig_status = "OK"
+    else:
+        ig_status = "desconhecido"
+
+    if r["ig_fetch_error"] and not r["uploaded"]:
+        yt_status = "não chegou (Instagram falhou antes)"
+    elif r["uploaded"]:
+        yt_status = f"OK — {len(r['uploaded'])} publicado(s)"
+    elif r["yt_errors"]:
+        yt_status = f"FALHOU — {len(r['yt_errors'])} erro(s)"
+    elif r["no_new"]:
+        yt_status = "nada a publicar (sem vídeos novos)"
+    else:
+        yt_status = "desconhecido"
+
     lines = [
-        f"Projeto Raquel — Resultado do sync diário",
+        "Projeto Raquel — Resultado do sync diário",
         f"Data: {date_str}",
         f"Status: {status_label}",
-        f"Já sincronizados no banco: {r['already_synced']}",
+        SEP,
+        "",
+        "📊 RESUMO",
+        f"  Banco local   : {r['already_synced']} vídeos já sincronizados",
+        f"  Instagram     : {ig_status}",
+        f"  YouTube upload: {yt_status}",
         "",
     ]
 
-    if r["session_expired"]:
+    # ── Diagnóstico de erro ──
+    if r["session_expired"] or r["ig_error_type"] == "401":
         lines += [
-            "AÇÃO NECESSÁRIA:",
-            "  1. Abra o Chrome e acesse instagram.com",
-            "  2. F12 > Application > Cookies > instagram.com",
-            "  3. Copie o valor de 'sessionid'",
-            "  4. Atualize INSTAGRAM_SESSION_ID no .env",
+            "🔑 CAUSA: AUTENTICAÇÃO REJEITADA (401)",
+            "  Instagram recusou o sessionid — expirou ou foi bloqueado por uso intenso.",
+            "",
+            "  AÇÃO NECESSÁRIA:",
+            "  1. Chrome > instagram.com > F12 > Application > Cookies > instagram.com",
+            "  2. Copiar valores de: sessionid, csrftoken, ds_user_id",
+            "  3. Atualizar .env em F:\\delirio-manager\\projeto-raquel\\",
+            "     INSTAGRAM_SESSION_ID=<novo valor>",
+            "     INSTAGRAM_CSRFTOKEN=<novo valor>",
+            "     INSTAGRAM_DS_USER_ID=<novo valor>",
+            "",
+        ]
+    elif r["ig_error_type"] == "429":
+        lines += [
+            "⏸️ CAUSA: RATE LIMIT POR IP",
+            "  Instagram bloqueou temporariamente o IP por excesso de requisições.",
+            "  Aguardar 30–60 min e tentar novamente.",
+            "  Dica: proxy residencial já está configurado — verificar INSTAGRAM_PROXY.",
+            "",
+        ]
+    elif r["ig_fetch_error"]:
+        lines += [
+            "❌ CAUSA: ERRO AO BUSCAR INSTAGRAM",
+            f"  {r['ig_fetch_error']}",
             "",
         ]
 
+    if r["yt_errors"]:
+        lines += ["❌ ERROS YOUTUBE:"]
+        for e in r["yt_errors"][:5]:
+            lines.append(f"  {e}")
+        lines.append("")
+
+    # ── Vídeos publicados ──
     if r["uploaded"]:
-        lines.append(f"Publicados ({len(r['uploaded'])}):")
+        lines.append(f"✅ PUBLICADOS ({len(r['uploaded'])}):")
         for url in r["uploaded"]:
             lines.append(f"  {url}")
         lines.append("")
 
-    if r["errors"]:
-        lines.append("Erros:")
-        for e in r["errors"][:5]:
-            lines.append(f"  {e}")
-        lines.append("")
-
-    lines += [
-        "--- LOG COMPLETO ---",
-        r["raw"],
-    ]
-
+    lines += [SEP, "LOG COMPLETO:", r["raw"]]
     return "\n".join(lines)
 
 
