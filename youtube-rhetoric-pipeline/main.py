@@ -15,6 +15,7 @@ from pipeline.queue import (
     init_db, is_processed, mark_pending, mark_done,
     enqueue_output, get_due_uploads, mark_uploaded, next_upload_slot,
 )
+from pipeline.notifier import send_upload_result
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -133,8 +134,10 @@ def run_uploads():
             )
             mark_uploaded(item["id"], yt_id)
             log.info(f"Uploaded {item['title']} → {yt_id}")
+            send_upload_result(title=item["title"], youtube_video_id=yt_id)
         except Exception as e:
             log.error(f"Upload failed for queue item {item['id']}: {e}")
+            send_upload_result(title=item["title"], youtube_video_id=None, error=str(e))
 
 
 if __name__ == "__main__":
