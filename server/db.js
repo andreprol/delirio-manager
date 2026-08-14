@@ -17,6 +17,7 @@ function getDb() {
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 10000'); // espera até 10s em vez de SQLITE_BUSY imediato
     db.pragma('foreign_keys = ON');
+    db.pragma('wal_autocheckpoint = 1000'); // checkpoint automático a cada 1000 páginas (~4MB)
     migrate(db);
   }
   return db;

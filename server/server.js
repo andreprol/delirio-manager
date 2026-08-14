@@ -27,6 +27,7 @@ server.listen(PORT, () => {
   alertEngine.start();
   insightEngine.start();
   zamakService.scheduleDailySync();
+  _scheduleWalCheckpoint();
   metricsEmail.scheduleDailyMetricsEmail();
   ncrMonitor.start();
   logger.info('NCR monitor iniciado', { interval: '2min' });
@@ -165,6 +166,19 @@ function _scheduleHourlyMetricsMonitor() {
 
   // Primeira verificação: 5 min após o boot (aguarda agentes registrarem)
   setTimeout(_checkHour, 5 * 60 * 1000);
+}
+
+// ── WAL checkpoint diário — previne crescimento ilimitado do WAL ─────────────
+function _scheduleWalCheckpoint() {
+  const { getDb } = require('./db');
+  setInterval(() => {
+    try {
+      getDb().pragma('wal_checkpoint(TRUNCATE)');
+      logger.info('[WAL] Checkpoint concluído');
+    } catch (e) {
+      logger.error('[WAL] Checkpoint falhou', { error: e.message });
+    }
+  }, 24 * 60 * 60 * 1000); // 24h
 }
 
 // ── NF-Ce indexer — dispara diariamente às 23:00 para servidores BOH ─────────
