@@ -98,7 +98,20 @@ def cmd_sync_instagram(max_videos: int = 5):
         return
 
     if not videos:
-        print("Nenhum vídeo novo encontrado.")
+        print("Nenhum vídeo novo recente. Buscando no backlog histórico do perfil...")
+        try:
+            videos = fetch_and_download_profile(
+                handle, temp_dir,
+                already_synced_ids=synced_ids,
+                max_new=max_videos,
+                max_consecutive_seen=9999,
+            )
+        except Exception as e:
+            print(f"Erro ao buscar backlog histórico: {e}")
+            return
+
+    if not videos:
+        print("Nenhum vídeo encontrado (novo ou backlog).")
         return
 
     tags = channel.get("branding", {}).get("default_hashtags", [])
@@ -125,13 +138,8 @@ def cmd_sync_instagram(max_videos: int = 5):
                 secrets_file=secrets_file,
             )
             mark_instagram_synced(ig_id, yt_id)
-            print(f"  OK Publicado: https://youtu.be/{yt_id}")
+            print(f"  ✓ Publicado: https://youtu.be/{yt_id}")
             new_count += 1
-            # Limpa arquivo local após upload bem-sucedido
-            try:
-                Path(video["file_path"]).unlink(missing_ok=True)
-            except Exception:
-                pass
         except Exception as e:
             print(f"  Erro no upload: {e}")
             mark_instagram_synced(ig_id)
