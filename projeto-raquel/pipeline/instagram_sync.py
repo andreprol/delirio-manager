@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Em steady state, para após N posts consecutivos já sincronizados.
-MAX_ALREADY_SEEN_CONSECUTIVE = 20
+MAX_ALREADY_SEEN_CONSECUTIVE = 100
 
 # user_id fixo de @raquelpiiires (evita lookup em web_profile_info)
 _RAQUEL_USER_ID = 46251461
