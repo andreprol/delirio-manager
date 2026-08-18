@@ -12,6 +12,12 @@ Uso:
   python main.py seo <id> <youtube_url>   Gera artigo de blog para um item
   python main.py schedule <id>            Agenda upload de um item
   python main.py upload                   Faz upload dos vídeos agendados para hoje
+
+  Fluxo 16:9 (vídeo longo — gera horas de exibição para monetização):
+  python main.py fetch [N]                Baixa N Reels para o pool, sem publicar
+  python main.py compile [N]              Monta compilados 16:9 de 10-15 min do pool
+  python main.py publish                  Sobe os compilados prontos para o YouTube
+  python main.py pool                     Mostra o estado do pool e dos compilados
 """
 
 import json
@@ -28,6 +34,9 @@ from pipeline.queue import (
     get_due_uploads, get_ready_uploads,
     mark_uploaded, mark_instagram_synced, is_instagram_synced, get_all_synced_instagram_ids,
     next_upload_slot, set_blog_article,
+    add_clip_to_pool, get_pool_ids, get_available_clips,
+    create_compilation, get_pending_compilations, mark_compilation_uploaded,
+    next_compilation_number,
 )
 from pipeline.content_intake import (
     parse_instagram_post, create_manual_brief, detect_content_type,
@@ -145,6 +154,181 @@ def cmd_sync_instagram(max_videos: int = 5):
             mark_instagram_synced(ig_id)
 
     print(f"\nSincronização concluída. {new_count} vídeo(s) publicado(s).")
+
+
+# ─── FLUXO 16:9 (VÍDEO LONGO) ────────────────────────────────────────────────
+
+def cmd_fetch(max_videos: int = 20):
+    """Baixa Reels para o pool de compilação. Não publica nada."""
+    from pipeline.compiler import probe_duration
+
+    channel = _load_channel()
+    handle = channel.get("instagram_handle", "@raquelpiiires")
+    temp_dir = Path(os.getenv("TEMP_DIR", "data/temp"))
+
+    # Ignora o que já foi publicado E o que já está esperando compilação.
+    known = get_all_synced_instagram_ids() | get_pool_ids()
+    print(f"\nBuscando até {max_videos} Reels novos de {handle} ({len(known)} já conhecidos)...")
+
+    try:
+        videos = fetch_and_download_profile(
+            handle, temp_dir, already_synced_ids=known, max_new=max_videos,
+        )
+    except Exception as e:
+        # Formato reconhecido por deploy/notify_result.py para classificar 401/429.
+        print(f"Erro ao buscar vídeos do Instagram: {e}")
+        return
+
+    if not videos:
+        print("Nenhum Reel novo encontrado.")
+        return
+
+    for v in videos:
+        dur = probe_duration(v["file_path"])
+        if dur <= 0:
+            print(f"  ignorando {Path(v['file_path']).name}: vídeo ilegível")
+            continue
+        add_clip_to_pool(v["instagram_id"], v["file_path"], v["caption"], dur, v["timestamp"])
+
+    total = sum(c["duration"] for c in get_available_clips())
+    print(f"\n{len(videos)} Reel(s) no pool. Disponível para compilar: {total/60:.1f} min.")
+
+
+def _compilation_title(group: list[dict], index: int) -> str:
+    """Título do compilado. Usa Claude se houver chave; senão cai num padrão fixo."""
+    from pipeline.compiler import _clip_label
+
+    labels = [_clip_label(c.get("caption", ""), i) for i, c in enumerate(group, 1)]
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    if api_key:
+        try:
+            import anthropic
+            joined = "\n".join(f"- {l}" for l in labels[:20])
+            msg = anthropic.Anthropic(api_key=api_key).messages.create(
+                model="claude-sonnet-5",
+                max_tokens=100,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Estes são os trechos de um compilado de vídeos sobre K-dramas, "
+                        "C-dramas e fan meetings do canal da Raquel Pires:\n\n"
+                        f"{joined}\n\n"
+                        "Escreva UM título de YouTube em português do Brasil para esse compilado. "
+                        "Máximo 70 caracteres, sem aspas, sem emoji, sem numeração. "
+                        "Responda apenas com o título."
+                    ),
+                }],
+            )
+            title = msg.content[0].text.strip().strip('"')
+            if title:
+                return title[:90]
+        except Exception as e:
+            log.warning(f"Título via Claude falhou ({e}); usando padrão.")
+
+    return f"K-Dramas e Fan Meetings — Compilado #{index}"
+
+
+def cmd_compile(max_compilations: int = None):
+    """Agrupa o pool em compilados 16:9 de 10-15 min e renderiza cada um."""
+    from pipeline.compiler import build_compilation, build_description, group_clips
+
+    clips = get_available_clips()
+    if not clips:
+        print("Pool vazio. Rode 'python main.py fetch 20' primeiro.")
+        return
+
+    groups, leftover = group_clips(clips)
+    leftover_min = sum(c["duration"] for c in leftover) / 60
+    if not groups:
+        print(
+            f"Pool tem só {leftover_min:.1f} min — abaixo do mínimo de 8 min por compilado.\n"
+            f"Rode 'python main.py fetch' para acumular mais Reels."
+        )
+        return
+
+    if max_compilations:
+        groups = groups[:max_compilations]
+
+    out_dir = Path("data/compilations")
+    work_dir = Path(os.getenv("TEMP_DIR", "data/temp")) / "_build"
+
+    print(f"\n{len(groups)} compilado(s) a montar ({leftover_min:.1f} min sobram no pool).\n")
+
+    for n, group in enumerate(groups, start=1):
+        total_min = sum(c["duration"] for c in group) / 60
+        number = next_compilation_number()
+        title = _compilation_title(group, number)
+        out_path = out_dir / f"comp_{number:03d}.mp4"
+
+        print(f"[{n}/{len(groups)}] {title}")
+        print(f"  {len(group)} clipes · {total_min:.1f} min")
+
+        try:
+            result = build_compilation(group, out_path, title, work_dir)
+        except Exception as e:
+            log.error(f"Falha ao montar compilado '{title}': {e}")
+            continue
+
+        description = build_description(result["chapters"])
+        comp_id = create_compilation(
+            title, description, result["path"], result["duration"], result["clips"],
+        )
+        print(f"  ✓ #{comp_id} pronto: {result['path']} ({result['duration']/60:.1f} min)\n")
+
+    print("Compilados prontos. Rode 'python main.py publish' para enviar ao YouTube.")
+
+
+def cmd_publish():
+    """Sobe os compilados já montados para o YouTube."""
+    channel = _load_channel()
+    tags = [t.lstrip("#") for t in channel.get("branding", {}).get("default_hashtags", [])]
+    secrets_file = os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json")
+
+    pending = get_pending_compilations()
+    if not pending:
+        print("Nenhum compilado pendente. Rode 'python main.py compile' primeiro.")
+        return
+
+    ok = 0
+    for comp in pending:
+        path = Path(comp["file_path"])
+        if not path.exists():
+            log.error(f"Compilado #{comp['id']}: arquivo sumiu ({path}). Pulando.")
+            continue
+
+        print(f"→ Upload #{comp['id']}: {comp['title']}")
+        try:
+            yt_id = upload_video(
+                file_path=str(path),
+                title=comp["title"],
+                description=comp["description"] or "",
+                tags=tags,
+                secrets_file=secrets_file,
+            )
+        except Exception as e:
+            log.error(f"Erro no upload do compilado #{comp['id']}: {e}")
+            continue
+
+        mark_compilation_uploaded(comp["id"], yt_id)
+        print(f"  ✓ Publicado: https://youtu.be/{yt_id}\n")
+        ok += 1
+
+    print(f"{ok} compilado(s) publicado(s).")
+
+
+def cmd_pool():
+    """Estado do pool de clipes e dos compilados."""
+    clips = get_available_clips()
+    total_min = sum(c["duration"] for c in clips) / 60
+    pending = get_pending_compilations()
+
+    print(f"\nPool: {len(clips)} clipe(s) livres · {total_min:.1f} min")
+    print(f"Rende aproximadamente {int(total_min // 12)} compilado(s) de ~12 min")
+    print(f"Compilados montados aguardando upload: {len(pending)}")
+    for comp in pending:
+        print(f"  #{comp['id']:<4} {comp['title'][:60]:<62} {(comp['duration'] or 0)/60:.1f} min")
+    print()
 
 
 def cmd_add_review():
@@ -382,6 +566,18 @@ def main():
             cmd_sync_instagram(int(args[1]))
         else:
             cmd_sync_instagram()
+
+    elif cmd == "fetch":
+        cmd_fetch(int(args[1]) if len(args) > 1 else 20)
+
+    elif cmd == "compile":
+        cmd_compile(int(args[1]) if len(args) > 1 else None)
+
+    elif cmd == "publish":
+        cmd_publish()
+
+    elif cmd == "pool":
+        cmd_pool()
 
     elif cmd == "add-review":
         cmd_add_review()

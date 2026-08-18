@@ -1,0 +1,28 @@
+[2026-08-10 23:08] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-10 23:46] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-11 10:19] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-12 16:15] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-12 16:18] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-12 16:20] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-12 17:02] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-12 17:09] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-12 17:19] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-12 17:21] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-12 17:30] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-13 07:46] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-13 07:56] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-13 20:39] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-14 09:54] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-14 20:10] MEDIUM | .env atualizado | razão: sessionid/csrftoken/ds_user_id renovados após 401 Instagram (session bloqueada entre run 07h e run 20h)
+[2026-08-14 20:30] MEDIUM | instagram_sync.py: proxy IPRoyal habilitado via INSTAGRAM_PROXY | razão: 401 persistiu após renovar cookies — tentativa de bypass por IP
+[2026-08-14 20:33] MEDIUM | notify_result.py: reescrita completa | razão: email "resultado incerto" não diferenciava falha IG de falha YT
+[2026-08-14 20:35] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-14 20:46] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-14 20:58] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-14 21:13] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-14 22:33] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-15 17:44] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-16 10:17] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-16 10:19] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-18 17:03] MEDIUM | edit .env: INSTAGRAM_PROXY desabilitado (era geo.iproyal.com:12321) | razão: proxy retornava CONNECT tunnel failed 504, causando 401 falso do Instagram; conexão direta retorna 200
+[2026-08-18 17:15] MEDIUM | pip install --force-reinstall --no-deps anthropic==0.121.0 | razão: dist-info 0.40.0 e 0.121.0 sobrepostas quebravam 'import anthropic' (ImportError: omit), derrubando main.py inteiro incluindo o sync diário

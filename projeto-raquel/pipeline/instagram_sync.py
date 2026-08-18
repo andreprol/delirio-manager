@@ -13,14 +13,24 @@ Instaloader é usado APENAS para carregar os cookies da session auth.
 Sem instaloader no path crítico → sem rate limit de fingerprint TLS.
 """
 import os
+import random
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 # Em steady state, para após N posts consecutivos já sincronizados.
 MAX_ALREADY_SEEN_CONSECUTIVE = 100
+
+# Intervalo entre páginas da mobile API. Sem pausa o Instagram devolve 401
+# (require_login) após ~10 páginas sequenciais, mesmo com sessionid válido.
+PAGE_DELAY_RANGE = (4.0, 9.0)
+
+# Backoff ao levar 401/429 numa página: espera e tenta a MESMA página de novo.
+# O bloqueio por rajada dura tipicamente 5-10 min, então a última espera cobre isso.
+PAGE_RETRY_BACKOFF = (60, 180, 420)
 
 # user_id fixo de @raquelpiiires (evita lookup em web_profile_info)
 _RAQUEL_USER_ID = 46251461
@@ -98,20 +108,41 @@ def _get_user_id(handle: str, session) -> int:
     return int(uid)
 
 
+def _fetch_page(session, url: str):
+    """
+    Busca uma página da mobile API com backoff em 401/429.
+    401 com sessionid válido = anti-bot por rajada; esperar resolve.
+    """
+    last_status, last_body = None, ""
+    for attempt, wait in enumerate((0, *PAGE_RETRY_BACKOFF)):
+        if wait:
+            print(f"  Instagram {last_status} — aguardando {wait}s antes de repetir a página...")
+            time.sleep(wait)
+        r = session.get(url, timeout=20)
+        if r.status_code == 200:
+            return r.json()
+        last_status, last_body = r.status_code, r.text[:120]
+        if r.status_code not in (401, 429):
+            break
+    raise RuntimeError(
+        f"Instagram {last_status} ao paginar posts (após {len(PAGE_RETRY_BACKOFF)} retentativas). {last_body}"
+    )
+
+
 def _iter_posts(user_id: int, session):
     """
     Gera items de posts via mobile API, paginando até o fim do perfil.
+    Pausa entre páginas para não disparar o anti-bot (401 require_login).
     Cada item é o dict bruto da API do Instagram.
     """
     url = f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count=12"
+    first = True
     while url:
-        r = session.get(url, timeout=20)
-        if r.status_code != 200:
-            raise RuntimeError(
-                f"Instagram {r.status_code} ao paginar posts. "
-                f"{'IP rate-limited. Tente mais tarde.' if r.status_code == 429 else r.text[:120]}"
-            )
-        data = r.json()
+        if not first:
+            time.sleep(random.uniform(*PAGE_DELAY_RANGE))
+        first = False
+
+        data = _fetch_page(session, url)
         for item in data.get("items", []):
             yield item
         next_cursor = data.get("next_max_id")
@@ -194,6 +225,26 @@ def fetch_and_download_profile(
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
+
+    try:
+        _collect_posts(
+            user_id, session, profile_dir, results,
+            already_synced_ids, max_new, max_consecutive_seen,
+        )
+    except RuntimeError as e:
+        # Paginação morreu no meio: não descarta o que já foi baixado.
+        if not results:
+            raise
+        print(f"  Paginação interrompida ({e}) — mantendo {len(results)} vídeo(s) já baixado(s)")
+
+    return results
+
+
+def _collect_posts(
+    user_id, session, profile_dir, results,
+    already_synced_ids, max_new, max_consecutive_seen,
+):
+    """Percorre o feed e preenche `results` in-place (para sobreviver a falhas parciais)."""
     consecutive_seen = 0
 
     for item in _iter_posts(user_id, session):

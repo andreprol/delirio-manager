@@ -36,6 +36,12 @@ def parse_run(log: str) -> dict:
         "sync_done": False,       # True se sync completou normalmente
         "new_count": 0,           # vídeos publicados (do resumo final)
         "already_synced": 0,      # posts já no banco antes da run
+        # Fluxo 16:9 (fetch → compile → publish)
+        "pool_added": 0,          # Reels novos que entraram no pool
+        "pool_free": 0,           # clipes livres no pool após a run
+        "pool_minutes": 0.0,      # minutos livres no pool após a run
+        "compiled": [],           # compilados montados nesta run
+        "compile_short": False,   # pool abaixo do mínimo para fechar compilado
         "raw": log,
     }
 
@@ -88,6 +94,28 @@ def parse_run(log: str) -> dict:
             if m:
                 result["already_synced"] = int(m.group(1))
 
+        # ── Fluxo 16:9 ──
+        # "17 Reel(s) no pool. Disponível para compilar: 8.6 min."
+        elif "reel(s) no pool" in ll:
+            m = re.search(r"(\d+) Reel", l)
+            if m:
+                result["pool_added"] = int(m.group(1))
+
+        # "✓ #3 pronto: data\compilations\comp_003.mp4 (12.4 min)"
+        elif "pronto:" in ll and "#" in l:
+            result["compiled"].append(l)
+
+        # "Pool: 9 clipe(s) livres · 4.2 min"
+        elif ll.startswith("pool:"):
+            m = re.search(r"(\d+) clipe\(s\) livres.*?([\d.]+) min", l)
+            if m:
+                result["pool_free"] = int(m.group(1))
+                result["pool_minutes"] = float(m.group(2))
+
+        # "Pool tem só 4.2 min — abaixo do mínimo de 8 min por compilado."
+        elif "abaixo do mínimo" in ll:
+            result["compile_short"] = True
+
     # Garantir coerência: se uploaded tem itens, new_count reflete isso
     if result["uploaded"] and result["new_count"] == 0:
         result["new_count"] = len(result["uploaded"])
@@ -114,6 +142,12 @@ def detect_outcome(r: dict) -> tuple[str, str]:
     # Erro no YouTube
     if r["yt_errors"]:
         return "❌ Erro no upload YouTube", "error"
+    # Compilado montado mas ainda não publicado
+    if r["compiled"]:
+        return f"🎬 {len(r['compiled'])} compilado(s) montado(s)", "info"
+    # Pool acumulando: run saudável, só falta conteúdo para fechar um compilado
+    if r["compile_short"]:
+        return f"📥 Pool acumulando ({r['pool_minutes']:.1f} min de {8} min)", "info"
     # Sem conteúdo novo
     if r["no_new"] or (r["sync_done"] and r["new_count"] == 0):
         return "ℹ️ Sem vídeos novos", "info"
@@ -154,6 +188,21 @@ def build_body(r: dict, status_label: str, date_str: str) -> str:
         f"  YouTube upload: {yt_status}",
         "",
     ]
+
+    # ── Pool e compilados (fluxo 16:9) ──
+    if r["pool_added"] or r["pool_free"] or r["compiled"] or r["compile_short"]:
+        lines += [
+            "🎬 COMPILADOS 16:9",
+            f"  Reels novos no pool : {r['pool_added']}",
+            f"  Pool livre agora    : {r['pool_free']} clipe(s) · {r['pool_minutes']:.1f} min",
+        ]
+        if r["compiled"]:
+            lines.append(f"  Montados nesta run  : {len(r['compiled'])}")
+            for c in r["compiled"]:
+                lines.append(f"    {c.strip()}")
+        elif r["compile_short"]:
+            lines.append("  Nenhum montado — pool ainda abaixo de 8 min")
+        lines.append("")
 
     # ── Diagnóstico de erro ──
     if r["session_expired"] or r["ig_error_type"] == "401":
