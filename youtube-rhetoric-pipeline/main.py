@@ -15,7 +15,7 @@ from pipeline.queue import (
     init_db, is_processed, mark_pending, mark_done,
     enqueue_output, get_due_uploads, mark_uploaded, next_upload_slot,
 )
-from pipeline.notifier import send_upload_result
+from pipeline.notifier import send_slot_summary
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -116,28 +116,30 @@ def run_pipeline(creator_handle: str = None, channel_id: str = None):
 def run_uploads():
     init_db()
     due = get_due_uploads()
-    if not due:
-        return
+    results = []
 
-    secrets_file = os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json")
-    temp_dir = Path(os.getenv("TEMP_DIR", "data/temp"))
+    if due:
+        secrets_file = os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json")
+        temp_dir = Path(os.getenv("TEMP_DIR", "data/temp"))
 
-    for item in due:
-        landscape = str(temp_dir / item["source_video_id"] / f"{item['source_video_id']}_landscape.mp4")
-        try:
-            yt_id = upload_video(
-                file_path=landscape,
-                title=item["title"],
-                description=item["description"],
-                tags=json.loads(item["tags"]),
-                secrets_file=secrets_file,
-            )
-            mark_uploaded(item["id"], yt_id)
-            log.info(f"Uploaded {item['title']} → {yt_id}")
-            send_upload_result(title=item["title"], youtube_video_id=yt_id)
-        except Exception as e:
-            log.error(f"Upload failed for queue item {item['id']}: {e}")
-            send_upload_result(title=item["title"], youtube_video_id=None, error=str(e))
+        for item in due:
+            landscape = str(temp_dir / item["source_video_id"] / f"{item['source_video_id']}_landscape.mp4")
+            try:
+                yt_id = upload_video(
+                    file_path=landscape,
+                    title=item["title"],
+                    description=item["description"],
+                    tags=json.loads(item["tags"]),
+                    secrets_file=secrets_file,
+                )
+                mark_uploaded(item["id"], yt_id)
+                log.info(f"Uploaded {item['title']} → {yt_id}")
+                results.append({"title": item["title"], "youtube_video_id": yt_id, "error": None})
+            except Exception as e:
+                log.error(f"Upload failed for queue item {item['id']}: {e}")
+                results.append({"title": item["title"], "youtube_video_id": None, "error": str(e)})
+
+    send_slot_summary(results)
 
 
 if __name__ == "__main__":

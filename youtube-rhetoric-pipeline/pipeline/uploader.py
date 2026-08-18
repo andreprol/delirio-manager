@@ -2,6 +2,7 @@ from pathlib import Path
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
 import pickle
 import os
 
@@ -14,7 +15,12 @@ def _get_youtube_service(secrets_file: str):
     if os.path.exists(TOKEN_FILE):
         with open(TOKEN_FILE, "rb") as f:
             creds = pickle.load(f)
-    if not creds or not creds.valid:
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        Path(TOKEN_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with open(TOKEN_FILE, "wb") as f:
+            pickle.dump(creds, f)
+    elif not creds or not creds.valid:
         flow = InstalledAppFlow.from_client_secrets_file(secrets_file, SCOPES)
         creds = flow.run_local_server(port=0)
         Path(TOKEN_FILE).parent.mkdir(parents=True, exist_ok=True)
