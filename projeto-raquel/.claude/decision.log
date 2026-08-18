@@ -29,3 +29,5 @@
 [2026-08-18 17:27] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
 [2026-08-18 18:00] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
 [2026-08-18 18:08] MEDIUM | remove BOM UTF-8 do .env | razão: BOM tornava a primeira variável \ufeffANTHROPIC_API_KEY, que nunca era lida — geração de título e roteiro via Claude falhava em silêncio
+[2026-08-18 18:30] MEDIUM | Set-ScheduledTask ProjetoRaquel-Sync-10h e -18h: sync_daily.bat -> compile_daily.bat | razão: sync_daily publica Reels verticais como Shorts, que não geram horas para o YPP
+[2026-08-18 18:30] MEDIUM | Disable-ScheduledTask Raquel_SyncManual_1x | razão: rodava main.py sync-instagram direto (publica Short) e não carrega .env
