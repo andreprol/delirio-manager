@@ -18,6 +18,7 @@ Uso:
   python main.py compile [N]              Monta compilados 16:9 de 10-15 min do pool
   python main.py publish                  Sobe os compilados prontos para o YouTube
   python main.py pool                     Mostra o estado do pool e dos compilados
+  python main.py reprocess                Devolve Shorts ja publicados ao pool
 """
 
 import json
@@ -36,7 +37,7 @@ from pipeline.queue import (
     next_upload_slot, set_blog_article,
     add_clip_to_pool, get_pool_ids, get_available_clips,
     create_compilation, get_pending_compilations, mark_compilation_uploaded,
-    next_compilation_number,
+    next_compilation_number, set_compilation_title,
 )
 from pipeline.content_intake import (
     parse_instagram_post, create_manual_brief, detect_content_type,
@@ -194,6 +195,45 @@ def cmd_fetch(max_videos: int = 20):
     print(f"\n{len(videos)} Reel(s) no pool. Disponível para compilar: {total/60:.1f} min.")
 
 
+def cmd_reprocess():
+    """
+    Devolve ao pool os Reels que já foram publicados como Shorts, para que
+    entrem em compilados 16:9. Os Shorts originais continuam no ar: o id do
+    YouTube deles não é sobrescrito (ver mark_compilation_uploaded).
+    """
+    from pipeline.compiler import probe_duration
+
+    temp_dir = Path(os.getenv("TEMP_DIR", "data/temp")) / "raquelpiiires"
+    synced = get_all_synced_instagram_ids()
+    in_pool = get_pool_ids()
+
+    added, missing = 0, 0
+    for path in sorted(temp_dir.glob("*.mp4")):
+        parts = path.stem.split("_", 1)
+        if len(parts) != 2:
+            continue
+        date_str, media_id = parts
+        if media_id not in synced or media_id in in_pool:
+            continue
+
+        dur = probe_duration(path)
+        if dur <= 0:
+            missing += 1
+            continue
+
+        taken = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}" if len(date_str) == 8 else None
+        add_clip_to_pool(media_id, str(path), "", dur, taken)
+        added += 1
+
+    no_file = len(synced) - added - len(in_pool & synced)
+    print(f"\n{added} Short(s) devolvido(s) ao pool para reprocessamento.")
+    if missing:
+        print(f"{missing} arquivo(s) ilegível(is), ignorado(s).")
+    if no_file > 0:
+        print(f"{no_file} publicado(s) sem MP4 em disco — não dá para reprocessar.")
+    print("\nRode 'python main.py compile' para montar os compilados por evento.")
+
+
 def _compilation_title(group: list[dict], index: int) -> str:
     """
     Título do compilado, a partir do que o grupo realmente tem em comum
@@ -327,6 +367,13 @@ def cmd_publish():
         ok += 1
 
     print(f"{ok} compilado(s) publicado(s).")
+
+
+def cmd_retitle(comp_id: int, title: str):
+    if set_compilation_title(comp_id, title):
+        print(f"✓ Compilado #{comp_id} renomeado: {title}")
+    else:
+        print(f"Compilado #{comp_id} não encontrado ou já publicado.")
 
 
 def cmd_pool():
@@ -590,6 +637,15 @@ def main():
 
     elif cmd == "pool":
         cmd_pool()
+
+    elif cmd == "reprocess":
+        cmd_reprocess()
+
+    elif cmd == "retitle":
+        if len(args) < 3:
+            print('Uso: python main.py retitle <id> "novo titulo"')
+            sys.exit(1)
+        cmd_retitle(int(args[1]), " ".join(args[2:]))
 
     elif cmd == "add-review":
         cmd_add_review()

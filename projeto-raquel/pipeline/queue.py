@@ -165,6 +165,20 @@ def next_compilation_number() -> int:
     return n + 1
 
 
+def set_compilation_title(comp_id: int, title: str) -> bool:
+    """Renomeia um compilado ainda não publicado. False se já foi ao ar."""
+    con = _conn()
+    try:
+        cur = con.execute(
+            "UPDATE compilations SET title = ? WHERE id = ? AND status = 'built'",
+            (title, comp_id),
+        )
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
 def get_pending_compilations() -> list[dict]:
     con = _conn()
     rows = con.execute(
@@ -190,8 +204,11 @@ def mark_compilation_uploaded(comp_id: int, youtube_video_id: str):
                WHERE id = ?""",
             (now, youtube_video_id, comp_id),
         )
+        # OR IGNORE, não OR REPLACE: Reels reprocessados a partir de Shorts que já
+        # estão no ar preservam o id do vídeo original. Só clipes inéditos são
+        # marcados com o id do compilado.
         con.executemany(
-            """INSERT OR REPLACE INTO instagram_synced
+            """INSERT OR IGNORE INTO instagram_synced
                (instagram_id, synced_at, youtube_video_id) VALUES (?, ?, ?)""",
             [(cid, now, youtube_video_id) for cid in clip_ids],
         )
