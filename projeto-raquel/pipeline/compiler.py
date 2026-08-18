@@ -21,12 +21,8 @@ WIDTH, HEIGHT, FPS = 1920, 1080, 30
 INTRO_SECONDS = 5
 OUTRO_SECONDS = 6
 
-# Alvo de duração do compilado. Fecha o grupo ao passar de MIN; nunca ultrapassa MAX.
-TARGET_MIN_SECONDS = 10 * 60
+# Teto de duração: evento muito grande é dividido em mais de um vídeo.
 TARGET_MAX_SECONDS = 15 * 60
-# Grupo com menos que isto fica pendente para a próxima rodada, em vez de virar
-# um compilado curto demais para render horas de exibição.
-ABSOLUTE_MIN_SECONDS = 8 * 60
 
 FONT_FILE = "C:/Windows/Fonts/arialbd.ttf"
 BG_COLOR = "0x14161C"
@@ -156,35 +152,161 @@ def concat_segments(segments: list[Path], dest: Path) -> Path:
     return dest
 
 
-def group_clips(clips: list[dict]) -> tuple[list[list[dict]], list[dict]]:
-    """
-    Divide os clipes em grupos de 10–15 min. Retorna (grupos_fechados, sobra).
-    Cada clipe precisa de `file_path`; `duration` é medida se ausente.
-    """
-    groups, current, total = [], [], 0.0
+# Um compilado 16:9 já é vídeo longo em qualquer duração — o limite de 3 min do
+# Short só vale para vertical/quadrado. Por isso o piso aqui é baixo: junta só o
+# que tem relação real entre si, em vez de esticar o grupo até bater 10 min.
+MIN_EVENT_SECONDS = 3 * 60
 
+# Palavras sem valor para identificar assunto.
+_STOPWORDS = {
+    "que", "com", "para", "por", "dos", "das", "uma", "meu", "minha", "muito",
+    "mais", "esse", "essa", "isso", "não", "sim", "aqui", "ele", "ela", "eles",
+    "foi", "vou", "tem", "the", "and", "you", "for", "gente", "hoje", "dia",
+    "vídeo", "video", "link", "bio", "sobre", "todo", "toda", "tudo", "pra",
+}
+
+
+def _tokens(caption: str) -> set:
+    """Hashtags e palavras longas da legenda — a impressão digital do assunto."""
+    text = (caption or "").lower()
+    tags = {t for t in re.findall(r"#(\w{3,})", text)}
+    words = {w for w in re.findall(r"[a-zà-ÿ]{4,}", text) if w not in _STOPWORDS}
+    return tags | words
+
+
+def _day(clip: dict) -> str:
+    """Data do post (YYYY-MM-DD), do timestamp ou do nome do arquivo."""
+    taken = clip.get("taken_at") or ""
+    if taken and len(taken) >= 10:
+        return taken[:10]
+    stem = Path(clip["file_path"]).stem
+    d = stem.split("_")[0]
+    return f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else d
+
+
+def _measure(clips: list[dict]) -> list[dict]:
+    out = []
     for clip in clips:
         dur = clip.get("duration") or probe_duration(clip["file_path"])
-        if dur <= 0:
-            continue
-        clip["duration"] = dur
+        if dur > 0:
+            clip["duration"] = dur
+            out.append(clip)
+    return out
 
-        if current and total + dur > TARGET_MAX_SECONDS:
-            groups.append(current)
+
+def _split_oversized(group: list[dict]) -> list[list[dict]]:
+    """Evento gigante vira mais de um vídeo, respeitando o teto de 15 min."""
+    if sum(c["duration"] for c in group) <= TARGET_MAX_SECONDS:
+        return [group]
+    parts, current, total = [], [], 0.0
+    for clip in group:
+        if current and total + clip["duration"] > TARGET_MAX_SECONDS:
+            parts.append(current)
             current, total = [], 0.0
-
         current.append(clip)
-        total += dur
+        total += clip["duration"]
+    if current:
+        parts.append(current)
+    return parts
 
-        if total >= TARGET_MIN_SECONDS:
-            groups.append(current)
-            current, total = [], 0.0
 
-    if total >= ABSOLUTE_MIN_SECONDS:
-        groups.append(current)
-        current = []
+def group_by_event(clips: list[dict]) -> tuple[list[list[dict]], list[dict]]:
+    """
+    Agrupa clipes do mesmo evento: mesma data, ou dias consecutivos que
+    compartilham assunto na legenda (fan meeting à noite, post no dia seguinte).
 
-    return groups, current
+    Retorna (eventos_com_material_suficiente, avulsos).
+    """
+    clips = _measure(clips)
+    by_day: dict[str, list[dict]] = {}
+    for clip in clips:
+        by_day.setdefault(_day(clip), []).append(clip)
+
+    # Funde dias vizinhos que falam do mesmo assunto.
+    days = sorted(by_day)
+    merged: list[list[dict]] = []
+    for day in days:
+        block = by_day[day]
+        if merged:
+            prev_day = _day(merged[-1][0])
+            adjacent = abs((_to_ord(day) or 0) - (_to_ord(prev_day) or 0)) <= 1
+            shared = _tokens_of(merged[-1]) & _tokens_of(block)
+            if adjacent and shared:
+                merged[-1].extend(block)
+                continue
+        merged.append(list(block))
+
+    events, loose = [], []
+    for block in merged:
+        if sum(c["duration"] for c in block) >= MIN_EVENT_SECONDS and len(block) > 1:
+            events.extend(_split_oversized(block))
+        else:
+            loose.extend(block)
+    return events, loose
+
+
+def _tokens_of(block: list[dict]) -> set:
+    tokens = set()
+    for clip in block:
+        tokens |= _tokens(clip.get("caption", ""))
+    return tokens
+
+
+def _to_ord(day: str) -> int | None:
+    try:
+        y, m, d = day.split("-")
+        return int(y) * 372 + int(m) * 31 + int(d)
+    except (ValueError, AttributeError):
+        return None
+
+
+def group_by_topic(clips: list[dict]) -> tuple[list[list[dict]], list[dict]]:
+    """
+    Para os avulsos: junta clipes que falam do mesmo assunto, mesmo em datas
+    distantes (vários Reels sobre o mesmo drama viram um vídeo só).
+
+    Retorna (temas_com_material_suficiente, sobra).
+    """
+    remaining = _measure(clips)
+    groups: list[list[dict]] = []
+    exhausted: set[str] = set()
+
+    while True:
+        # Token mais frequente entre os que sobraram define o próximo tema.
+        counts: dict[str, int] = {}
+        for clip in remaining:
+            for tok in _tokens(clip.get("caption", "")) - exhausted:
+                counts[tok] = counts.get(tok, 0) + 1
+
+        candidates = {t: c for t, c in counts.items() if c >= 2}
+        if not candidates:
+            break
+
+        topic = max(candidates, key=candidates.get)
+        exhausted.add(topic)  # sempre cresce: garante o fim do laço
+
+        block = [c for c in remaining if topic in _tokens(c.get("caption", ""))]
+        if sum(c["duration"] for c in block) < MIN_EVENT_SECONDS:
+            continue
+
+        for part in _split_oversized(block):
+            part[0]["_topic"] = topic
+            groups.append(part)
+        taken = {id(c) for c in block}
+        remaining = [c for c in remaining if id(c) not in taken]
+
+    return groups, remaining
+
+
+def group_clips(clips: list[dict]) -> tuple[list[list[dict]], list[dict]]:
+    """
+    Agrupa por evento primeiro; o que sobrar, tenta agrupar por assunto.
+    Clipes que não se encaixam em nenhum dos dois ficam no pool para a próxima
+    rodada — nunca são colados a esmo só para fechar duração.
+    """
+    events, loose = group_by_event(clips)
+    topics, leftover = group_by_topic(loose)
+    return events + topics, leftover
 
 
 def _clip_label(caption: str, index: int) -> str:
@@ -271,11 +393,12 @@ def build_compilation(
     }
 
 
-def build_description(chapters: list[tuple[str, str]], instagram_handle: str = "@raquelpiiires") -> str:
-    lines = [
-        "Compilado dos melhores momentos do meu Instagram — K-dramas, C-dramas e fan meetings.",
-        "",
-    ]
+def build_description(
+    chapters: list[tuple[str, str]],
+    instagram_handle: str = "@raquelpiiires",
+    intro_line: str = "K-dramas, C-dramas e fan meetings — direto do meu Instagram.",
+) -> str:
+    lines = [intro_line, ""]
     if chapters:
         lines.append("CAPÍTULOS")
         lines += [f"{stamp} {label}" for stamp, label in chapters]

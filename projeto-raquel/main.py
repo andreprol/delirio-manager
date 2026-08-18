@@ -195,9 +195,13 @@ def cmd_fetch(max_videos: int = 20):
 
 
 def _compilation_title(group: list[dict], index: int) -> str:
-    """Título do compilado. Usa Claude se houver chave; senão cai num padrão fixo."""
-    from pipeline.compiler import _clip_label
+    """
+    Título do compilado, a partir do que o grupo realmente tem em comum
+    (um evento numa data, ou um assunto recorrente). Usa Claude se houver chave.
+    """
+    from pipeline.compiler import _clip_label, _day
 
+    topic = group[0].get("_topic")
     labels = [_clip_label(c.get("caption", ""), i) for i, c in enumerate(group, 1)]
     api_key = os.environ.get("ANTHROPIC_API_KEY")
 
@@ -205,18 +209,22 @@ def _compilation_title(group: list[dict], index: int) -> str:
         try:
             import anthropic
             joined = "\n".join(f"- {l}" for l in labels[:20])
+            if topic:
+                context = f"Todos falam do mesmo assunto: '{topic}'."
+            else:
+                context = f"Todos são do mesmo evento, gravados em {_day(group[0])}."
+
             msg = anthropic.Anthropic(api_key=api_key).messages.create(
                 model="claude-sonnet-5",
                 max_tokens=100,
                 messages=[{
                     "role": "user",
                     "content": (
-                        "Estes são os trechos de um compilado de vídeos sobre K-dramas, "
-                        "C-dramas e fan meetings do canal da Raquel Pires:\n\n"
-                        f"{joined}\n\n"
-                        "Escreva UM título de YouTube em português do Brasil para esse compilado. "
-                        "Máximo 70 caracteres, sem aspas, sem emoji, sem numeração. "
-                        "Responda apenas com o título."
+                        "Canal da Raquel Pires, sobre K-dramas, C-dramas e fan meetings. "
+                        f"{context}\n\nTrechos que compõem o vídeo:\n{joined}\n\n"
+                        "Escreva UM título de YouTube em português do Brasil que descreva "
+                        "esse vídeo específico. Máximo 70 caracteres, sem aspas, sem emoji, "
+                        "sem numeração. Responda apenas com o título."
                     ),
                 }],
             )
@@ -226,7 +234,9 @@ def _compilation_title(group: list[dict], index: int) -> str:
         except Exception as e:
             log.warning(f"Título via Claude falhou ({e}); usando padrão.")
 
-    return f"K-Dramas e Fan Meetings — Compilado #{index}"
+    if topic:
+        return f"Tudo sobre {topic.capitalize()} — Raquel Pires"
+    return f"Cobertura completa — {_day(group[0])}"
 
 
 def cmd_compile(max_compilations: int = None):
@@ -242,8 +252,10 @@ def cmd_compile(max_compilations: int = None):
     leftover_min = sum(c["duration"] for c in leftover) / 60
     if not groups:
         print(
-            f"Pool tem só {leftover_min:.1f} min — abaixo do mínimo de 8 min por compilado.\n"
-            f"Rode 'python main.py fetch' para acumular mais Reels."
+            f"Nenhum evento ou tema com material suficiente ({len(leftover)} clipe(s) "
+            f"avulsos, {leftover_min:.1f} min no pool).\n"
+            f"Clipes soltos não são colados a esmo — ficam esperando outros do mesmo "
+            f"assunto. Rode 'python main.py fetch' para acumular mais."
         )
         return
 

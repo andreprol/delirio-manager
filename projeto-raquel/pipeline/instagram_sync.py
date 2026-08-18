@@ -108,13 +108,17 @@ def _get_user_id(handle: str, session) -> int:
     return int(uid)
 
 
-def _fetch_page(session, url: str):
+def _fetch_page(session, url: str, retry: bool = True):
     """
     Busca uma página da mobile API com backoff em 401/429.
     401 com sessionid válido = anti-bot por rajada; esperar resolve.
+
+    `retry=False` na primeira página: se ela já falha, o endpoint está bloqueado
+    para esta sessão e existe fallback melhor do que esperar 11 minutos.
     """
     last_status, last_body = None, ""
-    for attempt, wait in enumerate((0, *PAGE_RETRY_BACKOFF)):
+    waits = (0, *PAGE_RETRY_BACKOFF) if retry else (0,)
+    for wait in waits:
         if wait:
             print(f"  Instagram {last_status} — aguardando {wait}s antes de repetir a página...")
             time.sleep(wait)
@@ -124,25 +128,91 @@ def _fetch_page(session, url: str):
         last_status, last_body = r.status_code, r.text[:120]
         if r.status_code not in (401, 429):
             break
-    raise RuntimeError(
-        f"Instagram {last_status} ao paginar posts (após {len(PAGE_RETRY_BACKOFF)} retentativas). {last_body}"
+    raise RuntimeError(f"Instagram {last_status} ao paginar posts. {last_body}")
+
+
+def _web_node_to_item(node: dict) -> dict:
+    """
+    Converte um node do web_profile_info para o formato da mobile API,
+    para que `_extract_video_nodes` funcione com as duas origens.
+    """
+    caption_edges = (node.get("edge_media_to_caption") or {}).get("edges") or []
+    caption = caption_edges[0]["node"]["text"] if caption_edges else ""
+    item = {
+        "pk": node.get("id"),
+        "code": node.get("shortcode", ""),
+        "caption": {"text": caption},
+        "taken_at": node.get("taken_at_timestamp", 0),
+    }
+
+    children = (node.get("edge_sidecar_to_children") or {}).get("edges")
+    if children:
+        item["media_type"] = 8
+        item["carousel_media"] = [
+            {
+                "pk": c["node"].get("id"),
+                "media_type": 2 if c["node"].get("is_video") else 1,
+                "video_versions": (
+                    [{"url": c["node"]["video_url"]}] if c["node"].get("video_url") else []
+                ),
+            }
+            for c in children
+        ]
+    elif node.get("is_video") and node.get("video_url"):
+        item["media_type"] = 2
+        item["video_versions"] = [{"url": node["video_url"]}]
+    else:
+        item["media_type"] = 1
+
+    return item
+
+
+def _iter_posts_web(username: str, session):
+    """
+    Fallback: os ~12 posts mais recentes via web_profile_info.
+
+    Não pagina — o GraphQL com query_hash foi desativado pelo Instagram e o
+    endpoint atual exige um doc_id que muda com frequência. Serve para manter o
+    steady state vivo quando a mobile API está bloqueada; não drena backlog.
+    """
+    r = session.get(
+        f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}",
+        timeout=20,
     )
+    if r.status_code != 200:
+        raise RuntimeError(f"Instagram {r.status_code} em web_profile_info: {r.text[:120]}")
+
+    timeline = r.json()["data"]["user"]["edge_owner_to_timeline_media"]
+    print(f"  fallback web_profile_info: {len(timeline['edges'])} posts recentes")
+    for edge in timeline["edges"]:
+        yield _web_node_to_item(edge["node"])
 
 
-def _iter_posts(user_id: int, session):
+def _iter_posts(user_id: int, session, username: str = ""):
     """
     Gera items de posts via mobile API, paginando até o fim do perfil.
     Pausa entre páginas para não disparar o anti-bot (401 require_login).
-    Cada item é o dict bruto da API do Instagram.
+
+    Se a PRIMEIRA página falhar, o endpoint está bloqueado para esta sessão e
+    cai para o web_profile_info. Falha no meio da paginação propaga: o chamador
+    já preservou o que baixou até ali.
     """
     url = f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count=12"
     first = True
     while url:
         if not first:
             time.sleep(random.uniform(*PAGE_DELAY_RANGE))
-        first = False
 
-        data = _fetch_page(session, url)
+        try:
+            data = _fetch_page(session, url, retry=not first)
+        except RuntimeError:
+            if not first or not username:
+                raise
+            print("  mobile API bloqueada — tentando web_profile_info")
+            yield from _iter_posts_web(username, session)
+            return
+
+        first = False
         for item in data.get("items", []):
             yield item
         next_cursor = data.get("next_max_id")
@@ -229,7 +299,7 @@ def fetch_and_download_profile(
     try:
         _collect_posts(
             user_id, session, profile_dir, results,
-            already_synced_ids, max_new, max_consecutive_seen,
+            already_synced_ids, max_new, max_consecutive_seen, username,
         )
     except RuntimeError as e:
         # Paginação morreu no meio: não descarta o que já foi baixado.
@@ -242,12 +312,12 @@ def fetch_and_download_profile(
 
 def _collect_posts(
     user_id, session, profile_dir, results,
-    already_synced_ids, max_new, max_consecutive_seen,
+    already_synced_ids, max_new, max_consecutive_seen, username="",
 ):
     """Percorre o feed e preenche `results` in-place (para sobreviver a falhas parciais)."""
     consecutive_seen = 0
 
-    for item in _iter_posts(user_id, session):
+    for item in _iter_posts(user_id, session, username):
         video_nodes = _extract_video_nodes(item)
 
         if not video_nodes:
