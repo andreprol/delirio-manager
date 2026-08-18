@@ -309,6 +309,21 @@ def group_clips(clips: list[dict]) -> tuple[list[list[dict]], list[dict]]:
     return events + topics, leftover
 
 
+def title_from_caption(caption: str, max_len: int = 90) -> str:
+    """
+    Título a partir da legenda da própria autora, preservando a escrita dela:
+    tira só hashtags e espaço sobrando. Corta em fronteira de palavra — o limite
+    do YouTube é 100 caracteres.
+    """
+    first = (caption or "").strip().split("\n")[0]
+    clean = re.sub(r"#\w+", "", first)
+    clean = re.sub(r"\s+", " ", clean).strip(" .,-–—")
+    if len(clean) <= max_len:
+        return clean
+    cut = clean[:max_len].rsplit(" ", 1)[0].rstrip(" .,-–—")
+    return f"{cut}..." if cut else clean[:max_len]
+
+
 def _clip_label(caption: str, index: int) -> str:
     """Primeira linha da legenda, sem hashtags — vira o nome do capítulo."""
     first = (caption or "").strip().split("\n")[0]
@@ -346,6 +361,12 @@ def build_chapters(group: list[dict], intro_seconds: int = INTRO_SECONDS) -> lis
     # O último capítulo também precisa de 10s de duração até o fim do vídeo.
     if len(chapters) > 1 and t - last_start < MIN_CHAPTER_SECONDS:
         chapters.pop()
+
+    # Carrossel: todos os clipes vêm de um post só e repetem a legenda. Uma lista
+    # com a mesma frase N vezes não ajuda a navegar e ainda parece spam.
+    body = [label for _, label in chapters[1:]]
+    if len(set(body)) <= 1:
+        return []
 
     return chapters if len(chapters) >= 3 else []
 
@@ -398,14 +419,17 @@ def build_description(
     instagram_handle: str = "@raquelpiiires",
     intro_line: str = "K-dramas, C-dramas e fan meetings — direto do meu Instagram.",
 ) -> str:
-    lines = [intro_line, ""]
+    lines = [intro_line]
     if chapters:
-        lines.append("CAPÍTULOS")
+        lines += ["", "CAPÍTULOS"]
         lines += [f"{stamp} {label}" for stamp, label in chapters]
+    # Sem hashtags fixas: o canal é da criadora e o assunto é dela. Só entram as
+    # que ela mesma escreveu na legenda.
+    tags = sorted({f"#{t}" for t in re.findall(r"#(\w{2,})", intro_line or "")})
     lines += [
         "",
         f"📸 Instagram: https://www.instagram.com/{instagram_handle.lstrip('@')}/",
-        "",
-        "#kdrama #cdrama #kpop #fanmeeting #dorama",
     ]
+    if tags:
+        lines += ["", " ".join(tags)]
     return "\n".join(lines)

@@ -27,3 +27,5 @@
 [2026-08-18 17:03] MEDIUM | edit .env: INSTAGRAM_PROXY desabilitado (era geo.iproyal.com:12321) | razão: proxy retornava CONNECT tunnel failed 504, causando 401 falso do Instagram; conexão direta retorna 200
 [2026-08-18 17:15] MEDIUM | pip install --force-reinstall --no-deps anthropic==0.121.0 | razão: dist-info 0.40.0 e 0.121.0 sobrepostas quebravam 'import anthropic' (ImportError: omit), derrubando main.py inteiro incluindo o sync diário
 [2026-08-18 17:27] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-18 18:00] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-18 18:08] MEDIUM | remove BOM UTF-8 do .env | razão: BOM tornava a primeira variável \ufeffANTHROPIC_API_KEY, que nunca era lida — geração de título e roteiro via Claude falhava em silêncio

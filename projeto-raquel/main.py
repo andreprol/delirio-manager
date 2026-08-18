@@ -38,6 +38,8 @@ from pipeline.queue import (
     add_clip_to_pool, get_pool_ids, get_available_clips,
     create_compilation, get_pending_compilations, mark_compilation_uploaded,
     next_compilation_number, set_compilation_title,
+    get_original_captions, set_clip_caption,
+    get_compilation_clips, set_compilation_description,
 )
 from pipeline.content_intake import (
     parse_instagram_post, create_manual_brief, detect_content_type,
@@ -206,6 +208,8 @@ def cmd_reprocess():
     temp_dir = Path(os.getenv("TEMP_DIR", "data/temp")) / "raquelpiiires"
     synced = get_all_synced_instagram_ids()
     in_pool = get_pool_ids()
+    # Legenda original da Raquel, recuperada do que foi enviado ao YouTube.
+    captions = get_original_captions()
 
     added, missing = 0, 0
     for path in sorted(temp_dir.glob("*.mp4")):
@@ -222,8 +226,17 @@ def cmd_reprocess():
             continue
 
         taken = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}" if len(date_str) == 8 else None
-        add_clip_to_pool(media_id, str(path), "", dur, taken)
+        add_clip_to_pool(media_id, str(path), captions.get(media_id, ""), dur, taken)
         added += 1
+
+    # Preenche legenda de clipes que já estavam no pool sem ela.
+    backfilled = 0
+    for clip in get_available_clips():
+        if not clip.get("caption") and captions.get(clip["instagram_id"]):
+            set_clip_caption(clip["instagram_id"], captions[clip["instagram_id"]])
+            backfilled += 1
+    if backfilled:
+        print(f"{backfilled} legenda(s) recuperada(s) para clipes já no pool.")
 
     no_file = len(synced) - added - len(in_pool & synced)
     print(f"\n{added} Short(s) devolvido(s) ao pool para reprocessamento.")
@@ -239,10 +252,27 @@ def _compilation_title(group: list[dict], index: int) -> str:
     Título do compilado, a partir do que o grupo realmente tem em comum
     (um evento numa data, ou um assunto recorrente). Usa Claude se houver chave.
     """
-    from pipeline.compiler import _clip_label, _day
+    from pipeline.compiler import _clip_label, _day, title_from_caption
 
     topic = group[0].get("_topic")
-    labels = [_clip_label(c.get("caption", ""), i) for i, c in enumerate(group, 1)]
+
+    # Uma legenda só (carrossel) já é o título, escrito pela própria criadora.
+    # Passar isso a um modelo só abriria espaço para ele inventar contexto que a
+    # legenda não tem — o canal é dela e o assunto não é nosso.
+    distinct = {(c.get("caption") or "").strip() for c in group if (c.get("caption") or "").strip()}
+    if len(distinct) == 1:
+        direct = title_from_caption(distinct.pop())
+        if direct:
+            return direct
+    # Carrossel: os N vídeos de um mesmo post repetem a legenda. Deduplica para
+    # não mandar a mesma linha 13 vezes ao modelo.
+    labels, seen = [], set()
+    for i, clip in enumerate(group, 1):
+        label = _clip_label(clip.get("caption", ""), i)
+        if label not in seen:
+            seen.add(label)
+            labels.append(label)
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
 
     if api_key:
@@ -250,25 +280,31 @@ def _compilation_title(group: list[dict], index: int) -> str:
             import anthropic
             joined = "\n".join(f"- {l}" for l in labels[:20])
             if topic:
-                context = f"Todos falam do mesmo assunto: '{topic}'."
+                context = f"Todas falam do mesmo assunto: '{topic}'."
             else:
-                context = f"Todos são do mesmo evento, gravados em {_day(group[0])}."
+                context = f"Todas são do mesmo evento, gravado em {_day(group[0])}."
 
             msg = anthropic.Anthropic(api_key=api_key).messages.create(
                 model="claude-sonnet-5",
-                max_tokens=100,
+                # Folga para o bloco de raciocínio: com 100 o texto vinha vazio.
+                max_tokens=1024,
                 messages=[{
                     "role": "user",
                     "content": (
-                        "Canal da Raquel Pires, sobre K-dramas, C-dramas e fan meetings. "
-                        f"{context}\n\nTrechos que compõem o vídeo:\n{joined}\n\n"
-                        "Escreva UM título de YouTube em português do Brasil que descreva "
-                        "esse vídeo específico. Máximo 70 caracteres, sem aspas, sem emoji, "
-                        "sem numeração. Responda apenas com o título."
+                        "Abaixo estão as legendas escritas pela autora dos vídeos que "
+                        f"compõem um vídeo único. {context}\n\nLegendas:\n{joined}\n\n"
+                        "Escreva UM título de YouTube em português do Brasil usando "
+                        "SOMENTE informação presente nas legendas acima. Não acrescente "
+                        "nome de artista, evento, gênero ou lugar que não esteja escrito "
+                        "nelas — se a legenda não diz, o título não pode dizer. Prefira "
+                        "reaproveitar as palavras da autora. Máximo 70 caracteres, sem "
+                        "aspas, sem numeração. Responda apenas com o título."
                     ),
                 }],
             )
-            title = msg.content[0].text.strip().strip('"')
+            # A resposta pode vir com bloco de raciocínio antes do texto.
+            text = next((b.text for b in msg.content if getattr(b, "text", None)), "")
+            title = text.strip().strip('"')
             if title:
                 return title[:90]
         except Exception as e:
@@ -369,9 +405,49 @@ def cmd_publish():
     print(f"{ok} compilado(s) publicado(s).")
 
 
-def cmd_retitle(comp_id: int, title: str):
+def cmd_retitle(comp_id: int, title: str = None):
+    """
+    Renomeia um compilado. Sem título explícito, regenera a partir das legendas
+    originais da Raquel — clipes reprocessados entram no pool sem legenda, e ela
+    é recuperada do que foi enviado ao YouTube na época.
+    """
+    from pipeline.compiler import build_chapters, build_description
+
+    if title is None:
+        clips = get_compilation_clips(comp_id)
+        if not clips:
+            print(f"Compilado #{comp_id} não encontrado.")
+            return
+
+        captions = get_original_captions()
+        for clip in clips:
+            if not clip.get("caption"):
+                clip["caption"] = captions.get(clip["instagram_id"], "")
+
+        with_caption = sum(1 for c in clips if c.get("caption"))
+        if not with_caption:
+            print(f"Nenhuma legenda disponível para o compilado #{comp_id}.")
+            return
+
+        print(f"{with_caption}/{len(clips)} clipes com legenda original.")
+        title = _compilation_title(clips, comp_id)
+
+        # A descrição abre com a legenda que a própria autora escreveu.
+        distinct = []
+        for clip in clips:
+            text = (clip.get("caption") or "").strip()
+            if text and text not in distinct:
+                distinct.append(text)
+        intro = "\n\n".join(distinct) if distinct else None
+
+        set_compilation_description(
+            comp_id,
+            build_description(build_chapters(clips), intro_line=intro)
+            if intro else build_description(build_chapters(clips)),
+        )
+
     if set_compilation_title(comp_id, title):
-        print(f"✓ Compilado #{comp_id} renomeado: {title}")
+        print(f"✓ Compilado #{comp_id}: {title}")
     else:
         print(f"Compilado #{comp_id} não encontrado ou já publicado.")
 
@@ -647,10 +723,10 @@ def main():
         cmd_reprocess()
 
     elif cmd == "retitle":
-        if len(args) < 3:
-            print('Uso: python main.py retitle <id> "novo titulo"')
+        if len(args) < 2:
+            print('Uso: python main.py retitle <id> ["novo titulo"]')
             sys.exit(1)
-        cmd_retitle(int(args[1]), " ".join(args[2:]))
+        cmd_retitle(int(args[1]), " ".join(args[2:]) if len(args) > 2 else None)
 
     elif cmd == "add-review":
         cmd_add_review()

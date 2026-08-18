@@ -110,6 +110,37 @@ def add_clip_to_pool(instagram_id: str, file_path: str, caption: str,
     con.close()
 
 
+def get_original_captions() -> dict:
+    """
+    Legenda original de cada Reel já publicado, tirada do que foi enviado ao
+    YouTube na época. É a fonte para titular compilados de clipes reprocessados,
+    que entram no pool sem legenda.
+    """
+    con = _conn()
+    rows = con.execute(
+        """SELECT b.source_ref AS ig, q.title, q.description
+           FROM upload_queue q
+           JOIN content_briefs b ON q.brief_id = b.id
+           WHERE b.source_ref IS NOT NULL"""
+    ).fetchall()
+    con.close()
+    return {
+        r["ig"]: (r["title"] or r["description"] or "")
+        for r in rows
+        if r["ig"] and (r["title"] or r["description"])
+    }
+
+
+def set_clip_caption(instagram_id: str, caption: str):
+    con = _conn()
+    con.execute(
+        "UPDATE clip_pool SET caption = ? WHERE instagram_id = ?",
+        (caption, instagram_id),
+    )
+    con.commit()
+    con.close()
+
+
 def get_pool_ids() -> set:
     """Todos os ids já no pool — evita rebaixar o que está esperando compilação."""
     con = _conn()
@@ -163,6 +194,28 @@ def next_compilation_number() -> int:
     n = con.execute("SELECT COALESCE(MAX(id), 0) FROM compilations").fetchone()[0]
     con.close()
     return n + 1
+
+
+def get_compilation_clips(comp_id: int) -> list[dict]:
+    """Clipes que compõem um compilado, na ordem em que entraram no vídeo."""
+    con = _conn()
+    rows = con.execute(
+        """SELECT * FROM clip_pool WHERE compilation_id = ?
+           ORDER BY COALESCE(taken_at, added_at)""",
+        (comp_id,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def set_compilation_description(comp_id: int, description: str):
+    con = _conn()
+    con.execute(
+        "UPDATE compilations SET description = ? WHERE id = ? AND status = 'built'",
+        (description, comp_id),
+    )
+    con.commit()
+    con.close()
 
 
 def set_compilation_title(comp_id: int, title: str) -> bool:
