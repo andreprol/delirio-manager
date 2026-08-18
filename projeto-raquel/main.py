@@ -378,12 +378,17 @@ def cmd_retitle(comp_id: int, title: str):
 
 def cmd_pool():
     """Estado do pool de clipes e dos compilados."""
+    from pipeline.compiler import group_clips
+
     clips = get_available_clips()
     total_min = sum(c["duration"] for c in clips) / 60
     pending = get_pending_compilations()
+    groups, leftover = group_clips(list(clips))
 
     print(f"\nPool: {len(clips)} clipe(s) livres · {total_min:.1f} min")
-    print(f"Rende aproximadamente {int(total_min // 12)} compilado(s) de ~12 min")
+    print(f"Prontos para virar vídeo agora: {len(groups)} evento(s)/tema(s)")
+    if leftover:
+        print(f"Aguardando par: {len(leftover)} avulso(s) sem evento nem tema em comum")
     print(f"Compilados montados aguardando upload: {len(pending)}")
     for comp in pending:
         print(f"  #{comp['id']:<4} {comp['title'][:60]:<62} {(comp['duration'] or 0)/60:.1f} min")
