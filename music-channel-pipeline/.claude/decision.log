@@ -1,3 +1,11 @@
 [2026-08-13 15:24] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
 [2026-08-13 16:08] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
 [2026-08-13 16:37] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 16:48] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 17:35] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 17:37] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 17:45] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 17:49] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 18:43] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-21 19:40] MEDIUM | python main.py generate (Replicate Flux 1.1 Pro ~$0.04) | razão: API call de escrita externa — regerar vídeo Rio que falhou às 10h por queda de internet
+[2026-08-21 19:59] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
