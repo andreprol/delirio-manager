@@ -4,6 +4,7 @@ data/
 *.mp3
 __pycache__/
 .venv/
+venv/
 *.pyc
 config/client_secrets.json
 data/youtube_token.pkl

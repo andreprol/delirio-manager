@@ -6,8 +6,17 @@ def fetch_new_videos(
     api_key: str,
     channel_id: str,
     max_results: int = 50,
-    max_duration_seconds: int = 1800,
+    min_duration_seconds: int = 300,
+    max_duration_seconds: int = 1200,
 ) -> list[dict]:
+    """
+    Vídeos longos do creator, mais vistos primeiro.
+
+    O piso de duração é o que mantém o canal fora do feed de Shorts: um Short do
+    creator vira um vídeo vertical de menos de 3 minutos, que o YouTube
+    reclassifica como Short e cujas horas não contam para as 4.000h do YPP.
+    `videoDuration="medium"` já filtra 4–20 min no servidor, poupando quota.
+    """
     service = build("youtube", "v3", developerKey=api_key)
     search_resp = (
         service.search()
@@ -16,6 +25,7 @@ def fetch_new_videos(
             channelId=channel_id,
             order="viewCount",
             type="video",
+            videoDuration="medium",
             maxResults=max_results,
         )
         .execute()
@@ -37,7 +47,7 @@ def fetch_new_videos(
             continue
         duration_iso = item["contentDetails"]["duration"]
         duration_secs = int(isodate.parse_duration(duration_iso).total_seconds())
-        if duration_secs == 0 or duration_secs > max_duration_seconds:
+        if duration_secs < min_duration_seconds or duration_secs > max_duration_seconds:
             continue
         results.append(
             {

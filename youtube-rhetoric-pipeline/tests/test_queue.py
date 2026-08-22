@@ -51,3 +51,84 @@ def test_next_upload_slot_skips_taken():
     enqueue_output("v1", 0, 60, "T", "D", [], slot1)
     slot2 = next_upload_slot(schedule)
     assert slot2 != slot1
+
+
+KIND_SCHEDULE = [
+    {"time": "12:00", "kind": "long"},
+    {"time": "18:00", "kind": "short"},
+    {"time": "21:00", "kind": "short"},
+]
+
+
+def test_next_upload_slot_filters_by_kind():
+    assert "12:00" in next_upload_slot(KIND_SCHEDULE, kind="long")
+    short_slot = next_upload_slot(KIND_SCHEDULE, kind="short")
+    assert "18:00" in short_slot or "21:00" in short_slot
+
+
+def test_next_upload_slot_raises_for_unknown_kind():
+    with pytest.raises(RuntimeError, match="kind='live'"):
+        next_upload_slot(KIND_SCHEDULE, kind="live")
+
+
+def test_enqueue_output_stores_kind_and_file_path():
+    enqueue_output(
+        "vid123", 10.0, 80.0, "Título", "Desc", ["tag"], "2000-01-01T12:00:00",
+        kind="long", file_path="C:/temp/vid123_long.mp4",
+    )
+    item = get_due_uploads()[0]
+    assert item["kind"] == "long"
+    assert item["file_path"] == "C:/temp/vid123_long.mp4"
+
+
+def test_enqueue_output_defaults_to_short():
+    enqueue_output("vid123", 0.0, 60.0, "T", "D", [], "2000-01-01T12:00:00")
+    assert get_due_uploads()[0]["kind"] == "short"
+
+
+def test_init_db_is_idempotent_on_existing_db():
+    """Migração roda em banco já criado sem duplicar coluna."""
+    init_db()
+    init_db()
+    enqueue_output("v1", 0.0, 60.0, "T", "D", [], "2000-01-01T12:00:00", kind="long")
+    assert get_due_uploads()[0]["kind"] == "long"
+
+
+LEGACY_SCHEMA = """
+    CREATE TABLE output_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_video_id TEXT,
+        clip_start REAL,
+        clip_end REAL,
+        title TEXT,
+        description TEXT,
+        tags TEXT,
+        scheduled_time TEXT,
+        uploaded_at TEXT,
+        youtube_video_id TEXT,
+        status TEXT DEFAULT 'queued'
+    );
+"""
+
+
+def test_migrates_legacy_table_without_kind_and_file_path(tmp_path, monkeypatch):
+    """Caminho real da migração: o banco de produção tem o schema antigo."""
+    import sqlite3
+    db = tmp_path / "legacy.db"
+    monkeypatch.setenv("DB_PATH", str(db))
+
+    con = sqlite3.connect(db)
+    con.executescript(LEGACY_SCHEMA)
+    con.execute(
+        "INSERT INTO output_queue (source_video_id, title, scheduled_time, status)"
+        " VALUES ('velho', 'Vídeo antigo', '2000-01-01T12:00:00', 'queued')"
+    )
+    con.commit()
+    con.close()
+
+    init_db()
+
+    item = get_due_uploads()[0]
+    assert item["title"] == "Vídeo antigo"
+    assert item["kind"] == "short"
+    assert item["file_path"] is None
