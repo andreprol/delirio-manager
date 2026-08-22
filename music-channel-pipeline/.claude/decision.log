@@ -10,3 +10,5 @@
 [2026-08-21 19:40] MEDIUM | python main.py generate (Replicate Flux 1.1 Pro ~$0.04) | razão: API call de escrita externa — regerar vídeo Rio que falhou às 10h por queda de internet
 [2026-08-21 19:59] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
 [2026-08-21 20:30] MEDIUM | test_dance.py (Replicate seedance-1-lite + kling-v2.1 pro, ~$0.55) | razão: API call de escrita externa — teste de animação de dança com loop first==last frame
+[2026-08-21 22:50] MEDIUM | escopo youtube.upload adicionado ao consent screen do projeto anatomia-do-discurso (Google Cloud Console) | razão: alteração de config em serviço externo — pré-requisito para publicar o app e parar a expiração de 7 dias
+[2026-08-21 22:50] MEDIUM | Register-ScheduledTask \MusicChannel\CheckToken (diária 10:30) | razão: cria tarefa agendada no sistema
