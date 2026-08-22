@@ -18,8 +18,8 @@ from pipeline.queue import (
     next_upload_slot, enqueue_video, get_due_uploads, mark_uploaded,
 )
 from pipeline.image_gen import generate_thumbnail
-from pipeline.clip_gen import generate_clips
-from pipeline.video_builder import build_video, build_video_from_clips
+from pipeline.clip_gen import generate_loop_clip
+from pipeline.video_builder import build_video, build_video_from_loop_clip
 from pipeline.uploader import upload_video
 
 CHANNEL_FILE  = Path("config/channel.json")
@@ -109,20 +109,18 @@ def run_generate():
     log.info("Montando vídeo %d min... (animado=%s)", channel["video_duration_minutes"], animate)
 
     if animate:
-        clip_model = channel.get("clip_model", "minimax/video-01")
-        n_clips = int(channel.get("clips_per_video", 5))
-        log.info("Gerando %d clips animados via %s...", n_clips, clip_model)
-        clips_dir = temp_dir / "clips"
-        clip_paths = generate_clips(
+        clip_model = channel.get("clip_model", "kwaivgi/kling-v2.1")
+        clip_seconds = int(channel.get("clip_duration_seconds", 5))
+        log.info("Gerando clipe de loop de %ds via %s...", clip_seconds, clip_model)
+        clip_path = generate_loop_clip(
             thumbnail_path=img_path,
-            output_dir=clips_dir,
-            video_id=video_id,
+            output_path=temp_dir / "loop_clip.mp4",
             model=clip_model,
-            n_clips=n_clips,
+            duration=clip_seconds,
+            mode=channel.get("clip_mode", "pro"),
         )
-        log.info("Clips gerados: %s", [c.name for c in clip_paths])
-        video_path = build_video_from_clips(
-            clip_paths=clip_paths,
+        video_path = build_video_from_loop_clip(
+            clip_path=clip_path,
             audio_files=audio_files,
             output_dir=temp_dir,
             video_id=video_id,
