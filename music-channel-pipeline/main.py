@@ -21,6 +21,7 @@ from pipeline.image_gen import generate_thumbnail
 from pipeline.clip_gen import generate_loop_clip
 from pipeline.video_builder import build_video, build_video_from_loop_clip
 from pipeline.uploader import upload_video
+from pipeline.notifier import notify
 
 CHANNEL_FILE  = Path("config/channel.json")
 THEMES_FILE   = Path("config/themes.json")
@@ -71,6 +72,12 @@ def run_generate():
     all_audio = sorted(audio_dir.glob("*.mp3")) + sorted(audio_dir.glob("*.wav"))
     if not all_audio:
         log.warning("Nenhum áudio em %s — coloque arquivos MP3 do Suno e rode novamente.", audio_dir)
+        notify(
+            "Sem tracks — nenhum vídeo gerado hoje",
+            [f"A pasta {audio_dir} está vazia.",
+             "Gere os tracks no Suno com os prompts das 06:00 e jogue os MP3s lá."],
+            status="warn",
+        )
         sys.exit(0)
 
     tracks_per_video = int(channel.get("tracks_per_video", 5))
@@ -157,6 +164,16 @@ def run_generate():
     mark_composition_used(comp_id)
 
     log.info("Enfileirado para upload: %s | slot: %s", title, slot)
+    remaining = len(all_audio) - len(audio_files)
+    notify(
+        "Vídeo gerado e enfileirado",
+        [f"Título: {title}",
+         f"Tema: {theme['name']} | Composição: {comp_id} | Animado: {animate}",
+         f"Arquivo: {video_path}",
+         f"Slot de upload: {slot}",
+         f"Tracks restantes em pending/: {remaining}"],
+        status="ok" if remaining >= 4 else "warn",
+    )
 
 
 def run_upload():
@@ -166,12 +183,15 @@ def run_upload():
     due = get_due_uploads()
     if not due:
         log.info("Nenhum vídeo pendente de upload.")
+        notify("Slot de upload sem fila", ["Nenhum vídeo pendente com slot vencido."],
+               status="warn")
         return
 
     secrets_file = os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json")
     used_dir = Path(os.getenv("AUDIO_USED_DIR", "data/audio/used"))
     used_dir.mkdir(parents=True, exist_ok=True)
 
+    failures = 0
     for item in due:
         log.info("Fazendo upload: %s", item["title"])
         try:
@@ -184,6 +204,12 @@ def run_upload():
             )
             mark_uploaded(item["id"], yt_id)
             log.info("Uploaded → https://youtube.com/watch?v=%s", yt_id)
+            notify(
+                "Vídeo publicado",
+                [f"Título: {item['title']}",
+                 f"https://youtube.com/watch?v={yt_id}"],
+                status="ok",
+            )
 
             # Move audio to used/
             for fname in item["audio_filename"].split("|"):
@@ -192,12 +218,35 @@ def run_upload():
                     shutil.move(str(src), used_dir / fname)
 
         except Exception as e:
+            failures += 1
             log.error("Upload falhou: %s", e)
+            hint = ""
+            if "invalid_grant" in str(e):
+                hint = ("Refresh token do YouTube expirou. Rodar "
+                        "`python reauth_youtube.py` e escolher o canal Umbra Sessions.")
+            notify(
+                "Upload FALHOU",
+                [f"Título: {item['title']}",
+                 f"Fila id={item['id']} — continua pendente, não foi perdido.",
+                 f"Erro: {e}"] + ([hint] if hint else []),
+                status="fail",
+            )
+
+    # Sair diferente de zero para a task do Scheduler não marcar sucesso.
+    if failures:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "generate"
-    if cmd == "upload":
-        run_upload()
-    else:
-        run_generate()
+    try:
+        if cmd == "upload":
+            run_upload()
+        else:
+            run_generate()
+    except Exception as e:
+        # SystemExit não passa por aqui (deriva de BaseException), então as
+        # saídas limpas com sys.exit continuam funcionando.
+        log.exception("Slot '%s' quebrou", cmd)
+        notify(f"Slot '{cmd}' quebrou", [f"{type(e).__name__}: {e}"], status="fail")
+        sys.exit(1)
