@@ -43,21 +43,44 @@ def _run(cmd: list[str], timeout: int = 1800):
     return result
 
 
-def _fit_filter(width: int, height: int, stream: str = "0:v", label: str = "v") -> str:
+def _even(value: int) -> int:
+    """Dimensão ímpar em cadeia yuv420p depende de build do ffmpeg."""
+    return value // 2 * 2
+
+
+def _pad_filter(width: int, height: int, stream: str = "0:v", label: str = "v") -> str:
     """
-    Encaixa qualquer proporção em width x height: o próprio vídeo desfocado
-    preenche o fundo e o original entra centralizado, sem corte nem distorção.
+    Encaixa qualquer proporção em width x height sem corte: o próprio vídeo
+    desfocado preenche o fundo e o original entra centralizado.
 
     O desfoque roda em 1/8 da resolução: boxblur em 1920x1080 é o filtro mais
-    caro do pipeline e agora roda 2x por segmento.
+    caro do pipeline e roda 2x por segmento.
     """
+    bw, bh = _even(width // 8), _even(height // 8)
     return (
         f"[{stream}]split=2[bgsrc][fgsrc];"
-        f"[bgsrc]scale={width // 8}:{height // 8}:force_original_aspect_ratio=increase,"
-        f"crop={width // 8}:{height // 8},boxblur=3:1,scale={width}:{height}[bg];"
+        f"[bgsrc]scale={bw}:{bh}:force_original_aspect_ratio=increase,"
+        f"crop={bw}:{bh},boxblur=3:1,scale={width}:{height}[bg];"
         f"[fgsrc]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
         f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[{label}]"
     )
+
+
+def _crop_filter(width: int, height: int, stream: str = "0:v", label: str = "v") -> str:
+    """
+    Preenche width x height cortando as laterais. Usado nos Shorts: tela cheia
+    dá muito mais presença ao creator que a faixa central com fundo desfocado.
+    """
+    return (
+        f"[{stream}]scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1[{label}]"
+    )
+
+
+def _fit_filter(width: int, height: int, fit: str = "pad",
+                stream: str = "0:v", label: str = "v") -> str:
+    builder = _crop_filter if fit == "crop" else _pad_filter
+    return builder(width, height, stream, label)
 
 
 def has_audio_stream(path: str) -> bool:
@@ -80,7 +103,8 @@ def has_audio_stream(path: str) -> bool:
 
 
 def _narration_segment(source_path: str, narration_path: str, clip_start: float,
-                       width: int, height: int, out_path: Path) -> Path:
+                       width: int, height: int, out_path: Path,
+                       fit: str = "pad") -> Path:
     """Trecho analisado rodando mudo ao fundo, com a voz da IA por cima."""
     # Teto explícito além do -shortest: narração truncada ou corrompida deixaria
     # o -stream_loop rodando até o timeout de 1800s antes de acusar o erro.
@@ -92,7 +116,7 @@ def _narration_segment(source_path: str, narration_path: str, clip_start: float,
         "ffmpeg", "-y", "-noautorotate",
         "-stream_loop", "-1", "-ss", str(clip_start), "-i", source_path,
         "-i", narration_path,
-        "-filter_complex", _fit_filter(width, height),
+        "-filter_complex", _fit_filter(width, height, fit),
         "-map", "[v]", "-map", "1:a:0",
         *_VIDEO_ENCODE, *_AUDIO_ENCODE,
         "-t", str(narration_seconds), "-shortest",
@@ -102,7 +126,8 @@ def _narration_segment(source_path: str, narration_path: str, clip_start: float,
 
 
 def _clip_segment(source_path: str, clip_start: float, clip_end: float,
-                  width: int, height: int, out_path: Path) -> Path:
+                  width: int, height: int, out_path: Path,
+                  fit: str = "pad") -> Path:
     """Creator falando com o áudio original preservado."""
     # 0:a:0 e não 0:a — o merge do yt-dlp costuma trazer a dublagem automática
     # como segunda trilha, e o concat demux exige a mesma contagem de streams.
@@ -110,7 +135,7 @@ def _clip_segment(source_path: str, clip_start: float, clip_end: float,
         "ffmpeg", "-y", "-noautorotate",
         "-ss", str(clip_start), "-i", source_path,
         "-t", str(clip_end - clip_start),
-        "-filter_complex", _fit_filter(width, height),
+        "-filter_complex", _fit_filter(width, height, fit),
         "-map", "[v]", "-map", "0:a:0",
         *_VIDEO_ENCODE, *_AUDIO_ENCODE,
         str(out_path),
@@ -223,10 +248,12 @@ def build_short(source_path: str, segment: dict, output_dir: str, video_id: str,
         str(_narration_segment(
             source_path, segment["narration_path"], clip_start,
             SHORT_WIDTH, SHORT_HEIGHT, out / f"{video_id}_short{index}_narration.mp4",
+            fit="crop",
         )),
         str(_clip_segment(
             source_path, clip_start, clip_end,
             SHORT_WIDTH, SHORT_HEIGHT, out / f"{video_id}_short{index}_clip.mp4",
+            fit="crop",
         )),
     ]
 

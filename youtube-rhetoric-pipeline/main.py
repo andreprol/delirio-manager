@@ -51,14 +51,21 @@ def _asset(name: str) -> str | None:
 def _cleanup_intermediates(work_dir: Path, keep: set[str]) -> None:
     """
     Cada vídeo-fonte deixa o download e ~12 MP4s intermediários em 1080p; um run
-    diário encheria o disco em semanas. Só os arquivos que vão para upload ficam.
+    diário encheria o disco em semanas.
+
+    As narrações .mp3 ficam: são poucos KB e são a única parte do processo que
+    custa dinheiro por reexecução. Sem elas, mudar o enquadramento de um vídeo
+    já montado exigiria pagar o ElevenLabs de novo.
     """
     for path in work_dir.glob("*"):
-        if path.is_file() and str(path.resolve()) not in keep:
-            try:
-                path.unlink()
-            except OSError as e:
-                log.warning(f"Não removeu intermediário {path.name}: {e}")
+        if not path.is_file() or path.suffix == ".mp3":
+            continue
+        if str(path.resolve()) in keep:
+            continue
+        try:
+            path.unlink()
+        except OSError as e:
+            log.warning(f"Não removeu intermediário {path.name}: {e}")
 
 
 def _render_outputs(video_id: str, vid_path: Path, analysis: dict,

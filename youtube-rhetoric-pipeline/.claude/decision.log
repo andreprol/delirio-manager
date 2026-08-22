@@ -32,3 +32,5 @@
 [2026-08-22 18:20] MEDIUM | ALTER TABLE output_queue ADD COLUMN kind/file_path (data/pipeline.db, 22 linhas) | razão: migração de schema em banco de produção; aditiva, sem reescrita de linha
 [2026-08-22 18:25] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
 [2026-08-22 18:40] MEDIUM | edição youtube-rhetoric-pipeline/.gitignore | razão: config file; .venv/ não cobria a pasta real venv/, que ia para o stage
+[2026-08-22 18:56] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-22 19:00] MEDIUM | git push origin master | razão: push para remoto (branch normal, não force)
