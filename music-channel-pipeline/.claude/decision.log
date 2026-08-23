@@ -16,3 +16,7 @@
 [2026-08-22 19:43] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
 [2026-08-22 19:51] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
 [2026-08-22 19:45] MEDIUM | recriado .env (REPLICATE_API_TOKEN novo + RESEND_API_KEY restaurada) | razao: arquivo de config com segredo, apagado por git rm sem --cached em d2a98b25
+[2026-08-22 21:26] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 22:52] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 23:08] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 23:12] MEDIUM | config/channel.json tracks_per_video 4 -> 8 | razao: edicao de config; menos repeticao do bloco de audio na hora de video (4 faixas ~14min30 repetia ~4x, 8 faixas ~29min repete ~2x)
