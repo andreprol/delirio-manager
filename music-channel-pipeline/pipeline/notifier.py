@@ -11,6 +11,7 @@ Resend em free tier só entrega para o e-mail do dono da conta.
 """
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -20,9 +21,12 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 log = logging.getLogger(__name__)
 
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 TO_EMAIL = "andreprol1980@gmail.com"
 FROM_EMAIL = "onboarding@resend.dev"
+
+# Ler a chave DENTRO da função, nunca como constante de módulo: constante roda
+# no import e pode preceder o load_dotenv de quem importa, virando string vazia.
+UNDELIVERED_LOG = Path(__file__).parent.parent / "data" / "alerts_undelivered.log"
 
 STATUS_STYLE = {
     "ok": ("#22c55e", "OK"),
@@ -52,11 +56,30 @@ def _build_html(title: str, lines: list[str], status: str) -> str:
     </div>"""
 
 
+def record_undelivered(title: str, lines: list[str]):
+    """Registra em disco o alerta que não conseguiu sair.
+
+    Último recurso: as tasks do Scheduler não redirecionam log, então um alerta
+    perdido some sem deixar rastro. Este arquivo é o rastro.
+    """
+    try:
+        UNDELIVERED_LOG.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().isoformat(timespec="seconds")
+        with UNDELIVERED_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{stamp}] {title}\n")
+            for line in lines:
+                fh.write(f"    {line}\n")
+    except Exception as e:  # nunca mascarar o erro original
+        log.error("Não consegui nem gravar o alerta não entregue: %s", e)
+
+
 def notify(title: str, lines: list[str], status: str = "ok") -> bool:
     """Manda o alerta. Nunca levanta exceção — falha de e-mail não pode
     mascarar o erro real que motivou o alerta."""
-    if not RESEND_API_KEY or RESEND_API_KEY == "your_resend_key_here":
-        log.warning("RESEND_API_KEY ausente — alerta não enviado: %s", title)
+    RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+    if not RESEND_API_KEY or RESEND_API_KEY.endswith("your_resend_key_here"):
+        log.error("RESEND_API_KEY ausente — alerta NÃO enviado: %s", title)
+        record_undelivered(title, lines)
         return False
 
     prefix = {"ok": "✅", "warn": "⚠️", "fail": "🔴"}.get(status, "⚠️")
@@ -77,4 +100,5 @@ def notify(title: str, lines: list[str], status: str = "ok") -> bool:
         return True
     except Exception as e:
         log.error("Falha ao enviar alerta '%s': %s", title, e)
+        record_undelivered(title, lines + [f"Erro no envio: {e}"])
         return False

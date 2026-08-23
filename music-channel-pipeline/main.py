@@ -21,11 +21,54 @@ from pipeline.image_gen import generate_thumbnail
 from pipeline.clip_gen import generate_loop_clip
 from pipeline.video_builder import build_video, build_video_from_loop_clip
 from pipeline.uploader import upload_video
-from pipeline.notifier import notify
+from pipeline.notifier import notify, record_undelivered
 
 CHANNEL_FILE  = Path("config/channel.json")
 THEMES_FILE   = Path("config/themes.json")
 SCHEDULE_FILE = Path("config/schedule.json")
+ENV_FILE      = Path(__file__).parent / ".env"
+
+PLACEHOLDERS = ("your_replicate_token_here", "r8_your_replicate_token_here",
+                "your_resend_key_here", "re_your_resend_key_here",
+                "COLE_O_TOKEN_AQUI")
+
+
+def _missing(var: str) -> bool:
+    value = os.getenv(var, "").strip()
+    return not value or value in PLACEHOLDERS
+
+
+def _preflight(cmd: str):
+    """Falha cedo e explicado quando falta credencial.
+
+    Sem isto o slot morre com stack trace dentro de uma task que não redireciona
+    log — foi o que aconteceu em 22/08/2026, quando o .env foi apagado por um
+    `git rm` sem --cached.
+    """
+    problems = []
+    if not ENV_FILE.exists():
+        problems.append(f"{ENV_FILE} não existe. Copiar de .env.example e preencher.")
+
+    # __main__ trata qualquer comando que não seja "upload" como generate —
+    # a checagem tem que seguir a mesma regra, senão um typo pula o preflight.
+    if cmd == "upload":
+        secrets = Path(os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json"))
+        if not secrets.exists():
+            problems.append(f"YOUTUBE_CLIENT_SECRETS_FILE aponta para {secrets}, que não existe.")
+    elif _missing("REPLICATE_API_TOKEN"):
+        problems.append("REPLICATE_API_TOKEN ausente ou com placeholder no .env.")
+
+    # RESEND não bloqueia o slot — mas sem ela nenhum alerta sai, então o
+    # problema tem que aparecer no log e no arquivo de alertas não entregues.
+    if _missing("RESEND_API_KEY"):
+        log.error("RESEND_API_KEY ausente — NENHUM alerta por e-mail vai sair deste slot.")
+        record_undelivered("RESEND_API_KEY ausente", ["Slot rodou sem canal de alerta."])
+
+    if problems:
+        for p in problems:
+            log.error("Pré-checagem falhou: %s", p)
+        notify(f"Slot '{cmd}' não rodou — credencial faltando", problems, status="fail")
+        sys.exit(1)
 
 
 def _load_config():
@@ -240,6 +283,7 @@ def run_upload():
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "generate"
     try:
+        _preflight(cmd)
         if cmd == "upload":
             run_upload()
         else:

@@ -12,3 +12,7 @@
 [2026-08-21 20:30] MEDIUM | test_dance.py (Replicate seedance-1-lite + kling-v2.1 pro, ~$0.55) | razão: API call de escrita externa — teste de animação de dança com loop first==last frame
 [2026-08-21 22:50] MEDIUM | escopo youtube.upload adicionado ao consent screen do projeto anatomia-do-discurso (Google Cloud Console) | razão: alteração de config em serviço externo — pré-requisito para publicar o app e parar a expiração de 7 dias
 [2026-08-21 22:50] MEDIUM | Register-ScheduledTask \MusicChannel\CheckToken (diária 10:30) | razão: cria tarefa agendada no sistema
+[2026-08-22 19:27] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 19:43] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 19:51] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 19:45] MEDIUM | recriado .env (REPLICATE_API_TOKEN novo + RESEND_API_KEY restaurada) | razao: arquivo de config com segredo, apagado por git rm sem --cached em d2a98b25

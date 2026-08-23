@@ -7,3 +7,4 @@ pipeline/__pycache__/
 *.pyc
 .env
 config/client_secrets.json
+data/alerts_undelivered.log
