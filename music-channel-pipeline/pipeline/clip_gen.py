@@ -38,6 +38,8 @@ LOOP_NEGATIVE = (
 
 MAX_ATTEMPTS = 5
 RATE_LIMIT_BASE_WAIT = 15
+CLIP_TIMEOUT_SECONDS = 1200
+POLL_INTERVAL_SECONDS = 10
 
 
 def _save_video(url: str, path: Path):
@@ -73,7 +75,7 @@ def generate_loop_clip(
 
     for attempt in range(MAX_ATTEMPTS):
         try:
-            output = replicate.run(model, input=payload)
+            prediction = replicate.predictions.create(model=model, input=payload)
             break
         except ReplicateError as e:
             if "429" in str(e) and attempt < MAX_ATTEMPTS - 1:
@@ -83,6 +85,29 @@ def generate_loop_clip(
             else:
                 raise
 
+    # Polling proprio em vez de replicate.run(): run() segura a conexao ate o
+    # modelo terminar e estoura ReadTimeout do httpx quando a fila do Kling
+    # demora — a predicao continua rodando e sendo cobrada, mas o pipeline
+    # perde a saida. Aconteceu em 22/08/2026 e custou um clipe.
+    log.info("Predicao do clipe: %s", prediction.id)
+    deadline = time.monotonic() + CLIP_TIMEOUT_SECONDS
+    while prediction.status not in ("succeeded", "failed", "canceled"):
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"Clipe nao concluiu em {CLIP_TIMEOUT_SECONDS}s. "
+                f"Predicao {prediction.id} pode ainda estar rodando no Replicate."
+            )
+        time.sleep(POLL_INTERVAL_SECONDS)
+        prediction.reload()
+
+    if prediction.status != "succeeded":
+        raise RuntimeError(
+            f"Clipe {prediction.status}: {prediction.error} (predicao {prediction.id})"
+        )
+
+    output = prediction.output
+    if isinstance(output, list):
+        output = output[0]
     url = output if isinstance(output, str) else str(getattr(output, "url", output))
     _save_video(url, output_path)
     log.info("Clipe de loop gerado: %s", output_path)

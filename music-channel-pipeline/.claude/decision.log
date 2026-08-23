@@ -20,3 +20,6 @@
 [2026-08-22 22:52] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
 [2026-08-22 23:08] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
 [2026-08-22 23:12] MEDIUM | config/channel.json tracks_per_video 4 -> 8 | razao: edicao de config; menos repeticao do bloco de audio na hora de video (4 faixas ~14min30 repetia ~4x, 8 faixas ~29min repete ~2x)
+[2026-08-22 23:11] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 23:17] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 23:30] MEDIUM | 8 faixas de samba movidas de pending/ para used/ apos enfileirar o Rio | razao: evitar que o Generate das 10:00 monte um Capri com as mesmas musicas e dois videos disputem o slot das 18:00
