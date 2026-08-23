@@ -4,9 +4,13 @@ import requests
 import replicate
 from pathlib import Path
 
+# O cabelo precisa ser descrito ATE a testa. Sem isso o Flux inventa franja —
+# aconteceu no Rio de 21/08/2026 e descaracterizou a DJ.
 DJ_BASE = (
     "same character always: stunning beautiful female DJ, "
     "long straight silky platinum silver blonde hair, "
+    "hair parted in the middle and swept back away from the face, "
+    "forehead fully visible, no bangs, no fringe across the forehead, "
     "piercing vivid blue eyes, sexy smiling expression, "
     "athletic toned fit body, large detailed flower tattoos on both arms and shoulders, "
     "warm olive skin, high cheekbones, full lips, revealing fitted black outfit"

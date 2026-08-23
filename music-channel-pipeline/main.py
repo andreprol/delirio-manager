@@ -102,7 +102,24 @@ def _make_tags(theme: dict) -> list[str]:
     ]
 
 
-def run_generate():
+def _find_theme(themes, theme_id: str) -> dict:
+    items = themes["themes"] if isinstance(themes, dict) else themes
+    for t in items:
+        if t["id"] == theme_id:
+            return t
+    raise SystemExit(f"Tema '{theme_id}' não existe em config/themes.json.")
+
+
+def _find_composition(composition_id: str):
+    from pipeline.queue import ALL_COMPOSITIONS
+    for cid, desc in ALL_COMPOSITIONS:
+        if cid == composition_id:
+            return cid, desc
+    raise SystemExit(f"Composição '{composition_id}' não existe.")
+
+
+def run_generate(theme_id: str = None, composition_id: str = None,
+                 mark_rotation: bool = True):
     init_db()
     channel, themes, schedule = _load_config()
 
@@ -129,9 +146,18 @@ def run_generate():
         log.warning("Apenas %d track(s) disponível — ideal ter %d. Continuando.", len(audio_files), tracks_per_video)
     log.info("Usando %d track(s): %s", len(audio_files), [f.name for f in audio_files])
 
-    theme = get_next_theme(themes)
-    comp_id, comp_desc = get_next_composition()
-    log.info("Tema: %s | Composição: %s", theme["name"], comp_id)
+    if theme_id or composition_id:
+        # Refação avulsa: tema/composição escolhidos na mão e rotação intocada,
+        # para não empurrar o ciclo diário dos 12 temas.
+        theme = _find_theme(themes, theme_id) if theme_id else get_next_theme(themes)
+        comp_id, comp_desc = (
+            _find_composition(composition_id) if composition_id else get_next_composition()
+        )
+    else:
+        theme = get_next_theme(themes)
+        comp_id, comp_desc = get_next_composition()
+    log.info("Tema: %s | Composição: %s (rotação: %s)",
+             theme["name"], comp_id, "sim" if mark_rotation else "não")
 
     # Unique ID for this video
     video_id = f"{theme['id']}_{comp_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -203,8 +229,9 @@ def run_generate():
         tags=json.dumps(tags),
         scheduled_at=slot,
     )
-    mark_theme_used(theme["id"])
-    mark_composition_used(comp_id)
+    if mark_rotation:
+        mark_theme_used(theme["id"])
+        mark_composition_used(comp_id)
 
     log.info("Enfileirado para upload: %s | slot: %s", title, slot)
     remaining = len(all_audio) - len(audio_files)
