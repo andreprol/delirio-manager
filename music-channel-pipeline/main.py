@@ -19,8 +19,9 @@ from pipeline.queue import (
 )
 from pipeline.image_gen import generate_thumbnail
 from pipeline.clip_gen import generate_loop_clip
+from pipeline.scenery_gen import ensure_scenery, ensure_segment
 from pipeline.video_builder import build_video, build_video_from_loop_clip
-from pipeline.uploader import upload_video
+from pipeline.uploader import upload_video, thumbnail_for
 from pipeline.notifier import notify, record_undelivered
 
 CHANNEL_FILE  = Path("config/channel.json")
@@ -180,11 +181,39 @@ def run_generate(theme_id: str = None, composition_id: str = None,
     )
     log.info("Thumbnail: %s", img_path)
 
-    # Build video — animated clips or static image
-    animate = channel.get("animate_video", False)
-    log.info("Montando vídeo %d min... (animado=%s)", channel["video_duration_minutes"], animate)
+    # Fundo do vídeo: slideshow do local, avatar animado ou imagem parada.
+    # `background_mode` manda; `animate_video` fica lido como compatibilidade
+    # para não mudar o comportamento de quem tiver um channel.json antigo.
+    mode = channel.get("background_mode")
+    if not mode:
+        mode = "avatar_clip" if channel.get("animate_video", False) else "static"
+    log.info("Montando vídeo %d min... (fundo=%s)", channel["video_duration_minutes"], mode)
 
-    if animate:
+    if mode == "scenery":
+        # O acervo de 30 imagens e o segmento de 9 min são permanentes e
+        # reusados em toda rotação. Na primeira vez de um tema isto gera e
+        # cobra (~$1,80); depois é só ler do disco.
+        log.info("Preparando cenário de %s...", theme["name"])
+        images = ensure_scenery(
+            theme,
+            model=channel.get("scenery_model", "black-forest-labs/flux-1.1-pro-ultra"),
+            # Chave própria, não o `safety_tolerance` do canal: aquele está em 5
+            # por causa do figurino da DJ, e paisagem não precisa de folga
+            # nenhuma. Reusar o do canal arriscava 422 no primeiro dia de cada
+            # tema novo — falha que só apareceria meses depois.
+            safety_tolerance=channel.get("scenery_safety_tolerance", 2),
+            raw=channel.get("scenery_raw", True),
+        )
+        segment = ensure_segment(theme, images)
+        video_path = build_video_from_loop_clip(
+            clip_path=segment,
+            audio_files=audio_files,
+            output_dir=temp_dir,
+            video_id=video_id,
+            target_minutes=channel["video_duration_minutes"],
+            already_normalized=True,
+        )
+    elif mode == "avatar_clip":
         clip_model = channel.get("clip_model", "kwaivgi/kling-v2.1")
         clip_seconds = int(channel.get("clip_duration_seconds", 5))
         log.info("Gerando clipe de loop de %ds via %s...", clip_seconds, clip_model)
@@ -238,7 +267,7 @@ def run_generate(theme_id: str = None, composition_id: str = None,
     notify(
         "Vídeo gerado e enfileirado",
         [f"Título: {title}",
-         f"Tema: {theme['name']} | Composição: {comp_id} | Animado: {animate}",
+         f"Tema: {theme['name']} | Composição: {comp_id} | Fundo: {mode}",
          f"Arquivo: {video_path}",
          f"Slot de upload: {slot}",
          f"Tracks restantes em pending/: {remaining}"],
@@ -265,20 +294,28 @@ def run_upload():
     for item in due:
         log.info("Fazendo upload: %s", item["title"])
         try:
-            yt_id = upload_video(
+            yt_id, thumb_error = upload_video(
                 file_path=item["video_path"],
                 title=item["title"],
                 description=item["description"],
                 tags=json.loads(item["tags"]),
                 secrets_file=secrets_file,
+                thumbnail_path=thumbnail_for(item["video_path"]),
             )
             mark_uploaded(item["id"], yt_id)
             log.info("Uploaded → https://youtube.com/watch?v=%s", yt_id)
+            # Thumbnail que não colou não derruba o slot — o vídeo está no ar —
+            # mas tem que virar alerta: com fundo de paisagem, o frame que o
+            # YouTube escolhe sozinho não tem a DJ, e o card perde a identidade.
             notify(
-                "Vídeo publicado",
+                "Vídeo publicado" if not thumb_error
+                else "Vídeo publicado — SEM a thumbnail da DJ",
                 [f"Título: {item['title']}",
-                 f"https://youtube.com/watch?v={yt_id}"],
-                status="ok",
+                 f"https://youtube.com/watch?v={yt_id}"]
+                + ([thumb_error,
+                    "Definir à mão no YouTube Studio: o card está com um frame "
+                    "de paisagem, sem a DJ."] if thumb_error else []),
+                status="warn" if thumb_error else "ok",
             )
 
             # Move audio to used/

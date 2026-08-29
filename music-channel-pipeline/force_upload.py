@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 from pipeline.queue import _con, init_db, mark_uploaded
-from pipeline.uploader import upload_video
+from pipeline.uploader import upload_video, thumbnail_for
 
 
 def list_pending():
@@ -75,15 +75,18 @@ def main():
     log.info("Fazendo upload: %s (%.1f MB)", item["title"],
              video_path.stat().st_size / 1024 / 1024)
 
-    yt_id = upload_video(
+    yt_id, thumb_error = upload_video(
         file_path=str(video_path),
         title=item["title"],
         description=item["description"],
         tags=json.loads(item["tags"]),
         secrets_file=secrets_file,
+        thumbnail_path=thumbnail_for(video_path),
     )
     mark_uploaded(item["id"], yt_id)
     log.info("Uploaded → https://youtube.com/watch?v=%s", yt_id)
+    if thumb_error:
+        log.error("%s — definir à mão no YouTube Studio.", thumb_error)
 
     used_dir = Path(os.getenv("AUDIO_USED_DIR", "data/audio/used"))
     used_dir.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,9 @@
 data/temp/
 data/audio/used/
+# Acervo de cenario: ~360 JPEGs de 1,4 MB + os segmentos de video. Sao ativos
+# PAGOS (~$22 no total) e nao versionados por serem binarios grandes — logo,
+# nao estao protegidos por git. Backup e por copia da pasta data/scenery/.
+data/scenery/
 data/pipeline.db
 data/youtube_token.pkl
 __pycache__/

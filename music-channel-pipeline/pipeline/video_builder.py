@@ -82,17 +82,24 @@ def build_video_from_loop_clip(
     output_dir: Path,
     video_id: str,
     target_minutes: int = 60,
+    already_normalized: bool = False,
 ) -> Path:
     """Monta o vídeo de 60 min repetindo um clipe que emenda consigo mesmo.
 
     O clipe é normalizado uma vez e depois repetido com `-c:v copy`, sem
     reencodar as 60 min — 1h de 1080p sai em ~1min30 em vez de dezenas de
     minutos.
+
+    `already_normalized` pula a normalização para quem já entrega 1920×1080 com
+    GOP fechado — é o caso do segmento de slideshow, que sai assim do
+    `slideshow.py`. Reencodar 9 min à toa em todo slot é desperdício, e a
+    segunda passada só degradaria a imagem.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     target_seconds = target_minutes * 60
 
-    loop_unit = _normalize_loop_unit(clip_path, output_dir / f"{video_id}_loop_unit.mp4")
+    loop_unit = clip_path if already_normalized else _normalize_loop_unit(
+        clip_path, output_dir / f"{video_id}_loop_unit.mp4")
     final_audio = _prepare_audio(audio_files, output_dir, video_id, target_seconds)
 
     output_path = output_dir / f"{video_id}.mp4"
