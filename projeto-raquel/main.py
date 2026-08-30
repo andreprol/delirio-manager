@@ -23,12 +23,20 @@ Uso:
   python main.py publish                  Sobe os compilados prontos para o YouTube
   python main.py pool                     Mostra o estado do pool e dos compilados
   python main.py reprocess                Devolve Shorts ja publicados ao pool
+  python main.py import-dyi <zip> [--apply]
+                                          Importa o acervo do zip "Baixar suas
+                                          informacoes" do Instagram. Simula por
+                                          padrao; --apply grava no pool. E o unico
+                                          caminho para o acervo antigo: a mobile
+                                          API recusa paginar e o fallback so ve
+                                          os 12 posts mais recentes.
 """
 
 import json
 import os
 import sys
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -39,7 +47,7 @@ from pipeline.queue import (
     get_due_uploads, get_ready_uploads,
     mark_uploaded, mark_instagram_synced, is_instagram_synced, get_all_synced_instagram_ids,
     next_upload_slot, set_blog_article,
-    add_clip_to_pool, get_pool_ids, get_available_clips,
+    add_clip_to_pool, get_pool_ids, get_available_clips, get_all_pool_clips,
     quarantine_clip, get_exhausted_clip_ids, get_quarantined_clips,
     create_compilation, get_pending_compilations, mark_compilation_uploaded,
     next_compilation_number, set_compilation_title,
@@ -227,6 +235,103 @@ def cmd_fetch(max_videos: int = 20, max_seen: int = None):
 
     total = sum(c["duration"] for c in get_available_clips())
     print(f"\n{added} Reel(s) no pool. Disponível para compilar: {total/60:.1f} min.")
+
+
+def cmd_import_dyi(zip_path: str, apply: bool = False):
+    """
+    Importa o acervo do zip "Baixar suas informações" do Instagram para o pool.
+
+    Simula por padrão: sem `--apply` nada é gravado. O zip não traz media_id,
+    então a deduplicação é por conteúdo e vale a pena olhar o resultado antes.
+    """
+    from pipeline.compiler import probe_duration, verify_playable
+    from pipeline.dyi_import import (
+        find_media_entries, normalize_caption, plan_import, _day_of,
+    )
+    import shutil, zipfile
+
+    path = Path(zip_path)
+    if not path.exists():
+        print(f"Arquivo não encontrado: {path}")
+        return
+
+    print(f"\nLendo {path.name}...")
+    entries = find_media_entries(path)
+    if not entries:
+        print("Nenhum vídeo encontrado no zip.")
+        return
+    orfaos = sum(1 for e in entries if e.get("orphan"))
+    print(f"{len(entries)} vídeo(s) no export" + (f" ({orfaos} sem legenda no JSON)" if orfaos else ""))
+
+    # Impressão digital do que já temos: legendas do pool e as originais dos
+    # publicados (recuperadas do upload_queue — é a única pista dos 24 que não
+    # têm data nem arquivo em disco).
+    known_captions, known_days = {}, set()
+    for clip in get_all_pool_clips():
+        fp = normalize_caption(clip.get("caption") or "")
+        if fp:
+            known_captions.setdefault(fp, f"pool/{clip['instagram_id']}")
+        day = _day_of(clip.get("taken_at"))
+        if day:
+            known_days.add(day)
+    for ig_id, caption in get_original_captions().items():
+        fp = normalize_caption(caption)
+        if fp:
+            known_captions.setdefault(fp, f"publicado/{ig_id}")
+
+    plano = plan_import(entries, known_captions, known_days)
+    print(f"  novos      : {len(plano['novos'])}")
+    print(f"  duplicados : {len(plano['duplicados'])} (já no pool ou já publicados)")
+    print(f"  ambíguos   : {len(plano['ambiguos'])} (sem legenda, dia já coberto — não entram)")
+
+    for e in plano["ambiguos"][:10]:
+        print(f"    ? {Path(e['member']).name}: {e['motivo']}")
+
+    if not apply:
+        print("\nSimulação. Rode com --apply para gravar no pool.")
+        return
+
+    if not plano["novos"]:
+        print("\nNada novo a importar.")
+        return
+
+    temp_dir = Path(os.getenv("TEMP_DIR", "data/temp")) / "raquelpiiires"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    added = rejeitados = 0
+    with zipfile.ZipFile(path) as zf:
+        for e in plano["novos"]:
+            day = _day_of(e["timestamp"]).replace("-", "") or "00000000"
+            dest = temp_dir / f"{day}_{e['instagram_id']}.mp4"
+
+            if not dest.exists():
+                with zf.open(e["member"]) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+
+            dur = probe_duration(dest)
+            if dur <= 0:
+                print(f"  ignorando {dest.name}: vídeo ilegível")
+                dest.unlink(missing_ok=True)
+                rejeitados += 1
+                continue
+
+            motivo = verify_playable(dest, dur)
+            if motivo:
+                print(f"  em quarentena {dest.name}: {motivo}")
+                quarantine_clip(e["instagram_id"], motivo, str(dest))
+                rejeitados += 1
+                continue
+
+            taken_at = (
+                datetime.fromtimestamp(e["timestamp"], tz=timezone.utc).isoformat()
+                if e["timestamp"] else None
+            )
+            add_clip_to_pool(e["instagram_id"], str(dest), e["caption"], dur, taken_at)
+            added += 1
+
+    total = sum(c["duration"] for c in get_available_clips())
+    print(f"\n{added} clipe(s) importado(s), {rejeitados} recusado(s).")
+    print(f"Pool: {total/60:.1f} min. Rode 'python main.py compile' para montar.")
 
 
 def cmd_reprocess():
@@ -768,6 +873,12 @@ def main():
             int(args[1]) if len(args) > 1 else 20,
             int(args[2]) if len(args) > 2 else None,
         )
+
+    elif cmd == "import-dyi":
+        if len(args) < 2:
+            print("Uso: python main.py import-dyi <arquivo.zip> [--apply]")
+            sys.exit(1)
+        cmd_import_dyi(args[1], apply="--apply" in args)
 
     elif cmd == "compile":
         cmd_compile(int(args[1]) if len(args) > 1 else None)

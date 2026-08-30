@@ -212,6 +212,20 @@ def get_quarantined_clips() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_all_pool_clips() -> list[dict]:
+    """
+    Todos os clipes do pool, inclusive os já usados em compilado.
+
+    Diferente de `get_available_clips`, que filtra os disponíveis para montar:
+    para decidir "já temos este post" o conjunto certo é o total, senão os já
+    publicados ficam de fora justamente da checagem de duplicata.
+    """
+    con = _conn()
+    rows = con.execute("SELECT * FROM clip_pool").fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
 def get_available_clips() -> list[dict]:
     """Clipes do pool ainda não atribuídos a nenhum compilado, mais antigos primeiro."""
     con = _conn()
