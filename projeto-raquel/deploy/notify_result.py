@@ -4,6 +4,7 @@ Chamado pelo sync_daily.bat após o sync.
 """
 import os
 import re
+import sys
 from pathlib import Path
 from datetime import datetime
 
@@ -42,6 +43,9 @@ def parse_run(log: str) -> dict:
         "pool_minutes": 0.0,      # minutos livres no pool após a run
         "compiled": [],           # compilados montados nesta run
         "compile_short": False,   # pool abaixo do mínimo para fechar compilado
+        "compile_errors": [],     # falhas ao montar compilado
+        "quarantined": [],        # clipes retirados do pool por estarem ilegíveis
+        "yt_token_dead": False,   # refresh token do YouTube revogado/expirado
         "raw": log,
     }
 
@@ -58,6 +62,19 @@ def parse_run(log: str) -> dict:
         # Erro de upload YouTube
         elif "erro no upload" in ll:
             result["yt_errors"].append(l)
+            # invalid_grant não é falha de rede: o refresh token foi revogado e
+            # nenhuma rodada futura vai passar até o André reautenticar. Ficou 7
+            # dias como "erro de upload" genérico enquanto o canal parava.
+            if "invalid_grant" in ll or "expired or revoked" in ll:
+                result["yt_token_dead"] = True
+
+        # Falha ao montar compilado (clipe ilegível, ffmpeg, disco)
+        elif "falha ao montar compilado" in ll:
+            result["compile_errors"].append(l)
+
+        # Clipe retirado do pool por estar truncado/ilegível
+        elif "quarentena" in ll:
+            result["quarantined"].append(l)
 
         # Erro ao buscar Instagram (fetch/paginação falhou)
         elif ("erro ao buscar" in ll and "instagram" in ll) or \
@@ -78,7 +95,8 @@ def parse_run(log: str) -> dict:
             result["session_expired"] = True
 
         # Sem vídeos novos
-        elif "nenhum vídeo novo" in ll or "nenhum vídeo encontrado" in ll:
+        elif ("nenhum vídeo novo" in ll or "nenhum vídeo encontrado" in ll
+              or "nenhum reel novo" in ll):
             result["no_new"] = True
 
         # Linha de conclusão do sync
@@ -124,6 +142,11 @@ def parse_run(log: str) -> dict:
 
 
 def detect_outcome(r: dict) -> tuple[str, str]:
+    # Prioridade 0: token do YouTube revogado. Nada volta a publicar sozinho —
+    # é o único estado em que o canal fica parado indefinidamente sem que
+    # nenhuma rodada futura possa consertar.
+    if r["yt_token_dead"]:
+        return "🔴 TOKEN YOUTUBE REVOGADO — reautenticar", "critical"
     # Prioridade 1: autenticação rejeitada (401 / require_login)
     if r["session_expired"] or r["ig_error_type"] == "401":
         return "🔑 SESSION BLOQUEADA — ação necessária", "critical"
@@ -142,6 +165,9 @@ def detect_outcome(r: dict) -> tuple[str, str]:
     # Erro no YouTube
     if r["yt_errors"]:
         return "❌ Erro no upload YouTube", "error"
+    # Render falhou: o pool cresce mas nenhum vídeo sai
+    if r["compile_errors"]:
+        return "❌ Falha ao montar compilado", "error"
     # Compilado montado mas ainda não publicado
     if r["compiled"]:
         return f"🎬 {len(r['compiled'])} compilado(s) montado(s)", "info"
@@ -204,7 +230,32 @@ def build_body(r: dict, status_label: str, date_str: str) -> str:
             lines.append("  Nenhum montado — pool ainda abaixo de 8 min")
         lines.append("")
 
+    if r["quarantined"]:
+        lines += ["🧪 CLIPES EM QUARENTENA (ilegíveis, fora do pool)"]
+        lines += [f"    {q.strip()}" for q in r["quarantined"][:10]]
+        lines.append("")
+
     # ── Diagnóstico de erro ──
+    if r["yt_token_dead"]:
+        lines += [
+            "🔴 CAUSA: TOKEN DO YOUTUBE REVOGADO",
+            "  invalid_grant — o refresh token morreu. Nenhuma rodada futura",
+            "  publica nada até isto ser refeito à mão. O pool continua crescendo.",
+            "",
+            "  AÇÃO NECESSÁRIA:",
+            "  1. console.cloud.google.com > projeto anatomia-do-discurso",
+            "     > APIs e Serviços > Tela de consentimento OAuth > PUBLICAR APP",
+            "     (em 'Testing' o refresh token expira em 7 dias e isto se repete)",
+            "  2. cd F:\\delirio-manager\\projeto-raquel",
+            "     python deploy\\setup_youtube_auth.py",
+            "  3. Na tela de escolha de conta, confirmar que é o canal Raquel Pires",
+            "",
+        ]
+    elif r["compile_errors"]:
+        lines += ["❌ CAUSA: FALHA AO MONTAR COMPILADO"]
+        lines += [f"  {e.strip()}" for e in r["compile_errors"][:5]]
+        lines.append("")
+
     if r["session_expired"] or r["ig_error_type"] == "401":
         lines += [
             "🔑 CAUSA: AUTENTICAÇÃO REJEITADA (401)",
@@ -271,16 +322,21 @@ def send_email(subject: str, body: str) -> bool:
         return False
 
 
-def main():
+def main() -> int:
     log = read_last_run_log()
     r = parse_run(log)
-    status_label, _ = detect_outcome(r)
+    status_label, severity = detect_outcome(r)
     date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
 
     subject = f"[Raquel] {status_label} — {date_str}"
     body = build_body(r, status_label, date_str)
     send_email(subject, body)
 
+    # O .bat termina neste script, então este código é o "Last Result" que o
+    # Task Scheduler mostra. Enquanto ele era sempre 0, o painel dizia sucesso
+    # com o canal parado há uma semana.
+    return {"critical": 2, "error": 1}.get(severity, 0)
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -36,6 +36,7 @@ from pipeline.queue import (
     mark_uploaded, mark_instagram_synced, is_instagram_synced, get_all_synced_instagram_ids,
     next_upload_slot, set_blog_article,
     add_clip_to_pool, get_pool_ids, get_available_clips,
+    quarantine_clip, get_exhausted_clip_ids, get_quarantined_clips,
     create_compilation, get_pending_compilations, mark_compilation_uploaded,
     next_compilation_number, set_compilation_title,
     get_original_captions, set_clip_caption,
@@ -163,14 +164,16 @@ def cmd_sync_instagram(max_videos: int = 5):
 
 def cmd_fetch(max_videos: int = 20):
     """Baixa Reels para o pool de compilação. Não publica nada."""
-    from pipeline.compiler import probe_duration
+    from pipeline.compiler import probe_duration, verify_playable
 
     channel = _load_channel()
     handle = channel.get("instagram_handle", "@raquelpiiires")
     temp_dir = Path(os.getenv("TEMP_DIR", "data/temp"))
 
-    # Ignora o que já foi publicado E o que já está esperando compilação.
-    known = get_all_synced_instagram_ids() | get_pool_ids()
+    # Ignora o que já foi publicado, o que espera compilação e o que já esgotou
+    # as tentativas de download. Quem está em quarentena com tentativas de sobra
+    # fica de fora desta lista de propósito: é a chance de baixar de novo.
+    known = get_all_synced_instagram_ids() | get_pool_ids() | get_exhausted_clip_ids()
     print(f"\nBuscando até {max_videos} Reels novos de {handle} ({len(known)} já conhecidos)...")
 
     try:
@@ -186,15 +189,25 @@ def cmd_fetch(max_videos: int = 20):
         print("Nenhum Reel novo encontrado.")
         return
 
+    added = 0
     for v in videos:
         dur = probe_duration(v["file_path"])
         if dur <= 0:
             print(f"  ignorando {Path(v['file_path']).name}: vídeo ilegível")
             continue
+        # probe_duration lê só o cabeçalho: um download interrompido devolve a
+        # duração inteira e passa batido. O decode é o que separa vídeo curto de
+        # vídeo cortado, e é aqui que ele custa menos — antes de virar render.
+        reason = verify_playable(v["file_path"], dur)
+        if reason:
+            print(f"  em quarentena {Path(v['file_path']).name}: {reason}")
+            quarantine_clip(v["instagram_id"], reason, v["file_path"])
+            continue
         add_clip_to_pool(v["instagram_id"], v["file_path"], v["caption"], dur, v["timestamp"])
+        added += 1
 
     total = sum(c["duration"] for c in get_available_clips())
-    print(f"\n{len(videos)} Reel(s) no pool. Disponível para compilar: {total/60:.1f} min.")
+    print(f"\n{added} Reel(s) no pool. Disponível para compilar: {total/60:.1f} min.")
 
 
 def cmd_reprocess():
@@ -317,7 +330,14 @@ def _compilation_title(group: list[dict], index: int) -> str:
 
 def cmd_compile(max_compilations: int = None):
     """Agrupa o pool em compilados 16:9 de 10-15 min e renderiza cada um."""
-    from pipeline.compiler import build_compilation, build_description, group_clips
+    from pipeline.compiler import (
+        CompilationError, build_compilation, build_description, group_clips,
+    )
+
+    def _quarantine(rejected: list[dict]):
+        for r in rejected:
+            quarantine_clip(r["instagram_id"], r["reason"], r.get("file_path"))
+            log.warning(f"Clipe {r['instagram_id']} em quarentena: {r['reason']}")
 
     clips = get_available_clips()
     if not clips:
@@ -354,10 +374,17 @@ def cmd_compile(max_compilations: int = None):
 
         try:
             result = build_compilation(group, out_path, title, work_dir)
+        except CompilationError as e:
+            # Quarentena antes do continue: se os clipes ruins ficarem no pool,
+            # a mesma falha volta na próxima rodada agendada, para sempre.
+            _quarantine(e.rejected)
+            log.error(f"Falha ao montar compilado '{title}': {e}")
+            continue
         except Exception as e:
             log.error(f"Falha ao montar compilado '{title}': {e}")
             continue
 
+        _quarantine(result.get("rejected", []))
         description = build_description(result["chapters"])
         comp_id = create_compilation(
             title, description, result["path"], result["duration"], result["clips"],
@@ -468,6 +495,12 @@ def cmd_pool():
     print(f"Compilados montados aguardando upload: {len(pending)}")
     for comp in pending:
         print(f"  #{comp['id']:<4} {comp['title'][:60]:<62} {(comp['duration'] or 0)/60:.1f} min")
+
+    quarantined = get_quarantined_clips()
+    if quarantined:
+        print(f"\nEm quarentena (ilegíveis): {len(quarantined)}")
+        for q in quarantined:
+            print(f"  {q['instagram_id']}  tentativas={q['attempts']}  {q['reason'][:70]}")
     print()
 
 

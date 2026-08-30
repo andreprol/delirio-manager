@@ -40,6 +40,60 @@ def _run(cmd: list, timeout: int = 900):
     return proc
 
 
+# Piso de bitrate abaixo do qual o arquivo é download truncado, não vídeo ruim.
+# Um Reel do Instagram em 720x1280 nunca desce de ~400 kbps; 34 KB para 16 s
+# (17 kbps) era um MP4 com o header inteiro e o corpo pela metade — o ffprobe
+# lia duração e dimensões normalmente e só o decode acusava "partial file".
+MIN_CLIP_KBPS = 150
+
+
+class CompilationError(RuntimeError):
+    """
+    Falha ao montar um compilado, carregando os clipes recusados no caminho.
+    Sem isso o chamador não tem como pôr o clipe defeituoso de quarentena e a
+    mesma falha volta em toda rodada agendada.
+    """
+
+    def __init__(self, message: str, rejected: list[dict] | None = None):
+        super().__init__(message)
+        self.rejected = rejected or []
+
+
+def verify_playable(path, duration: float = 0.0) -> str | None:
+    """
+    Decodifica o arquivo inteiro para o muxer nulo. Devolve None se o clipe é
+    íntegro, ou o motivo da recusa.
+
+    `probe_duration` sozinho não serve de porteiro: ele lê o `moov`, que num
+    download interrompido chega completo mesmo sem os frames. Só o decode real
+    distingue vídeo curto de vídeo cortado.
+    """
+    p = Path(path)
+    if not p.exists():
+        return "arquivo ausente"
+
+    size = p.stat().st_size
+    if duration > 0:
+        kbps = size * 8 / 1000 / duration
+        if kbps < MIN_CLIP_KBPS:
+            return f"download truncado ({size} bytes, {kbps:.0f} kbps para {duration:.1f}s)"
+
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "error", "-xerror", "-i", str(p), "-f", "null", "-"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        # Estourar aqui não pode virar exceção solta: o preflight roda fora do
+        # try do render, e a lista de recusados se perderia junto — o clipe
+        # voltaria ao pool e travaria a rodada seguinte do mesmo jeito.
+        return "decode travou (timeout de 300s)"
+    if proc.returncode != 0:
+        first = (proc.stderr or "").strip().splitlines()
+        return f"decode falhou: {first[0] if first else 'sem detalhe'}"
+    return None
+
+
 def probe_duration(path) -> float:
     """Duração do arquivo em segundos. 0.0 se ilegível."""
     proc = subprocess.run(
@@ -388,29 +442,72 @@ def build_compilation(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     segments = []
 
+    # Conferência antes de renderizar qualquer coisa: um clipe truncado no meio
+    # do lote fazia o ffmpeg abortar e jogava fora o trabalho dos outros 36.
+    # Verificar primeiro custa segundos e mantém os capítulos coerentes com o
+    # que de fato entrou no vídeo.
+    usable, rejected = [], []
+    for i, clip in enumerate(group, start=1):
+        reason = verify_playable(clip["file_path"], clip.get("duration") or 0.0)
+        if reason:
+            print(f"  [{i}/{len(group)}] descartado {Path(clip['file_path']).name}: {reason}", flush=True)
+            rejected.append({"instagram_id": clip["instagram_id"],
+                             "file_path": clip["file_path"], "reason": reason})
+        else:
+            usable.append(clip)
+
+    if not usable:
+        raise CompilationError(
+            f"nenhum clipe íntegro no grupo ({len(rejected)} descartado(s))", rejected
+        )
+
     try:
         intro = make_card(title, subtitle, work_dir / "00_intro.mp4", INTRO_SECONDS)
         segments.append(intro)
 
-        for i, clip in enumerate(group, start=1):
+        rendered = []
+        for i, clip in enumerate(usable, start=1):
             seg = work_dir / f"{i:02d}_clip.mp4"
-            print(f"  [{i}/{len(group)}] normalizando {Path(clip['file_path']).name}...", flush=True)
-            segments.append(normalize_clip(clip["file_path"], seg))
+            print(f"  [{i}/{len(usable)}] normalizando {Path(clip['file_path']).name}...", flush=True)
+            try:
+                segments.append(normalize_clip(clip["file_path"], seg))
+            except Exception as e:
+                # Decodifica mas não renderiza (dimensão exótica, stream defeituoso).
+                # Vai para a quarentena igual ao truncado: clipe que não vira
+                # segmento não pode segurar o lote inteiro refém.
+                print(f"      descartado na normalização: {e}", flush=True)
+                rejected.append({"instagram_id": clip["instagram_id"],
+                                 "file_path": clip["file_path"],
+                                 "reason": f"normalização falhou: {e}"})
+                Path(seg).unlink(missing_ok=True)
+                continue
+            rendered.append(clip)
+
+        if not rendered:
+            raise CompilationError(
+                f"nenhum clipe renderizável no grupo ({len(rejected)} descartado(s))", rejected
+            )
 
         outro = make_card(outro_text, outro_sub, work_dir / "99_outro.mp4", OUTRO_SECONDS)
         segments.append(outro)
 
         print(f"  concatenando {len(segments)} segmentos...", flush=True)
         concat_segments(segments, out_path)
+    except CompilationError:
+        raise
+    except Exception as e:
+        raise CompilationError(str(e), rejected) from e
     finally:
         for seg in segments:
             Path(seg).unlink(missing_ok=True)
 
+    group = rendered
     return {
         "path": str(out_path),
         "duration": probe_duration(out_path),
         "chapters": build_chapters(group),
         "clips": [c["instagram_id"] for c in group],
+        "rejected": rejected,
     }
 
 
