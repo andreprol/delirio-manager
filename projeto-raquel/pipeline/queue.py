@@ -77,6 +77,16 @@ def init_db():
             compilation_id INTEGER
         );
 
+        -- Clipes que chegaram ilegíveis (download truncado, decode quebrado).
+        -- Ficam fora do pool para não derrubar o render, mas o fetch tenta
+        -- baixar de novo enquanto attempts < MAX_CLIP_ATTEMPTS.
+        CREATE TABLE IF NOT EXISTS clip_quarantine (
+            instagram_id TEXT PRIMARY KEY,
+            reason TEXT,
+            attempts INTEGER NOT NULL DEFAULT 1,
+            last_seen_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS compilations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
@@ -106,6 +116,10 @@ def add_clip_to_pool(instagram_id: str, file_path: str, caption: str,
            VALUES (?, ?, ?, ?, ?, ?)""",
         (instagram_id, file_path, caption, duration, taken_at, datetime.utcnow().isoformat()),
     )
+    # Entrou no pool íntegro: a quarentena anterior era de um download que
+    # falhou e já foi refeito. Deixar a linha lá faria o `pool` listar como
+    # ilegível um clipe que está justamente ali dentro, esperando compilação.
+    con.execute("DELETE FROM clip_quarantine WHERE instagram_id = ?", (instagram_id,))
     con.commit()
     con.close()
 
@@ -147,6 +161,55 @@ def get_pool_ids() -> set:
     rows = con.execute("SELECT instagram_id FROM clip_pool").fetchall()
     con.close()
     return {row[0] for row in rows}
+
+
+# Um download truncado costuma ser falha de rede: vale tentar de novo. Depois de
+# três tentativas o clipe é dado como perdido e passa a ser ignorado pelo fetch,
+# senão toda rodada gasta banda no mesmo arquivo quebrado.
+MAX_CLIP_ATTEMPTS = 3
+
+
+def quarantine_clip(instagram_id: str, reason: str, file_path: str = None):
+    """
+    Tira um clipe ilegível do pool e conta a tentativa. Apaga o MP4 quebrado
+    quando o caminho é informado: o arquivo parcial é justamente o que precisa
+    sair da frente para o fetch baixar de novo.
+    """
+    con = _conn()
+    con.execute("DELETE FROM clip_pool WHERE instagram_id = ?", (instagram_id,))
+    con.execute(
+        """INSERT INTO clip_quarantine (instagram_id, reason, attempts, last_seen_at)
+           VALUES (?, ?, 1, ?)
+           ON CONFLICT(instagram_id) DO UPDATE SET
+               reason = excluded.reason,
+               attempts = clip_quarantine.attempts + 1,
+               last_seen_at = excluded.last_seen_at""",
+        (instagram_id, reason, datetime.utcnow().isoformat()),
+    )
+    con.commit()
+    con.close()
+    if file_path:
+        Path(file_path).unlink(missing_ok=True)
+
+
+def get_exhausted_clip_ids() -> set:
+    """Clipes que estouraram as tentativas — o fetch não tenta mais."""
+    con = _conn()
+    rows = con.execute(
+        "SELECT instagram_id FROM clip_quarantine WHERE attempts >= ?",
+        (MAX_CLIP_ATTEMPTS,),
+    ).fetchall()
+    con.close()
+    return {row[0] for row in rows}
+
+
+def get_quarantined_clips() -> list[dict]:
+    con = _conn()
+    rows = con.execute(
+        "SELECT * FROM clip_quarantine ORDER BY last_seen_at DESC"
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
 
 
 def get_available_clips() -> list[dict]:
