@@ -309,7 +309,11 @@ def _compilation_title(group: list[dict], index: int) -> str:
                         "Escreva UM título de YouTube em português do Brasil usando "
                         "SOMENTE informação presente nas legendas acima. Não acrescente "
                         "nome de artista, evento, gênero ou lugar que não esteja escrito "
-                        "nelas — se a legenda não diz, o título não pode dizer. Prefira "
+                        "nelas — se a legenda não diz, o título não pode dizer. Isso vale "
+                        "também para estrutura: não invente 'Parte N', 'Episódio N', "
+                        "'Vol. N', 'Dia N' nem qualquer numeração de série que não esteja "
+                        "escrita nas legendas — o modelo já produziu 'Parte 5' a partir de "
+                        "uma legenda que só dizia 'kit Vip 3'. Prefira "
                         "reaproveitar as palavras da autora. Máximo 70 caracteres, sem "
                         "aspas, sem numeração. Responda apenas com o título."
                     ),
