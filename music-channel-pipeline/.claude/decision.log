@@ -39,3 +39,5 @@
 [2026-08-30 00:52] MEDIUM | build_scenery.py hawaii --force-segment (montagem estatica + recorte de margem) | razao: reconstrucao do segmento; sem custo de API
 [2026-08-30 01:10] MEDIUM | python regenerate.py hawaii night_back (thumbnail Flux ~$0.04 + montagem 1h) | razao: API call de escrita externa — remontar o video com o acervo v3 realista e estatico; rotacao NAO e marcada de novo
 [2026-08-30 01:12] MEDIUM | video_queue scheduled_at do item novo empurrado para 2027 | razao: escrita em banco; Andre pediu explicitamente para NAO subir antes de ver, e a task Upload das 18:00 pegaria o item automaticamente
+[2026-08-30 10:44] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-30 10:55] MEDIUM | python force_upload.py 15 (publicacao YouTube, Hawaii v3, 1.19 GB) | razao: API call de escrita externa — publicacao aprovada pelo Andre apos ver a amostra; canal Umbra Sessions confirmado por ele
