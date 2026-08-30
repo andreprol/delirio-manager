@@ -22,6 +22,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Em steady state, para após N posts consecutivos já sincronizados.
+#
+# Este teto é o freio do regime diário e existe por causa de um bloqueio real:
+# com 9999 a varredura ia até o fim do perfil em TODA rodada agendada, duas
+# vezes por dia, e a conta usada na época foi bloqueada. Varrer o perfil inteiro
+# é operação pontual, não rotina — por isso o valor alto entra por argumento
+# explícito (`fetch N FUNDO`) e nunca vira o padrão.
 MAX_ALREADY_SEEN_CONSECUTIVE = 100
 
 # Intervalo entre páginas da mobile API. Sem pausa o Instagram devolve 401
