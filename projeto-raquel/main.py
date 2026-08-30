@@ -351,6 +351,7 @@ def cmd_import_dyi(zip_path: str, apply: bool = False):
     from pipeline.dyi_import import (
         find_media_entries, normalize_caption, plan_import, _day_of,
     )
+    from pipeline.queue import MUSIC_COM_MUSICA
     import shutil, zipfile
 
     path = Path(zip_path)
@@ -401,7 +402,7 @@ def cmd_import_dyi(zip_path: str, apply: bool = False):
     temp_dir = Path(os.getenv("TEMP_DIR", "data/temp")) / "raquelpiiires"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    added = rejeitados = 0
+    added = rejeitados = com_musica = 0
     with zipfile.ZipFile(path) as zf:
         for e in plano["novos"]:
             day = _day_of(e["timestamp"]).replace("-", "") or "00000000"
@@ -430,10 +431,26 @@ def cmd_import_dyi(zip_path: str, apply: bool = False):
                 if e["timestamp"] else None
             )
             add_clip_to_pool(e["instagram_id"], str(dest), e["caption"], dur, taken_at)
+
+            # Faixa declarada pelo Instagram: é a informação que a medição
+            # acústica não alcança. Ausência dela NÃO libera o clipe — áudio
+            # "original" gravado num show carrega a música do palco e é
+            # reivindicável do mesmo jeito, então fica `desconhecido`.
+            musica = e.get("musica")
+            if musica:
+                set_clip_music(
+                    e["instagram_id"], MUSIC_COM_MUSICA, None,
+                    title=f"{musica['artista']} — {musica['titulo']}",
+                )
+                com_musica += 1
             added += 1
 
     total = sum(c["duration"] for c in get_available_clips())
     print(f"\n{added} clipe(s) importado(s), {rejeitados} recusado(s).")
+    print(f"  {com_musica} com faixa declarada pelo Instagram")
+    print(f"  {added - com_musica} sem faixa no export — ficam `desconhecido`, não liberados:")
+    print(f"    áudio 'original' gravado num show carrega a música do palco e")
+    print(f"    é reivindicável do mesmo jeito.")
     print(f"Pool: {total/60:.1f} min. Rode 'python main.py compile' para montar.")
 
 
