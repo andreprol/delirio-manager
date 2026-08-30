@@ -49,6 +49,7 @@ from pipeline.queue import (
     next_upload_slot, set_blog_article,
     add_clip_to_pool, get_pool_ids, get_available_clips, get_all_pool_clips,
     quarantine_clip, get_exhausted_clip_ids, get_quarantined_clips,
+    set_clip_music, get_music_counts,
     create_compilation, get_pending_compilations, mark_compilation_uploaded,
     next_compilation_number, set_compilation_title,
     get_original_captions, set_clip_caption,
@@ -235,6 +236,46 @@ def cmd_fetch(max_videos: int = 20, max_seen: int = None):
 
     total = sum(c["duration"] for c in get_available_clips())
     print(f"\n{added} Reel(s) no pool. Disponível para compilar: {total/60:.1f} min.")
+
+
+def cmd_music_scan(force: bool = False):
+    """
+    Mede o áudio de cada clipe do pool e grava o resultado em `music_status`.
+
+    Só marca `sem_musica` quando não há trilha ou o áudio é silêncio do começo
+    ao fim. Áudio audível fica `desconhecido`: medição acústica local não
+    distingue música reivindicável de música qualquer — ver `classificar`.
+    """
+    from pipeline.audio_probe import analisar, classificar
+    from pipeline.queue import MUSIC_DESCONHECIDO
+
+    clips = get_all_pool_clips()
+    alvo = [c for c in clips if force or not c.get("music_checked_at")]
+    print(f"\n{len(clips)} clipe(s) no pool; {len(alvo)} a medir.")
+
+    contagem = {}
+    for i, clip in enumerate(alvo, start=1):
+        metricas = analisar(clip["file_path"])
+        status, score = classificar(metricas)
+        set_clip_music(clip["instagram_id"], status, score)
+        contagem[status] = contagem.get(status, 0) + 1
+        if i % 20 == 0 or i == len(alvo):
+            print(f"  {i}/{len(alvo)}...", flush=True)
+
+    print("\nResultado desta medição:")
+    for status, n in sorted(contagem.items()):
+        print(f"  {status:<14} {n}")
+
+    total = get_music_counts()
+    print("\nPool inteiro:")
+    for status, n in sorted(total.items()):
+        print(f"  {status:<14} {n}")
+    if total.get(MUSIC_DESCONHECIDO):
+        print(
+            f"\n`{MUSIC_DESCONHECIDO}` não quer dizer 'sem música' — quer dizer não medido\n"
+            f"com certeza. Trate como suspeito de reivindicação até que uma fonte de\n"
+            f"verdade (fingerprint ou o próprio Content ID) diga o contrário."
+        )
 
 
 def cmd_thumbs(apply: bool = False):
@@ -686,6 +727,11 @@ def cmd_pool():
     for comp in pending:
         print(f"  #{comp['id']:<4} {comp['title'][:60]:<62} {(comp['duration'] or 0)/60:.1f} min")
 
+    musica = get_music_counts()
+    if musica:
+        resumo = "  ".join(f"{k}={v}" for k, v in sorted(musica.items()))
+        print(f"\nÁudio dos clipes: {resumo}")
+
     quarantined = get_quarantined_clips()
     if quarantined:
         print(f"\nEm quarentena (ilegíveis): {len(quarantined)}")
@@ -935,6 +981,9 @@ def main():
             int(args[1]) if len(args) > 1 else 20,
             int(args[2]) if len(args) > 2 else None,
         )
+
+    elif cmd == "music-scan":
+        cmd_music_scan(force="--force" in args)
 
     elif cmd == "thumbs":
         cmd_thumbs(apply="--apply" in args)

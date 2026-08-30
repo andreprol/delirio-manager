@@ -100,8 +100,33 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'built'
         );
     """)
+    _migrate(con)
     con.commit()
     con.close()
+
+
+# Estados possíveis de `music_status` em clip_pool.
+#
+# `desconhecido` NÃO é sinônimo de "sem música": é ausência de medição. Um clipe
+# nunca analisado tem que ser tratado como suspeito, senão a falta do dado vira
+# permissão para publicar — e a conta disso só aparece quando o Content ID
+# reivindica o compilado inteiro.
+MUSIC_DESCONHECIDO = "desconhecido"
+MUSIC_COM_MUSICA = "com_musica"
+MUSIC_SEM_MUSICA = "sem_musica"
+
+
+def _migrate(con):
+    """Colunas acrescentadas depois da criação original das tabelas."""
+    existentes = {r[1] for r in con.execute("PRAGMA table_info(clip_pool)")}
+    novas = {
+        "music_status": f"TEXT NOT NULL DEFAULT '{MUSIC_DESCONHECIDO}'",
+        "music_score": "REAL",
+        "music_checked_at": "TEXT",
+    }
+    for nome, tipo in novas.items():
+        if nome not in existentes:
+            con.execute(f"ALTER TABLE clip_pool ADD COLUMN {nome} {tipo}")
 
 
 # ─── COMPILADOS 16:9 ─────────────────────────────────────────────────────────
@@ -210,6 +235,26 @@ def get_quarantined_clips() -> list[dict]:
     ).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+def set_clip_music(instagram_id: str, status: str, score: float | None):
+    con = _conn()
+    con.execute(
+        "UPDATE clip_pool SET music_status = ?, music_score = ?, music_checked_at = ? "
+        "WHERE instagram_id = ?",
+        (status, score, datetime.utcnow().isoformat(), instagram_id),
+    )
+    con.commit()
+    con.close()
+
+
+def get_music_counts() -> dict:
+    con = _conn()
+    rows = con.execute(
+        "SELECT music_status, COUNT(*) FROM clip_pool GROUP BY music_status"
+    ).fetchall()
+    con.close()
+    return {r[0]: r[1] for r in rows}
 
 
 def get_all_pool_clips() -> list[dict]:
