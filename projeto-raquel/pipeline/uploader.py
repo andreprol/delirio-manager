@@ -17,16 +17,30 @@ def _get_youtube_service(secrets_file: str):
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
 
+    from google.auth.exceptions import RefreshError
+
+    def _interactive_flow():
+        abs_secrets = Path(secrets_file) if Path(secrets_file).is_absolute() else _PROJECT_ROOT / secrets_file
+        flow = InstalledAppFlow.from_client_secrets_file(str(abs_secrets), SCOPES)
+        return flow.run_local_server(port=0)
+
     creds = None
     if _TOKEN_FILE.exists():
         creds = Credentials.from_authorized_user_file(str(_TOKEN_FILE), SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except RefreshError:
+                # invalid_grant: o refresh token foi revogado (app OAuth em
+                # "Testing" expira o token em 7 dias). Sem este fallback o
+                # setup_youtube_auth.py estourava aqui em vez de abrir o
+                # browser — justamente na hora em que reautenticar é o
+                # conserto, e o arquivo morto na pasta era o que impedia.
+                print("Refresh token revogado — reabrindo autorização no browser.")
+                creds = _interactive_flow()
         else:
-            abs_secrets = Path(secrets_file) if Path(secrets_file).is_absolute() else _PROJECT_ROOT / secrets_file
-            flow = InstalledAppFlow.from_client_secrets_file(str(abs_secrets), SCOPES)
-            creds = flow.run_local_server(port=0)
+            creds = _interactive_flow()
         _TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
         _TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
     return build("youtube", "v3", credentials=creds)

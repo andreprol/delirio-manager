@@ -33,3 +33,5 @@
 [2026-08-18 18:30] MEDIUM | Disable-ScheduledTask Raquel_SyncManual_1x | razão: rodava main.py sync-instagram direto (publica Short) e não carrega .env
 [2026-08-18 18:26] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
 [2026-08-30 15:24] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-30 15:40] MEDIUM | git push origin master (F:/RichClub -> andreprol/delirio-manager) | razão: fix do compile e do notify precisa chegar ao remoto; push do clone F:/delirio-manager foi REJEITADO (historico divergente desde 18/08) e nao foi forcado
+[2026-08-30 15:32] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
