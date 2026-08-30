@@ -6,7 +6,14 @@ import os
 import json
 from pathlib import Path
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+# youtube.upload publica; os dois de leitura existem para medir o canal em vez
+# de supor. Mudar esta lista invalida o token guardado: o Google emite o token
+# amarrado aos escopos concedidos, então acrescentar um exige reautorizar.
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
+]
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _TOKEN_FILE = _PROJECT_ROOT / "data" / "youtube_token.json"
 
