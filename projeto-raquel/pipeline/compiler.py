@@ -22,7 +22,13 @@ INTRO_SECONDS = 5
 OUTRO_SECONDS = 6
 
 # Teto de duração: evento muito grande é dividido em mais de um vídeo.
-TARGET_MAX_SECONDS = 15 * 60
+#
+# O limite é do vídeo FINAL, não da soma dos clipes: intro e outro entram
+# depois do corte e empurravam o resultado para 15min11s, acima dos 15 min que
+# um canal sem verificação por telefone pode enviar. Os 10s de folga cobrem o
+# arredondamento do concat, que fecha em limite de quadro.
+YOUTUBE_UNVERIFIED_MAX_SECONDS = 15 * 60
+TARGET_MAX_SECONDS = YOUTUBE_UNVERIFIED_MAX_SECONDS - INTRO_SECONDS - OUTRO_SECONDS - 10
 
 FONT_FILE = "C:/Windows/Fonts/arialbd.ttf"
 BG_COLOR = "0x14161C"
