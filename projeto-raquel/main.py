@@ -237,6 +237,68 @@ def cmd_fetch(max_videos: int = 20, max_seen: int = None):
     print(f"\n{added} Reel(s) no pool. Disponível para compilar: {total/60:.1f} min.")
 
 
+def cmd_thumbs(apply: bool = False):
+    """
+    Sobe a capa de cada compilado publicado.
+
+    As imagens ficam em `data/thumbnails/comp_XXX.jpg`, escolhidas a olho entre
+    quadros candidatos — o quadro automático do YouTube costuma cair num corte
+    entre clipes. Capa personalizada exige canal verificado por telefone; sem
+    isso a API devolve 403 `youtube.thumbnail/forbidden`.
+    """
+    from googleapiclient.http import MediaFileUpload
+    from pipeline.uploader import _get_youtube_service
+
+    thumb_dir = Path("data/thumbnails")
+    pendentes = []
+    con = __import__("sqlite3").connect(os.getenv("DB_PATH", "data/pipeline.db"))
+    con.row_factory = __import__("sqlite3").Row
+    for r in con.execute(
+        "select id, title, youtube_video_id from compilations "
+        "where youtube_video_id is not null order by id"
+    ):
+        capa = thumb_dir / f"comp_{r['id']:03d}.jpg"
+        pendentes.append((r["id"], r["title"], r["youtube_video_id"], capa, capa.exists()))
+    con.close()
+
+    faltando = [p for p in pendentes if not p[4]]
+    print(f"\n{len(pendentes)} vídeo(s) publicado(s); {len(pendentes) - len(faltando)} com capa em disco.")
+    for comp_id, title, _, capa, existe in pendentes:
+        print(f"  #{comp_id} {'OK ' if existe else '-- '} {capa.name}  {title[:48]}")
+    if faltando:
+        print(f"\n{len(faltando)} sem imagem em {thumb_dir}/ — gere o arquivo antes de subir.")
+
+    if not apply:
+        print("\nSimulação. Rode com --apply para enviar ao YouTube.")
+        return
+
+    youtube = _get_youtube_service(
+        os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json")
+    )
+    ok = 0
+    for comp_id, title, video_id, capa, existe in pendentes:
+        if not existe:
+            continue
+        try:
+            youtube.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(str(capa), mimetype="image/jpeg"),
+            ).execute()
+            print(f"  ✓ #{comp_id} capa enviada: https://youtu.be/{video_id}")
+            ok += 1
+        except Exception as e:
+            texto = str(e)
+            if "youtube.thumbnail" in texto or "custom video thumbnails" in texto:
+                log.error(
+                    f"#{comp_id}: canal sem verificação por telefone — capa personalizada "
+                    f"bloqueada. Verifique em youtube.com/verify e rode de novo."
+                )
+                break
+            log.error(f"#{comp_id}: {texto[:200]}")
+
+    print(f"\n{ok} capa(s) enviada(s).")
+
+
 def cmd_import_dyi(zip_path: str, apply: bool = False):
     """
     Importa o acervo do zip "Baixar suas informações" do Instagram para o pool.
@@ -873,6 +935,9 @@ def main():
             int(args[1]) if len(args) > 1 else 20,
             int(args[2]) if len(args) > 2 else None,
         )
+
+    elif cmd == "thumbs":
+        cmd_thumbs(apply="--apply" in args)
 
     elif cmd == "import-dyi":
         if len(args) < 2:
