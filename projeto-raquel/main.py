@@ -14,7 +14,11 @@ Uso:
   python main.py upload                   Faz upload dos vídeos agendados para hoje
 
   Fluxo 16:9 (vídeo longo — gera horas de exibição para monetização):
-  python main.py fetch [N]                Baixa N Reels para o pool, sem publicar
+  python main.py fetch [N] [FUNDO]        Baixa N Reels para o pool, sem publicar
+                                          FUNDO atravessa N posts ja conhecidos para
+                                          alcancar o acervo antigo (so em rodada manual:
+                                          na agendada isso varre o perfil 2x/dia e
+                                          derrubou a conta anterior)
   python main.py compile [N]              Monta compilados 16:9 de 10-15 min do pool
   python main.py publish                  Sobe os compilados prontos para o YouTube
   python main.py pool                     Mostra o estado do pool e dos compilados
@@ -162,8 +166,15 @@ def cmd_sync_instagram(max_videos: int = 5):
 
 # ─── FLUXO 16:9 (VÍDEO LONGO) ────────────────────────────────────────────────
 
-def cmd_fetch(max_videos: int = 20):
-    """Baixa Reels para o pool de compilação. Não publica nada."""
+def cmd_fetch(max_videos: int = 20, max_seen: int = None):
+    """
+    Baixa Reels para o pool de compilação. Não publica nada.
+
+    `max_seen` atravessa N posts já conhecidos seguidos antes de desistir. O
+    padrão (100) serve ao regime diário: o feed começa pelos recentes, então
+    100 já cobre qualquer post novo. Valor alto varre o perfil inteiro para
+    alcançar o acervo antigo — use só em rodada manual, nunca na agendada.
+    """
     from pipeline.compiler import probe_duration, verify_playable
 
     channel = _load_channel()
@@ -176,9 +187,17 @@ def cmd_fetch(max_videos: int = 20):
     known = get_all_synced_instagram_ids() | get_pool_ids() | get_exhausted_clip_ids()
     print(f"\nBuscando até {max_videos} Reels novos de {handle} ({len(known)} já conhecidos)...")
 
+    from pipeline.instagram_sync import MAX_ALREADY_SEEN_CONSECUTIVE
+    seen_limit = max_seen or MAX_ALREADY_SEEN_CONSECUTIVE
+    if seen_limit > MAX_ALREADY_SEEN_CONSECUTIVE:
+        paginas = seen_limit // 12
+        print(f"  VARREDURA PROFUNDA: atravessa até {seen_limit} posts conhecidos "
+              f"(~{paginas} páginas, ~{paginas * 6.5 / 60:.0f} min de paginação)")
+
     try:
         videos = fetch_and_download_profile(
             handle, temp_dir, already_synced_ids=known, max_new=max_videos,
+            max_consecutive_seen=seen_limit,
         )
     except Exception as e:
         # Formato reconhecido por deploy/notify_result.py para classificar 401/429.
@@ -745,7 +764,10 @@ def main():
             cmd_sync_instagram()
 
     elif cmd == "fetch":
-        cmd_fetch(int(args[1]) if len(args) > 1 else 20)
+        cmd_fetch(
+            int(args[1]) if len(args) > 1 else 20,
+            int(args[2]) if len(args) > 2 else None,
+        )
 
     elif cmd == "compile":
         cmd_compile(int(args[1]) if len(args) > 1 else None)
