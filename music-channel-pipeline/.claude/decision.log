@@ -32,3 +32,10 @@
 [2026-08-29 13:00] MEDIUM | regeracao das imagens 18 e 20 do Hawaii (flux-1.1-pro-ultra, ~$0.12) + STYLE_VERSION 2 | razao: API call de escrita externa; Flux assinou 2 imagens com marca dagua falsa de fotografo, inaceitavel em canal monetizado
 [2026-08-29 13:08] MEDIUM | python main.py generate (thumbnail Flux 1.1 Pro ~$0.04 + montagem 1h) | razao: API call de escrita externa — primeiro video do Hawaii com fundo de slideshow, a pedido do Andre
 [2026-08-29 13:15] MEDIUM | python force_upload.py 14 (publicacao YouTube, Hawaii, 3.07 GB) | razao: API call de escrita externa — publicacao imediata pedida pelo Andre, fora do slot das 18:00
+[2026-08-29 13:30] MEDIUM | 4 imagens de teste de estilo realista (flux-1.1-pro-ultra, ~$0.24) | razao: API call de escrita externa — escolher prompt antes de regerar as 30, Andre achou o acervo com cara de IA
+[2026-08-29 13:40] MEDIUM | build_scenery.py hawaii --images-only, acervo v3 (30 imagens flux-1.1-pro-ultra, ~$1.80) | razao: API call de escrita externa — Andre achou o acervo v2 com cara de IA; STYLE v3 = foto amadora de turista, sem grade cinematografico
+[2026-08-29 13:42] MEDIUM | video_queue id=14 marcado youtube_id=DESCARTADO | razao: escrita em banco; video do acervo v2 substituido pelo v3, e a task Upload das 18:00 nao pode publica-lo (Andre pediu para nao subir)
+[2026-08-30 00:55] MEDIUM | regeracao das imagens 15, 18 e 29 do Hawaii v3 (~$0.18) | razao: API call de escrita externa; Flux assinou 3 de 30 mesmo com negativa reforcada
+[2026-08-30 00:52] MEDIUM | build_scenery.py hawaii --force-segment (montagem estatica + recorte de margem) | razao: reconstrucao do segmento; sem custo de API
+[2026-08-30 01:10] MEDIUM | python regenerate.py hawaii night_back (thumbnail Flux ~$0.04 + montagem 1h) | razao: API call de escrita externa — remontar o video com o acervo v3 realista e estatico; rotacao NAO e marcada de novo
+[2026-08-30 01:12] MEDIUM | video_queue scheduled_at do item novo empurrado para 2027 | razao: escrita em banco; Andre pediu explicitamente para NAO subir antes de ver, e a task Upload das 18:00 pegaria o item automaticamente

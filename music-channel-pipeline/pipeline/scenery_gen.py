@@ -37,25 +37,33 @@ SLEEP_BETWEEN_IMAGES = 12
 # Sobe a cada mudança em STYLE/NEGATIVE/SCENES. Fica gravado por imagem no
 # manifesto, que é o único jeito de saber depois quais arquivos de um acervo
 # misto vieram de qual versão do prompt.
-STYLE_VERSION = 2
+STYLE_VERSION = 3
 
-# Look comum a todas as cenas — o mesmo grade quente/cinematográfico das
-# thumbnails, para o acervo não destoar da identidade do canal.
+# Look comum a todas as cenas.
 #
-# "award-winning" saiu na v2: empurrava o Flux para o registro de print de
-# galeria e ele assinava a foto. Duas das 30 do Hawaii vieram com assinatura
-# falsa de fotógrafo ("R kaui PHOTOGRAPHY" e "MAUAII") — num canal monetizado
-# isso passa a impressão de banco de imagens pirateado.
+# v1 → v2: "award-winning" saiu. Empurrava o Flux para o registro de print de
+# galeria e ele assinava a foto — 2 das 30 do Hawaii vieram com assinatura falsa
+# de fotógrafo ("R kaui PHOTOGRAPHY", "MAUAII").
+#
+# v2 → v3: o acervo inteiro tinha cara de IA (turquesa brilhando, luz perfeita
+# demais, cartão-postal). Saíram "hyperrealistic", "cinematic color grade" e
+# "Kodak Portra 400" — justamente o que estilizava. O que funcionou num teste
+# de 8 imagens foi o oposto: descrever uma foto banal de turista.
+#
+# Cuidado ao mexer: a variante "authentic travel photograph" testada junto
+# parecia igualmente boa e trouxe de volta um "©Mauji Autharkio/USA" no canto.
+# Qualquer palavra que sugira autoria profissional convida a assinatura.
 STYLE = (
-    "RAW photo, professional travel photography, hyperrealistic, "
-    "warm cinematic color grade, Kodak Portra 400 film emulation, "
-    "razor sharp, deep depth of field, natural unedited landscape photograph"
+    "authentic amateur travel snapshot, natural lighting, "
+    "no filter, no post-processing, true colors, slight atmospheric haze, "
+    "ordinary everyday photograph, imperfect casual composition"
 )
 # Gente gerada por IA em segundo plano é onde aparecem rostos derretidos e
 # mãos com seis dedos. O acervo é de paisagem: sem pessoas, ponto.
 NEGATIVE = (
     "no people, no person, no crowd, "
     "no text, no watermark, no logo, no signature, no photographer credit, "
+    "no copyright notice, no copyright symbol, no date stamp, "
     "no caption, no lettering, no border, no frame"
 )
 

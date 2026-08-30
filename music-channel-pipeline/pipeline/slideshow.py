@@ -30,6 +30,11 @@ XFADE_SECONDS = 2
 FPS = 30
 WIDTH, HEIGHT = 1920, 1080
 
+# Imagem parada é o padrão desde 29/08/2026: André achou que o movimento lento
+# atrapalhava mais do que ajudava. O Ken Burns continua aqui, atrás de um
+# interruptor, porque a mecânica de fase da emenda depende dele.
+KEN_BURNS = False
+
 # O Ken Burns amplia 12% ao longo dos 20 s. O acervo sai do Flux em 2752×1536,
 # então mesmo no zoom máximo o recorte (2457 px) ainda é maior que 1920 — a
 # imagem nunca é ampliada, só reduzida. Nitidez preservada.
@@ -41,12 +46,34 @@ PAN_AMPLITUDE = 0.35
 # da resolução final e reduzir depois é o que impede o zoom lento de "pipocar".
 SUPERSAMPLE = 2
 
+# Margem de segurança descartada de cada borda antes de escalar.
+#
+# O Flux assina a foto mesmo com negativa explícita — 3 das 30 imagens do
+# Hawaii na v3 saíram com "© HA'AUI", "Ahaui" e "©...huna", todas a menos de 5%
+# da borda. Palavra no prompt não é mecanismo; recorte é. Sobra resolução para
+# isso: 2752×1536 menos 12% ainda dá 2422×1351, acima de 1080p, então a imagem
+# continua sendo só reduzida, nunca ampliada.
+SAFE_MARGIN = 0.06
+
+_CROP_MARGIN = (
+    f"crop=iw*{1 - 2 * SAFE_MARGIN:.2f}:ih*{1 - 2 * SAFE_MARGIN:.2f}"
+)
+
+_FIT_STATIC = (
+    f"{_CROP_MARGIN},"
+    f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,"
+    f"crop={WIDTH}:{HEIGHT},setsar=1,format=yuv420p"
+)
+
 
 def _ken_burns_filter(total_frames: int, offset_frames: int, span_frames: int,
                       zoom_in: bool, pan_dir: int, tilt_dir: int) -> str:
-    """Filtro de um slide. `offset_frames`/`span_frames` posicionam este trecho
-    dentro do Ken Burns completo da imagem — é isso que permite cortar a
-    imagem 01 em cabeça e rabo sem que o movimento dê um salto na emenda."""
+    """Filtro de um slide com movimento.
+
+    `offset_frames`/`span_frames` posicionam este trecho dentro do Ken Burns
+    completo da imagem — é isso que permite cortar a imagem 01 em cabeça e rabo
+    sem que o movimento dê um salto na emenda.
+    """
     # Fase normalizada dentro do movimento completo, em [0,1].
     phase = f"(on+{offset_frames})/{span_frames - 1}"
     zoom = (f"1+{ZOOM_AMPLITUDE}*{phase}" if zoom_in
@@ -55,6 +82,7 @@ def _ken_burns_filter(total_frames: int, offset_frames: int, span_frames: int,
     fx = f"(0.5+{pan_dir}*{PAN_AMPLITUDE}*(2*{phase}-1))"
     fy = f"(0.5+{tilt_dir}*{PAN_AMPLITUDE * 0.6}*(2*{phase}-1))"
     return (
+        f"{_CROP_MARGIN},"
         f"scale={WIDTH * SUPERSAMPLE}:{HEIGHT * SUPERSAMPLE}:"
         f"force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={WIDTH * SUPERSAMPLE}:{HEIGHT * SUPERSAMPLE},setsar=1,"
@@ -67,10 +95,20 @@ def _ken_burns_filter(total_frames: int, offset_frames: int, span_frames: int,
 def _render_slide(image: Path, output: Path, total_frames: int,
                   offset_frames: int, span_frames: int,
                   zoom_in: bool, pan_dir: int, tilt_dir: int) -> Path:
-    subprocess.run([
-        "ffmpeg", "-y", "-i", str(image),
-        "-vf", _ken_burns_filter(total_frames, offset_frames, span_frames,
-                                 zoom_in, pan_dir, tilt_dir),
+    if KEN_BURNS:
+        # zoompan gera os N frames a partir de UM frame de entrada, daí a
+        # imagem entrar sem -loop.
+        cmd = ["ffmpeg", "-y", "-i", str(image),
+               "-vf", _ken_burns_filter(total_frames, offset_frames,
+                                        span_frames, zoom_in, pan_dir, tilt_dir)]
+    else:
+        # Parado: repetir a mesma imagem pelos N frames. Sem zoompan não há
+        # supersample a fazer — escalar direto para 1080p sai mais nítido, e
+        # o x264 comprime frame idêntico a quase nada.
+        cmd = ["ffmpeg", "-y", "-loop", "1", "-framerate", str(FPS),
+               "-i", str(image), "-vf", _FIT_STATIC]
+
+    subprocess.run(cmd + [
         "-frames:v", str(total_frames),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
         "-fps_mode", "cfr", "-r", str(FPS), "-an", str(output),
