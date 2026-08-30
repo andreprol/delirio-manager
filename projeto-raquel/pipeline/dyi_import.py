@@ -54,6 +54,28 @@ def _member_digest(zf: zipfile.ZipFile, member: str) -> str:
     return h.hexdigest()
 
 
+def _iter_posts(data):
+    """
+    Normaliza o documento numa sequência de POSTS.
+
+    O export ora traz uma lista na raiz, ora um envelope
+    (`{"ig_reels_media": [...]}`). Tratar o envelope como um post só fazia a
+    legenda do post vazar para todos os itens e a faixa do primeiro post ser
+    atribuída ao acervo inteiro — a legenda é a única fonte permitida para o
+    título, e a faixa decide se o clipe é reivindicável.
+    """
+    if isinstance(data, list):
+        for item in data:
+            yield from _iter_posts(item)
+    elif isinstance(data, dict):
+        if isinstance(data.get("media"), list):
+            yield data                      # é um post
+            return
+        for valor in data.values():
+            if isinstance(valor, (list, dict)):
+                yield from _iter_posts(valor)
+
+
 def _walk_media(obj):
     """
     Rende dicts de mídia de qualquer um dos formatos de JSON do export.
@@ -68,6 +90,49 @@ def _walk_media(obj):
     elif isinstance(obj, list):
         for value in obj:
             yield from _walk_media(value)
+
+
+# Chaves onde o export guarda a faixa usada no Reel. O formato mudou de nome
+# mais de uma vez, então procuramos por qualquer uma em vez de fixar um esquema.
+_MUSIC_TITLE_KEYS = ("song_title", "song_name", "title", "audio_asset_title", "name")
+_MUSIC_ARTIST_KEYS = ("artist_name", "artist", "display_artist", "ig_artist_username")
+
+
+def _find_music(obj) -> dict | None:
+    """
+    Procura na árvore um bloco que descreva a faixa do Reel.
+
+    Reconhece o bloco pela presença de um campo de artista junto de um de
+    título: só o título seria ambíguo (o export usa `title` também para a
+    legenda do post, e confundir os dois marcaria como música toda legenda).
+    """
+    if isinstance(obj, dict):
+        chaves = set(obj)
+        artista = next((obj[k] for k in _MUSIC_ARTIST_KEYS
+                        if isinstance(obj.get(k), str) and obj[k].strip()), None)
+        if artista:
+            titulo = next((obj[k] for k in _MUSIC_TITLE_KEYS
+                           if isinstance(obj.get(k), str) and obj[k].strip()), None)
+            if titulo:
+                return {"artista": _fix_mojibake(artista.strip()),
+                        "titulo": _fix_mojibake(titulo.strip())}
+        # Blocos nomeados explicitamente de música merecem descida mesmo sem
+        # artista no nível de cima.
+        for k in chaves:
+            if "music" in k.lower() or "audio" in k.lower():
+                achado = _find_music(obj[k])
+                if achado:
+                    return achado
+        for v in obj.values():
+            achado = _find_music(v)
+            if achado:
+                return achado
+    elif isinstance(obj, list):
+        for v in obj:
+            achado = _find_music(v)
+            if achado:
+                return achado
+    return None
 
 
 def _entry_caption(media: dict, parent_title: str) -> str:
@@ -106,8 +171,8 @@ def find_media_entries(zip_path) -> list[dict]:
             except (json.JSONDecodeError, KeyError):
                 continue
 
-            for post in (data if isinstance(data, list) else [data]):
-                parent_title = post.get("title", "") if isinstance(post, dict) else ""
+            for post in _iter_posts(data):
+                parent_title = post.get("title", "")
                 for media in _walk_media(post):
                     uri = media.get("uri", "")
                     if not uri.lower().endswith(_VIDEO_SUFFIXES):
@@ -121,10 +186,14 @@ def find_media_entries(zip_path) -> list[dict]:
                     ts = media.get("creation_timestamp") or (
                         post.get("creation_timestamp") if isinstance(post, dict) else None
                     )
+                    # A faixa costuma ficar no post, não no item de mídia
+                    # (carrossel: um áudio para vários vídeos).
+                    musica = _find_music(media) or _find_music(post)
                     entries.append({
                         "member": member,
                         "timestamp": int(ts) if ts else 0,
                         "caption": _entry_caption(media, parent_title),
+                        "musica": musica,
                         # Id sintético: o zip não traz o media_id do Instagram.
                         # Derivar do caminho mantém o mesmo id se o zip for
                         # reimportado, evitando duplicata por reimportação.

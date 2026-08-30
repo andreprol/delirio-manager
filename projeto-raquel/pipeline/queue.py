@@ -123,6 +123,10 @@ def _migrate(con):
         "music_status": f"TEXT NOT NULL DEFAULT '{MUSIC_DESCONHECIDO}'",
         "music_score": "REAL",
         "music_checked_at": "TEXT",
+        # Faixa declarada pelo próprio Instagram ("Artista — Música"), quando o
+        # Reel usa áudio do catálogo. É a fonte que a medição acústica não
+        # alcança: diz QUAL faixa, não só que há som.
+        "music_title": "TEXT",
     }
     for nome, tipo in novas.items():
         if nome not in existentes:
@@ -237,13 +241,28 @@ def get_quarantined_clips() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def set_clip_music(instagram_id: str, status: str, score: float | None):
+def set_clip_music(instagram_id: str, status: str, score: float | None,
+                   title: str = None):
+    """
+    Grava o resultado da análise de áudio.
+
+    `title` só é sobrescrito quando vem preenchido: a medição acústica roda
+    depois da importação e não tem faixa para informar — se ela apagasse o
+    título vindo do Instagram, a única informação boa que temos sumiria.
+    """
     con = _conn()
-    con.execute(
-        "UPDATE clip_pool SET music_status = ?, music_score = ?, music_checked_at = ? "
-        "WHERE instagram_id = ?",
-        (status, score, datetime.utcnow().isoformat(), instagram_id),
-    )
+    if title:
+        con.execute(
+            "UPDATE clip_pool SET music_status = ?, music_score = ?, "
+            "music_checked_at = ?, music_title = ? WHERE instagram_id = ?",
+            (status, score, datetime.utcnow().isoformat(), title, instagram_id),
+        )
+    else:
+        con.execute(
+            "UPDATE clip_pool SET music_status = ?, music_score = ?, "
+            "music_checked_at = ? WHERE instagram_id = ?",
+            (status, score, datetime.utcnow().isoformat(), instagram_id),
+        )
     con.commit()
     con.close()
 
