@@ -41,3 +41,6 @@
 [2026-08-30 19:51] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
 [2026-08-30 19:59] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
 [2026-08-30 20:20] verify-gate OK | projeto: /f/delirio-manager/projeto-raquel
+[2026-08-30 21:40] MEDIUM | robocopy data/ + .env + client_secrets.json de F:/delirio-manager para F:/RichClub | razao: consolidar em clone unico; 2,1 GB, 141 arquivos, conferido por hash
+[2026-08-30 21:45] MEDIUM | Set-ScheduledTask ProjetoRaquel-Sync-10h/14h/18h e Raquel_SyncManual_1x -> F:/RichClub | razao: apontar as 4 tarefas para o clone unico; as outras 8 ja apontavam
+[2026-08-30 21:50] HIGH-EVITADO | rename de F:/delirio-manager NAO concluido | razao: pasta travada pelo proprio processo pwsh da sessao (PID 61016); nao deletado, nada perdido
