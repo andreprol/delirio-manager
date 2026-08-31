@@ -4,7 +4,7 @@
 :: classifica como Shorts e não geram horas de exibição), acumula os Reels num
 :: pool e publica compilados horizontais de 10-15 min.
 set PYTHONIOENCODING=utf-8
-cd /d F:\delirio-manager\projeto-raquel
+cd /d F:\RichClub\projeto-raquel
 
 :: 1. Baixa Reels novos para o pool (não publica nada)
 "C:\Program Files\Python312\python.exe" main.py fetch 25 > data\run_current.log 2>&1

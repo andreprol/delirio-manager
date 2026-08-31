@@ -1,7 +1,7 @@
 @echo off
 :: Sync diário Instagram → YouTube — Projeto Raquel
 set PYTHONIOENCODING=utf-8
-cd /d F:\delirio-manager\projeto-raquel
+cd /d F:\RichClub\projeto-raquel
 
 :: Re-upload de qualquer vídeo com youtube_video_id=NULL no banco (runs anteriores com falha)
 "C:\Program Files\Python312\python.exe" deploy\reupload_failed.py > data\run_current.log 2>&1
