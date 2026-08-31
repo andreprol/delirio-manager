@@ -1,4 +1,10 @@
 {
-  "upload_slots_brt": ["12:00", "18:00", "21:00"],
-  "max_per_day": 3
+  "upload_slots_brt": [
+    { "time": "12:00", "kind": "long" },
+    { "time": "18:00", "kind": "short" },
+    { "time": "21:00", "kind": "short" }
+  ],
+  "max_videos_per_run": 1,
+  "segments_per_video": 4,
+  "shorts_per_video": 2
 }

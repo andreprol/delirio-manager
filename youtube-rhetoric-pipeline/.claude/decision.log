@@ -14,3 +14,23 @@
 [2026-08-09 16:49] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
 [2026-08-09 17:04] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
 [2026-08-09 17:13] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-14 12:28] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-14 12:30] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-14 12:32] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-14 12:33] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-14 12:47] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-15 16:10] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-15 17:02] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-15 17:05] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-15 17:17] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-22 17:52] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-22 18:00] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-22 18:20] MEDIUM | pip install --upgrade yt-dlp (2026.7.4 -> 2026.8.19) | razão: instalação de dependência; extrator antigo devolvia HTTP 403 em todos os vídeos longos
+[2026-08-22 18:20] MEDIUM | edição config/schedule.json | razão: config file; slots passam a ter kind (12h longo, 18h/21h short) + max_videos_per_run
+[2026-08-22 18:20] MEDIUM | edição config/persona.json | razão: config file; max_narration_chars 800 -> 600 para caber 4 segmentos/dia na cota ElevenLabs
+[2026-08-22 18:20] MEDIUM | edição requirements.txt | razão: config file; piso do yt-dlp elevado para 2026.8.19
+[2026-08-22 18:20] MEDIUM | ALTER TABLE output_queue ADD COLUMN kind/file_path (data/pipeline.db, 22 linhas) | razão: migração de schema em banco de produção; aditiva, sem reescrita de linha
+[2026-08-22 18:25] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-22 18:40] MEDIUM | edição youtube-rhetoric-pipeline/.gitignore | razão: config file; .venv/ não cobria a pasta real venv/, que ia para o stage
+[2026-08-22 18:56] verify-gate OK | projeto: /f/RichClub/youtube-rhetoric-pipeline
+[2026-08-22 19:00] MEDIUM | git push origin master | razão: push para remoto (branch normal, não force)

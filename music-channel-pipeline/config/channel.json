@@ -3,12 +3,16 @@
   "dj_name": "DJ Umbra",
   "youtube_channel_id": "UCW1egP8J52NHjFSCd0mthaQ",
   "video_duration_minutes": 60,
-  "tracks_per_video": 4,
+  "tracks_per_video": 8,
   "replicate_model": "black-forest-labs/flux-1.1-pro",
   "canonical_face": "config/dj_canonical.jpg",
   "prompt_strength": 0.85,
   "safety_tolerance": 5,
-  "animate_video": false,
-  "clip_model": "minimax/video-01",
-  "clips_per_video": 5
+  "background_mode": "scenery",
+  "scenery_model": "black-forest-labs/flux-1.1-pro-ultra",
+  "scenery_raw": true,
+  "scenery_safety_tolerance": 2,
+  "clip_model": "kwaivgi/kling-v2.1",
+  "clip_duration_seconds": 5,
+  "clip_mode": "pro"
 }

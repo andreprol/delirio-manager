@@ -18,13 +18,58 @@ from pipeline.queue import (
     next_upload_slot, enqueue_video, get_due_uploads, mark_uploaded,
 )
 from pipeline.image_gen import generate_thumbnail
-from pipeline.clip_gen import generate_clips
-from pipeline.video_builder import build_video, build_video_from_clips
-from pipeline.uploader import upload_video
+from pipeline.clip_gen import generate_loop_clip
+from pipeline.scenery_gen import ensure_scenery, ensure_segment
+from pipeline.video_builder import build_video, build_video_from_loop_clip
+from pipeline.uploader import upload_video, thumbnail_for
+from pipeline.notifier import notify, record_undelivered
 
 CHANNEL_FILE  = Path("config/channel.json")
 THEMES_FILE   = Path("config/themes.json")
 SCHEDULE_FILE = Path("config/schedule.json")
+ENV_FILE      = Path(__file__).parent / ".env"
+
+PLACEHOLDERS = ("your_replicate_token_here", "r8_your_replicate_token_here",
+                "your_resend_key_here", "re_your_resend_key_here",
+                "COLE_O_TOKEN_AQUI")
+
+
+def _missing(var: str) -> bool:
+    value = os.getenv(var, "").strip()
+    return not value or value in PLACEHOLDERS
+
+
+def _preflight(cmd: str):
+    """Falha cedo e explicado quando falta credencial.
+
+    Sem isto o slot morre com stack trace dentro de uma task que não redireciona
+    log — foi o que aconteceu em 22/08/2026, quando o .env foi apagado por um
+    `git rm` sem --cached.
+    """
+    problems = []
+    if not ENV_FILE.exists():
+        problems.append(f"{ENV_FILE} não existe. Copiar de .env.example e preencher.")
+
+    # __main__ trata qualquer comando que não seja "upload" como generate —
+    # a checagem tem que seguir a mesma regra, senão um typo pula o preflight.
+    if cmd == "upload":
+        secrets = Path(os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json"))
+        if not secrets.exists():
+            problems.append(f"YOUTUBE_CLIENT_SECRETS_FILE aponta para {secrets}, que não existe.")
+    elif _missing("REPLICATE_API_TOKEN"):
+        problems.append("REPLICATE_API_TOKEN ausente ou com placeholder no .env.")
+
+    # RESEND não bloqueia o slot — mas sem ela nenhum alerta sai, então o
+    # problema tem que aparecer no log e no arquivo de alertas não entregues.
+    if _missing("RESEND_API_KEY"):
+        log.error("RESEND_API_KEY ausente — NENHUM alerta por e-mail vai sair deste slot.")
+        record_undelivered("RESEND_API_KEY ausente", ["Slot rodou sem canal de alerta."])
+
+    if problems:
+        for p in problems:
+            log.error("Pré-checagem falhou: %s", p)
+        notify(f"Slot '{cmd}' não rodou — credencial faltando", problems, status="fail")
+        sys.exit(1)
 
 
 def _load_config():
@@ -58,7 +103,24 @@ def _make_tags(theme: dict) -> list[str]:
     ]
 
 
-def run_generate():
+def _find_theme(themes, theme_id: str) -> dict:
+    items = themes["themes"] if isinstance(themes, dict) else themes
+    for t in items:
+        if t["id"] == theme_id:
+            return t
+    raise SystemExit(f"Tema '{theme_id}' não existe em config/themes.json.")
+
+
+def _find_composition(composition_id: str):
+    from pipeline.queue import ALL_COMPOSITIONS
+    for cid, desc in ALL_COMPOSITIONS:
+        if cid == composition_id:
+            return cid, desc
+    raise SystemExit(f"Composição '{composition_id}' não existe.")
+
+
+def run_generate(theme_id: str = None, composition_id: str = None,
+                 mark_rotation: bool = True):
     init_db()
     channel, themes, schedule = _load_config()
 
@@ -71,6 +133,12 @@ def run_generate():
     all_audio = sorted(audio_dir.glob("*.mp3")) + sorted(audio_dir.glob("*.wav"))
     if not all_audio:
         log.warning("Nenhum áudio em %s — coloque arquivos MP3 do Suno e rode novamente.", audio_dir)
+        notify(
+            "Sem tracks — nenhum vídeo gerado hoje",
+            [f"A pasta {audio_dir} está vazia.",
+             "Gere os tracks no Suno com os prompts das 06:00 e jogue os MP3s lá."],
+            status="warn",
+        )
         sys.exit(0)
 
     tracks_per_video = int(channel.get("tracks_per_video", 5))
@@ -79,9 +147,18 @@ def run_generate():
         log.warning("Apenas %d track(s) disponível — ideal ter %d. Continuando.", len(audio_files), tracks_per_video)
     log.info("Usando %d track(s): %s", len(audio_files), [f.name for f in audio_files])
 
-    theme = get_next_theme(themes)
-    comp_id, comp_desc = get_next_composition()
-    log.info("Tema: %s | Composição: %s", theme["name"], comp_id)
+    if theme_id or composition_id:
+        # Refação avulsa: tema/composição escolhidos na mão e rotação intocada,
+        # para não empurrar o ciclo diário dos 12 temas.
+        theme = _find_theme(themes, theme_id) if theme_id else get_next_theme(themes)
+        comp_id, comp_desc = (
+            _find_composition(composition_id) if composition_id else get_next_composition()
+        )
+    else:
+        theme = get_next_theme(themes)
+        comp_id, comp_desc = get_next_composition()
+    log.info("Tema: %s | Composição: %s (rotação: %s)",
+             theme["name"], comp_id, "sim" if mark_rotation else "não")
 
     # Unique ID for this video
     video_id = f"{theme['id']}_{comp_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -104,25 +181,51 @@ def run_generate():
     )
     log.info("Thumbnail: %s", img_path)
 
-    # Build video — animated clips or static image
-    animate = channel.get("animate_video", False)
-    log.info("Montando vídeo %d min... (animado=%s)", channel["video_duration_minutes"], animate)
+    # Fundo do vídeo: slideshow do local, avatar animado ou imagem parada.
+    # `background_mode` manda; `animate_video` fica lido como compatibilidade
+    # para não mudar o comportamento de quem tiver um channel.json antigo.
+    mode = channel.get("background_mode")
+    if not mode:
+        mode = "avatar_clip" if channel.get("animate_video", False) else "static"
+    log.info("Montando vídeo %d min... (fundo=%s)", channel["video_duration_minutes"], mode)
 
-    if animate:
-        clip_model = channel.get("clip_model", "minimax/video-01")
-        n_clips = int(channel.get("clips_per_video", 5))
-        log.info("Gerando %d clips animados via %s...", n_clips, clip_model)
-        clips_dir = temp_dir / "clips"
-        clip_paths = generate_clips(
-            thumbnail_path=img_path,
-            output_dir=clips_dir,
-            video_id=video_id,
-            model=clip_model,
-            n_clips=n_clips,
+    if mode == "scenery":
+        # O acervo de 30 imagens e o segmento de 9 min são permanentes e
+        # reusados em toda rotação. Na primeira vez de um tema isto gera e
+        # cobra (~$1,80); depois é só ler do disco.
+        log.info("Preparando cenário de %s...", theme["name"])
+        images = ensure_scenery(
+            theme,
+            model=channel.get("scenery_model", "black-forest-labs/flux-1.1-pro-ultra"),
+            # Chave própria, não o `safety_tolerance` do canal: aquele está em 5
+            # por causa do figurino da DJ, e paisagem não precisa de folga
+            # nenhuma. Reusar o do canal arriscava 422 no primeiro dia de cada
+            # tema novo — falha que só apareceria meses depois.
+            safety_tolerance=channel.get("scenery_safety_tolerance", 2),
+            raw=channel.get("scenery_raw", True),
         )
-        log.info("Clips gerados: %s", [c.name for c in clip_paths])
-        video_path = build_video_from_clips(
-            clip_paths=clip_paths,
+        segment = ensure_segment(theme, images)
+        video_path = build_video_from_loop_clip(
+            clip_path=segment,
+            audio_files=audio_files,
+            output_dir=temp_dir,
+            video_id=video_id,
+            target_minutes=channel["video_duration_minutes"],
+            already_normalized=True,
+        )
+    elif mode == "avatar_clip":
+        clip_model = channel.get("clip_model", "kwaivgi/kling-v2.1")
+        clip_seconds = int(channel.get("clip_duration_seconds", 5))
+        log.info("Gerando clipe de loop de %ds via %s...", clip_seconds, clip_model)
+        clip_path = generate_loop_clip(
+            thumbnail_path=img_path,
+            output_path=temp_dir / "loop_clip.mp4",
+            model=clip_model,
+            duration=clip_seconds,
+            mode=channel.get("clip_mode", "pro"),
+        )
+        video_path = build_video_from_loop_clip(
+            clip_path=clip_path,
             audio_files=audio_files,
             output_dir=temp_dir,
             video_id=video_id,
@@ -155,10 +258,21 @@ def run_generate():
         tags=json.dumps(tags),
         scheduled_at=slot,
     )
-    mark_theme_used(theme["id"])
-    mark_composition_used(comp_id)
+    if mark_rotation:
+        mark_theme_used(theme["id"])
+        mark_composition_used(comp_id)
 
     log.info("Enfileirado para upload: %s | slot: %s", title, slot)
+    remaining = len(all_audio) - len(audio_files)
+    notify(
+        "Vídeo gerado e enfileirado",
+        [f"Título: {title}",
+         f"Tema: {theme['name']} | Composição: {comp_id} | Fundo: {mode}",
+         f"Arquivo: {video_path}",
+         f"Slot de upload: {slot}",
+         f"Tracks restantes em pending/: {remaining}"],
+        status="ok" if remaining >= 4 else "warn",
+    )
 
 
 def run_upload():
@@ -168,24 +282,41 @@ def run_upload():
     due = get_due_uploads()
     if not due:
         log.info("Nenhum vídeo pendente de upload.")
+        notify("Slot de upload sem fila", ["Nenhum vídeo pendente com slot vencido."],
+               status="warn")
         return
 
     secrets_file = os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json")
     used_dir = Path(os.getenv("AUDIO_USED_DIR", "data/audio/used"))
     used_dir.mkdir(parents=True, exist_ok=True)
 
+    failures = 0
     for item in due:
         log.info("Fazendo upload: %s", item["title"])
         try:
-            yt_id = upload_video(
+            yt_id, thumb_error = upload_video(
                 file_path=item["video_path"],
                 title=item["title"],
                 description=item["description"],
                 tags=json.loads(item["tags"]),
                 secrets_file=secrets_file,
+                thumbnail_path=thumbnail_for(item["video_path"]),
             )
             mark_uploaded(item["id"], yt_id)
             log.info("Uploaded → https://youtube.com/watch?v=%s", yt_id)
+            # Thumbnail que não colou não derruba o slot — o vídeo está no ar —
+            # mas tem que virar alerta: com fundo de paisagem, o frame que o
+            # YouTube escolhe sozinho não tem a DJ, e o card perde a identidade.
+            notify(
+                "Vídeo publicado" if not thumb_error
+                else "Vídeo publicado — SEM a thumbnail da DJ",
+                [f"Título: {item['title']}",
+                 f"https://youtube.com/watch?v={yt_id}"]
+                + ([thumb_error,
+                    "Definir à mão no YouTube Studio: o card está com um frame "
+                    "de paisagem, sem a DJ."] if thumb_error else []),
+                status="warn" if thumb_error else "ok",
+            )
 
             # Move audio to used/
             for fname in item["audio_filename"].split("|"):
@@ -194,12 +325,36 @@ def run_upload():
                     shutil.move(str(src), used_dir / fname)
 
         except Exception as e:
+            failures += 1
             log.error("Upload falhou: %s", e)
+            hint = ""
+            if "invalid_grant" in str(e):
+                hint = ("Refresh token do YouTube expirou. Rodar "
+                        "`python reauth_youtube.py` e escolher o canal Umbra Sessions.")
+            notify(
+                "Upload FALHOU",
+                [f"Título: {item['title']}",
+                 f"Fila id={item['id']} — continua pendente, não foi perdido.",
+                 f"Erro: {e}"] + ([hint] if hint else []),
+                status="fail",
+            )
+
+    # Sair diferente de zero para a task do Scheduler não marcar sucesso.
+    if failures:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "generate"
-    if cmd == "upload":
-        run_upload()
-    else:
-        run_generate()
+    try:
+        _preflight(cmd)
+        if cmd == "upload":
+            run_upload()
+        else:
+            run_generate()
+    except Exception as e:
+        # SystemExit não passa por aqui (deriva de BaseException), então as
+        # saídas limpas com sys.exit continuam funcionando.
+        log.exception("Slot '%s' quebrou", cmd)
+        notify(f"Slot '{cmd}' quebrou", [f"{type(e).__name__}: {e}"], status="fail")
+        sys.exit(1)

@@ -29,6 +29,11 @@ def _get_youtube_service(secrets_file: str):
     return build("youtube", "v3", credentials=creds)
 
 
+def _sanitize(text: str) -> str:
+    """A API do YouTube rejeita '<' e '>' em título e descrição com HTTP 400."""
+    return text.replace("<", "(").replace(">", ")")
+
+
 def upload_video(file_path: str, title: str, description: str,
                  tags: list[str], secrets_file: str) -> str:
     path = Path(file_path)
@@ -37,8 +42,8 @@ def upload_video(file_path: str, title: str, description: str,
     youtube = _get_youtube_service(secrets_file)
     body = {
         "snippet": {
-            "title": title[:100],
-            "description": description[:5000],
+            "title": _sanitize(title)[:100],
+            "description": _sanitize(description)[:5000],
             "tags": tags,
             "categoryId": "27",
             "defaultLanguage": "pt",

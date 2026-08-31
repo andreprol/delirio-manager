@@ -1,3 +1,46 @@
 [2026-08-13 15:24] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
 [2026-08-13 16:08] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
 [2026-08-13 16:37] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 16:48] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 17:35] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 17:37] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 17:45] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 17:49] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-13 18:43] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-21 19:40] MEDIUM | python main.py generate (Replicate Flux 1.1 Pro ~$0.04) | razão: API call de escrita externa — regerar vídeo Rio que falhou às 10h por queda de internet
+[2026-08-21 19:59] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-21 20:30] MEDIUM | test_dance.py (Replicate seedance-1-lite + kling-v2.1 pro, ~$0.55) | razão: API call de escrita externa — teste de animação de dança com loop first==last frame
+[2026-08-21 22:50] MEDIUM | escopo youtube.upload adicionado ao consent screen do projeto anatomia-do-discurso (Google Cloud Console) | razão: alteração de config em serviço externo — pré-requisito para publicar o app e parar a expiração de 7 dias
+[2026-08-21 22:50] MEDIUM | Register-ScheduledTask \MusicChannel\CheckToken (diária 10:30) | razão: cria tarefa agendada no sistema
+[2026-08-22 19:27] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 19:43] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 19:51] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 19:45] MEDIUM | recriado .env (REPLICATE_API_TOKEN novo + RESEND_API_KEY restaurada) | razao: arquivo de config com segredo, apagado por git rm sem --cached em d2a98b25
+[2026-08-22 21:26] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 22:52] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 23:08] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 23:12] MEDIUM | config/channel.json tracks_per_video 4 -> 8 | razao: edicao de config; menos repeticao do bloco de audio na hora de video (4 faixas ~14min30 repetia ~4x, 8 faixas ~29min repete ~2x)
+[2026-08-22 23:11] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 23:17] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-22 23:30] MEDIUM | 8 faixas de samba movidas de pending/ para used/ apos enfileirar o Rio | razao: evitar que o Generate das 10:00 monte um Capri com as mesmas musicas e dois videos disputem o slot das 18:00
+[2026-08-24 18:06] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-24 18:24] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-29 12:39] MEDIUM | replicate flux-1.1-pro-ultra 1 imagem de teste (~$0.06) | razao: API call de escrita externa — validar modelo/params do acervo de cenario antes do lote de 30
+[2026-08-29 12:52] MEDIUM | build_scenery.py hawaii --images-only (29 imagens flux-1.1-pro-ultra, ~$1.74) | razao: API call de escrita externa — acervo permanente de cenario do Hawaii, reusado em todas as rotacoes futuras
+[2026-08-29 13:05] MEDIUM | config/channel.json animate_video removido -> background_mode="scenery" + scenery_model/scenery_raw | razao: edicao de config; fundo do video passa de avatar animado (Kling, $0.45/video) para slideshow de 30 imagens do local
+[2026-08-29 13:05] MEDIUM | .gitignore + data/scenery/ | razao: edicao de config; 360 JPEGs pagos + segmentos de video nao entram no repo
+[2026-08-29 13:00] MEDIUM | regeracao das imagens 18 e 20 do Hawaii (flux-1.1-pro-ultra, ~$0.12) + STYLE_VERSION 2 | razao: API call de escrita externa; Flux assinou 2 imagens com marca dagua falsa de fotografo, inaceitavel em canal monetizado
+[2026-08-29 13:08] MEDIUM | python main.py generate (thumbnail Flux 1.1 Pro ~$0.04 + montagem 1h) | razao: API call de escrita externa — primeiro video do Hawaii com fundo de slideshow, a pedido do Andre
+[2026-08-29 13:15] MEDIUM | python force_upload.py 14 (publicacao YouTube, Hawaii, 3.07 GB) | razao: API call de escrita externa — publicacao imediata pedida pelo Andre, fora do slot das 18:00
+[2026-08-29 13:30] MEDIUM | 4 imagens de teste de estilo realista (flux-1.1-pro-ultra, ~$0.24) | razao: API call de escrita externa — escolher prompt antes de regerar as 30, Andre achou o acervo com cara de IA
+[2026-08-29 13:40] MEDIUM | build_scenery.py hawaii --images-only, acervo v3 (30 imagens flux-1.1-pro-ultra, ~$1.80) | razao: API call de escrita externa — Andre achou o acervo v2 com cara de IA; STYLE v3 = foto amadora de turista, sem grade cinematografico
+[2026-08-29 13:42] MEDIUM | video_queue id=14 marcado youtube_id=DESCARTADO | razao: escrita em banco; video do acervo v2 substituido pelo v3, e a task Upload das 18:00 nao pode publica-lo (Andre pediu para nao subir)
+[2026-08-30 00:55] MEDIUM | regeracao das imagens 15, 18 e 29 do Hawaii v3 (~$0.18) | razao: API call de escrita externa; Flux assinou 3 de 30 mesmo com negativa reforcada
+[2026-08-30 00:52] MEDIUM | build_scenery.py hawaii --force-segment (montagem estatica + recorte de margem) | razao: reconstrucao do segmento; sem custo de API
+[2026-08-30 01:10] MEDIUM | python regenerate.py hawaii night_back (thumbnail Flux ~$0.04 + montagem 1h) | razao: API call de escrita externa — remontar o video com o acervo v3 realista e estatico; rotacao NAO e marcada de novo
+[2026-08-30 01:12] MEDIUM | video_queue scheduled_at do item novo empurrado para 2027 | razao: escrita em banco; Andre pediu explicitamente para NAO subir antes de ver, e a task Upload das 18:00 pegaria o item automaticamente
+[2026-08-30 10:44] verify-gate OK | projeto: /f/RichClub/music-channel-pipeline
+[2026-08-30 10:55] MEDIUM | python force_upload.py 15 (publicacao YouTube, Hawaii v3, 1.19 GB) | razao: API call de escrita externa — publicacao aprovada pelo Andre apos ver a amostra; canal Umbra Sessions confirmado por ele
+[2026-08-30 11:05] MEDIUM | build_scenery.py ibiza (30 imagens flux-1.1-pro-ultra, ~$1.80 + montagem do segmento) | razao: API call de escrita externa — pre-aquecer o acervo do proximo tema da rotacao, a pedido do Andre
+[2026-08-30 11:25] MEDIUM | regeracao da imagem 15 do Ibiza (~$0.06) | razao: API call de escrita externa; Flux assinou "(c) Ibiza Respacker" a 11% da borda, longe demais para o recorte de 6% resolver
+[2026-08-30 12:05] MEDIUM | git push origin master (4 commits, branch normal) | razao: push para repo remoto — etapa obrigatoria da skill documentar
