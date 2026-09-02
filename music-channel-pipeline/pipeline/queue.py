@@ -63,15 +63,29 @@ def _con():
 def get_next_theme(all_themes: list[dict]) -> dict:
     con = _con()
     used = [r["theme_id"] for r in con.execute(
-        "SELECT theme_id FROM theme_rotation ORDER BY id DESC"
+        "SELECT theme_id FROM theme_rotation ORDER BY id ASC"
     ).fetchall()]
     con.close()
     theme_ids = [t["id"] for t in all_themes]
     for tid in theme_ids:
         if tid not in used:
             return next(t for t in all_themes if t["id"] == tid)
-    # full rotation — restart
-    return next(t for t in all_themes if t["id"] == theme_ids[0])
+    # Todos já usados pelo menos uma vez — pega o menos usado recentemente
+    # (posição do último uso na lista, ordem ascendente = mais antigo primeiro).
+    # Antes disso caía sempre em theme_ids[0], travando a rotação em ibiza
+    # para sempre depois do primeiro ciclo completo.
+    last_index = {tid: i for i, tid in enumerate(used)}
+    next_tid = min(theme_ids, key=lambda tid: last_index.get(tid, -1))
+    return next(t for t in all_themes if t["id"] == next_tid)
+
+
+def theme_use_count(theme_id: str) -> int:
+    con = _con()
+    n = con.execute(
+        "SELECT COUNT(*) FROM theme_rotation WHERE theme_id=?", (theme_id,)
+    ).fetchone()[0]
+    con.close()
+    return n
 
 
 def get_next_composition() -> tuple[str, str]:

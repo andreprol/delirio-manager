@@ -59,16 +59,69 @@ THEME_EXTRAS = {
     "rio":      "Brazilian dark groove, Sugarloaf silhouette, Copacabana Atlantic night",
     "capri":    "Faraglioni rocks drama, emerald Mediterranean, exclusive island night",
     "hawaii":   "volcanic Pacific energy, tropical jungle dark, black lava cliffs night",
+    "cannes":     "French Riviera glamour, La Croisette night lights, yacht marina energy",
+    "formentera": "Balearic boho spirit, dune-lit lagoon, barefoot sunset groove",
+    "zanzibar":   "Swahili coast mystery, spice-market shadows, Indian Ocean night breeze",
+    "phuket":     "Andaman jungle drama, karst cliff silhouette, tropical monsoon heat",
+    "cabo":       "Baja desert-meets-ocean energy, El Arco silhouette, Pacific night swell",
+    "sttropez":   "Riviera glamour, pastel harbor lights, superyacht marina sophistication",
+    "seychelles": "granite island mystery, palm jungle hush, Indian Ocean isolation",
+    "marbella":   "Costa del Sol luxury, marina yacht lights, Sierra Blanca night silhouette",
+    "miami":      "Art Deco neon energy, South Beach skyline, Atlantic night heat",
+    "sardinia":   "Costa Smeralda exclusivity, granite cove shadows, emerald night water",
+    "borabora":     "Polynesian overwater dream, volcanic peak silhouette, lagoon hush",
+    "fiji":         "South Pacific island spirit, coral reef stillness, warm tropical night",
+    "barbados":     "Caribbean rum-shack groove, pastel colonial glow, palm-lined coast",
+    "cartagena":    "colonial Caribbean heat, colorful rooftop skyline, salsa-tinged night energy",
+    "capetown":     "Atlantic mountain drama, Twelve Apostles silhouette, cool ocean breeze",
+    "corsica":      "Mediterranean ruggedness, granite cliff mystery, pine-scented night air",
+    "cascais":      "Atlantic cliffside romance, fortress silhouette, wild ocean wind",
+    "hvar":         "Adriatic island glamour, Venetian stone glow, harbor night energy",
+    "havana":       "Cuban colonial nostalgia, vintage seafront neon, warm Caribbean groove",
+    "malibu":       "California coastal cool, golden cliff silhouette, Pacific night breeze",
+    "bondi":        "Australian beach glamour, sandstone headland drama, Tasman sea energy",
+    "algarve":      "Portuguese sea-cave mystery, golden grotto glow, Atlantic night hush",
+    "puntadeleste": "South American glam energy, modern skyline silhouette, river-meets-ocean night",
+    "langkawi":     "Malaysian jungle-island mystery, limestone karst silhouette, Andaman night calm",
+    "kotor":        "Montenegrin fjord drama, medieval fortress glow, deep bay stillness",
+    "turks":        "Caribbean powder-sand serenity, endless reef stillness, cabana night hush",
+    "mauritius":    "Indian Ocean volcanic drama, sugarcane coastline, lagoon sunset hush",
+    "kohsamui":     "Thai island warmth, limestone islet silhouette, Gulf night breeze",
+    "boracay":      "Philippine sunset-strip energy, powder-sand glow, Sulu sea night hush",
+    "goldcoast":    "Australian surf-city energy, skyline-against-beach drama, Pacific night pulse",
+    "nycsubway":    "gritty New York underground pulse, flickering fluorescent tension, distant train rumble",
+    "moscowmetro":  "opulent Soviet-era grandeur, marble echo, chandelier-lit underground drama",
+    "tokyounderground": "Shibuya neon density, rain-slicked alley glow, restless night pulse",
+    "berlinunderground": "raw industrial techno bunker energy, cold strobe haze, relentless underground drive",
+    "detroitwarehouse":  "birthplace-of-techno grit, rusted industrial dust, raw warehouse floodlight",
+    "londonunderground": "Victorian brick tunnel mystery, amber tunnel glow, subterranean hush",
+    "amsterdamcellar":   "canal-side cellar intimacy, candlelit brick warmth, cozy underground pulse",
+    "dublinpub":    "warm Irish pub session energy, brass and wood glow, cozy underground groove",
+    "praguespeakeasy":   "hidden speakeasy mystery, candlelit stone archway, secretive night energy",
+    "vegasnightclub":    "mega-club extravagance, laser-cut haze, towering LED spectacle",
+    "seoulnightclub":    "Gangnam glam precision, mirrored neon glow, glass dance floor pulse",
+    "amazoncanopy":      "treetop rainforest mystery, humid dusk mist, ancient canopy hush",
+    "amazonriver":       "floating river-stage intimacy, torchlit water reflection, starlit canopy gap",
+    "amazonwaterfall":   "hidden waterfall grotto serenity, cool cascading mist, mossy stillness",
+    "amazonnight":       "deep jungle nocturne, firefly glow, distant torchlit haze",
+    "eiffeltower":       "Parisian rooftop romance, iron lattice glow, golden night sparkle",
+    "burjkhalifa":       "Dubai sky-high opulence, glass spire glow, desert skyline haze",
+    "sydneyopera":       "harborside elegance, sail-shaped silhouette, shimmering forecourt night",
+    "romecolosseum":     "ancient floodlit grandeur, 2000-year stone drama, underground chamber mystery",
+    "marinabaysands":    "Singapore rooftop spectacle, infinity-skyline glow, glittering night haze",
 }
 
 
 def get_next_theme() -> dict:
+    """Espelha pipeline.queue.get_next_theme() — cópia local para não depender
+    do cwd do Task Scheduler ao importar o pacote pipeline.
+    Ver [[feedback-rotacao-travava-em-ibiza]] no projeto Umbra Sessions."""
     themes = json.loads(THEMES_FILE.read_text(encoding="utf-8"))
     try:
         con = sqlite3.connect(DB_PATH)
         con.execute("PRAGMA busy_timeout = 5000")
         used = [r[0] for r in con.execute(
-            "SELECT theme_id FROM theme_rotation ORDER BY id DESC"
+            "SELECT theme_id FROM theme_rotation ORDER BY id ASC"
         ).fetchall()]
         con.close()
     except Exception:
@@ -77,7 +130,9 @@ def get_next_theme() -> dict:
     for tid in theme_ids:
         if tid not in used:
             return next(t for t in themes if t["id"] == tid)
-    return next(t for t in themes if t["id"] == theme_ids[0])
+    last_index = {tid: i for i, tid in enumerate(used)}
+    next_tid = min(theme_ids, key=lambda tid: last_index.get(tid, -1))
+    return next(t for t in themes if t["id"] == next_tid)
 
 
 def build_prompts(theme: dict) -> list[dict]:

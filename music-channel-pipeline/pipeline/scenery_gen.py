@@ -102,6 +102,79 @@ SCENES = [
     "wide vista at first light, low mist over the water, {landmark} on the horizon",
 ]
 
+# Catálogos alternativos para temas fora do arquétipo praia/paraíso — usados
+# quando `theme["category"]` não é "beach" (default). `{location}`, `{landmark}`
+# e `{sea}` continuam vindo do tema, mas em temas de venue o campo `sea` guarda
+# uma cláusula de ambiente (ex: "haze de máquina de fumaça sob luz azul"), não
+# um corpo d'água — funciona porque é sempre interpolado como frase solta.
+SCENES_NIGHTLIFE = [
+    "empty tunnel corridor stretching into darkness, dim overhead lighting, {sea}",
+    "close view of {landmark}, condensation and worn textures under moody light",
+    "wide angle of the venue interior, empty dance floor, colored lights sweeping across the walls",
+    "low angle looking up at {landmark}, dramatic shadows and light beams",
+    "narrow doorway entrance glowing with colored light spilling into the corridor",
+    "empty bar counter, rows of bottles backlit, {sea}",
+    "overhead view of an empty dance floor, geometric light patterns projected on the ground",
+    "steam and fog drifting low across the floor, laser beams cutting through the haze",
+    "close detail of exposed pipework and worn brick texture, dim colored uplighting",
+    "wide shot of {location} at night, glowing signage reflected on wet pavement",
+    "empty DJ booth bathed in blue and purple stage light, {sea}",
+    "long exposure of light trails through the empty space, motion blur streaks",
+    "arched ceiling detail lit from below, dramatic shadow play across the stonework",
+    "distant view down a long corridor toward a glowing doorway, {sea}",
+    "close view of a worn wooden or metal surface catching a single spotlight",
+    "empty stairwell descending into the venue, warm light glowing from below",
+    "wide shot of {landmark}, atmospheric haze softening the far corners of the room",
+    "detail of a neon sign reflected in a puddle or polished floor, {sea}",
+    "empty seating area glowing under low ambient light, textures and shadows in focus",
+    "panoramic view of the empty venue from the entrance, {sea}",
+]
+
+SCENES_JUNGLE = [
+    "dense jungle canopy at dawn, shafts of light breaking through the leaves",
+    "{landmark} seen through thick tropical foliage, {sea}",
+    "aerial view over the endless rainforest canopy, mist rising at first light",
+    "close view of giant tropical leaves and vines, dappled sunlight filtering through",
+    "wide view of the river cutting through dense jungle, {sea}",
+    "dark jungle at night, fireflies glowing among the trees, {sea}",
+    "moss-covered ancient trees and tangled roots in soft filtered light",
+    "distant view of {landmark}, thick humid haze hanging over the canopy",
+    "close-up of exotic flowers and foliage, dew drops catching the light",
+    "misty jungle valley at first light, layers of green fading into the distance",
+    "wide aerial shot of a winding jungle river, {sea}",
+    "silhouette of tall jungle trees against a dramatic sunset sky",
+    "hidden jungle clearing bathed in soft golden light, {sea}",
+    "close view of water droplets on broad leaves after rain, soft diffused light",
+    "night sky glimpsed through a gap in the dense jungle canopy, stars visible",
+]
+
+SCENES_LANDMARK = [
+    "{landmark} at golden hour, dramatic warm side lighting",
+    "wide panoramic view of {location} skyline with {landmark} prominent",
+    "close architectural detail of {landmark}, textures and materials in sharp focus",
+    "{landmark} illuminated at night, {sea}",
+    "aerial view looking down over {location}, {landmark} visible among the rooftops",
+    "low angle looking up at {landmark}, dramatic perspective against the sky",
+    "reflection of {landmark} in still water or glass, {sea}",
+    "wide shot of the plaza or terrace surrounding {landmark} at dusk",
+    "distant view of {landmark} across the skyline, warm haze softening the horizon",
+    "close detail of the structure's lighting design at night, glowing accents",
+    "empty terrace or rooftop with {landmark} as the backdrop, {sea}",
+    "{landmark} seen from below at night, dramatic uplighting",
+    "wide establishing shot of {location} at blue hour, {landmark} lit against the darkening sky",
+    "silhouette of {landmark} against a vivid sunset sky",
+    "panoramic night view of {location}, {landmark} glowing among city lights",
+]
+
+# theme["category"] -> catálogo de cenas. "beach" (ou ausente) cai no SCENES
+# original — é o default de todo tema antigo, sem precisar tocar em cada um.
+CATEGORY_SCENES = {
+    "beach": SCENES,
+    "nightlife": SCENES_NIGHTLIFE,
+    "jungle": SCENES_JUNGLE,
+    "landmark": SCENES_LANDMARK,
+}
+
 SCENERY_COUNT = len(SCENES)
 
 
@@ -154,6 +227,10 @@ def _build_prompt(theme: dict, scene: str) -> str:
         sea=theme["sea"],
     )
     return f"{STYLE}, {scene}, {theme['location']}, {NEGATIVE}"
+
+
+def scenes_for(theme: dict) -> list[str]:
+    return CATEGORY_SCENES.get(theme.get("category", "beach"), SCENES)
 
 
 def _download(url: str, path: Path):
@@ -220,7 +297,8 @@ def ensure_scenery(
     out_dir = scenery_dir(theme["id"])
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    scenes = SCENES[:limit] if limit else SCENES
+    catalog = scenes_for(theme)
+    scenes = catalog[:limit] if limit else catalog
     paths, generated = [], 0
 
     for idx, scene in enumerate(scenes, start=1):

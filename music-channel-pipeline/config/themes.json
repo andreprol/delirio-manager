@@ -94,5 +94,425 @@
     "landmark": "volcanic black lava cliffs lush tropical waterfalls",
     "sea": "deep Pacific ocean turquoise waves",
     "party_style": "tropical open-air beach venue"
+  },
+  {
+    "id": "cannes",
+    "name": "Cannes",
+    "location": "Cannes French Riviera France",
+    "landmark": "La Croisette palm boulevard luxury yacht marina",
+    "sea": "Mediterranean sea",
+    "party_style": "rooftop terrace overlooking the bay"
+  },
+  {
+    "id": "formentera",
+    "name": "Formentera",
+    "location": "Formentera Balearic Islands Spain",
+    "landmark": "pristine white sand dunes Ses Illetes lagoon",
+    "sea": "turquoise Balearic Mediterranean sea",
+    "party_style": "boho beach club terrace"
+  },
+  {
+    "id": "zanzibar",
+    "name": "Zanzibar",
+    "location": "Zanzibar Tanzania",
+    "landmark": "Stone Town silhouette palm-lined white sand beach",
+    "sea": "turquoise Indian Ocean",
+    "party_style": "beachfront thatched-roof lounge"
+  },
+  {
+    "id": "phuket",
+    "name": "Phuket",
+    "location": "Phuket Thailand",
+    "landmark": "limestone karst cliffs tropical jungle coastline",
+    "sea": "emerald Andaman Sea",
+    "party_style": "clifftop infinity pool club"
+  },
+  {
+    "id": "cabo",
+    "name": "Cabo San Lucas",
+    "location": "Cabo San Lucas Mexico",
+    "landmark": "El Arco rock arch desert cliffs meeting ocean",
+    "sea": "deep blue Pacific ocean",
+    "party_style": "oceanfront rooftop lounge"
+  },
+  {
+    "id": "sttropez",
+    "name": "Saint-Tropez",
+    "location": "Saint-Tropez French Riviera France",
+    "landmark": "pastel harbor village superyacht marina",
+    "sea": "Mediterranean sea",
+    "party_style": "glamorous Pampelonne beach club"
+  },
+  {
+    "id": "seychelles",
+    "name": "Seychelles",
+    "location": "Seychelles Indian Ocean",
+    "landmark": "granite boulders Anse Source d'Argent palm jungle",
+    "sea": "turquoise Indian Ocean lagoon",
+    "party_style": "secluded beach club deck"
+  },
+  {
+    "id": "marbella",
+    "name": "Marbella",
+    "location": "Marbella Costa del Sol Spain",
+    "landmark": "Puerto Banus marina luxury yachts Sierra Blanca backdrop",
+    "sea": "Mediterranean sea",
+    "party_style": "exclusive beach club terrace"
+  },
+  {
+    "id": "miami",
+    "name": "Miami",
+    "location": "Miami Beach USA",
+    "landmark": "Art Deco skyline palm-lined boardwalk",
+    "sea": "turquoise Atlantic ocean",
+    "party_style": "rooftop pool club neon skyline"
+  },
+  {
+    "id": "sardinia",
+    "name": "Costa Smeralda",
+    "location": "Costa Smeralda Sardinia Italy",
+    "landmark": "granite coves luxury marina Porto Cervo",
+    "sea": "emerald Tyrrhenian sea",
+    "party_style": "clifftop exclusive club"
+  },
+  {
+    "id": "borabora",
+    "name": "Bora Bora",
+    "location": "Bora Bora French Polynesia",
+    "landmark": "Mount Otemanu volcanic peak overwater bungalows",
+    "sea": "turquoise South Pacific lagoon",
+    "party_style": "overwater deck sunset lounge"
+  },
+  {
+    "id": "fiji",
+    "name": "Fiji",
+    "location": "Fiji Islands South Pacific",
+    "landmark": "volcanic island silhouettes coral reef lagoon",
+    "sea": "crystal South Pacific ocean",
+    "party_style": "thatched-roof beach lounge"
+  },
+  {
+    "id": "barbados",
+    "name": "Barbados",
+    "location": "Barbados Caribbean",
+    "landmark": "pastel colonial architecture palm-lined coastline",
+    "sea": "turquoise Caribbean sea",
+    "party_style": "beachfront rum shack lounge"
+  },
+  {
+    "id": "cartagena",
+    "name": "Cartagena",
+    "location": "Cartagena Colombia",
+    "landmark": "colorful colonial walled city rooftop skyline",
+    "sea": "warm Caribbean sea",
+    "party_style": "rooftop terrace over the old city"
+  },
+  {
+    "id": "capetown",
+    "name": "Cape Town",
+    "location": "Camps Bay Cape Town South Africa",
+    "landmark": "Twelve Apostles mountain range dramatic cliffs",
+    "sea": "cold Atlantic ocean turquoise shallows",
+    "party_style": "beachfront rooftop lounge under the mountains"
+  },
+  {
+    "id": "corsica",
+    "name": "Corsica",
+    "location": "Corsica France Mediterranean",
+    "landmark": "rugged granite cliffs pine-covered coastline",
+    "sea": "clear Mediterranean sea",
+    "party_style": "clifftop hidden cove lounge"
+  },
+  {
+    "id": "cascais",
+    "name": "Cascais",
+    "location": "Cascais Portugal",
+    "landmark": "Atlantic cliffside fortress colorful coastal town",
+    "sea": "wild Atlantic ocean",
+    "party_style": "oceanfront cliffside terrace"
+  },
+  {
+    "id": "hvar",
+    "name": "Hvar",
+    "location": "Hvar Island Croatia",
+    "landmark": "Venetian stone fortress Adriatic hilltop",
+    "sea": "crystal Adriatic sea",
+    "party_style": "harbor-front terrace beach club"
+  },
+  {
+    "id": "havana",
+    "name": "Havana",
+    "location": "Havana Cuba",
+    "landmark": "colorful colonial facades vintage seafront promenade",
+    "sea": "warm Caribbean sea",
+    "party_style": "rooftop terrace over the Malecón"
+  },
+  {
+    "id": "malibu",
+    "name": "Malibu",
+    "location": "Malibu California USA",
+    "landmark": "golden cliffs Pacific Coast Highway silhouette",
+    "sea": "deep blue Pacific ocean",
+    "party_style": "clifftop oceanview deck lounge"
+  },
+  {
+    "id": "bondi",
+    "name": "Bondi Beach",
+    "location": "Bondi Beach Sydney Australia",
+    "landmark": "iconic curved beach sandstone headland cliffs",
+    "sea": "turquoise Tasman Sea",
+    "party_style": "beachfront rooftop bar"
+  },
+  {
+    "id": "algarve",
+    "name": "Algarve",
+    "location": "Lagos Algarve Portugal",
+    "landmark": "golden sea cave cliffs hidden grottoes",
+    "sea": "clear Atlantic ocean",
+    "party_style": "clifftop cave-view terrace"
+  },
+  {
+    "id": "puntadeleste",
+    "name": "Punta del Este",
+    "location": "Punta del Este Uruguay",
+    "landmark": "modern beachfront skyline peninsula silhouette",
+    "sea": "Atlantic ocean meeting Río de la Plata",
+    "party_style": "exclusive beachfront rooftop lounge"
+  },
+  {
+    "id": "langkawi",
+    "name": "Langkawi",
+    "location": "Langkawi Malaysia",
+    "landmark": "limestone karst jungle islands",
+    "sea": "calm Andaman Sea",
+    "party_style": "overwater jungle-fringed deck"
+  },
+  {
+    "id": "kotor",
+    "name": "Kotor",
+    "location": "Kotor Bay Montenegro",
+    "landmark": "medieval fortress walls dramatic fjord mountains",
+    "sea": "deep Adriatic bay",
+    "party_style": "waterfront old-town terrace"
+  },
+  {
+    "id": "turks",
+    "name": "Turks and Caicos",
+    "location": "Providenciales Turks and Caicos",
+    "landmark": "powder white sand endless barrier reef",
+    "sea": "impossibly clear turquoise Caribbean sea",
+    "party_style": "beachfront cabana lounge"
+  },
+  {
+    "id": "mauritius",
+    "name": "Mauritius",
+    "location": "Mauritius Indian Ocean",
+    "landmark": "volcanic peaks lush sugarcane coastline",
+    "sea": "turquoise Indian Ocean lagoon",
+    "party_style": "overwater sunset deck"
+  },
+  {
+    "id": "kohsamui",
+    "name": "Koh Samui",
+    "location": "Koh Samui Thailand",
+    "landmark": "coastal limestone islets golden sand coves",
+    "sea": "warm Gulf of Thailand",
+    "party_style": "beachfront jungle-fringed lounge"
+  },
+  {
+    "id": "boracay",
+    "name": "Boracay",
+    "location": "Boracay Philippines",
+    "landmark": "powder white sand famous sandbar sunset strip",
+    "sea": "turquoise Sulu Sea",
+    "party_style": "beachfront sunset strip lounge"
+  },
+  {
+    "id": "goldcoast",
+    "name": "Gold Coast",
+    "location": "Gold Coast Australia",
+    "landmark": "high-rise skyline against golden surf beach",
+    "sea": "Pacific ocean surf coastline",
+    "party_style": "rooftop skybar overlooking the coast"
+  },
+  {
+    "id": "nycsubway",
+    "name": "New York Subway",
+    "location": "New York City USA",
+    "landmark": "graffiti-covered subway platform steel support beams",
+    "sea": "flickering fluorescent lights, distant rumble of an approaching train",
+    "party_style": "underground subway platform rave",
+    "category": "nightlife"
+  },
+  {
+    "id": "moscowmetro",
+    "name": "Moscow Metro",
+    "location": "Moscow Russia",
+    "landmark": "ornate marble columns chandelier-lit vaulted ceiling",
+    "sea": "grand Soviet-era architecture glowing under warm chandelier light",
+    "party_style": "opulent underground metro hall rave",
+    "category": "nightlife"
+  },
+  {
+    "id": "tokyounderground",
+    "name": "Tokyo Underground",
+    "location": "Shibuya Tokyo Japan",
+    "landmark": "neon signage narrow concrete alleyway",
+    "sea": "dense neon glow reflecting off rain-slicked pavement",
+    "party_style": "narrow neon-lit basement club",
+    "category": "nightlife"
+  },
+  {
+    "id": "berlinunderground",
+    "name": "Berlin Underground",
+    "location": "Berlin Germany",
+    "landmark": "raw industrial concrete pillars exposed pipework",
+    "sea": "hazy fog machine drifting through cold blue strobe light",
+    "party_style": "cavernous industrial techno bunker",
+    "category": "nightlife"
+  },
+  {
+    "id": "detroitwarehouse",
+    "name": "Detroit Warehouse",
+    "location": "Detroit Michigan USA",
+    "landmark": "abandoned brick warehouse rusted steel beams",
+    "sea": "dust particles catching harsh warehouse floodlight",
+    "party_style": "raw industrial warehouse rave",
+    "category": "nightlife"
+  },
+  {
+    "id": "londonunderground",
+    "name": "London Underground Club",
+    "location": "London United Kingdom",
+    "landmark": "Victorian brick tunnel arched vaulted ceiling",
+    "sea": "dim amber tunnel lighting fading into darkness",
+    "party_style": "subterranean brick tunnel club",
+    "category": "nightlife"
+  },
+  {
+    "id": "amsterdamcellar",
+    "name": "Amsterdam Cellar Club",
+    "location": "Amsterdam Netherlands",
+    "landmark": "canal-side brick cellar wooden beam ceiling",
+    "sea": "warm candlelit glow against exposed brick walls",
+    "party_style": "intimate canal-side cellar club",
+    "category": "nightlife"
+  },
+  {
+    "id": "dublinpub",
+    "name": "Dublin Pub",
+    "location": "Dublin Ireland",
+    "landmark": "dark wood-paneled pub interior brass fixtures",
+    "sea": "warm amber lantern light glinting off polished wood",
+    "party_style": "cozy underground pub session",
+    "category": "nightlife"
+  },
+  {
+    "id": "praguespeakeasy",
+    "name": "Prague Speakeasy",
+    "location": "Prague Czech Republic",
+    "landmark": "hidden vaulted stone cellar bar",
+    "sea": "dim candlelight flickering across old stone archways",
+    "party_style": "secret speakeasy stone cellar",
+    "category": "nightlife"
+  },
+  {
+    "id": "vegasnightclub",
+    "name": "Las Vegas Nightclub",
+    "location": "Las Vegas Nevada USA",
+    "landmark": "towering LED video walls extravagant chandelier",
+    "sea": "pulsing laser beams cutting through dense stage haze",
+    "party_style": "mega nightclub main room",
+    "category": "nightlife"
+  },
+  {
+    "id": "seoulnightclub",
+    "name": "Seoul Nightclub",
+    "location": "Gangnam Seoul South Korea",
+    "landmark": "sleek mirrored walls glowing LED dance floor",
+    "sea": "neon reflections rippling across a glass dance floor",
+    "party_style": "high-end Gangnam nightclub",
+    "category": "nightlife"
+  },
+  {
+    "id": "amazoncanopy",
+    "name": "Amazon Canopy",
+    "location": "Amazon Rainforest Brazil",
+    "landmark": "elevated wooden canopy platform ancient towering trees",
+    "sea": "dense humid mist rising through the jungle canopy at dusk",
+    "party_style": "treetop jungle platform rave",
+    "category": "jungle"
+  },
+  {
+    "id": "amazonriver",
+    "name": "Amazon River",
+    "location": "Amazon River Brazil",
+    "landmark": "floating wooden stage dense riverside jungle wall",
+    "sea": "dark river water reflecting torchlight under a starlit canopy gap",
+    "party_style": "floating river stage party",
+    "category": "jungle"
+  },
+  {
+    "id": "amazonwaterfall",
+    "name": "Amazon Waterfall",
+    "location": "Amazon Rainforest Brazil",
+    "landmark": "hidden jungle waterfall moss-covered rock pool",
+    "sea": "cool mist drifting off a cascading jungle waterfall",
+    "party_style": "secluded waterfall grotto rave",
+    "category": "jungle"
+  },
+  {
+    "id": "amazonnight",
+    "name": "Amazon Night",
+    "location": "Amazon Rainforest Brazil",
+    "landmark": "dense jungle silhouette fireflies glowing in the dark",
+    "sea": "thick nocturnal jungle haze lit by distant torches",
+    "party_style": "deep jungle night rave",
+    "category": "jungle"
+  },
+  {
+    "id": "eiffeltower",
+    "name": "Eiffel Tower",
+    "location": "Paris France",
+    "landmark": "Eiffel Tower iron lattice structure illuminated at night",
+    "sea": "warm golden tower lights sparkling against the night sky",
+    "party_style": "rooftop terrace facing the tower",
+    "category": "landmark"
+  },
+  {
+    "id": "burjkhalifa",
+    "name": "Burj Khalifa",
+    "location": "Downtown Dubai UAE",
+    "landmark": "Burj Khalifa needle-like glass spire towering skyline",
+    "sea": "glittering desert skyline haze under the tower's lights",
+    "party_style": "sky-high observation deck lounge",
+    "category": "landmark"
+  },
+  {
+    "id": "sydneyopera",
+    "name": "Sydney Opera House",
+    "location": "Sydney Australia",
+    "landmark": "Opera House white sail-shaped shells harbor bridge silhouette",
+    "sea": "harbor water shimmering under warm forecourt lighting",
+    "party_style": "harborside forecourt terrace",
+    "category": "landmark"
+  },
+  {
+    "id": "romecolosseum",
+    "name": "Colosseum",
+    "location": "Rome Italy",
+    "landmark": "ancient Colosseum stone arches floodlit ruins",
+    "sea": "warm floodlight glow against 2000-year-old stone arches",
+    "party_style": "underground ancient chamber rave",
+    "category": "landmark"
+  },
+  {
+    "id": "marinabaysands",
+    "name": "Marina Bay Sands",
+    "location": "Singapore",
+    "landmark": "Marina Bay Sands rooftop infinity skypark towering skyline",
+    "sea": "city skyline glittering haze under the rooftop skyline",
+    "party_style": "rooftop infinity skypark lounge",
+    "category": "landmark"
   }
 ]

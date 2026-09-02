@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 import replicate
 from pipeline.queue import (
     init_db, get_next_theme, get_next_composition,
-    mark_theme_used, mark_composition_used,
+    mark_theme_used, mark_composition_used, theme_use_count,
     next_upload_slot, enqueue_video, get_due_uploads, mark_uploaded,
 )
 from pipeline.image_gen import generate_thumbnail
@@ -79,9 +79,10 @@ def _load_config():
     return channel, themes, schedule
 
 
-def _make_title(channel: dict, theme: dict) -> str:
+def _make_title(channel: dict, theme: dict, cycle: int = 1) -> str:
     year = datetime.now().year
-    return f"{theme['name']} Mix {year} | Dark Tech House | 1 Hour DJ Set"
+    suffix = f" (Vol. {cycle})" if cycle > 1 else ""
+    return f"{theme['name']} Mix {year}{suffix} | Dark Tech House | 1 Hour DJ Set"
 
 
 def _make_description(channel: dict, theme: dict) -> str:
@@ -91,7 +92,7 @@ def _make_description(channel: dict, theme: dict) -> str:
         f"🎧 AI-generated Dark Tech House mix\n"
         f"📍 {theme['name']}\n\n"
         f"#{theme['id'].replace('-','').title()}Mix #DarkTechHouse #TechHouse "
-        f"#IBizaMix #ElectronicMusic #DJSet #1HourMix"
+        f"#ElectronicMusic #DJSet #1HourMix"
     )
 
 
@@ -99,7 +100,7 @@ def _make_tags(theme: dict) -> list[str]:
     return [
         "dark tech house", "tech house", "electronic music", "dj set",
         "1 hour mix", theme["name"].lower(), f"{theme['name'].lower()} mix",
-        "ibiza", "beach party", "sunset mix", "ai music",
+        "beach party", "sunset mix", "ai music",
     ]
 
 
@@ -242,7 +243,8 @@ def run_generate(theme_id: str = None, composition_id: str = None,
     log.info("Vídeo: %s", video_path)
 
     # Metadata
-    title       = _make_title(channel, theme)
+    cycle       = theme_use_count(theme["id"]) + 1
+    title       = _make_title(channel, theme, cycle)
     description = _make_description(channel, theme)
     tags        = _make_tags(theme)
     slot        = next_upload_slot(schedule["upload_slots_brt"])
