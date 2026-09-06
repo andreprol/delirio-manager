@@ -20,6 +20,7 @@ from pipeline.queue import (
 from pipeline.image_gen import generate_thumbnail
 from pipeline.clip_gen import generate_loop_clip
 from pipeline.scenery_gen import ensure_scenery, ensure_segment
+from pipeline.veo_angles import build_veo_angles_loop_unit
 from pipeline.video_builder import build_video, build_video_from_loop_clip
 from pipeline.uploader import upload_video, thumbnail_for
 from pipeline.notifier import notify, record_undelivered
@@ -213,6 +214,27 @@ def run_generate(theme_id: str = None, composition_id: str = None,
             video_id=video_id,
             target_minutes=channel["video_duration_minutes"],
             already_normalized=True,
+        )
+    elif mode == "veo_angles":
+        # Modo caro (~$6+/vídeo: 5 imagens Flux + 5 clipes Veo) — reservado
+        # pra segunda-feira. Ver [[project-umbra-sessions]] seção "Cadência
+        # semanal".
+        log.info("Gerando vídeo de 5 ângulos via Veo (caro, ~$6+)...")
+        loop_unit = build_veo_angles_loop_unit(
+            theme=theme,
+            canonical_face_path=canonical,
+            work_dir=temp_dir,
+            replicate_api_token=os.environ["REPLICATE_API_TOKEN"],
+            flux_model=channel["replicate_model"],
+            safety_tolerance=channel["safety_tolerance"],
+            prompt_strength=channel["prompt_strength"],
+        )
+        video_path = build_video_from_loop_clip(
+            clip_path=loop_unit,
+            audio_files=audio_files,
+            output_dir=temp_dir,
+            video_id=video_id,
+            target_minutes=channel["video_duration_minutes"],
         )
     elif mode == "avatar_clip":
         clip_model = channel.get("clip_model", "kwaivgi/kling-v2.1")

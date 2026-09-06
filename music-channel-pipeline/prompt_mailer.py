@@ -1,6 +1,15 @@
 """
-Envia 5 prompts Suno do próximo tema da rotação via email às 06:00.
+Envia o prompt Suno do dia (padrao unico, BPM travado) via email as 06:00.
 Agendar via Task Scheduler: python prompt_mailer.py
+
+Padrao fechado em 06/09/2026 apos analise competitiva do canal Black Pulse:
+BPM travado (nao varia mais por faixa) para permitir crossfade real entre
+tracks e evitar mistura de arcos de dias diferentes via pending/. Vocal chop
+adicionado em todas as faixas (nao so 1 de 5 como antes) -- Zanzibar saiu com
+"eerie vocal chop" (do perfil antigo "Journey") e Andre notou que ficou melhor;
+Black Pulse tambem usa vocal em todo o material. Kick/bassline reforcados como
+assinatura sonora do canal. Ver [[project-umbra-sessions]] secao "Analise
+competitiva" e "Cadencia semanal".
 """
 import json
 import os
@@ -16,35 +25,19 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 TO_EMAIL       = "andreprol1980@gmail.com"
 FROM_EMAIL     = "onboarding@resend.dev"
 THEMES_FILE    = Path(__file__).parent / "config" / "themes.json"
+CHANNEL_FILE   = Path(__file__).parent / "config" / "channel.json"
 DB_PATH        = os.getenv("DB_PATH", str(Path(__file__).parent / "data" / "pipeline.db"))
 
-TRACK_PROFILES = [
-    {
-        "label": "Track 1 — Opening",
-        "bpm": 126,
-        "energy": "slow hypnotic intro, atmospheric, minimal percussion, soft bass pulse, mysterious mood, building tension",
-    },
-    {
-        "label": "Track 2 — Build",
-        "bpm": 128,
-        "energy": "rising energy, rolling bassline, tight hi-hat groove, synth arp entering, driving forward momentum",
-    },
-    {
-        "label": "Track 3 — Peak",
-        "bpm": 131,
-        "energy": "peak hour energy, heavy punchy kick, thick growling bass, intense driving groove, euphoric dark synth lead",
-    },
-    {
-        "label": "Track 4 — Journey",
-        "bpm": 130,
-        "energy": "sustained peak, hypnotic loop, eerie vocal chop, deep sub bass, relentless groove, dark melodic texture",
-    },
-    {
-        "label": "Track 5 — Outro",
-        "bpm": 127,
-        "energy": "cool down, softer kick, atmospheric pad swell, melodic synth fading, closing dark groove, introspective mood",
-    },
-]
+# BPM travado do canal -- mesmo numero todo santo dia, nao varia mais por
+# faixa nem por tema. Trocar aqui muda o padrao inteiro do canal.
+BPM_PADRAO = 124
+
+SOUND_SIGNATURE = (
+    "hypnotic deep groove, massive punchy kick drum, thunderous heavy sub bass, "
+    "hard-hitting driving bassline, dark club bass, four-on-the-floor, "
+    "sultry female vocal chops and hooks, minimal atmospheric layers, "
+    "muted percussive hats, no bright cymbals"
+)
 
 THEME_EXTRAS = {
     "ibiza":    "Mediterranean sunset mood, beach club terrace, Dalt Vila cliffs in background",
@@ -135,45 +128,47 @@ def get_next_theme() -> dict:
     return next(t for t in themes if t["id"] == next_tid)
 
 
-def build_prompts(theme: dict) -> list[dict]:
+def get_tracks_per_video() -> int:
+    # Default 5 alinhado com main.py:145 -- default divergente faria o email
+    # instruir um numero de cliques diferente do que o pipeline das 10h
+    # realmente consome.
+    try:
+        channel = json.loads(CHANNEL_FILE.read_text(encoding="utf-8"))
+        value = int(channel.get("tracks_per_video", 5))
+        if value <= 0:
+            raise ValueError(f"tracks_per_video invalido: {value}")
+        return value
+    except Exception as e:
+        print(f"AVISO: falha lendo tracks_per_video de {CHANNEL_FILE} ({e}), usando default 5")
+        return 5
+
+
+def build_prompt(theme: dict) -> str:
     extra = THEME_EXTRAS.get(theme["id"], theme["location"])
-    prompts = []
-    for profile in TRACK_PROFILES:
-        prompt = (
-            f"dark tech house, {profile['bpm']} BPM, "
-            f"{profile['energy']}, "
-            f"{extra}, "
-            f"no lyrics, instrumental"
-        )
-        prompts.append({"label": profile["label"], "prompt": prompt})
-    return prompts
+    return f"dark tech house, {BPM_PADRAO} BPM, {SOUND_SIGNATURE}, {extra}"
 
 
-def build_html(theme: dict, prompts: list[dict]) -> str:
-    rows = ""
-    for i, p in enumerate(prompts, 1):
-        rows += f"""
-        <div style="margin-bottom:24px;padding:16px;background:#1a1a2e;border-left:4px solid #7c3aed;border-radius:4px;">
-          <p style="margin:0 0 6px;color:#a78bfa;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">{p['label']}</p>
-          <p style="margin:0;color:#e2e8f0;font-family:monospace;font-size:13px;line-height:1.6;">{p['prompt']}</p>
-        </div>"""
-
+def build_html(theme: dict, prompt: str, submissions: int) -> str:
     return f"""
     <div style="font-family:sans-serif;max-width:600px;margin:0 auto;background:#0f0f1a;padding:32px;border-radius:8px;">
       <h1 style="color:#7c3aed;margin:0 0 4px;font-size:22px;">🎧 Umbra Sessions</h1>
-      <p style="color:#6b7280;margin:0 0 24px;font-size:13px;">Prompts do dia — {theme['name']}</p>
+      <p style="color:#6b7280;margin:0 0 24px;font-size:13px;">Prompt do dia — {theme['name']}</p>
 
       <p style="color:#94a3b8;font-size:14px;margin:0 0 20px;">
-        Gere os 5 tracks abaixo no Suno (Style field, Lyrics em branco).
-        Baixe os MP3s e jogue no atalho da área de trabalho.
+        Cole o texto abaixo no campo de descrição do Suno e clique Create
+        <strong>{submissions}x seguidas, sem mudar nada</strong> (2 versões por
+        clique = {submissions * 2} faixas). Se aparecer toggle "Instrumental",
+        deixe DESLIGADO — queremos os vocal chops.
       </p>
 
-      {rows}
+      <div style="margin-bottom:24px;padding:16px;background:#1a1a2e;border-left:4px solid #7c3aed;border-radius:4px;">
+        <p style="margin:0;color:#e2e8f0;font-family:monospace;font-size:13px;line-height:1.6;">{prompt}</p>
+      </div>
 
       <hr style="border:none;border-top:1px solid #1e293b;margin:24px 0;">
       <p style="color:#4b5563;font-size:12px;margin:0;">
         Pasta: <code style="color:#7c3aed;">F:\\RichClub\\music-channel-pipeline\\data\\audio\\pending\\</code><br>
-        Após colocar os 5 MP3s, o pipeline roda automaticamente às 10h (gera) e 18h (upload).
+        Após colocar os MP3s, o pipeline roda automaticamente às 10h (gera) e 18h (upload).
       </p>
     </div>"""
 
@@ -193,15 +188,15 @@ def send_email(subject: str, html: str):
 
 
 def main():
-    theme   = get_next_theme()
-    prompts = build_prompts(theme)
-    html    = build_html(theme, prompts)
-    subject = f"🎧 Umbra Sessions — 5 Prompts Suno: {theme['name']}"
+    theme       = get_next_theme()
+    prompt      = build_prompt(theme)
+    submissions = -(-get_tracks_per_video() // 2)  # ceil division, 2 versoes por clique
+    html        = build_html(theme, prompt, submissions)
+    subject     = f"🎧 Umbra Sessions — Prompt Suno: {theme['name']}"
 
     sent = send_email(subject, html)
     if not sent:
-        for p in prompts:
-            print(f"\n{p['label']}:\n{p['prompt']}")
+        print(f"\nPrompt ({submissions}x):\n{prompt}")
     else:
         print(f"Email enviado → {TO_EMAIL} | Tema: {theme['name']}")
 

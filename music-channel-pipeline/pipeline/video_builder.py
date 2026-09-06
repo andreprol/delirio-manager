@@ -1,6 +1,24 @@
+import logging
 import subprocess
 import os
 from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+# Padrao de audio fechado em 06/09/2026: som nunca pode cair a zero entre
+# faixas (o Suno ja exporta cada track com fade-out proprio -- ver metadata
+# "[Fade to silence]" -- entao corte seco criava um vale de quase-silencio
+# duplo). acrossfade sobrepoe D segundos de cada par em vez de cortar.
+# Grave reforcado (bass boost + limiter pra nao estourar) e a assinatura
+# sonora do canal, aplicado uma vez sobre o resultado ja com crossfade.
+CROSSFADE_SECONDS = 8
+# Teto de repeticoes no loop de preencher a hora -- um bloco de audio
+# anormalmente curto (arquivo truncado/corrompido em pending/, ja aconteceu
+# neste pipeline, ver feedback_arquivo_truncado_derruba_lote) nao pode gerar
+# um filter_complex com centenas de -i.
+MAX_LOOP_REPEATS = 30
+BASS_BOOST_FILTER = "bass=gain=6:frequency=90:width_type=o:width=0.8,alimiter=limit=0.95"
+MP3_ENCODE_ARGS = ["-c:a", "libmp3lame", "-q:a", "2"]
 
 
 def _get_audio_duration(path: Path) -> float:
@@ -12,35 +30,98 @@ def _get_audio_duration(path: Path) -> float:
     return float(result.stdout.strip())
 
 
-def _concat_audio(audio_files: list[Path], output: Path) -> Path:
-    concat_list = output.parent / "concat_list.txt"
-    concat_list.write_text(
-        "\n".join(f"file '{p.resolve()}'" for p in audio_files),
-        encoding="utf-8"
-    )
+def _crossfade_chain(audio_files: list[Path], output: Path,
+                      crossfade_seconds: float = CROSSFADE_SECONDS,
+                      extra_filter: str | None = None,
+                      trim_seconds: float | None = None) -> Path:
+    """Concatena N faixas com crossfade real entre cada par -- o som nunca
+    cai a zero. acrossfade so opera em pares, entao encadeia N-1 chamadas
+    num filter_complex so. `extra_filter` (bass boost) e aplicado uma vez no
+    fim da cadeia, nao em cada par. `crossfade_seconds` e reduzido sozinho se
+    alguma faixa for curta demais pra suportar a janela pedida -- ja
+    aconteceu MP3 truncado neste pipeline."""
+    trim_args = ["-t", str(trim_seconds)] if trim_seconds else []
+
+    if len(audio_files) == 1:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(audio_files[0]),
+             "-af", extra_filter or "anull"] + trim_args + MP3_ENCODE_ARGS + [str(output)],
+            check=True, capture_output=True,
+        )
+        return output
+
+    durations = [_get_audio_duration(f) for f in audio_files]
+    shortest = min(durations)
+    if shortest <= 0:
+        raise ValueError(f"Faixa de audio com duracao invalida (0s): {audio_files}")
+    safe_crossfade = min(crossfade_seconds, shortest / 2)
+    if safe_crossfade < crossfade_seconds:
+        log.warning(
+            "Crossfade reduzido de %.1fs para %.1fs -- faixa curta demais (%.1fs) entre %s",
+            crossfade_seconds, safe_crossfade, shortest, [f.name for f in audio_files])
+
+    inputs = []
+    for f in audio_files:
+        inputs += ["-i", str(f)]
+
+    filter_parts = []
+    prev_label = "0:a"
+    for i in range(1, len(audio_files)):
+        out_label = f"a{i}"
+        filter_parts.append(
+            f"[{prev_label}][{i}:a]acrossfade=d={safe_crossfade}:c1=tri:c2=tri[{out_label}]"
+        )
+        prev_label = out_label
+
+    graph = ";".join(filter_parts)
+    if extra_filter:
+        graph += f";[{prev_label}]{extra_filter}[out]"
+        map_label = "[out]"
+    else:
+        map_label = f"[{prev_label}]"
+
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-         "-i", str(concat_list), "-c", "copy", str(output)],
+        ["ffmpeg", "-y"] + inputs + [
+            "-filter_complex", graph,
+            "-map", map_label,
+        ] + trim_args + MP3_ENCODE_ARGS + [str(output)],
         check=True, capture_output=True,
     )
     return output
+
+
+def _concat_audio(audio_files: list[Path], output: Path) -> Path:
+    """Concatena as tracks do dia com crossfade real + grave reforcado."""
+    return _crossfade_chain(audio_files, output, extra_filter=BASS_BOOST_FILTER)
+
+
+def _loops_needed(duration: float, target_seconds: float, crossfade_seconds: float) -> int:
+    """Quantas repeticoes do bloco (com crossfade entre cada) cobrem
+    target_seconds, capado em MAX_LOOP_REPEATS."""
+    if duration <= 0:
+        raise ValueError(f"Duracao de audio invalida: {duration}s")
+    net_gain_per_loop = duration - crossfade_seconds
+    loops = int(target_seconds / net_gain_per_loop) + 2
+    return min(loops, MAX_LOOP_REPEATS)
 
 
 def _loop_audio_to_duration(audio: Path, target_seconds: float, output: Path) -> Path:
+    """Repete o bloco ja concatenado ate cobrir target_seconds, crossfadando
+    cada repeticao consigo mesma -- a emenda da hora fechando tambem nao
+    pode cair a zero. Bass boost ja foi aplicado uma vez em _concat_audio,
+    entao aqui e so crossfade puro (nao reaplicar, acumularia ganho)."""
     duration = _get_audio_duration(audio)
-    loops = int(target_seconds / duration) + 1
-    concat_list = output.parent / "loop_list.txt"
-    concat_list.write_text(
-        "\n".join(f"file '{audio.resolve()}'" for _ in range(loops)),
-        encoding="utf-8"
-    )
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-         "-i", str(concat_list), "-t", str(target_seconds),
-         "-c", "copy", str(output)],
-        check=True, capture_output=True,
-    )
-    return output
+    crossfade = min(CROSSFADE_SECONDS, duration / 2) if duration > 0 else CROSSFADE_SECONDS
+    loops = _loops_needed(duration, target_seconds, crossfade)
+
+    covered = duration + (loops - 1) * (duration - crossfade)
+    if covered < target_seconds:
+        log.warning(
+            "Loop capado em %d repeticoes cobre so %.0fs de %.0fs pedidos "
+            "(bloco de audio anormalmente curto: %.1fs)", loops, covered, target_seconds, duration)
+
+    return _crossfade_chain([audio] * loops, output,
+                             crossfade_seconds=crossfade, trim_seconds=target_seconds)
 
 
 def _prepare_audio(audio_files: list[Path], output_dir: Path,
