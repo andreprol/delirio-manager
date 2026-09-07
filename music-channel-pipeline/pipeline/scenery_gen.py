@@ -37,7 +37,18 @@ SLEEP_BETWEEN_IMAGES = 12
 # Sobe a cada mudança em STYLE/NEGATIVE/SCENES. Fica gravado por imagem no
 # manifesto, que é o único jeito de saber depois quais arquivos de um acervo
 # misto vieram de qual versão do prompt.
-STYLE_VERSION = 3
+#
+# v3 → v4 (07/09/2026): André reclamou de 2 problemas nos vídeos de terça-a-
+# domingo (modo scenery): (1) imagem de noite misturada com as de dia, (2)
+# imagem genérica sem nada a ver com o destino ("uma ponte simples"). Causa:
+# SCENES só usava {landmark} em 3 das 30 cenas — o resto era arquétipo de
+# praia genérico (píer, cachoeira, dunas) que serve pra qualquer lugar
+# tropical e não amarra com o tema. Reescrito pra maioria das cenas
+# referenciar {landmark}/{location} e removidas as cenas de noite/escuro
+# (mantido nascer/pôr do sol e golden hour — ainda é luz de dia, decisão do
+# André). SCENES_LANDMARK não mudou: Eiffel/Coliseu/Burj Khalifa são famosos
+# pela iluminação noturna, travar em dia contrariaria o próprio tema.
+STYLE_VERSION = 4
 
 # Look comum a todas as cenas.
 #
@@ -67,38 +78,40 @@ NEGATIVE = (
     "no caption, no lettering, no border, no frame"
 )
 
-# 30 ângulos. `{location}`, `{landmark}` e `{sea}` vêm do tema em
-# config/themes.json, então o mesmo catálogo serve os 12 destinos.
+# 30 ângulos, reescritos em 07/09/2026 pra maioria amarrar em {landmark} —
+# só variando o enquadramento/hora do dia, nunca o destino. `{location}`,
+# `{landmark}` e `{sea}` vêm do tema em config/themes.json. Sem noite/escuro
+# (só nascer/pôr do sol e golden hour, que ainda é luz de dia).
 SCENES = [
-    "empty beach at sunrise, soft pastel sky, gentle waves washing over golden sand",
-    "aerial drone view of the coastline, turquoise shallows fading into deep blue water",
-    "tall palm trees silhouetted against a burning orange sunset over {sea}",
+    "{landmark} seen from the beach at sunrise, soft pastel sky, gentle waves washing over the sand",
+    "aerial drone view of the coastline near {landmark}, turquoise shallows fading into deep blue water",
+    "tall palm trees framing a distant view of {landmark}, warm midday light over {sea}",
     "{landmark} seen from a distance in warm early morning light",
-    "dramatic sea cliffs meeting the water, white spray from crashing waves",
-    "long wooden pier stretching out over calm water at golden hour",
-    "lush tropical vegetation framing a hidden cove with clear water",
-    "top-down overhead view of turquoise water meeting white sand, natural patterns",
-    "blue hour after sunset, first stars appearing, calm sea, distant warm lights",
-    "tropical waterfall falling into a natural pool surrounded by green foliage",
-    "panoramic view from a high viewpoint over the bay of {location}",
-    "sailboats and white yachts anchored in a sheltered turquoise bay",
-    "sunbeams filtering through palm fronds, dappled light on warm sand",
-    "moody dramatic storm clouds over {sea}, shafts of light breaking through",
-    "empty infinity pool terrace overlooking {sea} at dusk, glowing water",
-    "narrow coastal road winding along the cliffs high above the water",
-    "close low view of gentle waves rolling onto wet sand, sky reflected",
-    "night sky full of stars and the milky way over the dark ocean",
-    "steep green hills dropping into {sea}, morning mist in the valleys",
-    "solitary rock formation standing in the water at sunset, dark silhouette",
-    "calm shallow lagoon at midday, impossibly clear water, sandy bottom visible",
-    "stone terrace with hanging bougainvillea overlooking the coastline at golden hour",
-    "aerial view of the curving shoreline, waves drawing long white lines on the sand",
-    "sunset reflected on wet sand at low tide, mirror effect, long shadows",
-    "dense tropical foliage and exotic flowers in the foreground, {sea} behind",
-    "distant town lights glowing warm along the dark shore at night",
+    "dramatic sea cliffs meeting {sea}, white spray from crashing waves, {landmark} visible in the distance",
+    "wooden boardwalk leading toward {landmark}, calm water at golden hour",
+    "lush tropical vegetation framing a view of {landmark} across the water",
+    "top-down aerial view of {sea} meeting the shoreline near {landmark}",
+    "panoramic view from a high viewpoint over {location}, {landmark} prominent in the scene",
+    "close view of local flora native to {location}, {landmark} softly visible in the background",
+    "panoramic view from a high viewpoint over the bay of {location}, {landmark} on the horizon",
+    "sailboats and white yachts anchored near {landmark}, {sea} sparkling in the sun",
+    "sunbeams filtering through palm fronds, {landmark} framed in the distance",
+    "moody dramatic storm clouds over {sea}, {landmark} silhouetted against the sky",
+    "empty terrace overlooking {sea} at golden hour, {landmark} visible in the distance",
+    "narrow coastal road winding along the cliffs above {sea}, {landmark} in view",
+    "close low view of gentle waves rolling onto wet sand near {location}, sky reflected",
+    "sweeping view of the coastline at first light, {landmark} emerging through the morning haze",
+    "steep green hills dropping into {sea} near {location}, morning mist in the valleys",
+    "solitary rock formation standing in {sea} at sunrise, {landmark} visible in the distance",
+    "calm shallow lagoon at midday near {landmark}, impossibly clear water, sandy bottom visible",
+    "stone terrace with hanging bougainvillea overlooking {location} at golden hour, {landmark} in view",
+    "aerial view of the curving shoreline near {landmark}, waves drawing long white lines on the sand",
+    "sunset reflected on wet sand at low tide, {landmark} silhouetted in the distance, long shadows",
+    "dense tropical foliage and exotic flowers in the foreground, {landmark} visible through the greenery",
+    "wide view of {location} from the water, {landmark} rising along the shoreline in warm daylight",
     "{landmark} at golden hour, dramatic side lighting",
-    "windswept dunes and beach grass in late afternoon light",
-    "aerial view of rugged rocky terrain meeting brilliant turquoise water",
+    "windswept dunes and beach grass in late afternoon light, {landmark} visible on the horizon",
+    "aerial view of rugged rocky terrain meeting {sea} near {landmark}",
     "wide vista at first light, low mist over the water, {landmark} on the horizon",
 ]
 
@@ -130,22 +143,27 @@ SCENES_NIGHTLIFE = [
     "panoramic view of the empty venue from the entrance, {sea}",
 ]
 
+# Sem noite/escuro desde 07/09/2026 (mesma regra do SCENES de praia) — exceto
+# o tema "Amazon Night" (config/themes.json), cujo landmark/sea já descrevem
+# escuridão/tocha por definição; forçar dia nesse tema específico geraria
+# prompt contraditório. Não há como excluir 1 tema do catálogo compartilhado
+# sem lógica nova — sinalizado, não resolvido (ver sessão 07/09/2026).
 SCENES_JUNGLE = [
     "dense jungle canopy at dawn, shafts of light breaking through the leaves",
     "{landmark} seen through thick tropical foliage, {sea}",
-    "aerial view over the endless rainforest canopy, mist rising at first light",
-    "close view of giant tropical leaves and vines, dappled sunlight filtering through",
-    "wide view of the river cutting through dense jungle, {sea}",
-    "dark jungle at night, fireflies glowing among the trees, {sea}",
-    "moss-covered ancient trees and tangled roots in soft filtered light",
+    "aerial view over the endless rainforest canopy near {landmark}, mist rising at first light",
+    "close view of giant tropical leaves and vines near {landmark}, dappled sunlight filtering through",
+    "wide view of the river cutting through dense jungle toward {landmark}, {sea}",
+    "sunlit jungle clearing near {landmark}, butterflies and dappled light among the trees",
+    "moss-covered ancient trees and tangled roots near {landmark}, soft filtered light",
     "distant view of {landmark}, thick humid haze hanging over the canopy",
-    "close-up of exotic flowers and foliage, dew drops catching the light",
-    "misty jungle valley at first light, layers of green fading into the distance",
-    "wide aerial shot of a winding jungle river, {sea}",
-    "silhouette of tall jungle trees against a dramatic sunset sky",
-    "hidden jungle clearing bathed in soft golden light, {sea}",
-    "close view of water droplets on broad leaves after rain, soft diffused light",
-    "night sky glimpsed through a gap in the dense jungle canopy, stars visible",
+    "close-up of exotic flowers and foliage near {landmark}, dew drops catching the light",
+    "misty jungle valley at first light near {landmark}, layers of green fading into the distance",
+    "wide aerial shot of a winding jungle river toward {landmark}, {sea}",
+    "silhouette of tall jungle trees near {landmark} against a dramatic sunset sky",
+    "hidden jungle clearing bathed in soft golden light, {landmark} visible through the trees, {sea}",
+    "close view of water droplets on broad leaves after rain near {landmark}, soft diffused light",
+    "sunlight breaking through a gap in the dense jungle canopy near {landmark}",
 ]
 
 SCENES_LANDMARK = [
