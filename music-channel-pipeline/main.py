@@ -102,6 +102,12 @@ def _make_tags(theme: dict) -> list[str]:
         "dark tech house", "tech house", "electronic music", "dj set",
         "1 hour mix", theme["name"].lower(), f"{theme['name'].lower()} mix",
         "beach party", "sunset mix", "ai music",
+        # Reforço de SEO/descoberta, aplicado manualmente nos 19 vídeos
+        # existentes em 08/09/2026 — daqui pra frente sai direto no upload.
+        "underground techno", "techno music", "house music", "dj mix",
+        "party mix", "dance music", "driving techno", "hypnotic techno",
+        "melodic techno", "deep house", "club music", "afterhours",
+        "ibiza", "techno 2026", "dark techno",
     ]
 
 

@@ -89,7 +89,14 @@ def upload_video(
             "tags": tags,
             "categoryId": "10",  # Music
         },
-        "status": {"privacyStatus": "public"},
+        "status": {
+            "privacyStatus": "public",
+            # Toda peça do canal é DJ/cenário 100% gerado por IA — exigido pela
+            # política do YouTube ("simulação realista de algo que não
+            # aconteceu"). Corrigido manualmente nos 19 vídeos já publicados
+            # em 08/09/2026; daqui pra frente sai certo desde o upload.
+            "containsSyntheticMedia": True,
+        },
     }
     media = MediaFileUpload(file_path, chunksize=-1, resumable=True,
                             mimetype="video/mp4")
