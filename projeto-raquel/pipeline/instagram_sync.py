@@ -130,7 +130,15 @@ def _fetch_page(session, url: str, retry: bool = True):
             time.sleep(wait)
         r = session.get(url, timeout=20)
         if r.status_code == 200:
-            return r.json()
+            try:
+                return r.json()
+            except ValueError:
+                # 200 com HTML no corpo = auth insuficiente pro endpoint, mas
+                # sem status de erro — o Instagram devolve o shell da SPA em
+                # vez de 401/429 quando a sessão não é aceita ali. Trata como
+                # bloqueio: mesmo backoff, mesmo fallback no final.
+                last_status, last_body = "200 (HTML, não-JSON)", r.text[:120]
+                continue
         last_status, last_body = r.status_code, r.text[:120]
         if r.status_code not in (401, 429):
             break
@@ -188,7 +196,12 @@ def _iter_posts_web(username: str, session):
     if r.status_code != 200:
         raise RuntimeError(f"Instagram {r.status_code} em web_profile_info: {r.text[:120]}")
 
-    timeline = r.json()["data"]["user"]["edge_owner_to_timeline_media"]
+    try:
+        payload = r.json()
+    except ValueError:
+        raise RuntimeError(f"Instagram 200 (HTML, não-JSON) em web_profile_info: {r.text[:120]}")
+
+    timeline = payload["data"]["user"]["edge_owner_to_timeline_media"]
     print(f"  fallback web_profile_info: {len(timeline['edges'])} posts recentes")
     for edge in timeline["edges"]:
         yield _web_node_to_item(edge["node"])

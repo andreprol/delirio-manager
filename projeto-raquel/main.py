@@ -4,7 +4,9 @@ Canal: Raquel Pires (@raquelpires)
 
 Uso:
   python main.py status                    Mostra todos os itens na fila
-  python main.py sync-instagram [N]        Baixa vídeos do Instagram e faz upload no YouTube (padrão: 10)
+  python main.py sync-instagram [N] [FUNDO] Baixa vídeos do Instagram e faz upload no YouTube (padrão N: 5).
+                                          FUNDO atravessa N posts conhecidos p/ achar o
+                                          acervo antigo (só rodada manual, nunca agendada)
   python main.py add-review               Adiciona review de drama (interativo)
   python main.py add-fanmeeting           Adiciona vlog de fan meeting (interativo)
   python main.py add-instagram <url>      Importa post do Instagram (cola a legenda)
@@ -102,7 +104,14 @@ def cmd_status():
     print()
 
 
-def cmd_sync_instagram(max_videos: int = 5):
+def cmd_sync_instagram(max_videos: int = 5, max_seen: int = None):
+    """
+    `max_seen` atravessa N posts já sincronizados seguidos antes de desistir.
+    Sem valor, usa 60 (cobre o feed recente). Valor alto (ex.: 9999) varre o
+    perfil inteiro atrás do acervo antigo — só em rodada manual, nunca na
+    agendada: varredura profunda 2x/dia já derrubou a conta anterior (ver
+    mesma armadilha em cmd_fetch).
+    """
     channel = _load_channel()
     handle = channel.get("instagram_handle", "@raquelpiiires")
     secrets_file = os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "config/client_secrets.json")
@@ -124,13 +133,20 @@ def cmd_sync_instagram(max_videos: int = 5):
         return
 
     if not videos:
-        print("Nenhum vídeo novo recente. Buscando no backlog histórico do perfil...")
+        seen_limit = max_seen or 60
+        if seen_limit > 60:
+            paginas = seen_limit // 12
+            print(f"Nenhum vídeo novo recente. VARREDURA PROFUNDA: atravessa até "
+                  f"{seen_limit} posts conhecidos (~{paginas} páginas, "
+                  f"~{paginas * 6.5 / 60:.0f} min)...")
+        else:
+            print("Nenhum vídeo novo recente. Buscando no backlog histórico do perfil...")
         try:
             videos = fetch_and_download_profile(
                 handle, temp_dir,
                 already_synced_ids=synced_ids,
                 max_new=max_videos,
-                max_consecutive_seen=60,
+                max_consecutive_seen=seen_limit,
             )
         except Exception as e:
             print(f"Erro ao buscar backlog histórico: {e}")
@@ -988,10 +1004,10 @@ def main():
         cmd_status()
 
     elif cmd == "sync-instagram":
-        if len(args) > 1:
-            cmd_sync_instagram(int(args[1]))
-        else:
-            cmd_sync_instagram()
+        cmd_sync_instagram(
+            int(args[1]) if len(args) > 1 else 5,
+            int(args[2]) if len(args) > 2 else None,
+        )
 
     elif cmd == "fetch":
         cmd_fetch(

@@ -44,3 +44,10 @@
 [2026-08-30 21:40] MEDIUM | robocopy data/ + .env + client_secrets.json de F:/delirio-manager para F:/RichClub | razao: consolidar em clone unico; 2,1 GB, 141 arquivos, conferido por hash
 [2026-08-30 21:45] MEDIUM | Set-ScheduledTask ProjetoRaquel-Sync-10h/14h/18h e Raquel_SyncManual_1x -> F:/RichClub | razao: apontar as 4 tarefas para o clone unico; as outras 8 ja apontavam
 [2026-08-30 21:50] HIGH-EVITADO | rename de F:/delirio-manager NAO concluido | razao: pasta travada pelo proprio processo pwsh da sessao (PID 61016); nao deletado, nada perdido
+[2026-09-08 15:50] MEDIUM | Set-ScheduledTask ProjetoRaquel-Sync-10h/18h: compile_daily.bat -> sync_daily.bat | razao: Andre pediu retomar postagem de Shorts direto do Instagram ate esgotar acervo, antes de voltar ao formato 16:9
+[2026-09-08 15:52] verify-gate OK | projeto: /f/RichClub/projeto-raquel
+[2026-09-08 16:08] verify-gate OK | projeto: /f/RichClub/projeto-raquel
+[2026-09-08 16:12] verify-gate OK | projeto: /f/RichClub/projeto-raquel
+[2026-09-08 16:26] verify-gate OK | projeto: /f/RichClub/projeto-raquel
+[2026-09-08 16:30] MEDIUM | .env: INSTAGRAM_PROXY religado (IPRoyal) | razao: IP residencial em 429 persistente confirmado por 2 contas diferentes; era falso 401 por tunnel antes, tentando de novo
+[2026-09-08 16:30] verify-gate OK | projeto: /f/RichClub/projeto-raquel
