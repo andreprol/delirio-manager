@@ -1,0 +1,160 @@
+{
+ "data": "2026-09-09",
+ "query": "\"Technical Recruiter\" OR \"Talent Acquisition\" AI product",
+ "enviado_em": null,
+ "pessoas": [
+  {
+   "slug": "giulialatorreesposito",
+   "nome": "Giulia Latorre Esposito",
+   "empresa": "Bluelight",
+   "headline": "Technical Recruiter",
+   "creator": false,
+   "status": "fila",
+   "nota": "Oi Giulia Latorre Esposito, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho na Bluelight com posicoes de engenharia para times distribuidos e queria me conectar."
+  },
+  {
+   "slug": "bianca-donadi",
+   "nome": "Bianca de Moura",
+   "empresa": "UL Solutions",
+   "headline": "Recrutadora | Recrutamento e Selecao | R&S | Tech Recruiter",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Bianca de Moura, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho na UL Solutions cobrindo hiring nas Americas (EUA, Brasil e Mexico) e queria me conectar."
+  },
+  {
+   "slug": "vanessafreires",
+   "nome": "Vanessa Freires",
+   "empresa": "Localiza&Co",
+   "headline": "Tech Recruiter | Talent Acquisition | Sourcing",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Vanessa Freires, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Senior Technical Recruiter na Localiza&Co, com sourcing tech e queria me conectar."
+  },
+  {
+   "slug": "fernanda-serr%C3%A3o-46838b101",
+   "nome": "Fernanda Serrao",
+   "empresa": "Veriff",
+   "headline": "Global Senior Technical Recruiter @ Veriff (ex-Sr LATAM Recruiter na AWS)",
+   "creator": false,
+   "status": "fila",
+   "nota": "Oi Fernanda Serrao, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Global Senior Technical Recruiter na Veriff, depois do recrutamento LATAM na AWS e queria me conectar."
+  },
+  {
+   "slug": "brunavalerios",
+   "nome": "Bruna Valerio",
+   "empresa": "Skopia",
+   "headline": "Senior Technical Recruiter | Tech Recruiter | Talent Acquisition",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Bruna Valerio, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Senior Technical Recruiter na Skopia e queria me conectar."
+  },
+  {
+   "slug": "rebecacorreali",
+   "nome": "Rebeca Correali",
+   "empresa": "Databricks",
+   "headline": "Staff Technical Recruiter @ Databricks",
+   "creator": false,
+   "status": "fila",
+   "nota": "Oi Rebeca Correali, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Staff Technical Recruiter na Databricks, com times de dados e queria me conectar."
+  },
+  {
+   "slug": "carolinabeatrizpena",
+   "nome": "Carolina",
+   "empresa": "GeorgiaTEK Systems Inc.",
+   "headline": "Talent Acquisition | Tech Recruiter | Global Recruiter",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Carolina, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Global Recruiter na GeorgiaTEK Systems, com vagas internacionais e queria me conectar."
+  },
+  {
+   "slug": "isabellatechrecruiter",
+   "nome": "Isabella",
+   "empresa": "ZENVIA",
+   "headline": "Technical Recruiter | Talent Acquisition Partner | People Analytics",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Isabella, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Tech Recruiter Latam na ZENVIA, com People Analytics e queria me conectar."
+  },
+  {
+   "slug": "sarah-rocha-b059b9149",
+   "nome": "Sarah",
+   "empresa": "DevSignal",
+   "headline": "Technical Recruiter | Technical Sourcer | Global Recruitment",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Sarah, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho na DevSignal com recrutamento tecnico global e queria me conectar."
+  },
+  {
+   "slug": "brunatonetto",
+   "nome": "Bruna",
+   "empresa": "Ambush",
+   "headline": "Technical Recruiter at Ambush",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Bruna, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho no time de People da Ambush, recrutando tech e queria me conectar."
+  },
+  {
+   "slug": "alessandra-di-matteo-792b2681",
+   "nome": "Alessandra",
+   "empresa": "ArcTouch",
+   "headline": "Master Technical Recruiter na ArcTouch",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Alessandra, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Master Technical Recruiter na ArcTouch, com times de produto digital e queria me conectar."
+  },
+  {
+   "slug": "natielimaia",
+   "nome": "Natieli",
+   "empresa": "Thoughtworks",
+   "headline": "Psychologist | Technical Recruiter @ Thoughtworks",
+   "creator": false,
+   "status": "fila",
+   "nota": "Oi Natieli, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Americas Technical Recruiter na Thoughtworks e queria me conectar."
+  },
+  {
+   "slug": "gabrielasalves",
+   "nome": "Gabriela",
+   "empresa": "SONDA",
+   "headline": "Talent Acquisition | Tech Recruiter | HR Business Partner",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Gabriela, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Technical Recruiter na SONDA, com projetos corporativos e queria me conectar."
+  },
+  {
+   "slug": "amanda-probst",
+   "nome": "Amanda",
+   "empresa": "Zup Innovation",
+   "headline": "Senior Talent Acquisition na Zup Innovation",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Amanda, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Senior Talent Acquisition na Zup Innovation e queria me conectar."
+  },
+  {
+   "slug": "camila-zanetta-6971287a",
+   "nome": "Camila",
+   "empresa": "Grupo Boticario",
+   "headline": "Technical Recruiter Specialist | Data Recruiter Specialist | Full-Cycle Recruiting",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Camila, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho como Tech e Data Recruiter Specialist no Grupo Boticario e queria me conectar."
+  },
+  {
+   "slug": "williams-junior",
+   "nome": "Williams",
+   "empresa": "DOT Digital Group",
+   "headline": "Talent Acquisition | Strategic Sourcing | IT Recruiter | Latam Recruiter | Product Recruiter | AI Recruiter",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Williams, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho na DOT Digital Group com recrutamento Latam, Product e AI e queria me conectar."
+  },
+  {
+   "slug": "amanda-caroline-eschholz",
+   "nome": "Amanda Caroline",
+   "empresa": "Share People Hub",
+   "headline": "Project Lead | Tech Recruiter | Talent Acquisition | Tech Division | CX | IA",
+   "creator": true,
+   "status": "fila",
+   "nota": "Oi Amanda Caroline, sou Technical Program Manager com foco em IA Generativa em producao, buscando vaga remota internacional. Vi seu trabalho na Share People Hub liderando a Tech Division com foco em IA e queria me conectar."
+  }
+ ]
+}
