@@ -194,7 +194,7 @@ function SkeletonCard() {
   )
 }
 
-function ClockCard({ clock, isArmed, markError, onMarkNew }) {
+function ClockCard({ clock, isArmed, isPending, markError, onMarkNew }) {
   const storeName = IP_TO_STORE[clock.ip] || clock.ip
   const cardStyle = {
     ...styles.card,
@@ -220,9 +220,13 @@ function ClockCard({ clock, isArmed, markError, onMarkNew }) {
         ? <span style={styles.responseTime}>{clock.responseTimeMs}ms</span>
         : <span style={styles.errorMsg} title={clock.error}>{clock.error || 'Sem resposta'}</span>
       }
-      {isArmed
-        ? <span style={styles.armedBadge}>🆕 aguardando releitura</span>
-        : <button style={styles.markNewBtn} onClick={handleMarkNew}>🆕 Marcar como relógio novo</button>
+      {clock.isPlaceholder
+        ? <span style={styles.markNewError}>Aguardando o relógio responder</span>
+        : isArmed
+          ? <span style={styles.armedBadge}>🆕 aguardando releitura</span>
+          : <button style={styles.markNewBtn} onClick={handleMarkNew} disabled={isPending}>
+              {isPending ? 'Marcando…' : '🆕 Marcar como relógio novo'}
+            </button>
       }
       {markError && <span style={styles.markNewError}>{markError}</span>}
     </div>
@@ -235,6 +239,7 @@ export function ClockStatusGrid() {
   const [error, setError]     = useState(null)
   const [armedIps, setArmedIps]   = useState(new Set())
   const [markErrors, setMarkErrors] = useState({})
+  const [pendingIps, setPendingIps] = useState(new Set())
 
   async function fetchStatus() {
     setLoading(true)
@@ -250,12 +255,20 @@ export function ClockStatusGrid() {
   }
 
   async function handleMarkNew(ip) {
+    if (pendingIps.has(ip)) return
     setMarkErrors(prev => ({ ...prev, [ip]: null }))
+    setPendingIps(prev => new Set(prev).add(ip))
     try {
       await api.rh.markClockNew(ip)
       setArmedIps(prev => new Set(prev).add(ip))
     } catch (err) {
       setMarkErrors(prev => ({ ...prev, [ip]: err.message || 'Falha ao marcar relógio como novo.' }))
+    } finally {
+      setPendingIps(prev => {
+        const next = new Set(prev)
+        next.delete(ip)
+        return next
+      })
     }
   }
 
@@ -280,6 +293,7 @@ export function ClockStatusGrid() {
       reachable: false,
       responseTimeMs: null,
       error: 'Sem dados',
+      isPlaceholder: true,
     })),
   ]
 
@@ -326,6 +340,7 @@ export function ClockStatusGrid() {
                 key={clock.ip}
                 clock={clock}
                 isArmed={armedIps.has(clock.ip)}
+                isPending={pendingIps.has(clock.ip)}
                 markError={markErrors[clock.ip]}
                 onMarkNew={handleMarkNew}
               />
