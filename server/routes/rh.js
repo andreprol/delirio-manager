@@ -155,6 +155,9 @@ router.post('/clock/:ip/mark-new', async (req, res) => {
   if (!CLOCK_PROXY_TOKEN) {
     return res.status(500).json({ error: 'CLOCK_PROXY_TOKEN nao configurado' });
   }
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(req.params.ip)) {
+    return res.status(400).json({ error: 'IP invalido' });
+  }
   try {
     const result = await callClockProxy(`/clock/${req.params.ip}/mark-new`, {}, 'POST');
     res.json(result);

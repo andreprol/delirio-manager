@@ -589,4 +589,10 @@ describe('POST /api/rh/clock/:ip/mark-new', () => {
     expect(res.body.error).toBe('Falha ao conectar com o clock-proxy');
     expect(res.body.detail).toBe('IP 999.999.999.999 nao esta em CLOCK_IPS');
   });
+
+  it('rejeita IP mal formado com 400 sem chamar o clock-proxy', async () => {
+    const res = await request(app).post('/api/rh/clock/192.168.1.1%2F..%2Fadmin/mark-new');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('IP invalido');
+  });
 });
