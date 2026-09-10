@@ -82,12 +82,27 @@ jobs:
           set -e
           cd /tmp && rm -rf dt-deploy
           git clone --depth=1 "https://github.com/andreprol/delirio-manager.git" dt-deploy 2>&1 | tail -3
+
+          # ecosystem.config.js da VM tem env vars injetadas manualmente e nunca
+          # commitadas no repo (CLOCK_PROXY_TOKEN/CLOCK_PROXY_URL do clock-proxy).
+          # Incidente 2026-09-10: o cp -r abaixo sobrescrevia esse arquivo com a
+          # versão do repo (sem as vars), derrubando o Módulo RH em produção.
+          # Preserva o arquivo da VM em vez de deixar o repo sobrescrevê-lo.
+          if [ -f /opt/dt-manager/ecosystem.config.js ]; then
+            cp /opt/dt-manager/ecosystem.config.js /tmp/ecosystem.config.js.vm-backup
+          fi
+
           cp -r dt-deploy/server/. /opt/dt-manager/
+
+          if [ -f /tmp/ecosystem.config.js.vm-backup ]; then
+            cp /tmp/ecosystem.config.js.vm-backup /opt/dt-manager/ecosystem.config.js
+          fi
+
           cp -r dt-deploy/infra/. /opt/dt-manager/infra/
           cd /opt/dt-manager
           npm install --production 2>&1 | tail -5
           bash /opt/dt-manager/infra/safe-restart.sh 2>&1 | tail -20
-          rm -rf /tmp/dt-deploy
+          rm -rf /tmp/dt-deploy /tmp/ecosystem.config.js.vm-backup
           echo DEPLOY_OK
           HEREDOC
 
