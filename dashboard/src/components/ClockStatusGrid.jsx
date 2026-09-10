@@ -157,6 +157,28 @@ const styles = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
+  markNewBtn: {
+    marginTop: '4px',
+    padding: '4px 8px',
+    background: 'transparent',
+    color: 'var(--text-muted, #94a3b8)',
+    border: '1px solid var(--border, #2d3748)',
+    borderRadius: '6px',
+    fontSize: '11px',
+    cursor: 'pointer',
+    alignSelf: 'flex-start',
+  },
+  armedBadge: {
+    marginTop: '4px',
+    fontSize: '11px',
+    color: 'var(--accent, #3b82f6)',
+    fontWeight: 600,
+  },
+  markNewError: {
+    fontSize: '10px',
+    color: 'var(--red, #f87171)',
+    marginTop: '2px',
+  },
 }
 
 function SkeletonCard() {
@@ -172,11 +194,19 @@ function SkeletonCard() {
   )
 }
 
-function ClockCard({ clock }) {
+function ClockCard({ clock, isArmed, markError, onMarkNew }) {
   const storeName = IP_TO_STORE[clock.ip] || clock.ip
   const cardStyle = {
     ...styles.card,
     ...(clock.reachable ? styles.cardReachable : styles.cardUnreachable),
+  }
+
+  function handleMarkNew() {
+    const confirmed = window.confirm(
+      `Confirma que o relógio ${storeName} (${clock.ip}) foi fisicamente substituído?\n\nIsso faz a próxima leitura de funcionários ignorar a checagem de segurança contra queda repentina — use só depois de trocar o hardware.`
+    )
+    if (!confirmed) return
+    onMarkNew(clock.ip)
   }
 
   return (
@@ -190,6 +220,11 @@ function ClockCard({ clock }) {
         ? <span style={styles.responseTime}>{clock.responseTimeMs}ms</span>
         : <span style={styles.errorMsg} title={clock.error}>{clock.error || 'Sem resposta'}</span>
       }
+      {isArmed
+        ? <span style={styles.armedBadge}>🆕 aguardando releitura</span>
+        : <button style={styles.markNewBtn} onClick={handleMarkNew}>🆕 Marcar como relógio novo</button>
+      }
+      {markError && <span style={styles.markNewError}>{markError}</span>}
     </div>
   )
 }
@@ -198,6 +233,8 @@ export function ClockStatusGrid() {
   const [data, setData]       = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
+  const [armedIps, setArmedIps]   = useState(new Set())
+  const [markErrors, setMarkErrors] = useState({})
 
   async function fetchStatus() {
     setLoading(true)
@@ -212,6 +249,16 @@ export function ClockStatusGrid() {
     }
   }
 
+  async function handleMarkNew(ip) {
+    setMarkErrors(prev => ({ ...prev, [ip]: null }))
+    try {
+      await api.rh.markClockNew(ip)
+      setArmedIps(prev => new Set(prev).add(ip))
+    } catch (err) {
+      setMarkErrors(prev => ({ ...prev, [ip]: err.message || 'Falha ao marcar relógio como novo.' }))
+    }
+  }
+
   useEffect(() => { fetchStatus() }, [])
 
   const reachable = data?.reachable ?? 0
@@ -222,19 +269,7 @@ export function ClockStatusGrid() {
     ? new Date(data.timestamp).toLocaleString('pt-BR')
     : null
 
-  const clocks = data?.clocks ?? []
-
-  // Ensure all known IPs appear (fill missing ones from the response)
-  const knownIps = new Set(clocks.map(c => c.ip))
-  const fullClocks = [
-    ...clocks,
-    ...CLOCK_IPS.filter(ip => !knownIps.has(ip)).map(ip => ({
-      ip,
-      reachable: false,
-      responseTimeMs: null,
-      error: 'Sem dados',
-    })),
-  ]
+  const fullClocks = data?.clocks ?? []
 
   return (
     <div style={styles.container}>
@@ -274,7 +309,15 @@ export function ClockStatusGrid() {
       <div style={styles.grid}>
         {loading
           ? CLOCK_IPS.map(ip => <SkeletonCard key={ip} />)
-          : fullClocks.map(clock => <ClockCard key={clock.ip} clock={clock} />)
+          : fullClocks.map(clock => (
+              <ClockCard
+                key={clock.ip}
+                clock={clock}
+                isArmed={armedIps.has(clock.ip)}
+                markError={markErrors[clock.ip]}
+                onMarkNew={handleMarkNew}
+              />
+            ))
         }
       </div>
     </div>
