@@ -147,6 +147,26 @@ router.get('/clocks/status', async (req, res) => {
   }
 });
 
+// POST /api/rh/clock/:ip/mark-new
+// Marca um relógio como "recém-substituído" — a próxima leitura de funcionários desse IP
+// vai ignorar o guard de divergência (queda >50% no count) por uma leitura, uma única vez.
+// Usar depois de trocar fisicamente o hardware de um relógio (mesmo IP, funcionários zerados).
+router.post('/clock/:ip/mark-new', async (req, res) => {
+  if (!CLOCK_PROXY_TOKEN) {
+    return res.status(500).json({ error: 'CLOCK_PROXY_TOKEN nao configurado' });
+  }
+  try {
+    const result = await callClockProxy(`/clock/${req.params.ip}/mark-new`, {}, 'POST');
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({
+      error:  'Falha ao conectar com o clock-proxy',
+      detail: err.message,
+      hint:   `Verifique se o Servidor Skill esta acessivel em ${CLOCK_PROXY_URL}`,
+    });
+  }
+});
+
 // GET /api/rh/employees
 // Busca funcionários de todos os relógios e retorna comparação (pode demorar minutos)
 router.get('/employees', async (req, res) => {
