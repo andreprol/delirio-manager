@@ -33,10 +33,10 @@ DB_PATH        = os.getenv("DB_PATH", str(Path(__file__).parent / "data" / "pipe
 BPM_PADRAO = 124
 
 SOUND_SIGNATURE = (
-    "hypnotic deep groove, massive punchy kick drum, thunderous heavy sub bass, "
-    "hard-hitting driving bassline, dark club bass, four-on-the-floor, "
-    "sultry female vocal chops and hooks, minimal atmospheric layers, "
-    "muted percussive hats, no bright cymbals"
+    "hypnotic deep house groove, powerful heavy kick drum, deep weighty sub bass, "
+    "restrained subtle bassline, dark understated house atmosphere, four-on-the-floor, "
+    "soft female vocal chops used sparingly, minimal atmospheric layers, "
+    "soft muted hats, no bright cymbals, no big synth drops, not dance-pop"
 )
 
 THEME_EXTRAS = {

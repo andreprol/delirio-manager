@@ -87,13 +87,27 @@ def _make_title(channel: dict, theme: dict, cycle: int = 1) -> str:
 
 
 def _make_description(channel: dict, theme: dict) -> str:
+    # Paragrafo denso de keyword pra Pesquisa do YouTube -- repete as variacoes
+    # de "hypnotic/dark/underground tech house" que o canal-modelo Black Pulse
+    # usa (SEO via descricao, tags vazias no video dele). Ver analise
+    # competitiva em [[project-umbra-sessions]].
     return (
-        f"🌊 {theme['location']} vibes — 1 hour of pure Dark Tech House.\n"
+        f"🌊 {theme['location']} vibes — 1 hour of hypnotic dark tech house.\n"
         f"Let the music transport you to {theme['name']}.\n\n"
-        f"🎧 AI-generated Dark Tech House mix\n"
-        f"📍 {theme['name']}\n\n"
+        f"A deep, hypnotic dark tech house mix set in {theme['location']} — "
+        f"underground tech house, dark techno, melodic techno and driving "
+        f"house music blended into one continuous DJ set. Perfect hypnotic "
+        f"techno mix for studying, working, gaming, driving, a night club "
+        f"session or just relaxing to deep house and underground techno vibes.\n\n"
+        f"🎧 AI-generated hypnotic dark tech house mix\n"
+        f"📍 {theme['name']}\n"
+        f"🔁 1 hour non-stop DJ set — dark techno, tech house, underground house\n\n"
+        f"{channel.get('channel_name', 'Umbra Sessions')} — new hypnotic dark "
+        f"tech house mixes regularly. Subscribe for more underground techno "
+        f"and deep house sessions.\n\n"
         f"#{theme['id'].replace('-','').title()}Mix #DarkTechHouse #TechHouse "
-        f"#ElectronicMusic #DJSet #1HourMix"
+        f"#UndergroundTechno #DeepHouse #HypnoticTechno #ElectronicMusic "
+        f"#DJSet #1HourMix"
     )
 
 

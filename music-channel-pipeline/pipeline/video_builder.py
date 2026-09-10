@@ -17,7 +17,7 @@ CROSSFADE_SECONDS = 8
 # neste pipeline, ver feedback_arquivo_truncado_derruba_lote) nao pode gerar
 # um filter_complex com centenas de -i.
 MAX_LOOP_REPEATS = 30
-BASS_BOOST_FILTER = "bass=gain=6:frequency=90:width_type=o:width=0.8,alimiter=limit=0.95"
+BASS_BOOST_FILTER = "bass=gain=9:frequency=90:width_type=o:width=0.8,alimiter=limit=0.95"
 MP3_ENCODE_ARGS = ["-c:a", "libmp3lame", "-q:a", "2"]
 
 
