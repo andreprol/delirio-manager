@@ -78,6 +78,11 @@ jest.mock('./services/ncrMonitor', () => ({
   sendNcrResultEmail: jest.fn(),
 }));
 
+// CLOCK_PROXY_* precisam estar definidas ANTES do require('./app') abaixo — rh.js lê
+// process.env uma única vez, no load do módulo.
+process.env.CLOCK_PROXY_TOKEN = 'test-clock-proxy-token';
+process.env.CLOCK_PROXY_URL   = 'http://127.0.0.1:34521';
+
 // Importa app depois dos mocks
 const app = require('./app');
 const db  = require('./db');
@@ -542,5 +547,51 @@ describe('404', () => {
   it('retorna 404 JSON para rota desconhecida', async () => {
     const res = await request(app).get('/api/nao-existe').expect(404);
     expect(res.body.error).toMatch(/nao encontrada/i);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/rh/clock/:ip/mark-new
+// ─────────────────────────────────────────────────────────────────────────────
+// Sobe um clock-proxy fake real (não mock de módulo) na porta fixa acima —
+// CLOCK_PROXY_URL já foi resolvida no require('./app') do topo do arquivo.
+describe('POST /api/rh/clock/:ip/mark-new', () => {
+  const http = require('http');
+  let fakeClockProxy;
+
+  beforeAll((done) => {
+    fakeClockProxy = http.createServer((req, res) => {
+      if (req.url === '/clock/192.168.14.151/mark-new') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: true, ip: '192.168.14.151' }));
+      }
+      if (req.url === '/clock/192.168.99.99/mark-new') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'IP 192.168.99.99 nao esta em CLOCK_IPS' }));
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    fakeClockProxy.listen(34521, done);
+  });
+
+  afterAll((done) => { fakeClockProxy.close(done); });
+
+  it('proxeia a marcação e retorna ok:true', async () => {
+    const res = await request(app).post('/api/rh/clock/192.168.14.151/mark-new');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, ip: '192.168.14.151' });
+  });
+
+  it('repassa erro 400 do clock-proxy com o status e mensagem originais', async () => {
+    const res = await request(app).post('/api/rh/clock/192.168.99.99/mark-new');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('IP 192.168.99.99 nao esta em CLOCK_IPS');
+  });
+
+  it('rejeita IP mal formado com 400 sem chamar o clock-proxy', async () => {
+    const res = await request(app).post('/api/rh/clock/192.168.1.1%2F..%2Fadmin/mark-new');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('IP invalido');
   });
 });

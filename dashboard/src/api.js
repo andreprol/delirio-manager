@@ -141,6 +141,8 @@ export const api = {
       request('GET', '/api/rh/lgpd-info'),
     nextRef1: () =>
       request('GET', '/api/rh/next-ref1'),
+    markClockNew: (ip) =>
+      request('POST', `/api/rh/clock/${ip}/mark-new`),
   },
 
   // DR — Bare Metal Recovery

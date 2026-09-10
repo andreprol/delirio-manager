@@ -157,6 +157,28 @@ const styles = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
+  markNewBtn: {
+    marginTop: '4px',
+    padding: '4px 8px',
+    background: 'transparent',
+    color: 'var(--text-muted, #94a3b8)',
+    border: '1px solid var(--border, #2d3748)',
+    borderRadius: '6px',
+    fontSize: '11px',
+    cursor: 'pointer',
+    alignSelf: 'flex-start',
+  },
+  armedBadge: {
+    marginTop: '4px',
+    fontSize: '11px',
+    color: 'var(--accent, #3b82f6)',
+    fontWeight: 600,
+  },
+  markNewError: {
+    fontSize: '10px',
+    color: 'var(--red, #f87171)',
+    marginTop: '2px',
+  },
 }
 
 function SkeletonCard() {
@@ -172,11 +194,19 @@ function SkeletonCard() {
   )
 }
 
-function ClockCard({ clock }) {
+function ClockCard({ clock, isArmed, isPending, markError, onMarkNew }) {
   const storeName = IP_TO_STORE[clock.ip] || clock.ip
   const cardStyle = {
     ...styles.card,
     ...(clock.reachable ? styles.cardReachable : styles.cardUnreachable),
+  }
+
+  function handleMarkNew() {
+    const confirmed = window.confirm(
+      `Confirma que o relógio ${storeName} (${clock.ip}) foi fisicamente substituído?\n\nIsso faz a próxima leitura de funcionários ignorar a checagem de segurança contra queda repentina — use só depois de trocar o hardware.`
+    )
+    if (!confirmed) return
+    onMarkNew(clock.ip)
   }
 
   return (
@@ -190,6 +220,15 @@ function ClockCard({ clock }) {
         ? <span style={styles.responseTime}>{clock.responseTimeMs}ms</span>
         : <span style={styles.errorMsg} title={clock.error}>{clock.error || 'Sem resposta'}</span>
       }
+      {clock.isPlaceholder
+        ? <span style={styles.markNewError}>Aguardando o relógio responder</span>
+        : isArmed
+          ? <span style={styles.armedBadge}>🆕 aguardando releitura</span>
+          : <button style={styles.markNewBtn} onClick={handleMarkNew} disabled={isPending}>
+              {isPending ? 'Marcando…' : '🆕 Marcar como relógio novo'}
+            </button>
+      }
+      {markError && <span style={styles.markNewError}>{markError}</span>}
     </div>
   )
 }
@@ -198,6 +237,9 @@ export function ClockStatusGrid() {
   const [data, setData]       = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
+  const [armedIps, setArmedIps]   = useState(new Set())
+  const [markErrors, setMarkErrors] = useState({})
+  const [pendingIps, setPendingIps] = useState(new Set())
 
   async function fetchStatus() {
     setLoading(true)
@@ -205,10 +247,31 @@ export function ClockStatusGrid() {
     try {
       const result = await api.rh.getClockStatus()
       setData(result)
+      if (Array.isArray(result?.armed)) {
+        setArmedIps(new Set(result.armed))
+      }
     } catch (err) {
       setError(err.message || 'Não foi possível conectar ao clock-proxy.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleMarkNew(ip) {
+    if (pendingIps.has(ip)) return
+    setMarkErrors(prev => ({ ...prev, [ip]: null }))
+    setPendingIps(prev => new Set(prev).add(ip))
+    try {
+      await api.rh.markClockNew(ip)
+      setArmedIps(prev => new Set(prev).add(ip))
+    } catch (err) {
+      setMarkErrors(prev => ({ ...prev, [ip]: err.message || 'Falha ao marcar relógio como novo.' }))
+    } finally {
+      setPendingIps(prev => {
+        const next = new Set(prev)
+        next.delete(ip)
+        return next
+      })
     }
   }
 
@@ -233,6 +296,7 @@ export function ClockStatusGrid() {
       reachable: false,
       responseTimeMs: null,
       error: 'Sem dados',
+      isPlaceholder: true,
     })),
   ]
 
@@ -274,7 +338,16 @@ export function ClockStatusGrid() {
       <div style={styles.grid}>
         {loading
           ? CLOCK_IPS.map(ip => <SkeletonCard key={ip} />)
-          : fullClocks.map(clock => <ClockCard key={clock.ip} clock={clock} />)
+          : fullClocks.map(clock => (
+              <ClockCard
+                key={clock.ip}
+                clock={clock}
+                isArmed={armedIps.has(clock.ip)}
+                isPending={pendingIps.has(clock.ip)}
+                markError={markErrors[clock.ip]}
+                onMarkNew={handleMarkNew}
+              />
+            ))
         }
       </div>
     </div>

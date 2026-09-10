@@ -41,7 +41,12 @@ function callClockProxy(path, body, method = 'POST') {
         try {
           const parsed = JSON.parse(data);
           if (res.statusCode === 202) return resolve({ ...parsed, _statusCode: 202 });
-          if (res.statusCode >= 400) return reject(new Error(parsed.error || `clock-proxy HTTP ${res.statusCode}`));
+          if (res.statusCode >= 400) {
+            const err = new Error(parsed.error || `clock-proxy HTTP ${res.statusCode}`);
+            err.statusCode = res.statusCode;
+            err.body = parsed;
+            return reject(err);
+          }
           resolve(parsed);
         }
         catch (_) { resolve({ error: data }); }
@@ -139,6 +144,32 @@ router.get('/clocks/status', async (req, res) => {
     const result = await callClockProxy('/rh/clocks/status', null, 'GET');
     res.json(result);
   } catch (err) {
+    res.status(502).json({
+      error:  'Falha ao conectar com o clock-proxy',
+      detail: err.message,
+      hint:   `Verifique se o Servidor Skill esta acessivel em ${CLOCK_PROXY_URL}`,
+    });
+  }
+});
+
+// POST /api/rh/clock/:ip/mark-new
+// Marca um relógio como "recém-substituído" — a próxima leitura de funcionários desse IP
+// vai ignorar o guard de divergência (queda >50% no count) por uma leitura, uma única vez.
+// Usar depois de trocar fisicamente o hardware de um relógio (mesmo IP, funcionários zerados).
+router.post('/clock/:ip/mark-new', async (req, res) => {
+  if (!CLOCK_PROXY_TOKEN) {
+    return res.status(500).json({ error: 'CLOCK_PROXY_TOKEN nao configurado' });
+  }
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(req.params.ip)) {
+    return res.status(400).json({ error: 'IP invalido' });
+  }
+  try {
+    const result = await callClockProxy(`/clock/${req.params.ip}/mark-new`, {}, 'POST');
+    res.json(result);
+  } catch (err) {
+    if (err.statusCode && err.statusCode < 500) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
     res.status(502).json({
       error:  'Falha ao conectar com o clock-proxy',
       detail: err.message,
