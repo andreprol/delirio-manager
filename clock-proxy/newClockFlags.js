@@ -13,14 +13,25 @@ function loadFlags(filePath) {
       const arr = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       return new Set(arr);
     }
-  } catch (_) {
+  } catch (err) {
     // arquivo corrompido — começa do zero, não trava o boot do processo
+    console.error('[newClockFlags] falha ao carregar flags, iniciando vazio:', err.message);
   }
   return new Set();
 }
 
+// Grava o Set de flags em disco de forma atômica (arquivo temporário +
+// rename) e nunca lança — se a escrita falhar (disco cheio, EACCES,
+// diretório inexistente etc.) a flag permanece só em memória e o erro é
+// apenas logado, sem derrubar o processo chamador.
 function saveFlags(filePath, flags) {
-  fs.writeFileSync(filePath, JSON.stringify([...flags]), 'utf8');
+  const tmpPath = `${filePath}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify([...flags]), 'utf8');
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    console.error('[newClockFlags] falha ao salvar flags em disco:', err.message);
+  }
 }
 
 function isNewClockBypassActive(flags, ip) {
