@@ -14,12 +14,19 @@ import { api } from '../api'
 import { ClockStatusGrid } from '../components/ClockStatusGrid'
 
 const SAMPLE_STATUS = {
-  total: 2,
-  reachable: 2,
+  total: 9,
+  reachable: 9,
   timestamp: '2026-09-10T12:00:00.000Z',
   clocks: [
-    { ip: '192.168.14.151', reachable: true,  responseTimeMs: 40 },
-    { ip: '192.168.15.151', reachable: true,  responseTimeMs: 55 },
+    { ip: '192.168.14.151', reachable: true, responseTimeMs: 40 },
+    { ip: '192.168.15.151', reachable: true, responseTimeMs: 55 },
+    { ip: '192.168.12.151', reachable: true, responseTimeMs: 30 },
+    { ip: '192.168.0.151',  reachable: true, responseTimeMs: 20 },
+    { ip: '192.168.13.151', reachable: true, responseTimeMs: 25 },
+    { ip: '192.168.18.151', reachable: true, responseTimeMs: 35 },
+    { ip: '192.168.16.151', reachable: true, responseTimeMs: 45 },
+    { ip: '192.168.20.151', reachable: true, responseTimeMs: 50 },
+    { ip: '192.168.10.150', reachable: true, responseTimeMs: 60 },
   ],
 }
 
@@ -31,7 +38,7 @@ beforeEach(() => {
 describe('ClockStatusGrid — botão "Marcar como relógio novo"', () => {
   it('exibe o botão em cada card de relógio após carregar', async () => {
     render(<ClockStatusGrid />)
-    await waitFor(() => expect(screen.getAllByText(/marcar como relógio novo/i)).toHaveLength(2))
+    await waitFor(() => expect(screen.getAllByText(/marcar como relógio novo/i)).toHaveLength(9))
   })
 
   it('pede confirmação e chama api.rh.markClockNew com o IP correto', async () => {
@@ -69,7 +76,7 @@ describe('ClockStatusGrid — botão "Marcar como relógio novo"', () => {
     fireEvent.click(screen.getAllByText(/marcar como relógio novo/i)[0])
 
     await waitFor(() => expect(screen.getByText(/aguardando releitura/i)).toBeInTheDocument())
-    expect(screen.getAllByText(/marcar como relógio novo/i)).toHaveLength(1)
+    expect(screen.getAllByText(/marcar como relógio novo/i)).toHaveLength(8)
   })
 
   it('mostra erro se a chamada de marcar falhar, sem trocar pelo badge', async () => {

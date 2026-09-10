@@ -269,7 +269,19 @@ export function ClockStatusGrid() {
     ? new Date(data.timestamp).toLocaleString('pt-BR')
     : null
 
-  const fullClocks = data?.clocks ?? []
+  const clocks = data?.clocks ?? []
+
+  // Ensure all known IPs appear (fill missing ones from the response)
+  const knownIps = new Set(clocks.map(c => c.ip))
+  const fullClocks = [
+    ...clocks,
+    ...CLOCK_IPS.filter(ip => !knownIps.has(ip)).map(ip => ({
+      ip,
+      reachable: false,
+      responseTimeMs: null,
+      error: 'Sem dados',
+    })),
+  ]
 
   return (
     <div style={styles.container}>
