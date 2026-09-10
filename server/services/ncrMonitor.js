@@ -5,6 +5,7 @@
 const path = require('path');
 const fs   = require('fs');
 const db   = require('../db');
+const { sendAlert } = require('./resendAlert');
 
 const POLL_INTERVAL_MS     = 2 * 60 * 1000;  // 2 minutos
 const ALERT_THRESHOLD      = 3;              // falhas consecutivas antes de alertar
@@ -54,73 +55,10 @@ const health = {
   tokenFailures:  0,
   fetchFailures:  0,
   lastTickAt:     Date.now(),
-  lastAlert:      {},
 };
 
-function canAlert(stage) {
-  const now  = Date.now();
-  const last = health.lastAlert[stage] || 0;
-  return now - last >= ALERT_COOLDOWN_MS;
-}
-
-function markAlerted(stage) {
-  health.lastAlert[stage] = Date.now();
-}
-
-function loadResendKey() {
-  try {
-    const conf = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
-    return conf.resendApiKey || process.env.RESEND_API_KEY || null;
-  } catch {
-    return process.env.RESEND_API_KEY || null;
-  }
-}
-
 async function sendHealthAlert(stage, detail) {
-  if (!canAlert(stage)) return;
-
-  const apiKey = loadResendKey();
-  if (!apiKey) {
-    console.error(`[NCR-HEALTH] sem resendApiKey — alerta ${stage}: ${detail}`);
-    return;
-  }
-
-  markAlerted(stage);
-
-  const esc    = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  const html = `<!DOCTYPE html><html lang="pt-BR"><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-<div style="background:#c0392b;color:#fff;padding:14px 20px;border-radius:6px 6px 0 0">
-  <h2 style="margin:0;font-size:16px">🚨 NCR Monitor — Falha Detectada</h2>
-  <p style="margin:4px 0 0;font-size:13px;opacity:0.85">Delirio Manager — Health Alert</p>
-</div>
-<div style="border:1px solid #ddd;border-top:none;padding:16px 20px;border-radius:0 0 6px 6px">
-  <p style="margin:0 0 8px"><b>Etapa com falha:</b> ${esc(stage)}</p>
-  <p style="background:#fff5f5;border-left:4px solid #c0392b;padding:10px 14px;font-size:13px;margin:0 0 12px">${esc(detail)}</p>
-  <p style="color:#718096;font-size:11px;margin:0">Delirio Manager NCR Monitor — ${nowStr} UTC</p>
-</div>
-</body></html>`;
-
-  try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method:  'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from:    'NCR Monitor <onboarding@resend.dev>',
-        to:      ['andreprol1980@gmail.com'],
-        subject: `🚨 NCR Monitor — Falha: ${stage}`,
-        html,
-      }),
-    });
-    if (!res.ok) {
-      const txt = await res.text();
-      console.error(`[NCR-HEALTH] Resend ${res.status}: ${txt.slice(0, 200)}`);
-    } else {
-      console.log(`[NCR-HEALTH] Alerta enviado — stage=${stage}`);
-    }
-  } catch (e) {
-    console.error('[NCR-HEALTH] Erro ao enviar alerta:', e.message);
-  }
+  await sendAlert({ source: 'NCR Monitor', stage, detail, cooldownKey: `ncr:${stage}`, cooldownMs: ALERT_COOLDOWN_MS });
 }
 
 async function checkAckTimeouts() {

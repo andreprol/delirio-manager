@@ -11,11 +11,25 @@ const zamakService      = require('./services/zamak');
 const metricsEmail       = require('./services/metricsEmailReport');
 const ncrMonitor         = require('./services/ncrMonitor');
 const serviceStatusEmail = require('./services/serviceStatusEmail');
+const rhHealthMonitor    = require('./services/rhHealthMonitor');
+const { sendAlert }      = require('./services/resendAlert');
 
 const PORT = process.env.PORT || 3847;
 
 const server = http.createServer(app);
 initWebSocket(server);
+
+// Checagem de boot — pega o cenário do incidente de 2026-09-10 no exato momento
+// em que um deploy/restart apaga a env var, em vez de esperar o próximo tick do monitor.
+if (!process.env.CLOCK_PROXY_TOKEN) {
+  logger.error('CLOCK_PROXY_TOKEN ausente no ambiente — Módulo RH vai falhar em todas as rotas');
+  sendAlert({
+    source:      'Módulo RH',
+    stage:       'Boot sem CLOCK_PROXY_TOKEN',
+    detail:      'Servidor subiu sem CLOCK_PROXY_TOKEN no ambiente — todas as rotas /api/rh/* vão retornar 500. Verifique o ecosystem.config.js da VM.',
+    cooldownKey: 'rh:token-missing', // mesma chave do rhHealthMonitor — evita alerta duplicado
+  }).catch(e => logger.error('[Boot] Falha ao enviar alerta de CLOCK_PROXY_TOKEN ausente', { error: e.message }));
+}
 
 server.listen(PORT, () => {
   logger.info('Delirio Manager Server iniciado', {
@@ -33,6 +47,8 @@ server.listen(PORT, () => {
   logger.info('NCR monitor iniciado', { interval: '2min' });
   serviceStatusEmail.scheduleServiceStatusEmails();
   _scheduleHourlyMetricsMonitor();
+  rhHealthMonitor.start(PORT);
+  logger.info('RH health monitor iniciado', { interval: '5min' });
 });
 
 // ── Monitor autônomo de leituras horárias ────────────────────────────────────
@@ -216,5 +232,6 @@ process.on('SIGTERM', () => {
   logger.info('SIGTERM recebido — encerrando graciosamente');
   alertEngine.stop();
   insightEngine.stop();
+  rhHealthMonitor.stop();
   server.close(() => process.exit(0));
 });

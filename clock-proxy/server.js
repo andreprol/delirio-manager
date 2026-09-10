@@ -2,6 +2,25 @@ require('dotenv').config();
 const fs      = require('fs');
 const path    = require('path');
 const express = require('express');
+
+// Guarda de módulos obrigatórios — evita crash uncaught + restart-loop mudo do PM2
+// quando um arquivo sumir do disco (incidente 2026-09-10: utils.js ausente).
+// Em vez de derrubar o processo, sobe um servidor mínimo com /health honesto,
+// pra ficar visível (502→503 diferenciado) em vez de porta fechada indistinguível.
+const REQUIRED_MODULES = ['./henry-hexa.js', './utils.js'];
+const missingModules = REQUIRED_MODULES.filter(f => !fs.existsSync(path.join(__dirname, f)));
+if (missingModules.length > 0) {
+  console.error('[dt-clock-proxy] módulo(s) ausente(s), rodando em modo degradado:', missingModules);
+  const mini = express();
+  mini.get('/health', (req, res) => {
+    res.status(503).json({ ok: false, service: 'dt-clock-proxy', missing: missingModules });
+  });
+  mini.listen(process.env.PORT || 4321, () => {
+    console.error('[dt-clock-proxy] modo degradado ativo na porta', process.env.PORT || 4321);
+  });
+  return;
+}
+
 const { HenryHexa } = require('./henry-hexa');
 const { buildMasterCache } = require('./utils');
 
