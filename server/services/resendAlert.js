@@ -3,8 +3,9 @@
 // Extraído de ncrMonitor.js (sendHealthAlert) para reuso por outros monitores (ex: rhHealthMonitor).
 'use strict';
 
-const path = require('path');
-const fs   = require('fs');
+const path   = require('path');
+const fs     = require('fs');
+const logger = require('./logger');
 
 const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min
 
@@ -59,7 +60,7 @@ async function sendAlert({ source, stage, detail, cooldownKey, cooldownMs = DEFA
 
   const apiKey = loadResendKey();
   if (!apiKey) {
-    console.error(`[${source}] sem resendApiKey — alerta ${stage}: ${detail}`);
+    logger.error(`[${source}] sem resendApiKey — alerta ${stage}: ${detail}`);
     return { sent: false, reason: 'no-api-key' };
   }
 
@@ -80,13 +81,13 @@ async function sendAlert({ source, stage, detail, cooldownKey, cooldownMs = DEFA
     });
     if (!res.ok) {
       const txt = await res.text();
-      console.error(`[${source}] Resend ${res.status}: ${txt.slice(0, 200)}`);
+      logger.error(`[${source}] Resend ${res.status}: ${txt.slice(0, 200)}`);
       return { sent: false, reason: `resend-${res.status}` };
     }
-    console.log(`[${source}] Alerta enviado — stage=${stage}`);
+    logger.info(`[${source}] Alerta enviado — stage=${stage}`);
     return { sent: true };
   } catch (e) {
-    console.error(`[${source}] Erro ao enviar alerta:`, e.message);
+    logger.error(`[${source}] Erro ao enviar alerta: ${e.message}`);
     return { sent: false, reason: 'exception', error: e.message };
   }
 }

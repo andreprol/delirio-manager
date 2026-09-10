@@ -11,6 +11,7 @@
 
 const http = require('http');
 const { sendAlert } = require('./resendAlert');
+const logger = require('./logger');
 
 const POLL_INTERVAL_MS  = 5 * 60 * 1000;  // 5 min — mesma cadência do infra/watchdog.sh
 const FAILURE_THRESHOLD = 2;              // falhas 502 consecutivas antes de alertar
@@ -94,7 +95,7 @@ async function checkOnce(port) {
     result = await fetchClocksStatus(port);
   } catch (e) {
     // servidor local não respondeu nem isso — algo mais grave, não é escopo deste monitor
-    console.error('[RH-HEALTH] Falha ao consultar endpoint local:', e.message);
+    logger.error(`[RH-HEALTH] Falha ao consultar endpoint local: ${e.message}`);
     return;
   }
 
@@ -103,7 +104,7 @@ async function checkOnce(port) {
   if (statusCode === 500) return handleTokenMissing(body);
   if (statusCode === 502) return handleConnFailed(body);
   if (statusCode !== 200) {
-    console.error(`[RH-HEALTH] status inesperado ${statusCode}:`, JSON.stringify(body).slice(0, 200));
+    logger.error(`[RH-HEALTH] status inesperado ${statusCode}: ${JSON.stringify(body).slice(0, 200)}`);
     return;
   }
   return handleSuccess(body);
@@ -111,9 +112,9 @@ async function checkOnce(port) {
 
 function start(port) {
   const targetPort = port || process.env.PORT || 3847;
-  checkOnce(targetPort).catch(e => console.error('[RH-HEALTH] check inicial erro:', e.message));
+  checkOnce(targetPort).catch(e => logger.error(`[RH-HEALTH] check inicial erro: ${e.message}`));
   state.timer = setInterval(() => {
-    checkOnce(targetPort).catch(e => console.error('[RH-HEALTH] check erro:', e.message));
+    checkOnce(targetPort).catch(e => logger.error(`[RH-HEALTH] check erro: ${e.message}`));
   }, POLL_INTERVAL_MS);
 }
 
