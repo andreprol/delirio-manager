@@ -23,6 +23,13 @@ if (missingModules.length > 0) {
 
 const { HenryHexa } = require('./henry-hexa');
 const { buildMasterCache } = require('./utils');
+const {
+  loadFlags,
+  isNewClockBypassActive,
+  markAsNewClock,
+  consumeNewClockFlag,
+  isSuspiciousReading,
+} = require('./newClockFlags');
 
 const app = express();
 const PORT       = process.env.PORT       || 4321;
@@ -410,6 +417,20 @@ app.get('/rh/clocks/status', async (req, res) => {
   }
 });
 
+// POST /clock/:ip/mark-new
+// Marca um IP para bypass do guard de divergência na próxima leitura de funcionários —
+// usar quando o relógio físico foi substituído por um novo (mesmo IP, zerado).
+// Flag de um-tiro: some sozinha após a próxima leitura desse IP.
+app.post('/clock/:ip/mark-new', (req, res) => {
+  const { ip } = req.params;
+  if (!CLOCK_IPS.includes(ip)) {
+    return res.status(400).json({ error: `IP ${ip} nao esta em CLOCK_IPS` });
+  }
+  markAsNewClock(_newClockFlags, ip, NEW_CLOCK_FLAGS_FILE);
+  console.log(`[dt-clock-proxy] ${ip} marcado como relógio novo — próxima leitura vai ignorar o guard de divergência`);
+  res.json({ ok: true, ip });
+});
+
 // ─── FUNCIONÁRIOS DE TODOS OS RELÓGIOS ───────────────────────────────────────
 // Assíncrono: inicia job em background, retorna 202 imediatamente.
 // Polling: chamar GET /rh/employees até receber 200 com dados.
@@ -421,6 +442,10 @@ let _clockResults      = [];     // dados brutos por relógio — persistidos pa
 let _pendingRefreshIps = null;   // IPs aguardando partial refresh enquanto job está rodando
 const EMP_CACHE_TTL    = 10 * 60 * 1000;
 const EMP_CACHE_FILE   = path.join(process.cwd(), 'employee-cache.json');
+
+// Flag "relógio novo" — bypass de um-tiro do guard de divergência por IP
+const NEW_CLOCK_FLAGS_FILE = path.join(process.cwd(), 'new-clock-flags.json');
+let _newClockFlags = loadFlags(NEW_CLOCK_FLAGS_FILE);
 
 // Carrega cache do disco na inicialização — garante que guard tem dados mesmo após restart/deploy
 try {
@@ -493,7 +518,19 @@ async function runEmployeesInBackground(targetIps) {
 
         // Guard: resultado suspeito = novo count < 50% do count anterior com dados válidos.
         // Cobre tanto lista vazia (firmware bug) quanto fetch parcial (paginação truncada).
-        const isSuspicious = prevEntry?.success && prevCount > 0 && newCount < Math.ceil(prevCount * 0.5);
+        // Bypass de um-tiro: se o IP foi marcado como "relógio novo", aceita a leitura mesmo
+        // que caia >50% (troca física de hardware, não glitch de firmware).
+        const bypassGuard = isNewClockBypassActive(_newClockFlags, ip);
+        const isSuspicious = isSuspiciousReading({
+          bypassGuard,
+          prevSuccess: prevEntry?.success,
+          prevCount,
+          newCount,
+        });
+        if (bypassGuard) {
+          consumeNewClockFlag(_newClockFlags, ip, NEW_CLOCK_FLAGS_FILE);
+          console.log(`[/rh/employees] ${ip}: flag "relógio novo" consumida — aceitando ${newCount} funcionário(s) sem checagem de divergência`);
+        }
 
         if (!result.success || isSuspicious) {
           if (isSuspicious && result.success) {
