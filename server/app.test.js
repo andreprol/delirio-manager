@@ -565,9 +565,9 @@ describe('POST /api/rh/clock/:ip/mark-new', () => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ ok: true, ip: '192.168.14.151' }));
       }
-      if (req.url === '/clock/999.999.999.999/mark-new') {
+      if (req.url === '/clock/192.168.99.99/mark-new') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ error: 'IP 999.999.999.999 nao esta em CLOCK_IPS' }));
+        return res.end(JSON.stringify({ error: 'IP 192.168.99.99 nao esta em CLOCK_IPS' }));
       }
       res.writeHead(404);
       res.end();
@@ -583,11 +583,10 @@ describe('POST /api/rh/clock/:ip/mark-new', () => {
     expect(res.body).toEqual({ ok: true, ip: '192.168.14.151' });
   });
 
-  it('repassa falha do clock-proxy como 502 com detalhe do erro', async () => {
-    const res = await request(app).post('/api/rh/clock/999.999.999.999/mark-new');
-    expect(res.status).toBe(502);
-    expect(res.body.error).toBe('Falha ao conectar com o clock-proxy');
-    expect(res.body.detail).toBe('IP 999.999.999.999 nao esta em CLOCK_IPS');
+  it('repassa erro 400 do clock-proxy com o status e mensagem originais', async () => {
+    const res = await request(app).post('/api/rh/clock/192.168.99.99/mark-new');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('IP 192.168.99.99 nao esta em CLOCK_IPS');
   });
 
   it('rejeita IP mal formado com 400 sem chamar o clock-proxy', async () => {

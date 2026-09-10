@@ -527,7 +527,7 @@ async function runEmployeesInBackground(targetIps) {
           prevCount,
           newCount,
         });
-        if (bypassGuard) {
+        if (bypassGuard && result.success) {
           consumeNewClockFlag(_newClockFlags, ip, NEW_CLOCK_FLAGS_FILE);
           console.log(`[/rh/employees] ${ip}: flag "relógio novo" consumida — aceitando ${newCount} funcionário(s) sem checagem de divergência`);
         }

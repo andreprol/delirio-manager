@@ -41,7 +41,12 @@ function callClockProxy(path, body, method = 'POST') {
         try {
           const parsed = JSON.parse(data);
           if (res.statusCode === 202) return resolve({ ...parsed, _statusCode: 202 });
-          if (res.statusCode >= 400) return reject(new Error(parsed.error || `clock-proxy HTTP ${res.statusCode}`));
+          if (res.statusCode >= 400) {
+            const err = new Error(parsed.error || `clock-proxy HTTP ${res.statusCode}`);
+            err.statusCode = res.statusCode;
+            err.body = parsed;
+            return reject(err);
+          }
           resolve(parsed);
         }
         catch (_) { resolve({ error: data }); }
@@ -162,6 +167,9 @@ router.post('/clock/:ip/mark-new', async (req, res) => {
     const result = await callClockProxy(`/clock/${req.params.ip}/mark-new`, {}, 'POST');
     res.json(result);
   } catch (err) {
+    if (err.statusCode && err.statusCode < 500) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
     res.status(502).json({
       error:  'Falha ao conectar com o clock-proxy',
       detail: err.message,
