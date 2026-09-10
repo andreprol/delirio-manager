@@ -247,6 +247,9 @@ export function ClockStatusGrid() {
     try {
       const result = await api.rh.getClockStatus()
       setData(result)
+      if (Array.isArray(result?.armed)) {
+        setArmedIps(new Set(result.armed))
+      }
     } catch (err) {
       setError(err.message || 'Não foi possível conectar ao clock-proxy.')
     } finally {

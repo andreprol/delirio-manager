@@ -409,6 +409,7 @@ app.get('/rh/clocks/status', async (req, res) => {
       reachable:   results.filter(r => r.reachable).length,
       unreachable: results.filter(r => !r.reachable).length,
       clocks:      results,
+      armed:       [..._newClockFlags],
       timestamp:   new Date().toISOString(),
     });
   } catch (err) {
