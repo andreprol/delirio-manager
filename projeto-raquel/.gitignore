@@ -1,8 +1,0 @@
-.env
-data/
-config/client_secrets.json
-config/token.json
-__pycache__/
-*.pyc
-*.pyo
-.pytest_cache/

@@ -1,6 +1,22 @@
 # Dependencies
 node_modules/
 
+# Projetos separados que vivem como pasta dentro deste workspace mas NAO
+# sao parte do Delirio Manager -- cada um tem (ou devia ter) repo proprio.
+# Achado 14/09/2026: origin deste repo aponta pro delirio-manager (publico),
+# e "git push origin master" ja vazou codigo desses projetos pra la varias
+# vezes sem ninguem perceber (ultimo commit real do repo era um commit do
+# Umbra Sessions, nao do Delirio Manager). Nunca remover essas linhas sem
+# entender o motivo primeiro.
+/uriverse3d/
+/uriverse3d-deploy/
+/music-channel-pipeline/
+/projeto-raquel/
+/linkedin-outreach/
+/youtube-rhetoric-pipeline/
+/cv-tailor/
+/homefood-michael-review/
+
 # Build outputs
 dist/
 dist-electron/
