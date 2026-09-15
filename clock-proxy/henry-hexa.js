@@ -2,6 +2,13 @@ const { chromium } = require('playwright');
 const http = require('http');
 const { formatCpf } = require('./utils');
 
+// Rótulo do menu de colaboradores varia por firmware: "Colaboradores" (padrão, maioria
+// dos relógios) ou "Usuário" (visto em relógio recém-substituído, firmware/modelo diferente).
+// Âncoras ^...$ garantem match exato — sem elas "Usuário" bateria também em "Usuários"
+// (menu de contas de sistema do admin, seção completamente diferente).
+const COLAB_MENU_TEXT     = /^(Colaboradores|Usuário)$/;
+const COLAB_MENU_SELECTOR = 'text=/^(Colaboradores|Usuário)$/';
+
 class HenryHexa {
   constructor(ip, user, password) {
     this.ip = ip;
@@ -55,11 +62,11 @@ class HenryHexa {
     await page.locator('#lblPass').fill(this.password);
     await page.locator('a.button.primary', { hasText: 'Entrar' }).click();
 
-    // Aguarda "Colaboradores" (sucesso) ou tela de sessão ativa (requer desconexão forçada)
+    // Aguarda "Colaboradores"/"Usuário" (sucesso) ou tela de sessão ativa (requer desconexão forçada)
     let loggedIn = false;
     try {
       await Promise.race([
-        page.waitForSelector('text=Colaboradores',     { timeout: 30000 }).then(() => { loggedIn = true; }),
+        page.waitForSelector(COLAB_MENU_SELECTOR,      { timeout: 30000 }).then(() => { loggedIn = true; }),
         page.waitForSelector('text=Outra conexão',     { timeout: 30000 }),
         page.waitForSelector('text=outra conexão',     { timeout: 30000 }),
         page.waitForSelector('text=conexão ativa',     { timeout: 30000 }),
@@ -81,7 +88,7 @@ class HenryHexa {
         }).first();
         if (await forceBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
           await forceBtn.click();
-          await page.waitForSelector('text=Colaboradores', { timeout: 30000 });
+          await page.waitForSelector(COLAB_MENU_SELECTOR, { timeout: 30000 });
           return; // login OK após forçar desconexão
         }
         throw new Error(`Outra conexão está ativa no relógio — não foi possível forçar desconexão (botão não encontrado)`);
@@ -96,13 +103,13 @@ class HenryHexa {
           .slice(0, 10)
           .join(' | ')
       ).catch(() => 'não foi possível capturar texto');
-      throw new Error(`Login falhou — "Colaboradores" não apareceu após 30s. Tela após Entrar: "${visibleText}"`);
+      throw new Error(`Login falhou — "Colaboradores"/"Usuário" não apareceu após 30s. Tela após Entrar: "${visibleText}"`);
     }
   }
 
   // Navega para a tela de lista de colaboradores (usado apenas pelo listEmployees)
   async navigateToColaborador(page) {
-    await page.getByText('Colaboradores').click();
+    await page.getByText(COLAB_MENU_TEXT).click();
     await page.waitForSelector('text=Buscar', { timeout: 10000 });
   }
 
@@ -110,7 +117,7 @@ class HenryHexa {
   async navigateAndSearchByCPF(page, cpf) {
     const formattedCpf = formatCpf(cpf);
 
-    await page.getByText('Colaboradores').click();
+    await page.getByText(COLAB_MENU_TEXT).click();
     // Aguarda o botão "Inserir" — exclusivo da página de Colaboradores, nunca presente no menu principal
     await page.waitForSelector('a:has-text("Inserir")', { timeout: 10000 });
 
@@ -214,7 +221,7 @@ class HenryHexa {
       try {
         await this.login(page);
 
-        await page.getByText('Colaboradores').click();
+        await page.getByText(COLAB_MENU_TEXT).click();
         await page.waitForSelector('a:has-text("Inserir")', { timeout: 20000 });
 
         await page.locator('a:has-text("Inserir")').click();
