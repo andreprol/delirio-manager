@@ -6,6 +6,8 @@ vi.mock('../api', () => ({
     rh: {
       getClockStatus: vi.fn(),
       markClockNew:   vi.fn(),
+      refreshClocks:  vi.fn(),
+      getEmployees:   vi.fn(),
     },
   },
 }))
@@ -139,5 +141,92 @@ describe('ClockStatusGrid — botão "Marcar como relógio novo"', () => {
 
     resolvePromise({ ok: true, ip: '192.168.14.151' })
     await waitFor(() => expect(screen.getByText(/aguardando releitura/i)).toBeInTheDocument())
+  })
+})
+
+describe('ClockStatusGrid — botão "Forçar releitura de funcionários"', () => {
+  it('exibe o botão em cada card reachable', async () => {
+    render(<ClockStatusGrid />)
+    await waitFor(() => expect(screen.getAllByText(/forçar releitura/i)).toHaveLength(9))
+  })
+
+  it('não exibe o botão em cards placeholder', async () => {
+    api.rh.getClockStatus.mockResolvedValue({
+      total: 9,
+      reachable: 2,
+      timestamp: '2026-09-10T12:00:00.000Z',
+      armed: [],
+      clocks: [
+        { ip: '192.168.14.151', reachable: true, responseTimeMs: 40 },
+        { ip: '192.168.15.151', reachable: true, responseTimeMs: 55 },
+      ],
+    })
+
+    render(<ClockStatusGrid />)
+
+    await waitFor(() => expect(screen.getAllByText(/forçar releitura/i)).toHaveLength(2))
+  })
+
+  it('chama refreshClocks com o IP correto e depois confirma via polling de getEmployees', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    api.rh.refreshClocks.mockResolvedValue({ status: 'started', clockIps: ['192.168.14.151'] })
+    api.rh.getEmployees.mockResolvedValue({ total: 10 })
+
+    render(<ClockStatusGrid />)
+    await vi.waitFor(() => screen.getAllByText(/forçar releitura/i))
+
+    fireEvent.click(screen.getAllByText(/forçar releitura/i)[0])
+
+    await vi.waitFor(() => expect(api.rh.refreshClocks).toHaveBeenCalledWith(['192.168.14.151']))
+
+    await vi.advanceTimersByTimeAsync(5000)
+
+    await vi.waitFor(() => expect(screen.getByText(/releitura concluída/i)).toBeInTheDocument())
+    vi.useRealTimers()
+  })
+
+  it('mostra erro se refreshClocks falhar', async () => {
+    api.rh.refreshClocks.mockRejectedValue(new Error('clock-proxy indisponível'))
+
+    render(<ClockStatusGrid />)
+    await waitFor(() => screen.getAllByText(/forçar releitura/i))
+
+    fireEvent.click(screen.getAllByText(/forçar releitura/i)[0])
+
+    await waitFor(() => expect(screen.getByText(/clock-proxy indisponível/i)).toBeInTheDocument())
+  })
+
+  it('mostra "ainda processando" se getEmployees continuar _pending após esgotar as tentativas', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    api.rh.refreshClocks.mockResolvedValue({ status: 'started', clockIps: ['192.168.14.151'] })
+    api.rh.getEmployees.mockResolvedValue({ _pending: true, status: 'running' })
+
+    render(<ClockStatusGrid />)
+    await vi.waitFor(() => screen.getAllByText(/forçar releitura/i))
+
+    fireEvent.click(screen.getAllByText(/forçar releitura/i)[0])
+    await vi.waitFor(() => expect(api.rh.refreshClocks).toHaveBeenCalledWith(['192.168.14.151']))
+
+    await vi.advanceTimersByTimeAsync(30 * 5000)
+
+    await vi.waitFor(() => expect(screen.getByText(/ainda processando/i)).toBeInTheDocument())
+    vi.useRealTimers()
+  }, 15000)
+
+  it('desabilita "forçar releitura" nos outros cards enquanto um refresh está em andamento', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let resolveRefresh
+    api.rh.refreshClocks.mockImplementation(() => new Promise(r => { resolveRefresh = r }))
+
+    render(<ClockStatusGrid />)
+    await vi.waitFor(() => screen.getAllByText(/forçar releitura/i))
+
+    const buttons = screen.getAllByText(/forçar releitura/i)
+    fireEvent.click(buttons[0])
+
+    await vi.waitFor(() => expect(screen.getAllByText(/forçar releitura/i)[1]).toBeDisabled())
+
+    resolveRefresh({ status: 'started' })
+    vi.useRealTimers()
   })
 })

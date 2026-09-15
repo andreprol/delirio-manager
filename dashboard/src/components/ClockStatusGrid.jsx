@@ -1,5 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api } from '../api'
+
+const REFRESH_POLL_INTERVAL_MS  = 5000
+const REFRESH_POLL_MAX_ATTEMPTS = 30
 
 const IP_TO_STORE = {
   '192.168.15.151': 'Gávea',
@@ -179,6 +182,22 @@ const styles = {
     color: 'var(--red, #f87171)',
     marginTop: '2px',
   },
+  refreshBtn: {
+    marginTop: '4px',
+    padding: '4px 8px',
+    background: 'transparent',
+    color: 'var(--text-muted, #94a3b8)',
+    border: '1px solid var(--border, #2d3748)',
+    borderRadius: '6px',
+    fontSize: '11px',
+    cursor: 'pointer',
+    alignSelf: 'flex-start',
+  },
+  refreshMsg: {
+    fontSize: '10px',
+    color: 'var(--accent, #3b82f6)',
+    marginTop: '2px',
+  },
 }
 
 function SkeletonCard() {
@@ -194,7 +213,7 @@ function SkeletonCard() {
   )
 }
 
-function ClockCard({ clock, isArmed, isPending, markError, onMarkNew }) {
+function ClockCard({ clock, isArmed, isPending, markError, onMarkNew, isRefreshing, anyRefreshing, refreshMsg, onForceRefresh }) {
   const storeName = IP_TO_STORE[clock.ip] || clock.ip
   const cardStyle = {
     ...styles.card,
@@ -229,6 +248,12 @@ function ClockCard({ clock, isArmed, isPending, markError, onMarkNew }) {
             </button>
       }
       {markError && <span style={styles.markNewError}>{markError}</span>}
+      {!clock.isPlaceholder && clock.reachable && (
+        <button style={styles.refreshBtn} onClick={() => onForceRefresh(clock.ip)} disabled={isRefreshing || anyRefreshing}>
+          {isRefreshing ? 'Forçando releitura…' : '🔄 Forçar releitura de funcionários'}
+        </button>
+      )}
+      {refreshMsg && <span style={styles.refreshMsg}>{refreshMsg}</span>}
     </div>
   )
 }
@@ -240,6 +265,10 @@ export function ClockStatusGrid() {
   const [armedIps, setArmedIps]   = useState(new Set())
   const [markErrors, setMarkErrors] = useState({})
   const [pendingIps, setPendingIps] = useState(new Set())
+  const [refreshingIps, setRefreshingIps] = useState(new Set())
+  const [refreshMsgs, setRefreshMsgs]     = useState({})
+  const mountedRef = useRef(true)
+  useEffect(() => () => { mountedRef.current = false }, [])
 
   async function fetchStatus() {
     setLoading(true)
@@ -272,6 +301,43 @@ export function ClockStatusGrid() {
         next.delete(ip)
         return next
       })
+    }
+  }
+
+  // Serializado globalmente: getEmployees()._pending reflete o job único e
+  // compartilhado do clock-proxy (não é por IP) — rodar 2 "forçar releitura"
+  // ao mesmo tempo faria o polling de um IP ler a conclusão do scan do outro.
+  async function handleForceRefresh(ip) {
+    if (refreshingIps.size > 0) return
+    setRefreshMsgs(prev => ({ ...prev, [ip]: null }))
+    setRefreshingIps(prev => new Set(prev).add(ip))
+    try {
+      await api.rh.refreshClocks([ip])
+      let attempts = 0
+      let done = false
+      while (attempts < REFRESH_POLL_MAX_ATTEMPTS && !done) {
+        await new Promise(r => setTimeout(r, REFRESH_POLL_INTERVAL_MS))
+        if (!mountedRef.current) return
+        const result = await api.rh.getEmployees()
+        if (!result._pending) done = true
+        attempts++
+      }
+      if (!mountedRef.current) return
+      setRefreshMsgs(prev => ({
+        ...prev,
+        [ip]: done ? 'Releitura concluída — confira a aba Funcionários' : 'Ainda processando — confira a aba Funcionários em instantes',
+      }))
+    } catch (err) {
+      if (!mountedRef.current) return
+      setRefreshMsgs(prev => ({ ...prev, [ip]: err.message || 'Falha ao forçar releitura.' }))
+    } finally {
+      if (mountedRef.current) {
+        setRefreshingIps(prev => {
+          const next = new Set(prev)
+          next.delete(ip)
+          return next
+        })
+      }
     }
   }
 
@@ -346,6 +412,10 @@ export function ClockStatusGrid() {
                 isPending={pendingIps.has(clock.ip)}
                 markError={markErrors[clock.ip]}
                 onMarkNew={handleMarkNew}
+                isRefreshing={refreshingIps.has(clock.ip)}
+                anyRefreshing={refreshingIps.size > 0 && !refreshingIps.has(clock.ip)}
+                refreshMsg={refreshMsgs[clock.ip]}
+                onForceRefresh={handleForceRefresh}
               />
             ))
         }
