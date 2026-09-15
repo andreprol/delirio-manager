@@ -438,7 +438,12 @@ class HenryHexa {
     let stableSince = -1;
 
     while (Date.now() - start < maxWaitMs) {
-      const count = await page.locator('tr.painted, tr.unpainted').count();
+      // Conta só linhas realmente visíveis — o firmware pode manter uma tabela
+      // escondida (componente reaproveitado entre telas) com as mesmas classes CSS,
+      // fora da tela atual mas ainda no DOM.
+      const count = await page.locator('tr.painted, tr.unpainted').evaluateAll(
+        rows => rows.filter(r => r.offsetParent !== null).length
+      );
       if (count > 0 && count === lastCount) {
         if (stableSince < 0) stableSince = Date.now();
         if (Date.now() - stableSince >= stableMs) return count;
@@ -488,16 +493,18 @@ class HenryHexa {
           // Antes: ~4 chamadas CDP por linha × 20 linhas/pág = 80 chamadas/pág.
           // Agora: 1 chamada por página independente do número de linhas.
           const pageRows = await page.evaluate(() =>
-            Array.from(document.querySelectorAll('tr.painted, tr.unpainted')).map(row => {
-              const cells = Array.from(row.querySelectorAll('td'));
-              if (cells.length < 2) return null;
-              return [
-                (cells[0]?.textContent || '').trim(),                    // name
-                (cells[1]?.textContent || '').trim(),                    // cpf
-                (cells[2]?.textContent || '').trim(),                    // refs (raw para check de '/')
-                (cells[3]?.textContent || '').replace(/\s/g, ''),        // ref2 fallback (cells[3])
-              ];
-            }).filter(r => r !== null)
+            Array.from(document.querySelectorAll('tr.painted, tr.unpainted'))
+              .filter(row => row.offsetParent !== null) // ignora linhas escondidas no DOM
+              .map(row => {
+                const cells = Array.from(row.querySelectorAll('td'));
+                if (cells.length < 2) return null;
+                return [
+                  (cells[0]?.textContent || '').trim(),                    // name
+                  (cells[1]?.textContent || '').trim(),                    // cpf
+                  (cells[2]?.textContent || '').trim(),                    // refs (raw para check de '/')
+                  (cells[3]?.textContent || '').replace(/\s/g, ''),        // ref2 fallback (cells[3])
+                ];
+              }).filter(r => r !== null)
           );
 
           // Captura texto da primeira linha ANTES de clicar próxima página (para detecção de navegação)
