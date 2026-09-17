@@ -1,6 +1,6 @@
 # Delirio Tropical — VPN Chain & Network Infrastructure
 
-> **Status:** Production ✅ | Last updated: 2026-06-16
+> **Status:** Production ✅ | Last updated: 2026-09-17
 
 ## Architecture Overview
 
@@ -49,6 +49,11 @@ dt-manager (Azure :3847)
 - **Auth:** PSK
 - **NAT-T:** Enabled (ESP in UDP)
 - **Boot persistence:** `systemctl enable strongswan-starter`
+- **Self-healing (since 2026-09-17):** `keyingtries=%forever` + `closeaction=restart` in
+  `/etc/ipsec.conf` — strongSwan retries reconnection forever instead of giving up permanently
+  after 3 rounds. Belt-and-suspenders: `ipsec-watchdog-metro.timer` (systemd, every 3min) force
+  re-runs `ipsec up azure-to-metro` if the SA is down. See [Key Lessons Learned #5](#5-keyingtries-default-of-3-causes-permanent-tunnel-death) below and
+  `infra/ipsec-watchdog-metro.sh`.
 
 ```bash
 # Health check
@@ -159,6 +164,39 @@ The `&` at the end of the command is required for background execution. Without 
 ### 4. pfSense diag_command.php has two separate forms
 
 The Diagnostics → Command Prompt page has shell (EXEC) and PHP (EXECPHP) buttons. The PHP form is needed to write files. When automating via browser, always use `button[name="submit"][value="EXECPHP"]` — not `button[type="submit"]` which matches the shell button first.
+
+### 5. keyingtries default of 3 causes permanent tunnel death
+
+**Symptom:** `azure-to-metro` would die and stay dead for 24h+, requiring manual `ipsec up`
+every day ("recriar o túnel"), even though the underlying network blip lasted only minutes.
+
+**Root cause:** `/etc/ipsec.conf` never set `keyingtries` for `conn azure-to-metro`. strongSwan's
+default is **3**. Whenever the peer (Metro pfSense WAN, `201.76.172.74`) stopped responding to
+IKE for longer than ~9 minutes (transient network blip, pfSense reboot, ISP hiccup), `dpdaction=restart`
+fired 3 reconnection rounds (~2-3min each with retransmit backoff), and after the 3rd failure
+charon logged `giving up after 5 retransmits` / `establishing IKE_SA failed, peer not responding`
+and **never tried again** — the tunnel stayed down until a human ran `ipsec up` manually.
+Confirmed via `journalctl -u strongswan-starter`: last retry attempt 2026-09-16 02:17 UTC, tunnel
+dead until manually restored 2026-09-17 21:26 UTC (>24h) — and the peer answered on the very
+first attempt, proving the network/peer was not actually unreachable that whole time.
+
+**Fix (`/etc/ipsec.conf`, `conn azure-to-metro`):**
+```
+keyingtries=%forever   # never give up permanently — keep retrying indefinitely
+closeaction=restart    # also reconnect on an explicit peer-initiated SA delete, not just DPD timeout
+```
+`systemctl restart strongswan-starter` to apply.
+
+**Defense in depth:** `infra/ipsec-watchdog-metro.sh` + `ipsec-watchdog-metro.timer` (systemd,
+every 3min, `enable --now` so it survives reboot) — checks `ipsec statusall azure-to-metro` for
+`(0 up`; if down, forces `ipsec up azure-to-metro` and logs to `/var/log/ipsec-watchdog.log`.
+This is independent of the `keyingtries` fix — even if the infinite-retry logic itself ever stalls,
+the watchdog catches it within 3 minutes instead of 24+ hours.
+
+**Not yet investigated:** why the peer periodically stops responding to IKE in the first place
+(dynamic WAN IP? pfSense reboot cadence? ISP flapping?). Not currently critical since the fix
+above guarantees self-healing within minutes regardless of cause — worth revisiting only if
+outages become very frequent (many times a day).
 
 ---
 
