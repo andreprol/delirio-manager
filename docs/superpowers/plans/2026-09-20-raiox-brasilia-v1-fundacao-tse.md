@@ -275,6 +275,8 @@ git commit -m "chore(ingest): script de inspeção do layout de candidatura do T
 
 ### Task 4: Parser do CSV de candidatura
 
+**Achado da Task 3 (inspeção real do TSE)**: o cabeçalho real do arquivo `consulta_cand_2026_BRASIL.csv` **não tem** a coluna `NM_MUNICIPIO_NASCIMENTO` (documentação de terceiros estava errada nesse ponto). Colunas confirmadas de verdade no arquivo real (52 colunas ao todo, listando só as usadas por este parser): `ANO_ELEICAO`, `NR_TURNO`, `DS_CARGO`, `SG_UF`, `NR_CANDIDATO`, `NM_URNA_CANDIDATO`, `NM_CANDIDATO`, `SG_PARTIDO`, `NM_PARTIDO`, `DS_SIT_TOT_TURNO`, `SQ_CANDIDATO`, `NR_CPF_CANDIDATO`, `DT_NASCIMENTO`, `SG_UF_NASCIMENTO` — todas confirmadas presentes com esses nomes exatos. O parser abaixo já foi ajustado pra não depender de `NM_MUNICIPIO_NASCIMENTO`. A coluna `nm_municipio_nascimento` já existe no banco (Task 2) — fica sempre `null` por enquanto (nullable, sem custo, não vale reabrir migração por isso).
+
 **Files:**
 - Create: `raiox-brasilia/scripts/ingest/tse/parse_candidatura.ts`
 - Test: `raiox-brasilia/scripts/ingest/tse/parse_candidatura.test.ts`
@@ -293,10 +295,10 @@ import { describe, it, expect } from "vitest";
 import { parseCandidaturaCsv } from "./parse_candidatura";
 
 const CABECALHO =
-  "ANO_ELEICAO;NR_TURNO;DS_CARGO;SG_UF;NR_CANDIDATO;NM_URNA_CANDIDATO;NM_CANDIDATO;SG_PARTIDO;NM_PARTIDO;DS_SIT_TOT_TURNO;SQ_CANDIDATO;NR_CPF_CANDIDATO;DT_NASCIMENTO;SG_UF_NASCIMENTO;NM_MUNICIPIO_NASCIMENTO";
+  "ANO_ELEICAO;NR_TURNO;DS_CARGO;SG_UF;NR_CANDIDATO;NM_URNA_CANDIDATO;NM_CANDIDATO;SG_PARTIDO;NM_PARTIDO;DS_SIT_TOT_TURNO;SQ_CANDIDATO;NR_CPF_CANDIDATO;DT_NASCIMENTO;SG_UF_NASCIMENTO";
 
 const LINHA_EXEMPLO =
-  "2026;1;GOVERNADOR;RR;10;MARIA TESTE;MARIA DA SILVA TESTE;PARTIDO X;PARTIDO EXEMPLO;#NULO#;123456789012345;12345678900;15/03/1975;RR;BOA VISTA";
+  "2026;1;GOVERNADOR;RR;10;MARIA TESTE;MARIA DA SILVA TESTE;PARTIDO X;PARTIDO EXEMPLO;#NULO#;123456789012345;12345678900;15/03/1975;RR";
 
 describe("parseCandidaturaCsv", () => {
   it("converte uma linha de candidatura corretamente", () => {
@@ -349,7 +351,6 @@ export interface CandidaturaTSE {
   cpf: string | null;
   dataNascimento: string | null;
   sgUfNascimento: string | null;
-  nmMunicipioNascimento: string | null;
 }
 
 const VALORES_NULOS = new Set(["#NULO#", "#NULO", "", "-1", "-3"]);
@@ -389,7 +390,6 @@ export function parseCandidaturaCsv(conteudoUtf8: string): CandidaturaTSE[] {
       cpf: limpar(linha["NR_CPF_CANDIDATO"]),
       dataNascimento: dataNascBr ? converterDataBrParaIso(dataNascBr) : null,
       sgUfNascimento: limpar(linha["SG_UF_NASCIMENTO"]),
-      nmMunicipioNascimento: limpar(linha["NM_MUNICIPIO_NASCIMENTO"]),
     };
   });
 }
@@ -460,7 +460,6 @@ function candidaturaExemplo(sobrescreve: Partial<CandidaturaTSE> = {}): Candidat
     cpf: null,
     dataNascimento: "1975-03-15",
     sgUfNascimento: "RR",
-    nmMunicipioNascimento: "BOA VISTA",
     ...sobrescreve,
   };
 }
@@ -557,7 +556,6 @@ export async function resolverPessoaId(
       nome_civil: candidatura.nmCandidato,
       data_nascimento: candidatura.dataNascimento,
       sg_uf_nascimento: candidatura.sgUfNascimento,
-      nm_municipio_nascimento: candidatura.nmMunicipioNascimento,
       cpf: candidatura.cpf,
     })
     .select("id")
