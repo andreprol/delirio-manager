@@ -128,7 +128,8 @@ create table pessoa (
   sg_uf_nascimento text,
   nm_municipio_nascimento text,
   cpf text unique,
-  oculto_por_ordem_judicial text,
+  oculto boolean not null default false,
+  motivo_ocultacao_judicial text,
   criado_em timestamptz not null default now(),
   atualizado_em timestamptz not null default now()
 );
@@ -137,7 +138,7 @@ create index pessoa_nome_trgm_idx on pessoa using gin (nome_civil gin_trgm_ops);
 
 create table candidatura (
   id uuid primary key default gen_random_uuid(),
-  pessoa_id uuid not null references pessoa(id) on delete cascade,
+  pessoa_id uuid not null references pessoa(id) on delete restrict,
   ano_eleicao integer not null,
   turno integer not null,
   cargo text not null,
@@ -148,7 +149,8 @@ create table candidatura (
   nm_partido text,
   situacao text,
   sq_candidato_tse text not null,
-  oculto_por_ordem_judicial text,
+  oculto boolean not null default false,
+  motivo_ocultacao_judicial text,
   fonte_url text not null,
   coletado_em timestamptz not null default now(),
   criado_em timestamptz not null default now(),
@@ -157,19 +159,37 @@ create table candidatura (
 
 create index candidatura_pessoa_idx on candidatura (pessoa_id);
 create index candidatura_busca_idx on candidatura using gin (nm_urna gin_trgm_ops);
+
+alter table pessoa enable row level security;
+alter table candidatura enable row level security;
+
+create or replace function set_atualizado_em()
+returns trigger as $$
+begin
+  new.atualizado_em = now();
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger pessoa_atualizado_em
+  before update on pessoa
+  for each row
+  execute function set_atualizado_em();
 ```
+
+**Nota (revisão de código pegou isso, corrigido em relação ao rascunho original deste plano)**: `pessoa_id` usa `on delete restrict`, não `cascade` — o projeto nunca apaga registro de verdade (só marca oculto), então apagar uma `pessoa` sem antes tratar as `candidatura` dela é bloqueado de propósito. RLS habilitado sem nenhuma policy — correto, porque a aplicação só acessa via `service_role` key (que bypassa RLS), nunca via `anon`/`authenticated`.
 
 - [ ] **Step 3: Aplicar a migração**
 
-No painel Supabase → SQL Editor → cole o conteúdo do arquivo acima → Run.
+Via conexão direta ao Postgres (`SUPABASE_DB_URL`, connection string do **Session pooler** — a conexão direta do Supabase é IPv6-only e pode não funcionar dependendo da rede), usando `scripts/db/aplicar_migracao.ts` (criado nesta mesma task). Não precisa colar no SQL Editor do painel.
 
-Esperado: duas tabelas (`pessoa`, `candidatura`) aparecem em Table Editor, sem erro.
+Esperado: duas tabelas (`pessoa`, `candidatura`) aparecem, com RLS ativo, sem erro.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add supabase/migrations/0001_pessoa_candidatura.sql
-git commit -m "feat(db): schema inicial de pessoa e candidatura"
+git add supabase/migrations/0001_pessoa_candidatura.sql scripts/db
+git commit -m "feat(db): schema inicial de pessoa e candidatura, com RLS"
 ```
 
 ---
@@ -753,6 +773,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await supabaseServidor.from("candidatura").delete().eq("sq_candidato_tse", "999999999999995");
   await supabaseServidor.from("pessoa").delete().eq("slug", SLUG_TESTE);
 });
 
@@ -811,7 +832,7 @@ export async function buscarPoliticos(termo: string): Promise<ResultadoBusca[]> 
     .select(
       "pessoa_id, nm_urna, cargo, sg_partido, sg_uf, ano_eleicao, pessoa:pessoa_id(slug, nome_civil)"
     )
-    .is("oculto_por_ordem_judicial", null)
+    .eq("oculto", false)
     .or(
       `nm_urna.ilike.%${termoLimpo}%,sg_partido.ilike.%${termoLimpo}%,nr_candidato.eq.${termoLimpo}`
     )
@@ -942,6 +963,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await supabaseServidor.from("candidatura").delete().eq("sq_candidato_tse", "999999999999994");
   await supabaseServidor.from("pessoa").delete().eq("slug", SLUG_TESTE);
 });
 
@@ -993,7 +1015,7 @@ export async function buscarFicha(slug: string): Promise<FichaPolitico | null> {
     .from("pessoa")
     .select("id, nome_civil")
     .eq("slug", slug)
-    .is("oculto_por_ordem_judicial", null)
+    .eq("oculto", false)
     .maybeSingle();
   if (erroPessoa) throw erroPessoa;
   if (!pessoa) return null;
@@ -1002,7 +1024,7 @@ export async function buscarFicha(slug: string): Promise<FichaPolitico | null> {
     .from("candidatura")
     .select("ano_eleicao, cargo, sg_uf, sg_partido, situacao, fonte_url, coletado_em")
     .eq("pessoa_id", pessoa.id)
-    .is("oculto_por_ordem_judicial", null)
+    .eq("oculto", false)
     .order("ano_eleicao", { ascending: false });
   if (erroCandidaturas) throw erroCandidaturas;
 
