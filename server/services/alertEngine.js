@@ -24,6 +24,14 @@ function loadConfig() {
   }
 }
 
+// Master switch da topbar (botão 🔔/🔕). Antes só suprimia o email/Teams de
+// máquina offline — agora é o interruptor global de TODA notificação
+// (dashboard, email, Teams). Detecção e automações (WoL, DR, restart) não
+// passam por aqui e continuam rodando com o flag desligado.
+function alertsEnabled() {
+  return loadConfig().alerts?.offlineEnabled !== false;
+}
+
 function start() {
   timer = setInterval(checkAll, CHECK_INTERVAL_MS);
   console.log('[AlertEngine] Iniciado (intervalo: 30s, threshold offline: 90s)');
@@ -61,6 +69,7 @@ function checkDRBackups() {
 }
 
 async function sendDROverdueEmail(displayName, location, hoursAgo, lastOkISO) {
+  if (!alertsEnabled()) return;
   const cfg = loadConfig().alerts?.email;
   if (!cfg?.enabled || !cfg.to?.length) return;
 
@@ -104,13 +113,11 @@ function checkAll() {
 }
 
 function maybeSendOfflineNotification(machineId, displayName, location, lastSeen, lastMetrics) {
-  const cfg            = loadConfig();
-  const offlineEnabled = cfg.alerts?.offlineEnabled !== false;
-  const now            = Date.now();
-  const lastAlert      = offlineAlertCooldown.get(machineId) || 0;
-  const inCooldown     = (now - lastAlert) < OFFLINE_ALERT_COOLDOWN_MS;
+  const now        = Date.now();
+  const lastAlert  = offlineAlertCooldown.get(machineId) || 0;
+  const inCooldown = (now - lastAlert) < OFFLINE_ALERT_COOLDOWN_MS;
 
-  if (!offlineEnabled) {
+  if (!alertsEnabled()) {
     console.log(`[AlertEngine] Offline: ${machineId} (alertas desabilitados)`);
     return;
   }
@@ -319,6 +326,7 @@ async function sendWolBiosAlert(machine, displayName, location, guide) {
 }
 
 async function sendWolBiosEmail(subject, displayName, location, guide) {
+  if (!alertsEnabled()) return;
   const cfg = loadConfig().alerts?.email;
   if (!cfg?.enabled || !cfg.to?.length) return;
 
@@ -357,6 +365,7 @@ async function sendWolBiosEmail(subject, displayName, location, guide) {
 }
 
 async function sendWolBiosTeams(displayName, location, guide) {
+  if (!alertsEnabled()) return;
   const cfg = loadConfig().alerts?.teams;
   if (!cfg?.enabled || !cfg.webhook_url) return;
 
@@ -396,6 +405,7 @@ async function sendWolBiosTeams(displayName, location, guide) {
 }
 
 async function sendAutoWakeEmail(name, location, offlineMin) {
+  if (!alertsEnabled()) return;
   const cfg = loadConfig().alerts?.email;
   if (!cfg?.enabled || !cfg.to?.length) return;
 
@@ -443,6 +453,7 @@ function buildAutoWakeResultMailContent(name, location, success) {
 }
 
 async function sendAutoWakeResultEmail(name, location, success) {
+  if (!alertsEnabled()) return;
   const cfg = loadConfig().alerts?.email;
   if (!cfg?.enabled || !cfg.to?.length) return;
 
@@ -467,6 +478,7 @@ async function sendAutoWakeResultEmail(name, location, success) {
 }
 
 async function sendAutoWakeTeams(name, location, offlineMin) {
+  if (!alertsEnabled()) return;
   const cfg = loadConfig().alerts?.teams;
   if (!cfg?.enabled || !cfg.webhook_url) return;
 
@@ -500,6 +512,7 @@ async function sendAutoWakeTeams(name, location, offlineMin) {
 }
 
 async function sendAutoWakeResultTeams(name, location, success) {
+  if (!alertsEnabled()) return;
   const cfg = loadConfig().alerts?.teams;
   if (!cfg?.enabled || !cfg.webhook_url) return;
 
@@ -549,6 +562,7 @@ function formatMetricsText(m) {
 }
 
 async function sendOfflineEmail(displayName, location, lastSeen, lastMetrics) {
+  if (!alertsEnabled()) return;
   const cfg = loadConfig().alerts?.email;
   if (!cfg?.enabled || !cfg.to?.length) return;
 
@@ -585,6 +599,7 @@ async function sendOfflineEmail(displayName, location, lastSeen, lastMetrics) {
 }
 
 async function sendOfflineTeams(displayName, location, lastSeen, lastMetrics) {
+  if (!alertsEnabled()) return;
   const cfg = loadConfig().alerts?.teams;
   if (!cfg?.enabled || !cfg.webhook_url) return;
 
@@ -625,6 +640,7 @@ async function sendOfflineTeams(displayName, location, lastSeen, lastMetrics) {
 }
 
 function fireAlert(machineId, type, message) {
+  if (!alertsEnabled()) return;
   broadcast('alert', { machineId, type, message, ts: new Date().toISOString() });
   db.addEvent(machineId, `alert_${type}`, message);
   console.log(`[Alert] ${type} | ${machineId}: ${message}`);

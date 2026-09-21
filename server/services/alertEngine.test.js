@@ -13,7 +13,7 @@ describe('alertEngine', () => {
   let sendMailMock;
 
   // Configura e re-importa o módulo do zero em cada teste
-  function setupModule({ emailEnabled = false } = {}) {
+  function setupModule({ emailEnabled = false, offlineEnabled } = {}) {
     jest.resetModules();
 
     sendMailMock  = jest.fn().mockResolvedValue({});
@@ -34,6 +34,8 @@ describe('alertEngine', () => {
           },
         }
       : { alerts: { email: { enabled: false }, teams: { enabled: false } } };
+
+    if (offlineEnabled !== undefined) cfg.alerts.offlineEnabled = offlineEnabled;
 
     dbMock = {
       getMachinesStale:          jest.fn(() => []),
@@ -355,6 +357,69 @@ describe('alertEngine', () => {
       dbMock.getAlerts.mockReturnValue(rule('disk_low', 5));
       alertEngine.checkAll();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'disk_low' }));
+    });
+  });
+
+  // ── master switch (alerts.offlineEnabled = false) — dashboard ────────────
+  describe('master switch — fireAlert (dashboard)', () => {
+    it('offline: sem broadcast "alert", mas machine:offline continua', () => {
+      setupModule({ emailEnabled: true, offlineEnabled: false });
+      dbMock.getMachinesStale.mockReturnValue([{
+        id: 'mach-off', hostname: 'PC-OFF', display_name: 'PC Desligado',
+        location: 'Loja', last_seen: '2026-07-10T20:00:00Z', online_since: null,
+      }]);
+      alertEngine.checkAll();
+
+      expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.anything());
+      expect(broadcastMock).toHaveBeenCalledWith('machine:offline', expect.anything());
+      expect(dbMock.setMachineStatus).toHaveBeenCalledWith('mach-off', 'offline');
+    });
+
+    it('cpu_high: não dispara mesmo com regra habilitada', () => {
+      setupModule({ offlineEnabled: false });
+      dbMock.getAllMachines.mockReturnValue([{
+        id: 'mach-cpu', hostname: 'PC-CPU', status: 'online',
+        last_metrics: JSON.stringify({ cpuPct: 99, cpuTempC: 0, diskFreeGB: 100 }),
+      }]);
+      dbMock.getAlerts.mockReturnValue([{ enabled: 1, type: 'cpu_high', threshold: 80, duration_mins: 0 }]);
+      alertEngine.checkAll();
+      expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'cpu_high' }));
+    });
+
+    it('flag ausente (default) — alertas continuam funcionando normalmente', () => {
+      setupModule({});
+      dbMock.getMachinesStale.mockReturnValue([{
+        id: 'mach-def', hostname: 'PC-DEF', display_name: 'PC Default',
+        location: 'Loja', last_seen: '2026-07-10T20:00:00Z', online_since: null,
+      }]);
+      alertEngine.checkAll();
+      expect(broadcastMock).toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'offline' }));
+    });
+  });
+
+  // ── master switch (alerts.offlineEnabled = false) — email/Teams ──────────
+  describe('master switch — email (DR overdue / WoL BIOS)', () => {
+    it('DR overdue — não envia email nem fireAlert', () => {
+      setupModule({ emailEnabled: true, offlineEnabled: false });
+      dbMock.getMachinesDRDue.mockReturnValue([{
+        id: 'mach-dr', display_name: 'PC DR', hostname: 'PC-DR',
+        location: 'Loja', dr_last_ok: null,
+      }]);
+      alertEngine.checkAll();
+      expect(sendMailMock).not.toHaveBeenCalled();
+      expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'dr_overdue' }));
+    });
+
+    it('WoL BIOS needed — não envia email nem fireAlert', () => {
+      setupModule({ emailEnabled: true, offlineEnabled: false });
+      jest.useFakeTimers().setSystemTime(new Date('2026-07-10T21:00:00Z'));
+      dbMock.getMachinesWolTesting.mockReturnValue([{
+        id: 'mach-wol', hostname: 'PC-WOL', display_name: 'PC WoL',
+        location: 'Loja', status: 'offline', motherboard: 'ASUS ROG',
+      }]);
+      alertEngine.checkAll();
+      expect(sendMailMock).not.toHaveBeenCalled();
+      expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'wol_bios_needed' }));
     });
   });
 

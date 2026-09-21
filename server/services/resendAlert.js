@@ -20,13 +20,22 @@ function markAlerted(cooldownKey) {
   lastAlertAt[cooldownKey] = Date.now();
 }
 
-function loadResendKey() {
+function loadConfig() {
   try {
-    const conf = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
-    return conf.resendApiKey || process.env.RESEND_API_KEY || null;
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
   } catch {
-    return process.env.RESEND_API_KEY || null;
+    return {};
   }
+}
+
+function resendKeyFrom(conf) {
+  return conf.resendApiKey || process.env.RESEND_API_KEY || null;
+}
+
+// Mesmo master switch do botão 🔔/🔕 da topbar (alertEngine.js) — silencia
+// também os alertas por Resend (NCR Monitor, Módulo RH, boot-check).
+function alertsEnabledFrom(conf) {
+  return conf.alerts?.offlineEnabled !== false;
 }
 
 function escapeHtml(s) {
@@ -55,10 +64,17 @@ function buildHtml(source, stage, detail) {
 // cooldownKey: chave única para o cooldown (default: `${source}:${stage}`)
 // cooldownMs: janela de cooldown (default: 30 min)
 async function sendAlert({ source, stage, detail, cooldownKey, cooldownMs = DEFAULT_COOLDOWN_MS }) {
+  const conf = loadConfig();
+
+  if (!alertsEnabledFrom(conf)) {
+    logger.info(`[${source}] alerta suprimido (alertas desativados) — stage=${stage}`);
+    return { sent: false, reason: 'alerts-disabled' };
+  }
+
   const key = cooldownKey || `${source}:${stage}`;
   if (!canAlert(key, cooldownMs)) return { sent: false, reason: 'cooldown' };
 
-  const apiKey = loadResendKey();
+  const apiKey = resendKeyFrom(conf);
   if (!apiKey) {
     logger.error(`[${source}] sem resendApiKey — alerta ${stage}: ${detail}`);
     return { sent: false, reason: 'no-api-key' };

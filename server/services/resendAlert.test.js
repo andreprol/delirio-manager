@@ -96,4 +96,24 @@ describe('resendAlert.sendAlert', () => {
     expect(result).toEqual({ sent: true });
     expect(global.fetch.mock.calls[0][1].headers.Authorization).toBe('Bearer key-from-config');
   });
+
+  it('alerts.offlineEnabled=false (master switch da topbar) — não chama fetch, retorna alerts-disabled', async () => {
+    process.env.RESEND_API_KEY = 'key-abc';
+    fs.readFileSync.mockImplementation(() => JSON.stringify({ alerts: { offlineEnabled: false } }));
+
+    const result = await sendAlert({ source: 'NCR Monitor', stage: 'X', detail: 'd', cooldownKey: 'master-off' });
+
+    expect(result).toEqual({ sent: false, reason: 'alerts-disabled' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('alerts.offlineEnabled=true — comportamento normal preservado', async () => {
+    process.env.RESEND_API_KEY = 'key-abc';
+    fs.readFileSync.mockImplementation(() => JSON.stringify({ alerts: { offlineEnabled: true } }));
+    global.fetch.mockResolvedValueOnce(makeOkFetch());
+
+    const result = await sendAlert({ source: 'Teste', stage: 'E', detail: 'd', cooldownKey: 'master-on' });
+
+    expect(result).toEqual({ sent: true });
+  });
 });
