@@ -1141,6 +1141,16 @@ Comprar/usar domínio já registrado no registro.br. Em Settings → Domains do 
 
 ### Task 10: QA manual final
 
+- [ ] **Step 0: Criar índice em `sg_partido` antes da ingestão real**
+
+Achado da revisão da Task 7: a busca faz `ilike` em `sg_partido` mas só existe índice trigram em `nm_urna` — sem índice, busca por partido vira sequential scan na tabela inteira, pior caso com termo de partido (baixa cardinalidade, muito match). Sem problema enquanto a tabela tá vazia, mas antes de popular com ~21 mil linha real (Step 1 abaixo), crie o índice:
+
+```sql
+create index candidatura_partido_trgm_idx on candidatura using gin (sg_partido gin_trgm_ops);
+```
+
+Aplique via `npx tsx scripts/db/aplicar_migracao.ts supabase/migrations/0002_indice_partido.sql` (mesmo padrão da Task 2) — isso é uma migração de banco (classificada HIGH pelo protocolo do projeto), então pause e peça confirmação antes de rodar, mesmo sendo uma operação aditiva (não destrutiva).
+
 - [ ] **Step 1: Rodar a ingestão real**
 
 ```bash
