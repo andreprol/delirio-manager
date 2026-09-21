@@ -43,8 +43,12 @@ server.listen(PORT, () => {
   zamakService.scheduleDailySync();
   _scheduleWalCheckpoint();
   metricsEmail.scheduleDailyMetricsEmail();
-  ncrMonitor.start();
-  logger.info('NCR monitor iniciado', { interval: '2min' });
+  if (process.env.NCR_MONITOR_ENABLED === 'false') {
+    logger.info('NCR monitor desabilitado via NCR_MONITOR_ENABLED=false');
+  } else {
+    ncrMonitor.start();
+    logger.info('NCR monitor iniciado', { interval: '2min' });
+  }
   serviceStatusEmail.scheduleServiceStatusEmails();
   _scheduleHourlyMetricsMonitor();
   rhHealthMonitor.start(PORT);
