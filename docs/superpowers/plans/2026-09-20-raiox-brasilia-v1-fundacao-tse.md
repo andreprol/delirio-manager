@@ -275,7 +275,7 @@ git commit -m "chore(ingest): script de inspeção do layout de candidatura do T
 
 ### Task 4: Parser do CSV de candidatura
 
-**Achado da Task 3 (inspeção real do TSE)**: o cabeçalho real do arquivo `consulta_cand_2026_BRASIL.csv` **não tem** a coluna `NM_MUNICIPIO_NASCIMENTO` (documentação de terceiros estava errada nesse ponto). Colunas confirmadas de verdade no arquivo real (52 colunas ao todo, listando só as usadas por este parser): `ANO_ELEICAO`, `NR_TURNO`, `DS_CARGO`, `SG_UF`, `NR_CANDIDATO`, `NM_URNA_CANDIDATO`, `NM_CANDIDATO`, `SG_PARTIDO`, `NM_PARTIDO`, `DS_SIT_TOT_TURNO`, `SQ_CANDIDATO`, `NR_CPF_CANDIDATO`, `DT_NASCIMENTO`, `SG_UF_NASCIMENTO` — todas confirmadas presentes com esses nomes exatos. O parser abaixo já foi ajustado pra não depender de `NM_MUNICIPIO_NASCIMENTO`. A coluna `nm_municipio_nascimento` já existe no banco (Task 2) — fica sempre `null` por enquanto (nullable, sem custo, não vale reabrir migração por isso).
+**Achado da Task 3 (inspeção real do TSE)**: o cabeçalho real do arquivo `consulta_cand_2026_BRASIL.csv` **não tem** a coluna `NM_MUNICIPIO_NASCIMENTO` (documentação de terceiros estava errada nesse ponto). Colunas confirmadas de verdade no arquivo real (50 colunas ao todo, listando só as usadas por este parser): `ANO_ELEICAO`, `NR_TURNO`, `DS_CARGO`, `SG_UF`, `NR_CANDIDATO`, `NM_URNA_CANDIDATO`, `NM_CANDIDATO`, `SG_PARTIDO`, `NM_PARTIDO`, `DS_SIT_TOT_TURNO`, `SQ_CANDIDATO`, `NR_CPF_CANDIDATO`, `DT_NASCIMENTO`, `SG_UF_NASCIMENTO` — todas confirmadas presentes com esses nomes exatos. O parser abaixo já foi ajustado pra não depender de `NM_MUNICIPIO_NASCIMENTO`. A coluna `nm_municipio_nascimento` já existe no banco (Task 2) — fica sempre `null` por enquanto (nullable, sem custo, não vale reabrir migração por isso).
 
 **Files:**
 - Create: `raiox-brasilia/scripts/ingest/tse/parse_candidatura.ts`
@@ -1167,3 +1167,5 @@ Escolha um político cuja candidatura tenha `situacao` nula na fonte original �
 - Plano 5: Apoio formal (coligação + doação) e polish de SEO/sitemap.
 
 Cada um adiciona uma seção nova na mesma ficha — arquitetura de dado e identidade de pessoa já ficam prontas neste Plano 1.
+
+**Débito técnico conhecido, pra considerar no Plano 2**: `ingerirCandidaturas2026` (Task 6) processa candidatura uma por vez, com até 4 ida-e-volta ao Postgres por linha (`resolverPessoaId` + upsert) — pra ~21 mil linha do ciclo 2026, isso é lento (pode passar de 1h) mas aceitável no v1 por ser job offline sem usuário esperando. Quando o Plano 2 (financiamento) multiplicar o volume de escrita, vale otimizar: pré-carregar `pessoa` existente por CPF antes do loop, e/ou paralelismo limitado (ex: `p-limit`).
