@@ -3,6 +3,7 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
+const { internalAuth } = require('../middleware/internalAuth');
 
 // GET /api/insights?machine_id=X&limit=50
 router.get('/', (req, res) => {
@@ -25,7 +26,8 @@ router.put('/:id/read', (req, res) => {
 });
 
 // POST /api/insights/generate  — manual trigger (debug/test)
-router.post('/generate', async (req, res) => {
+// Protegido: dispara chamada paga à API da Anthropic pra todas as máquinas.
+router.post('/generate', internalAuth, async (req, res) => {
   try {
     const insightEngine = require('../services/insightEngine');
     const result = await insightEngine.runNow();

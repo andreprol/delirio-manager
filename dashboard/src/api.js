@@ -1,6 +1,7 @@
 // api.js - Cliente HTTP para o servidor Delirio Manager
 
 let serverUrl = 'https://dt-manager.brazilsouth.cloudapp.azure.com'
+let internalApiKey = ''
 
 export function setServerUrl(url) {
   serverUrl = url.replace(/\/$/, '')
@@ -10,10 +11,22 @@ export function getServerUrl() {
   return serverUrl
 }
 
-async function request(method, path, body) {
+// Chave enviada em endpoints que disparam chamada paga à API da Anthropic
+// (relatório/insights sob demanda) — protegidos por server/middleware/internalAuth.js.
+export function setInternalApiKey(key) {
+  internalApiKey = key || ''
+}
+
+export function getInternalApiKey() {
+  return internalApiKey
+}
+
+async function request(method, path, body, { authed = false } = {}) {
+  const headers = { 'Content-Type': 'application/json' }
+  if (authed && internalApiKey) headers['x-internal-key'] = internalApiKey
   const res = await fetch(`${serverUrl}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   })
   if (res.status === 202) {
@@ -66,7 +79,7 @@ export const api = {
   // Insights
   getInsights:      (machineId) => request('GET', `/api/insights${machineId ? `?machine_id=${machineId}` : ''}`),
   markInsightRead:  (id)        => request('PUT', `/api/insights/${id}/read`),
-  generateInsights: ()          => request('POST', '/api/insights/generate'),
+  generateInsights: ()          => request('POST', '/api/insights/generate', null, { authed: true }),
 
   // Aloha BOH scan
   aloha: {
@@ -172,7 +185,7 @@ export const api = {
     resolveTopic: (id)                         => request('DELETE', `/api/relatorio/topics/${id}`),
     moveTopic:    (id, store_name)             => request('PATCH',  `/api/relatorio/topics/${id}/move`, { store_name }),
     replicateTopic: (id, target_stores)        => request('POST',   `/api/relatorio/topics/${id}/replicate`, { target_stores }),
-    generate:     (store, month)               => request('POST',   '/api/relatorio/generate', { store, month }),
+    generate:     (store, month)               => request('POST',   '/api/relatorio/generate', { store, month }, { authed: true }),
     saveFeedback: (store, month, text, runId)  => request('POST',   '/api/relatorio/feedback', { store_name: store, month, feedback_text: text, report_run_id: runId }),
     getHistory:   (store)                      => request('GET',    `/api/relatorio/history/${encodeURIComponent(store)}`),
     getFreshdesk: (store)                      => request('GET',    `/api/relatorio/freshdesk/${encodeURIComponent(store)}`),

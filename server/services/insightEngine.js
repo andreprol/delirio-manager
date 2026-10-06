@@ -96,28 +96,64 @@ function persistInsights(machine, machineInsights) {
   return saved;
 }
 
-async function analyzeMachine(machine, cfg) {
-  const lookbackDays = cfg.lookback_days || 7;
-  const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
+// Busca TODO o backlog novo desde o cursor salvo (sem LIMIT aqui) — é o que
+// garante que o cursor devolvido nunca pule evento sem ele ter sido
+// realmente visto. Um LIMIT nesta query faria o DESC sempre trazer
+// justamente o id mais alto (= o próprio MAX da tabela), então "avançar o
+// cursor até o maior id buscado" viraria idêntico a "avançar até o MAX da
+// tabela" — perda silenciosa do restante do backlog sempre que ele exceder
+// o LIMIT (achado de review). O recorte pro prompt (mais recente = sinal
+// mais relevante) acontece depois, em JS, sem afetar o cursor.
+function fetchNewEvents(machine) {
+  const lastWinId     = machine.last_win_event_id || 0;
+  const lastOfflineId = machine.last_offline_event_id || 0;
 
-  // Fetch Windows events for this machine
   const events = db.getDb().prepare(`
-    SELECT event_id, source, level, translation, event_time
-    FROM win_events WHERE machine_id = ? AND event_time >= ?
-    ORDER BY event_time DESC LIMIT 150
-  `).all(machine.id, since);
+    SELECT id, event_id, source, level, translation, event_time
+    FROM win_events WHERE machine_id = ? AND id > ?
+    ORDER BY id DESC
+  `).all(machine.id, lastWinId);
 
-  // Fetch offline events for this machine
   const offlineEvents = db.getDb().prepare(`
-    SELECT ts, type, details FROM events
-    WHERE machine_id = ? AND type = 'offline' AND ts >= ?
-    ORDER BY ts DESC LIMIT 30
-  `).all(machine.id, since);
+    SELECT id, ts, type, details FROM events
+    WHERE machine_id = ? AND type = 'offline' AND id > ?
+    ORDER BY id DESC
+  `).all(machine.id, lastOfflineId);
+
+  // Cursor cobre o backlog inteiro buscado acima — nunca fica maior que o
+  // que de fato foi visto, então nenhum evento pode ser marcado "já
+  // analisado" sem ter sido.
+  return {
+    events, offlineEvents,
+    maxWinId:     events.length        ? events[0].id        : lastWinId,
+    maxOfflineId: offlineEvents.length ? offlineEvents[0].id : lastOfflineId,
+  };
+}
+
+// Claude às vezes embrulha o JSON em code fence markdown — remove antes de parsear.
+function parseInsightsResponse(responseText, machineId) {
+  try {
+    const cleaned = responseText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+    return JSON.parse(cleaned);
+  } catch {
+    console.warn(`[InsightEngine] Resposta inválida da Claude API para ${machineId}: ${responseText.slice(0, 100)}`);
+    return null;
+  }
+}
+
+async function analyzeMachine(machine, cfg) {
+  // Cursor incremental: só processa evento com id MAIOR que o já visto na
+  // última rodada (evita reenviar ~96% de dados repetidos a cada ciclo —
+  // bug real que custou US$107,62 num dia só no projeto JARVIS, mesmo padrão).
+  const { events, offlineEvents, maxWinId, maxOfflineId } = fetchNewEvents(machine);
 
   if (events.length === 0 && offlineEvents.length === 0) return 0;
 
   const name    = machine.display_name || machine.hostname;
-  const context = buildContext(name, events, offlineEvents);
+  // Só os mais recentes entram no prompt — sinal mais relevante pro Claude.
+  // O cursor já cobre o backlog inteiro (acima), então nada fica
+  // permanentemente sem ser analisado mesmo se o volume exceder isso.
+  const context = buildContext(name, events.slice(0, 150), offlineEvents.slice(0, 30));
 
   const prompt = `Você é um especialista em suporte técnico Windows. Analise os eventos abaixo da máquina "${name}" e identifique padrões problemáticos.
 
@@ -143,17 +179,14 @@ Responda SOMENTE com JSON neste formato exato:
 Se não houver padrões relevantes, retorne: {"insights":[]}`;
 
   const responseText = await fetchClaudeResponse(cfg, prompt);
-  if (!responseText) return 0;
+  if (!responseText) return 0; // falha na API — não avança cursor, tenta de novo no próximo ciclo
 
-  let parsed;
-  try {
-    // Claude sometimes wraps JSON in markdown code blocks — strip them
-    const cleaned = responseText.replace(/^```json\n?/,'').replace(/\n?```$/,'').trim();
-    parsed = JSON.parse(cleaned);
-  } catch {
-    console.warn(`[InsightEngine] Resposta inválida da Claude API para ${machine.id}: ${responseText.slice(0, 100)}`);
-    return 0;
-  }
+  const parsed = parseInsightsResponse(responseText, machine.id);
+  if (!parsed) return 0; // resposta inválida — não avança cursor, tenta de novo no próximo ciclo
+
+  // Só avança o cursor depois de uma análise bem-sucedida (mesmo que 0 insights
+  // relevantes tenham sido encontrados — isso é um resultado válido).
+  db.updateMachineInsightCursor(machine.id, { lastWinEventId: maxWinId, lastOfflineEventId: maxOfflineId });
 
   return persistInsights(machine, parsed.insights || []);
 }
@@ -182,4 +215,4 @@ function restart() {
   start();
 }
 
-module.exports = { start, stop, runNow, restart };
+module.exports = { start, stop, runNow, restart, analyzeMachine };

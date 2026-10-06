@@ -10,6 +10,86 @@ const db       = require('../db');
 const freshdesk = require('../services/freshdesk');
 const { buildStoreContext, callClaude, parseClaudeScore, generateDocx, generatePdf } = require('../services/reportEngine');
 const { sendSimpleEmail } = require('../services/nfce-mailer');
+const { internalAuth } = require('../middleware/internalAuth');
+
+// Mesmo shape do branch fresco (parseClaudeScore) na resposta do dedup —
+// nunca a row crua do banco, pra quem consumir `scores`/`recommendations`
+// não quebrar só quando a resposta vier do cache (achado de review).
+function buildCachedResponse(recent) {
+  let recommendations;
+  try {
+    recommendations = JSON.parse(recent.ai_recommendations || '[]');
+  } catch {
+    recommendations = []; // coluna corrompida não pode derrubar a resposta cacheada
+  }
+  const base = '/downloads/relatorios';
+  return {
+    runId:  recent.id,
+    score:  recent.score_total,
+    docxUrl: recent.docx_path ? `${base}/${path.basename(recent.docx_path)}` : null,
+    pdfUrl:  recent.pdf_path  ? `${base}/${path.basename(recent.pdf_path)}`  : null,
+    scores: {
+      score_total:        recent.score_total,
+      score_hardware:     recent.score_hardware,
+      score_software:     recent.score_software,
+      score_connectivity: recent.score_connectivity,
+      score_security:     recent.score_security,
+      score_incidents:    recent.score_incidents,
+      score_operational:  recent.score_operational,
+      ai_narrative:       recent.ai_narrative,
+      ai_recommendations: recommendations,
+      inconclusivos:      [],
+    },
+    narrative:       recent.ai_narrative,
+    recommendations,
+    cached: true,
+  };
+}
+
+const INCONCLUSIVO_RECIPIENTS = [
+  'andre@delirio.com.br',
+  'thais@delirio.com.br',
+  'italo@delirio.com.br',
+  'rodrigorosa@delirio.com.br',
+];
+
+// Só enviar email para IDs que ainda existem como tópico aberto — Claude
+// pode retornar IDs de tópicos já deletados ou inventar IDs, ignorar esses.
+function notifyInconclusiveTopics(store, month, scores, ctx) {
+  console.log(`[relatorio] ${store} ${month} — inconclusivos: ${JSON.stringify(scores.inconclusivos)}`);
+  if (!scores.inconclusivos || scores.inconclusivos.length === 0) return;
+
+  const topicById = {};
+  ctx.openTopics.forEach(t => { topicById[t.id] = t; });
+  const validIds = scores.inconclusivos.filter(id => topicById[id]);
+  if (validIds.length !== scores.inconclusivos.length) {
+    const skipped = scores.inconclusivos.filter(id => !topicById[id]);
+    console.log(`[relatorio] ignorando inconclusivos sem tópico aberto: ${JSON.stringify(skipped)}`);
+  }
+
+  for (const topicId of validIds) {
+    const topic = topicById[topicId];
+    const html = `<p>O tópico abaixo inserido para a loja <strong>${store}</strong> foi considerado <strong>inconclusivo</strong> pela análise de IA e não pôde contribuir para nenhuma dimensão do relatório.</p>
+<table border="1" cellpadding="6" style="border-collapse:collapse;font-family:Arial,sans-serif">
+  <tr><td><strong>Loja</strong></td><td>${store}</td></tr>
+  <tr><td><strong>Mês</strong></td><td>${month}</td></tr>
+  <tr><td><strong>Tópico ID</strong></td><td>${topicId}</td></tr>
+  <tr><td><strong>Descrição</strong></td><td>${topic.description}</td></tr>
+</table>
+<p>Por favor, edite o tópico no Delirio Manager com mais detalhes para que possa ser avaliado corretamente no próximo relatório.</p>`;
+    console.log(`[relatorio] enviando email inconclusivo — topico ID ${topicId} para ${INCONCLUSIVO_RECIPIENTS.join(', ')}`);
+    sendSimpleEmail(
+      INCONCLUSIVO_RECIPIENTS,
+      `[Delirio Manager] Tópico inconclusivo — ${store}`,
+      html
+    ).then(() => console.log(`[relatorio] email inconclusivo enviado OK — topico ID ${topicId}`))
+     .catch(e => console.error('[relatorio] FALHA email inconclusivo:', e.message));
+  }
+}
+
+// Janela de dedup: 2ª chamada pra mesma loja+mês dentro desse período devolve
+// o relatório já gerado em vez de pagar a API de novo.
+const REPORT_DEDUP_WINDOW_MIN = 30;
 
 // Multer: salva fotos em public/relatorio-photos/ com nome único
 const PHOTOS_DIR = path.join(__dirname, '..', 'public', 'relatorio-photos');
@@ -193,10 +273,16 @@ router.post('/topics/:id/replicate', (req, res) => {
 });
 
 // POST /api/relatorio/generate
-router.post('/generate', async (req, res) => {
+// Protegido: dispara chamada paga à API da Anthropic + geração de DOCX/PDF.
+router.post('/generate', internalAuth, async (req, res) => {
   try {
     const { store, month } = req.body;
     if (!store || !month) return res.status(400).json({ error: 'store e month são obrigatórios' });
+
+    // 0. Dedup: já existe relatório recente pra essa loja+mês? Devolve ele em
+    //    vez de pagar a API de novo (evita duplo-clique, retry do cliente, etc).
+    const recent = db.getRecentReportRun(store, month, REPORT_DEDUP_WINDOW_MIN);
+    if (recent) return res.json(buildCachedResponse(recent));
 
     // 1. Sync Freshdesk se cache vencido
     await freshdesk.syncIfStale(store).catch(e => console.warn('[relatorio] Freshdesk sync failed:', e.message));
@@ -222,43 +308,7 @@ router.post('/generate', async (req, res) => {
     });
 
     // 6. Alertar sobre tópicos inconclusivos
-    console.log(`[relatorio] ${store} ${month} — inconclusivos: ${JSON.stringify(scores.inconclusivos)}`);
-    if (scores.inconclusivos && scores.inconclusivos.length > 0) {
-      const topicById = {};
-      ctx.openTopics.forEach(t => { topicById[t.id] = t; });
-      // Só enviar email para IDs que ainda existem como tópicos abertos.
-      // Claude pode retornar IDs de tópicos já deletados ou inventar IDs — ignorar.
-      const validIds = scores.inconclusivos.filter(id => topicById[id]);
-      if (validIds.length !== scores.inconclusivos.length) {
-        const skipped = scores.inconclusivos.filter(id => !topicById[id]);
-        console.log(`[relatorio] ignorando inconclusivos sem tópico aberto: ${JSON.stringify(skipped)}`);
-      }
-      for (const topicId of validIds) {
-        const topic = topicById[topicId];
-        const descricao = topic.description;
-        const html = `<p>O tópico abaixo inserido para a loja <strong>${store}</strong> foi considerado <strong>inconclusivo</strong> pela análise de IA e não pôde contribuir para nenhuma dimensão do relatório.</p>
-<table border="1" cellpadding="6" style="border-collapse:collapse;font-family:Arial,sans-serif">
-  <tr><td><strong>Loja</strong></td><td>${store}</td></tr>
-  <tr><td><strong>Mês</strong></td><td>${month}</td></tr>
-  <tr><td><strong>Tópico ID</strong></td><td>${topicId}</td></tr>
-  <tr><td><strong>Descrição</strong></td><td>${descricao}</td></tr>
-</table>
-<p>Por favor, edite o tópico no Delirio Manager com mais detalhes para que possa ser avaliado corretamente no próximo relatório.</p>`;
-        const INCONCLUSIVO_RECIPIENTS = [
-          'andre@delirio.com.br',
-          'thais@delirio.com.br',
-          'italo@delirio.com.br',
-          'rodrigorosa@delirio.com.br',
-        ];
-        console.log(`[relatorio] enviando email inconclusivo — topico ID ${topicId} para ${INCONCLUSIVO_RECIPIENTS.join(', ')}`);
-        sendSimpleEmail(
-          INCONCLUSIVO_RECIPIENTS,
-          `[Delirio Manager] Tópico inconclusivo — ${store}`,
-          html
-        ).then(() => console.log(`[relatorio] email inconclusivo enviado OK — topico ID ${topicId}`))
-         .catch(e => console.error('[relatorio] FALHA email inconclusivo:', e.message));
-      }
-    }
+    notifyInconclusiveTopics(store, month, scores, ctx);
 
     // 7. Responder com URLs de download
     const base = '/downloads/relatorios';

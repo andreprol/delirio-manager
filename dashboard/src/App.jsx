@@ -11,7 +11,7 @@ import { RhModule } from './components/RhModule'
 import { AlohaModule } from './components/AlohaModule'
 import { DRModule } from './components/DRModule'
 import { ReportModule } from './components/ReportModule'
-import { api, setServerUrl, getServerUrl } from './api'
+import { api, setServerUrl, getServerUrl, setInternalApiKey } from './api'
 
 function fmtAge(min) {
   if (min == null) return 'Nunca sincronizado'
@@ -32,6 +32,7 @@ function IntSyncPill({ label, ok, ageMinutes, syncing }) {
 
 export default function App() {
   const [serverUrl, setServerUrlState] = useState('https://dt-manager.brazilsouth.cloudapp.azure.com')
+  const [internalApiKey, setInternalApiKeyState] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [showUpdate,   setShowUpdate]   = useState(false)
   const [search, setSearch] = useState('')
@@ -163,17 +164,23 @@ export default function App() {
   useEffect(() => {
     async function load() {
       let url = serverUrl
+      let key = internalApiKey
       try {
         if (window.electronAPI) {
           const cfg = await window.electronAPI.getConfig()
-          if (cfg?.serverUrl) url = cfg.serverUrl
+          if (cfg?.serverUrl)      url = cfg.serverUrl
+          if (cfg?.internalApiKey) key = cfg.internalApiKey
         } else {
-          const saved = localStorage.getItem('serverUrl')
-          if (saved) url = saved
+          const savedUrl = localStorage.getItem('serverUrl')
+          const savedKey = localStorage.getItem('internalApiKey')
+          if (savedUrl) url = savedUrl
+          if (savedKey) key = savedKey
         }
       } catch {}
       setServerUrlState(url)
       setServerUrl(url)
+      setInternalApiKeyState(key)
+      setInternalApiKey(key)
       setConfigLoaded(true)
       try {
         const settings = await api.getSettings()
@@ -184,14 +191,20 @@ export default function App() {
     load()
   }, [])
 
-  async function saveServerUrl(url) {
+  // Salva URL do servidor e chave interna juntas — electronAPI.setConfig
+  // SOBRESCREVE o arquivo inteiro (não mescla), então as duas sempre viajam
+  // juntas pra uma nunca apagar a outra.
+  async function saveServerUrl(url, key = internalApiKey) {
     setServerUrlState(url)
     setServerUrl(url)
+    setInternalApiKeyState(key)
+    setInternalApiKey(key)
     try {
       if (window.electronAPI) {
-        await window.electronAPI.setConfig({ serverUrl: url })
+        await window.electronAPI.setConfig({ serverUrl: url, internalApiKey: key })
       } else {
         localStorage.setItem('serverUrl', url)
+        localStorage.setItem('internalApiKey', key)
       }
     } catch {}
     setShowSettings(false)
@@ -587,6 +600,7 @@ export default function App() {
       {showSettings && (
         <SettingsModal
           currentUrl={serverUrl}
+          currentInternalKey={internalApiKey}
           onSave={saveServerUrl}
           onClose={() => setShowSettings(false)}
         />
@@ -608,8 +622,9 @@ export default function App() {
   )
 }
 
-function SettingsModal({ currentUrl, onSave, onClose }) {
+function SettingsModal({ currentUrl, currentInternalKey, onSave, onClose }) {
   const [url, setUrl] = useState(currentUrl)
+  const [internalKey, setInternalKey] = useState(currentInternalKey || '')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
 
@@ -671,6 +686,18 @@ function SettingsModal({ currentUrl, onSave, onClose }) {
           placeholder="https://dt-manager.brazilsouth.cloudapp.azure.com"
         />
 
+        <label className="form-label" style={{ marginTop: 10 }}>
+          Chave interna (protege Relatório/Insights sob demanda)
+        </label>
+        <input
+          className="form-input"
+          type="password"
+          value={internalKey}
+          onChange={e => setInternalKey(e.target.value)}
+          placeholder="deixe em branco se o servidor não exigir"
+          autoComplete="new-password"
+        />
+
         {testResult && (
           <div className={`test-result ${testResult.ok ? 'ok' : 'err'}`}>
             {testResult.msg}
@@ -681,7 +708,7 @@ function SettingsModal({ currentUrl, onSave, onClose }) {
           <button className="btn btn-secondary" onClick={testConnection} disabled={testing}>
             {testing ? 'Testando...' : 'Testar conexao'}
           </button>
-          <button className="btn btn-primary" onClick={() => onSave(url)}>
+          <button className="btn btn-primary" onClick={() => onSave(url, internalKey)}>
             Salvar URL
           </button>
           <button className="btn btn-secondary" onClick={onClose}>

@@ -430,6 +430,10 @@ function migrate(db) {
       PRIMARY KEY (machine_id, service_name)
     )`,
     `ALTER TABLE ncr_monitor_emails ADD COLUMN lead_minutes INTEGER DEFAULT 0`,
+    // Cursor incremental do InsightEngine — evita reanalisar eventos já vistos
+    // a cada ciclo (bug real: janela fixa de 7 dias reprocessava ~96% repetido).
+    `ALTER TABLE machines ADD COLUMN last_win_event_id INTEGER DEFAULT 0`,
+    `ALTER TABLE machines ADD COLUMN last_offline_event_id INTEGER DEFAULT 0`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -645,6 +649,14 @@ function getMachinesAutoWolTesting(olderThanISO) {
       AND wol_tested_at IS NOT NULL
       AND wol_tested_at < ?
   `).all(olderThanISO);
+}
+
+// Avança o cursor incremental do InsightEngine após uma análise bem-sucedida —
+// evita reenviar os mesmos eventos pro Claude no próximo ciclo.
+function updateMachineInsightCursor(machineId, { lastWinEventId, lastOfflineEventId }) {
+  getDb().prepare(`
+    UPDATE machines SET last_win_event_id = ?, last_offline_event_id = ? WHERE id = ?
+  `).run(lastWinEventId, lastOfflineEventId, machineId);
 }
 
 // ── Metrics ───────────────────────────────────────────────────────────────────
@@ -1279,6 +1291,16 @@ function getReportHistory(storeName) {
   ).all(storeName);
 }
 
+// Dedup: evita gerar (e pagar) relatório de novo se já existe um recente
+// pra mesma loja+mês dentro da janela.
+function getRecentReportRun(storeName, month, windowMinutes) {
+  const cutoff = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+  return getDb().prepare(
+    `SELECT * FROM report_runs WHERE store_name = ? AND month = ? AND generated_at >= ?
+     ORDER BY generated_at DESC LIMIT 1`
+  ).get(storeName, month, cutoff);
+}
+
 // Feedback
 function saveFeedback({ store_name, month, feedback_text, report_run_id }) {
   getDb().prepare(
@@ -1785,6 +1807,7 @@ module.exports = {
   // machines
   registerMachine, getMachineByToken, getMachineById, getMachineByHostname, isDeletedMachine,
   getAllMachines, updateMachine, deleteMachine, setMachineStatus, getMachinesStale,
+  updateMachineInsightCursor,
   setWolStatus, getMachinesWolTesting,
   getMachinesBiosNeeded, getMachinesOfflineForWake, getMachinesAutoWolTesting,
   // metrics
@@ -1816,7 +1839,7 @@ module.exports = {
   // relatório — freshdesk cache
   getFreshdeskCacheAge, upsertFreshdeskTickets, getFreshdeskActive, getFreshdeskClosed,
   // relatório — report runs
-  saveReportRun, getReportHistory,
+  saveReportRun, getReportHistory, getRecentReportRun,
   // relatório — feedback
   saveFeedback, getRecentFeedback,
   // relatório — overview
