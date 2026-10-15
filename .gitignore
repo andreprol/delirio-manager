@@ -16,6 +16,7 @@ node_modules/
 /youtube-rhetoric-pipeline/
 /cv-tailor/
 /homefood-michael-review/
+/acessibilidade-delirio/
 
 # Build outputs
 dist/
@@ -63,3 +64,6 @@ ruvector.db
 
 # Documents
 *.pdf
+
+# Delirio Caixa — segredos
+delirio-caixa/.secrets/
