@@ -119,3 +119,38 @@ describe('activity_log', () => {
     expect(db.getActivityLog('m4', 0)).toHaveLength(1);
   });
 });
+
+describe('live_sessions', () => {
+  function insertTestMachine(db, id) {
+    const now = new Date().toISOString();
+    db.getDb().prepare(`
+      INSERT INTO machines (id, hostname, token, registered_at)
+      VALUES (?, 'TESTE', ?, ?)
+    `).run(id, 'token-' + id, now);
+  }
+
+  it('cria, encerra e marca gravação', () => {
+    const db = require('./db');
+    insertTestMachine(db, 'm3');
+
+    const sessionId = db.createLiveSession('m3', 'shadow');
+    expect(typeof sessionId).toBe('string');
+
+    let session = db.getLiveSession(sessionId);
+    expect(session.mode).toBe('shadow');
+    expect(session.ended_at).toBeNull();
+
+    db.setLiveSessionRecorded(sessionId);
+    db.endLiveSession(sessionId);
+
+    session = db.getLiveSession(sessionId);
+    expect(session.recorded).toBe(1);
+    expect(session.ended_at).not.toBeNull();
+  });
+
+  it('rejeita mode inválido', () => {
+    const db = require('./db');
+    insertTestMachine(db, 'm4');
+    expect(() => db.createLiveSession('m4', 'invalido')).toThrow();
+  });
+});

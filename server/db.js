@@ -490,7 +490,7 @@ function migrate(db) {
 const _MACHINE_CHILD_TABLES = [
   'metrics', 'commands', 'events', 'machine_metrics_hourly',
   'machine_offline_events', 'reading_miss_events', 'win_events',
-  'nfce_index', 'dr_backups', 'service_status', 'activity_log',
+  'nfce_index', 'dr_backups', 'service_status', 'activity_log', 'live_sessions',
 ];
 
 function registerMachine({ machineId, hostname, agentVersion }) {
@@ -916,6 +916,34 @@ function purgeActivityLog(days) {
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const info = getDb().prepare('DELETE FROM activity_log WHERE captured_at < ?').run(cutoff);
   return info.changes;
+}
+
+// ── Live sessions (acesso remoto) ─────────────────────────────────────────────
+
+function createLiveSession(machineId, mode) {
+  if (mode !== 'normal' && mode !== 'shadow') {
+    throw new Error(`mode inválido: ${mode}`);
+  }
+  const id  = crypto.randomUUID();
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO live_sessions (id, machine_id, mode, started_at)
+    VALUES (?, ?, ?, ?)
+  `).run(id, machineId, mode, now);
+  return id;
+}
+
+function getLiveSession(sessionId) {
+  return getDb().prepare('SELECT * FROM live_sessions WHERE id = ?').get(sessionId);
+}
+
+function endLiveSession(sessionId) {
+  const now = new Date().toISOString();
+  getDb().prepare('UPDATE live_sessions SET ended_at = ? WHERE id = ?').run(now, sessionId);
+}
+
+function setLiveSessionRecorded(sessionId) {
+  getDb().prepare('UPDATE live_sessions SET recorded = 1 WHERE id = ?').run(sessionId);
 }
 
 // ── Win Events ────────────────────────────────────────────────────────────────
@@ -1968,4 +1996,6 @@ module.exports = {
   setWatchlistKeywordActive, deleteWatchlistKeyword,
   // acesso remoto — activity log
   insertActivityLog, getActivityLog, purgeActivityLog,
+  // acesso remoto — live sessions
+  createLiveSession, getLiveSession, endLiveSession, setLiveSessionRecorded,
 };
