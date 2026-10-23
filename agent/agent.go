@@ -84,7 +84,7 @@ func newAgent() *Agent {
 		logWarn(fmt.Sprintf("Erro ao carregar config: %v — usando padrao.", err))
 	}
 
-	initLogger()
+	initLogger("agent.log")
 
 	return &Agent{
 		cfg:    cfg,
