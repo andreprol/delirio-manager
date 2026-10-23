@@ -20,6 +20,14 @@ const (
 )
 
 func main() {
+	// --companion não é registrada no flag padrão: checar antes do flag.Parse().
+	if isCompanionMode(os.Args[1:]) {
+		if err := runCompanion(); err != nil {
+			log.Fatalf("Erro no modo companion: %v", err)
+		}
+		return
+	}
+
 	install    := flag.Bool("install", false, "Instalar como servico Windows")
 	uninstall  := flag.Bool("uninstall", false, "Desinstalar servico Windows")
 	run        := flag.Bool("run", false, "Executar em modo console (debug)")
