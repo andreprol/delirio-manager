@@ -202,6 +202,50 @@ function migrate(db) {
 
     CREATE INDEX IF NOT EXISTS idx_dr_backups_machine
       ON dr_backups(machine_id, backed_at DESC);
+
+    CREATE TABLE IF NOT EXISTS watchlist_keywords (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      keyword    TEXT NOT NULL,
+      active     INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      machine_id    TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      window_title  TEXT NOT NULL DEFAULT '',
+      process_name  TEXT NOT NULL DEFAULT '',
+      captured_at   TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_activity_log_machine_ts
+      ON activity_log(machine_id, captured_at);
+
+    CREATE INDEX IF NOT EXISTS idx_activity_log_captured_at
+      ON activity_log(captured_at);
+
+    CREATE TABLE IF NOT EXISTS watchlist_matches (
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      activity_log_id      INTEGER NOT NULL REFERENCES activity_log(id) ON DELETE CASCADE,
+      keyword              TEXT NOT NULL,
+      screenshot_blob_path TEXT,
+      matched_at           TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_watchlist_matches_log
+      ON watchlist_matches(activity_log_id);
+
+    CREATE TABLE IF NOT EXISTS live_sessions (
+      id         TEXT PRIMARY KEY,
+      machine_id TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      mode       TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      ended_at   TEXT,
+      recorded   INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_live_sessions_machine
+      ON live_sessions(machine_id, started_at);
   `);
 
   // Migrações incrementais — seguras para rodar múltiplas vezes
@@ -446,7 +490,7 @@ function migrate(db) {
 const _MACHINE_CHILD_TABLES = [
   'metrics', 'commands', 'events', 'machine_metrics_hourly',
   'machine_offline_events', 'reading_miss_events', 'win_events',
-  'nfce_index', 'dr_backups', 'service_status',
+  'nfce_index', 'dr_backups', 'service_status', 'activity_log', 'live_sessions',
 ];
 
 function registerMachine({ machineId, hostname, agentVersion }) {
@@ -499,6 +543,16 @@ function registerMachine({ machineId, hostname, agentVersion }) {
             `SELECT id FROM machines WHERE UPPER(hostname) = UPPER(?) AND id != ?`
           ).all(hostname, machineId);
           for (const { id: dupId } of dupes) {
+            // watchlist_matches depende de activity_log (FK), mas o CASCADE não
+            // dispara com foreign_keys=OFF (necessário pro re-key acima) — limpa
+            // antes de deletar activity_log, senão fica linha órfã na tabela de
+            // evidência/auditoria da watchlist.
+            try {
+              d.prepare(
+                `DELETE FROM watchlist_matches WHERE activity_log_id IN
+                 (SELECT id FROM activity_log WHERE machine_id=?)`
+              ).run(dupId);
+            } catch (_) {}
             for (const t of _MACHINE_CHILD_TABLES) {
               try { d.prepare(`DELETE FROM ${t} WHERE machine_id=?`).run(dupId); } catch (_) {}
             }
@@ -817,6 +871,89 @@ function renameGroup(oldName, newName) {
 function reorderGroups(names) {
   const stmt = getDb().prepare('UPDATE groups SET sort_order=? WHERE name=?');
   names.forEach((name, i) => stmt.run(i, name));
+}
+
+// ── Watchlist ─────────────────────────────────────────────────────────────────
+
+function createWatchlistKeyword(keyword) {
+  const now = new Date().toISOString();
+  const info = getDb().prepare(
+    'INSERT INTO watchlist_keywords (keyword, active, created_at) VALUES (?, 1, ?)'
+  ).run(keyword, now);
+  return info.lastInsertRowid;
+}
+
+function getWatchlistKeywords() {
+  return getDb().prepare('SELECT * FROM watchlist_keywords ORDER BY id DESC').all();
+}
+
+function getActiveWatchlistKeywords() {
+  return getDb().prepare('SELECT * FROM watchlist_keywords WHERE active = 1').all();
+}
+
+function setWatchlistKeywordActive(id, active) {
+  getDb().prepare('UPDATE watchlist_keywords SET active = ? WHERE id = ?')
+    .run(active ? 1 : 0, id);
+}
+
+function deleteWatchlistKeyword(id) {
+  getDb().prepare('DELETE FROM watchlist_keywords WHERE id = ?').run(id);
+}
+
+// ── Activity log (acesso remoto) ──────────────────────────────────────────────
+
+function insertActivityLog(machineId, windowTitle, processName) {
+  const now = new Date().toISOString();
+  const info = getDb().prepare(`
+    INSERT INTO activity_log (machine_id, window_title, process_name, captured_at)
+    VALUES (?, ?, ?, ?)
+  `).run(machineId, windowTitle || '', processName || '', now);
+  return { id: info.lastInsertRowid, capturedAt: now };
+}
+
+function getActivityLog(machineId, limit = 100) {
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 100;
+  // id DESC como desempate: capturas no mesmo milissegundo (relógio grosseiro) mantêm a ordem de inserção
+  return getDb().prepare(`
+    SELECT * FROM activity_log WHERE machine_id = ?
+    ORDER BY captured_at DESC, id DESC LIMIT ?
+  `).all(machineId, safeLimit);
+}
+
+function purgeActivityLog(days) {
+  if (!Number.isFinite(days) || days <= 0) return 0;
+  // Comparação de strings é válida: todos os timestamps vêm de toISOString() (formato fixo, UTC, ordenável)
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const info = getDb().prepare('DELETE FROM activity_log WHERE captured_at < ?').run(cutoff);
+  return info.changes;
+}
+
+// ── Live sessions (acesso remoto) ─────────────────────────────────────────────
+
+function createLiveSession(machineId, mode) {
+  if (mode !== 'normal' && mode !== 'shadow') {
+    throw new Error(`mode inválido: ${mode}`);
+  }
+  const id  = crypto.randomUUID();
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO live_sessions (id, machine_id, mode, started_at)
+    VALUES (?, ?, ?, ?)
+  `).run(id, machineId, mode, now);
+  return id;
+}
+
+function getLiveSession(sessionId) {
+  return getDb().prepare('SELECT * FROM live_sessions WHERE id = ?').get(sessionId);
+}
+
+function endLiveSession(sessionId) {
+  const now = new Date().toISOString();
+  getDb().prepare('UPDATE live_sessions SET ended_at = ? WHERE id = ?').run(now, sessionId);
+}
+
+function setLiveSessionRecorded(sessionId) {
+  getDb().prepare('UPDATE live_sessions SET recorded = 1 WHERE id = ?').run(sessionId);
 }
 
 // ── Win Events ────────────────────────────────────────────────────────────────
@@ -1864,4 +2001,11 @@ module.exports = {
   ncrGetAckTimedOut,
   // service status (NCR BOH)
   upsertServiceStatus, getServiceStatusBOH,
+  // acesso remoto — watchlist
+  createWatchlistKeyword, getWatchlistKeywords, getActiveWatchlistKeywords,
+  setWatchlistKeywordActive, deleteWatchlistKeyword,
+  // acesso remoto — activity log
+  insertActivityLog, getActivityLog, purgeActivityLog,
+  // acesso remoto — live sessions
+  createLiveSession, getLiveSession, endLiveSession, setLiveSessionRecorded,
 };

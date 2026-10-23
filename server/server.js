@@ -13,11 +13,18 @@ const ncrMonitor         = require('./services/ncrMonitor');
 const serviceStatusEmail = require('./services/serviceStatusEmail');
 const rhHealthMonitor    = require('./services/rhHealthMonitor');
 const { sendAlert }      = require('./services/resendAlert');
+const { initLiveRelay }  = require('./services/liveSessionRelay');
+const activityRetention  = require('./services/activityRetention');
 
 const PORT = process.env.PORT || 3847;
 
 const server = http.createServer(app);
 initWebSocket(server);
+// Sempre montado, mesmo sem FEATURE_LIVE_ACCESS — inofensivo: sem a flag,
+// nenhuma rota consegue criar sessão (registerSession), então toda conexão
+// em /live recebe 4000 (sessão inexistente) na hora, mesmo custo de a rota
+// não existir. Gatear aqui também só adicionaria uma segunda flag redundante.
+initLiveRelay(server);
 
 // Checagem de boot — pega o cenário do incidente de 2026-09-10 no exato momento
 // em que um deploy/restart apaga a env var, em vez de esperar o próximo tick do monitor.
@@ -42,6 +49,9 @@ server.listen(PORT, () => {
   insightEngine.start();
   zamakService.scheduleDailySync();
   _scheduleWalCheckpoint();
+  if (process.env.FEATURE_LIVE_ACCESS === 'true') {
+    activityRetention.scheduleDailyPurge();
+  }
   metricsEmail.scheduleDailyMetricsEmail();
   if (process.env.NCR_MONITOR_ENABLED === 'false') {
     logger.info('NCR monitor desabilitado via NCR_MONITOR_ENABLED=false');
@@ -237,5 +247,6 @@ process.on('SIGTERM', () => {
   alertEngine.stop();
   insightEngine.stop();
   rhHealthMonitor.stop();
+  activityRetention.stop();
   server.close(() => process.exit(0));
 });
