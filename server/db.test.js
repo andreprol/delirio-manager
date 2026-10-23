@@ -99,4 +99,23 @@ describe('activity_log', () => {
     expect(removed).toBe(1);
     expect(db.getActivityLog('m2', 10)).toHaveLength(1);
   });
+
+  it('purgeActivityLog com days <= 0 não remove nada', () => {
+    const db = require('./db');
+    insertTestMachine(db, 'm3');
+    db.insertActivityLog('m3', 'janela', 'app.exe');
+
+    expect(db.purgeActivityLog(0)).toBe(0);
+    expect(db.purgeActivityLog(-5)).toBe(0);
+    expect(db.getActivityLog('m3', 10)).toHaveLength(1);
+  });
+
+  it('getActivityLog com limit inválido cai no default de 100', () => {
+    const db = require('./db');
+    insertTestMachine(db, 'm4');
+    db.insertActivityLog('m4', 'janela', 'app.exe');
+
+    expect(db.getActivityLog('m4', -1)).toHaveLength(1);
+    expect(db.getActivityLog('m4', 0)).toHaveLength(1);
+  });
 });

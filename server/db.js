@@ -221,6 +221,9 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_activity_log_machine_ts
       ON activity_log(machine_id, captured_at);
 
+    CREATE INDEX IF NOT EXISTS idx_activity_log_captured_at
+      ON activity_log(captured_at);
+
     CREATE TABLE IF NOT EXISTS watchlist_matches (
       id                   INTEGER PRIMARY KEY AUTOINCREMENT,
       activity_log_id      INTEGER NOT NULL REFERENCES activity_log(id) ON DELETE CASCADE,
@@ -899,14 +902,16 @@ function insertActivityLog(machineId, windowTitle, processName) {
 }
 
 function getActivityLog(machineId, limit = 100) {
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 100;
   // id DESC como desempate: capturas no mesmo milissegundo (relógio grosseiro) mantêm a ordem de inserção
   return getDb().prepare(`
     SELECT * FROM activity_log WHERE machine_id = ?
     ORDER BY captured_at DESC, id DESC LIMIT ?
-  `).all(machineId, limit);
+  `).all(machineId, safeLimit);
 }
 
 function purgeActivityLog(days) {
+  if (!Number.isFinite(days) || days <= 0) return 0;
   // Comparação de strings é válida: todos os timestamps vêm de toISOString() (formato fixo, UTC, ordenável)
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const info = getDb().prepare('DELETE FROM activity_log WHERE captured_at < ?').run(cutoff);
