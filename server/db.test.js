@@ -6,16 +6,16 @@
  * o arquivo no Windows ao limpar no afterAll.
  */
 
+beforeEach(() => {
+  jest.resetModules();
+  process.env.DB_PATH = ':memory:';
+});
+
+afterEach(() => {
+  delete process.env.DB_PATH;
+});
+
 describe('migração de schema — acesso remoto', () => {
-  beforeEach(() => {
-    jest.resetModules();
-    process.env.DB_PATH = ':memory:';
-  });
-
-  afterEach(() => {
-    delete process.env.DB_PATH;
-  });
-
   it('cria watchlist_keywords, watchlist_matches, activity_log e live_sessions', () => {
     const { getDb } = require('./db');
     const db = getDb();
@@ -28,15 +28,6 @@ describe('migração de schema — acesso remoto', () => {
 });
 
 describe('watchlist_keywords CRUD', () => {
-  beforeEach(() => {
-    jest.resetModules();
-    process.env.DB_PATH = ':memory:';
-  });
-
-  afterEach(() => {
-    delete process.env.DB_PATH;
-  });
-
   it('cria, lista, desativa e deleta uma keyword', () => {
     const db = require('./db');
     const id = db.createWatchlistKeyword('vaga de emprego');
