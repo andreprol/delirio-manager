@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"time"
 )
 
 // isCompanionMode detecta a flag --companion nos args brutos (chamado antes
@@ -49,9 +53,63 @@ func runCompanion() error {
 	select {} // bloqueia forever — processo companion vive até ser morto pelo serviço
 }
 
-// activityReportLoop é stub — implementação nas próximas tasks.
+// ActivityPayload é o corpo JSON de POST /api/activity.
+type ActivityPayload struct {
+	WindowTitle string `json:"windowTitle"`
+	ProcessName string `json:"processName"`
+}
+
+func buildActivityPayload(windowTitle, processName string) ActivityPayload {
+	return ActivityPayload{WindowTitle: windowTitle, ProcessName: processName}
+}
+
+const activityReportIntervalSecs = 4
+
+// activityReportLoop reporta a janela em foco pro servidor a cada ~4s
+// (ver spec: "3-5s"). Erros de captura ou de rede não derrubam o loop —
+// só pula o ciclo e tenta de novo no próximo tick.
 func activityReportLoop(cfg *Config, stopCh <-chan struct{}) {
-	<-stopCh
+	ticker := time.NewTicker(activityReportIntervalSecs * time.Second)
+	defer ticker.Stop()
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			title, proc, err := captureForegroundWindow()
+			if err != nil {
+				continue // sem janela em foco (ex: tela de login) — tenta de novo no próximo tick
+			}
+			payload := buildActivityPayload(title, proc)
+			if err := sendActivityPayload(client, cfg, payload); err != nil {
+				logWarn(fmt.Sprintf("companion: erro ao reportar atividade: %v", err))
+			}
+		}
+	}
+}
+
+func sendActivityPayload(client *http.Client, cfg *Config, payload ActivityPayload) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", cfg.ServerURL+"/api/activity", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("servidor retornou status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // companionPipeLoop é stub — implementação nas próximas tasks.

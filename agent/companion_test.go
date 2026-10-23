@@ -11,3 +11,13 @@ func TestParseCompanionFlags(t *testing.T) {
 		t.Fatal("esperava isCompanionMode(false) sem --companion")
 	}
 }
+
+func TestBuildActivityPayload(t *testing.T) {
+	payload := buildActivityPayload("Vagas - LinkedIn", "chrome.exe")
+	if payload.WindowTitle != "Vagas - LinkedIn" {
+		t.Errorf("WindowTitle = %q", payload.WindowTitle)
+	}
+	if payload.ProcessName != "chrome.exe" {
+		t.Errorf("ProcessName = %q", payload.ProcessName)
+	}
+}

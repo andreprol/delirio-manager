@@ -36,12 +36,6 @@ func basenameFromPath(fullPath string) string {
 	return parts[len(parts)-1]
 }
 
-// Vars/const/func abaixo são consumidos pela Task 3 do plano (wiring em
-// activityReportLoop, hoje stub em companion.go) — ainda não há chamador
-// nesta task, então ficam marcados //nolint:unused até a próxima task ligar
-// o fio. Não testável em CI de outra forma (ver doc de captureForegroundWindow).
-//
-//nolint:unused
 var (
 	user32                         = syscall.NewLazyDLL("user32.dll")
 	procGetForegroundWindow        = user32.NewProc("GetForegroundWindow")
@@ -53,7 +47,6 @@ var (
 	procCloseHandle                = kernel32.NewProc("CloseHandle")
 )
 
-//nolint:unused
 const (
 	processQueryLimitedInformation = 0x1000
 	maxWindowTitleChars            = 512
@@ -75,8 +68,6 @@ const (
 // captureForegroundWindow lê a janela em foco agora — título + nome do
 // processo. Não testável em CI (precisa de sessão desktop interativa real);
 // verificar manualmente rodando o companion numa máquina Windows de teste.
-//
-//nolint:unused
 func captureForegroundWindow() (windowTitle string, processName string, err error) {
 	hwnd, _, _ := procGetForegroundWindow.Call()
 	if hwnd == 0 {
