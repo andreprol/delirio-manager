@@ -148,9 +148,11 @@ describe('live_sessions', () => {
     expect(session.ended_at).not.toBeNull();
   });
 
-  it('rejeita mode inválido', () => {
+  it('rejeita mode inválido sem inserir linha', () => {
     const db = require('./db');
     insertTestMachine(db, 'm4');
-    expect(() => db.createLiveSession('m4', 'invalido')).toThrow();
+    expect(() => db.createLiveSession('m4', 'invalido')).toThrow(/mode inválido/);
+    const rows = db.getDb().prepare('SELECT COUNT(*) AS c FROM live_sessions WHERE machine_id = ?').get('m4');
+    expect(rows.c).toBe(0);
   });
 });
