@@ -16,13 +16,13 @@ describe('migração de schema — acesso remoto', () => {
     delete process.env.DB_PATH;
   });
 
-  it('cria watchlist_keywords, activity_log e live_sessions', () => {
+  it('cria watchlist_keywords, watchlist_matches, activity_log e live_sessions', () => {
     const { getDb } = require('./db');
     const db = getDb();
     const tables = db.prepare(`
       SELECT name FROM sqlite_master WHERE type='table'
-      AND name IN ('watchlist_keywords','activity_log','live_sessions')
+      AND name IN ('watchlist_keywords','watchlist_matches','activity_log','live_sessions')
     `).all().map(r => r.name).sort();
-    expect(tables).toEqual(['activity_log', 'live_sessions', 'watchlist_keywords']);
+    expect(tables).toEqual(['activity_log', 'live_sessions', 'watchlist_keywords', 'watchlist_matches']);
   });
 });

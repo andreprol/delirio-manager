@@ -222,11 +222,11 @@ function migrate(db) {
       ON activity_log(machine_id, captured_at);
 
     CREATE TABLE IF NOT EXISTS watchlist_matches (
-      id                INTEGER PRIMARY KEY AUTOINCREMENT,
-      activity_log_id   INTEGER NOT NULL REFERENCES activity_log(id) ON DELETE CASCADE,
-      keyword           TEXT NOT NULL,
-      screenshot_blob   TEXT,
-      matched_at        TEXT NOT NULL
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      activity_log_id      INTEGER NOT NULL REFERENCES activity_log(id) ON DELETE CASCADE,
+      keyword              TEXT NOT NULL,
+      screenshot_blob_path TEXT,
+      matched_at           TEXT NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_watchlist_matches_log
