@@ -16,3 +16,17 @@ func TestFriendlyProcessName(t *testing.T) {
 		}
 	}
 }
+
+func TestBasenameFromPath(t *testing.T) {
+	cases := map[string]string{
+		`C:\Program Files\DelirioAgent\delirio-agent.exe`: "delirio-agent.exe",
+		`C:/Program Files/Google/Chrome/chrome.exe`:        "chrome.exe",
+		"notepad.exe":                                      "notepad.exe", // sem separador
+	}
+	for input, want := range cases {
+		got := basenameFromPath(input)
+		if got != want {
+			t.Errorf("basenameFromPath(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
