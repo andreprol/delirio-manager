@@ -8,14 +8,18 @@ const { adminAuth } = require('../middleware/adminAuth');
 
 // Configuração da watchlist é administrativa e sensível (revela o que a
 // empresa está monitorando) — todas as rotas exigem X-Admin-Secret, mesmo GET.
+// router.use (não por rota): torna estruturalmente impossível esquecer o auth
+// numa rota nova adicionada depois — ao contrário de machines.js, aqui é 100%
+// das rotas que precisam, não só uma.
+router.use(adminAuth);
 
 // GET /api/watchlist
-router.get('/', adminAuth, (req, res) => {
+router.get('/', (req, res) => {
   res.json(db.getWatchlistKeywords());
 });
 
 // POST /api/watchlist  { keyword: "vaga de emprego" }
-router.post('/', adminAuth, (req, res) => {
+router.post('/', (req, res) => {
   const { keyword } = req.body;
   if (typeof keyword !== 'string' || !keyword.trim()) {
     return res.status(400).json({ error: 'keyword e obrigatoria' });
@@ -26,7 +30,7 @@ router.post('/', adminAuth, (req, res) => {
 });
 
 // PUT /api/watchlist/:id  { active: true|false }
-router.put('/:id', adminAuth, (req, res) => {
+router.put('/:id', (req, res) => {
   const { active } = req.body;
   if (typeof active !== 'boolean') {
     return res.status(400).json({ error: 'active deve ser boolean' });
@@ -37,7 +41,7 @@ router.put('/:id', adminAuth, (req, res) => {
 });
 
 // DELETE /api/watchlist/:id
-router.delete('/:id', adminAuth, (req, res) => {
+router.delete('/:id', (req, res) => {
   db.deleteWatchlistKeyword(req.params.id);
   broadcast('watchlist:updated', db.getWatchlistKeywords());
   res.json({ ok: true });

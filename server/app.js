@@ -139,8 +139,11 @@ app.use('/api/zamak',     zamakRoutes);
 app.use('/api/admin',     adminRoutes);
 
 if (process.env.FEATURE_LIVE_ACCESS === 'true') {
-  app.use('/api/watchlist', watchlistRoutes);
+  // Ingestão do companion (agente, uma máquina por vez) — auth por token de
+  // agente (agentAuthNoLimit), trust boundary diferente das duas de baixo.
   app.use('/api',           activityRoutes);
+  // Controle administrativo (dashboard) — auth por X-Admin-Secret (adminAuth).
+  app.use('/api/watchlist', watchlistRoutes);
   app.use('/api/live',      liveRoutes);
 }
 
