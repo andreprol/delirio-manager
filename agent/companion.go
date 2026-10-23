@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -47,7 +49,13 @@ func runCompanion() error {
 	// session (companionPipeLoop) ganhar um sinal de "encerrar", trocar este
 	// select{} por `select { case <-stopCh: return nil }` pra sair de fato.
 	stopCh := make(chan struct{})
-	go activityReportLoop(cfg, stopCh)
+	// FEATURE_LIVE_ACCESS: mesma flag do server (ver server/app.js) — feature
+	// ainda incompleta (Task 3/13 do agente), nunca reportar atividade pro
+	// servidor antes dele ter a rota /api/activity habilitada, senão as 224
+	// máquinas martelam 404 a cada 4s indefinidamente.
+	if os.Getenv("FEATURE_LIVE_ACCESS") == "true" {
+		go activityReportLoop(cfg, stopCh)
+	}
 	go companionPipeLoop(cfg, stopCh)
 
 	select {} // bloqueia forever — processo companion vive até ser morto pelo serviço
@@ -71,7 +79,12 @@ const activityReportIntervalSecs = 4
 func activityReportLoop(cfg *Config, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(activityReportIntervalSecs * time.Second)
 	defer ticker.Stop()
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Timeout menor que o intervalo do ticker: se uma request atrasasse mais
+	// que activityReportIntervalSecs, a cadência real divergiria em silêncio
+	// do "~4s" documentado acima (o time.Ticker descarta ticks em atraso em
+	// vez de empilhar, então não há corrida — só relatório atrasado sem log).
+	client := &http.Client{Timeout: 3 * time.Second}
+	consecutiveFailures := 0
 
 	for {
 		select {
@@ -82,9 +95,20 @@ func activityReportLoop(cfg *Config, stopCh <-chan struct{}) {
 			if err != nil {
 				continue // sem janela em foco (ex: tela de login) — tenta de novo no próximo tick
 			}
-			payload := buildActivityPayload(title, proc)
+			payload := buildActivityPayload(title, friendlyProcessName(proc))
 			if err := sendActivityPayload(client, cfg, payload); err != nil {
-				logWarn(fmt.Sprintf("companion: erro ao reportar atividade: %v", err))
+				consecutiveFailures++
+				// Loga só a 1ª falha — se o servidor cair, evita ~21.600
+				// linhas/dia (e outras tantas no Windows Event Log, que não
+				// tem a mesma rotação de companion.log) repetindo o mesmo erro.
+				if consecutiveFailures == 1 {
+					logWarn(fmt.Sprintf("companion: erro ao reportar atividade: %v", err))
+				}
+				continue
+			}
+			if consecutiveFailures > 0 {
+				logInfo(fmt.Sprintf("companion: report de atividade recuperado após %d falha(s) consecutiva(s)", consecutiveFailures))
+				consecutiveFailures = 0
 			}
 		}
 	}
@@ -106,6 +130,10 @@ func sendActivityPayload(client *http.Client, cfg *Config, payload ActivityPaylo
 		return err
 	}
 	defer resp.Body.Close()
+	// Drena o body antes de fechar — sem isso o http.Transport não devolve a
+	// conexão pro pool keep-alive, forçando handshake TCP/TLS novo a cada
+	// tick (relevante a 1 req/4s por máquina em 224 máquinas).
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("servidor retornou status %d", resp.StatusCode)
 	}
