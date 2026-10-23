@@ -4,6 +4,7 @@ const express        = require('express');
 const router         = express.Router();
 const db             = require('../db');
 const { broadcast }  = require('../services/websocket');
+const { adminAuth }  = require('../middleware/adminAuth');
 
 // GET /api/machines
 router.get('/', (req, res) => {
@@ -193,16 +194,8 @@ function parseMachine(m) {
 
 // POST /api/machines/:id/run
 // Executa script PowerShell na maquina e aguarda resultado sincrono (max 35s).
-// Requer header X-Admin-Secret (mesmo segredo do endpoint /api/admin/*).
-
-function loadAdminSecret() {
-  const fs   = require('fs');
-  const path = require('path');
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
-    return cfg.adminSecret || null;
-  } catch { return null; }
-}
+// Requer header X-Admin-Secret (middleware/adminAuth.js — mesmo segredo do
+// endpoint /api/admin/* e de /api/live/*).
 
 function isValidScript(script) {
   return script && typeof script === 'string' && script.trim();
@@ -223,12 +216,7 @@ async function pollCommandResult(commandId, deadline) {
   return null;
 }
 
-router.post('/:id/run', async (req, res) => {
-  const adminSecret = loadAdminSecret();
-  if (!adminSecret || req.headers['x-admin-secret'] !== adminSecret) {
-    return res.status(401).json({ error: 'X-Admin-Secret invalido ou nao configurado' });
-  }
-
+router.post('/:id/run', adminAuth, async (req, res) => {
   const machine = db.getMachineById(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 

@@ -9,42 +9,12 @@
 // nunca os dois juntos do mesmo lado. Mesmo padrão X-Admin-Secret de
 // routes/machines.js (endpoint /:id/run).
 
-const express = require('express');
-const router  = express.Router();
-const crypto  = require('crypto');
-const db      = require('../db');
-const relay   = require('../services/liveSessionRelay');
-
-function loadAdminSecret() {
-  if (process.env.ADMIN_SECRET) return process.env.ADMIN_SECRET;
-  try {
-    const fs   = require('fs');
-    const path = require('path');
-    const cfg  = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8'));
-    return cfg.adminSecret || null;
-  } catch {
-    return null;
-  }
-}
-
-// Comparação resistente a timing attack — mesmo cuidado que o code-reviewer da
-// Task 9 exigiu em liveSessionRelay.js (safeTokenEqual) pros tokens de sessão;
-// o X-Admin-Secret autoriza abrir acesso remoto, então merece o mesmo padrão.
-function safeSecretEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
-function adminAuth(req, res, next) {
-  const secret = loadAdminSecret();
-  if (!secret || !safeSecretEqual(req.headers['x-admin-secret'], secret)) {
-    return res.status(401).json({ error: 'X-Admin-Secret inválido ou não configurado' });
-  }
-  next();
-}
+const express   = require('express');
+const router    = express.Router();
+const crypto    = require('crypto');
+const db        = require('../db');
+const relay     = require('../services/liveSessionRelay');
+const { adminAuth } = require('../middleware/adminAuth');
 
 // POST /api/live/:machineId/start  { mode: 'normal'|'shadow' }
 router.post('/:machineId/start', adminAuth, (req, res) => {
