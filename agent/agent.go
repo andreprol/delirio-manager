@@ -28,6 +28,12 @@ type Agent struct {
 
 	// update deduplication — previne goroutines concorrentes de update
 	updating bool
+
+	// acesso remoto (FEATURE_LIVE_ACCESS) — estado do companion lançado por
+	// sessionWatchLoop na sessão ativa. Só esta goroutine escreve nestes
+	// campos (sem concorrência), então sem mutex dedicado.
+	companionPID     uint32
+	companionSession uint32
 }
 
 // HeartbeatPayload e o JSON enviado ao servidor a cada ciclo.
@@ -124,6 +130,13 @@ func (a *Agent) start() error {
 	// Monitoramento de serviços NCR Voyix (apenas máquinas BOH)
 	go a.serviceMonitorLoop()
 
+	// FEATURE_LIVE_ACCESS: mesma flag usada em companion.go — feature ainda
+	// incompleta (Task 5/13 do agente), não lançar o companion em produção
+	// antes do servidor e do restante da feature estarem prontos.
+	if os.Getenv("FEATURE_LIVE_ACCESS") == "true" {
+		go a.sessionWatchLoop()
+	}
+
 	safeGo("lhm",        func() { ensureLHM(a.cfg.ServerURL) })
 	safeGo("bootEvents", a.collectAndSendBootEvents)
 	safeGo("wolStatus",  a.collectWolStatus)
@@ -198,6 +211,47 @@ func (a *Agent) heartbeatLoop() {
 			}()
 		case <-a.stopCh:
 			return
+		}
+	}
+}
+
+const sessionWatchIntervalSecs = 15
+
+// sessionWatchLoop roda só no serviço (Session 0): detecta a sessão de
+// usuário ativa e garante que o companion está rodando nela. Relança em
+// logoff/logon (sessão muda) ou se o companion morreu por qualquer motivo.
+func (a *Agent) sessionWatchLoop() {
+	ticker := time.NewTicker(sessionWatchIntervalSecs * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			sessions, err := enumerateSessions()
+			if err != nil {
+				logWarn(fmt.Sprintf("sessionWatch: erro ao enumerar sessões: %v", err))
+				continue
+			}
+			activeID, ok := pickActiveSession(sessions)
+			if !ok {
+				continue // sem usuário logado agora (tela de login) — nada a fazer
+			}
+
+			sessionChanged := activeID != a.companionSession
+			alive := a.companionPID != 0 && processIsAlive(a.companionPID)
+			if !shouldRelaunchCompanion(alive, sessionChanged) {
+				continue
+			}
+
+			pid, err := launchCompanion(activeID)
+			if err != nil {
+				logError(fmt.Sprintf("sessionWatch: falha ao lançar companion: %v", err))
+				continue
+			}
+			a.companionPID = pid
+			a.companionSession = activeID
+			logInfo(fmt.Sprintf("Companion lançado (PID %d, sessão %d).", pid, activeID))
 		}
 	}
 }

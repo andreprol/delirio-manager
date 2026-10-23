@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 type wtsSessionState uint32
@@ -87,4 +90,97 @@ func enumerateSessions() ([]sessionInfo, error) {
 		sessions = append(sessions, sessionInfo{ID: raw.SessionID, State: wtsSessionState(raw.State)})
 	}
 	return sessions, nil
+}
+
+// shouldRelaunchCompanion decide se o companion precisa ser (re)lançado:
+// se não está vivo, ou se a sessão ativa mudou desde o último lançamento
+// (logoff/logon — o companion antigo ficou órfão numa sessão que já não
+// é mais a ativa).
+func shouldRelaunchCompanion(companionAlive bool, sessionChanged bool) bool {
+	return !companionAlive || sessionChanged
+}
+
+// tokenAccessForCreateProcessAsUser é o conjunto de direitos que o token
+// primário duplicado precisa ter pra CreateProcessAsUser funcionar — os 5
+// listados na própria documentação da API (TOKEN_QUERY, TOKEN_ASSIGN_PRIMARY,
+// TOKEN_DUPLICATE, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_SESSIONID). Faltar
+// TOKEN_ASSIGN_PRIMARY em particular é a causa clássica de
+// CreateProcessAsUserW falhar com ERROR_PRIVILEGE_NOT_HELD/ACCESS_DENIED —
+// por isso cada direito é nomeado explicitamente em vez de usar
+// MAXIMUM_ALLOWED (que dependeria do ACL do token de origem).
+const tokenAccessForCreateProcessAsUser = windows.TOKEN_QUERY |
+	windows.TOKEN_ASSIGN_PRIMARY |
+	windows.TOKEN_DUPLICATE |
+	windows.TOKEN_ADJUST_DEFAULT |
+	windows.TOKEN_ADJUST_SESSIONID
+
+// launchCompanion lança delirio-agent.exe --companion na sessão sessionID,
+// usando o token do usuário logado nela (WTSQueryUserToken + DuplicateTokenEx
+// + CreateProcessAsUser — o padrão Session-0-isolation de qualquer serviço
+// que precisa de um processo auxiliar na sessão interativa do usuário).
+// O processo herda o token do próprio usuário (não SYSTEM, sem elevação) e
+// aparece normalmente no Gerenciador de Tarefas.
+//
+// Não testável em CI — exige contexto SYSTEM real com SeTcbPrivilege e uma
+// sessão desktop real. Verificar manualmente numa VM/PC de teste: logar,
+// confirmar que o serviço lança o companion e que delirio-agent.exe aparece
+// 2x no Gerenciador de Tarefas (serviço + companion), o companion sem
+// privilégio elevado.
+func launchCompanion(sessionID uint32) (companionPID uint32, err error) {
+	var userToken windows.Token
+	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
+		return 0, fmt.Errorf("WTSQueryUserToken falhou pra sessão %d: %w", sessionID, err)
+	}
+	defer userToken.Close() //nolint:errcheck
+
+	var primaryToken windows.Token
+	if err := windows.DuplicateTokenEx(
+		userToken, tokenAccessForCreateProcessAsUser, nil,
+		windows.SecurityImpersonation, windows.TokenPrimary, &primaryToken,
+	); err != nil {
+		return 0, fmt.Errorf("DuplicateTokenEx falhou: %w", err)
+	}
+	defer primaryToken.Close() //nolint:errcheck
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("os.Executable: %w", err)
+	}
+	cmdLine := fmt.Sprintf(`"%s" --companion`, exePath)
+	cmdLineUTF16, err := windows.UTF16PtrFromString(cmdLine)
+	if err != nil {
+		return 0, fmt.Errorf("UTF16PtrFromString(cmdLine): %w", err)
+	}
+	desktopUTF16, err := windows.UTF16PtrFromString(`winsta0\default`)
+	if err != nil {
+		return 0, fmt.Errorf("UTF16PtrFromString(desktop): %w", err)
+	}
+
+	si := windows.StartupInfo{Desktop: desktopUTF16}
+	si.Cb = uint32(unsafe.Sizeof(si))
+	var pi windows.ProcessInformation
+
+	if err := windows.CreateProcessAsUser(
+		primaryToken, nil, cmdLineUTF16, nil, nil, false,
+		windows.CREATE_NO_WINDOW, nil, nil, &si, &pi,
+	); err != nil {
+		return 0, fmt.Errorf("CreateProcessAsUser falhou: %w", err)
+	}
+	defer windows.CloseHandle(pi.Process) //nolint:errcheck
+	defer windows.CloseHandle(pi.Thread)  //nolint:errcheck
+
+	return pi.ProcessId, nil
+}
+
+// processIsAlive confere se o processo com o pid dado ainda existe — usado
+// pelo watcher pra decidir se o companion precisa ser relançado. Basta
+// SYNCHRONIZE: só precisamos saber se o handle do processo ainda é válido,
+// não esperar por ele terminar.
+func processIsAlive(pid uint32) bool {
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck
+	return true
 }
