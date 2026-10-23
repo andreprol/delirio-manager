@@ -112,9 +112,13 @@ describe('initLiveRelay — conexão real', () => {
   afterEach(() => unregisterSession('s-real'));
 
   it('companion autenticado consegue conectar e dashboard recebe o frame', (done) => {
-    registerSession('s-real', { machineId: 'm1', mode: 'shadow', companionToken: 'tok-123' });
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'shadow', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
 
-    const dashboardWs = new WebSocket(`ws://localhost:${port}/live?sessionId=s-real&role=dashboard`);
+    const dashboardWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+    );
     let companionWs;
 
     dashboardWs.on('message', (data) => {
@@ -135,6 +139,19 @@ describe('initLiveRelay — conexão real', () => {
   it('companion com token errado é desconectado', (done) => {
     registerSession('s-real', { machineId: 'm1', mode: 'shadow', companionToken: 'tok-correto' });
     const ws = new WebSocket(`ws://localhost:${port}/live?sessionId=s-real&role=companion&token=errado`);
+    ws.on('close', (code) => {
+      expect(code).toBe(4001);
+      done();
+    });
+  });
+
+  it('dashboard sem dashboardToken correto é desconectado (sessionId sozinho não autoriza)', (done) => {
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'shadow', companionToken: 'tok-123', dashboardToken: 'dash-correto',
+    });
+    const ws = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=errado`
+    );
     ws.on('close', (code) => {
       expect(code).toBe(4001);
       done();

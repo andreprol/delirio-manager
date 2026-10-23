@@ -15,14 +15,14 @@ const MODE_NORMAL = 'normal';
 
 const sessions = new Map();
 
-function registerSession(sessionId, { machineId, mode, companionToken }) {
+function registerSession(sessionId, { machineId, mode, companionToken, dashboardToken }) {
   if (sessions.has(sessionId)) {
     throw new Error(
       `liveSessionRelay: sessão ${sessionId} já registrada — chame unregisterSession antes de registrar de novo`
     );
   }
   sessions.set(sessionId, {
-    machineId, mode, companionToken,
+    machineId, mode, companionToken, dashboardToken,
     companionWs: null,
     dashboardWs: null,
   });
@@ -142,6 +142,14 @@ function initLiveRelay(server) {
       }
       attachCompanionSocket(sessionId, ws);
     } else if (role === 'dashboard') {
+      // sessionId sozinho NÃO é segredo suficiente pra autorizar o dashboard —
+      // precisa do dashboardToken emitido junto no POST /start (achado 🔴 do
+      // code-reviewer da Task 9: sem isso, qualquer um que soubesse o sessionId
+      // abria a sessão como se fosse o operador autorizado).
+      if (token !== session.dashboardToken) {
+        ws.close(4001, 'token inválido');
+        return;
+      }
       attachDashboardSocket(sessionId, ws);
     } else {
       ws.close(4002, 'role inválido');
