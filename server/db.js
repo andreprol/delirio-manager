@@ -487,7 +487,7 @@ function migrate(db) {
 const _MACHINE_CHILD_TABLES = [
   'metrics', 'commands', 'events', 'machine_metrics_hourly',
   'machine_offline_events', 'reading_miss_events', 'win_events',
-  'nfce_index', 'dr_backups', 'service_status',
+  'nfce_index', 'dr_backups', 'service_status', 'activity_log',
 ];
 
 function registerMachine({ machineId, hostname, agentVersion }) {
@@ -885,6 +885,32 @@ function setWatchlistKeywordActive(id, active) {
 
 function deleteWatchlistKeyword(id) {
   getDb().prepare('DELETE FROM watchlist_keywords WHERE id = ?').run(id);
+}
+
+// ── Activity log (acesso remoto) ──────────────────────────────────────────────
+
+function insertActivityLog(machineId, windowTitle, processName) {
+  const now = new Date().toISOString();
+  const info = getDb().prepare(`
+    INSERT INTO activity_log (machine_id, window_title, process_name, captured_at)
+    VALUES (?, ?, ?, ?)
+  `).run(machineId, windowTitle || '', processName || '', now);
+  return { id: info.lastInsertRowid, capturedAt: now };
+}
+
+function getActivityLog(machineId, limit = 100) {
+  // id DESC como desempate: capturas no mesmo milissegundo (relógio grosseiro) mantêm a ordem de inserção
+  return getDb().prepare(`
+    SELECT * FROM activity_log WHERE machine_id = ?
+    ORDER BY captured_at DESC, id DESC LIMIT ?
+  `).all(machineId, limit);
+}
+
+function purgeActivityLog(days) {
+  // Comparação de strings é válida: todos os timestamps vêm de toISOString() (formato fixo, UTC, ordenável)
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const info = getDb().prepare('DELETE FROM activity_log WHERE captured_at < ?').run(cutoff);
+  return info.changes;
 }
 
 // ── Win Events ────────────────────────────────────────────────────────────────
@@ -1935,4 +1961,6 @@ module.exports = {
   // acesso remoto — watchlist
   createWatchlistKeyword, getWatchlistKeywords, getActiveWatchlistKeywords,
   setWatchlistKeywordActive, deleteWatchlistKeyword,
+  // acesso remoto — activity log
+  insertActivityLog, getActivityLog, purgeActivityLog,
 };

@@ -63,3 +63,40 @@ describe('watchlist_keywords CRUD', () => {
     expect(active[0]).toMatchObject({ id: novaId, keyword: 'segunda', active: 1 });
   });
 });
+
+describe('activity_log', () => {
+  function insertTestMachine(db, id) {
+    const now = new Date().toISOString();
+    db.getDb().prepare(`
+      INSERT INTO machines (id, hostname, token, registered_at)
+      VALUES (?, 'TESTE', ?, ?)
+    `).run(id, 'token-' + id, now);
+  }
+
+  it('insere e lista por máquina, mais recente primeiro', () => {
+    const db = require('./db');
+    insertTestMachine(db, 'm1');
+
+    db.insertActivityLog('m1', 'Excel - planilha.xlsx', 'EXCEL.EXE');
+    db.insertActivityLog('m1', 'Vagas - LinkedIn', 'chrome.exe');
+
+    const rows = db.getActivityLog('m1', 10);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].window_title).toBe('Vagas - LinkedIn');
+    expect(rows[1].window_title).toBe('Excel - planilha.xlsx');
+  });
+
+  it('purgeActivityLog remove linhas mais antigas que N dias', () => {
+    const db = require('./db');
+    insertTestMachine(db, 'm2');
+    const oldTs = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
+    db.getDb().prepare(
+      'INSERT INTO activity_log (machine_id, window_title, process_name, captured_at) VALUES (?,?,?,?)'
+    ).run('m2', 'janela antiga', 'app.exe', oldTs);
+    db.insertActivityLog('m2', 'janela recente', 'app.exe');
+
+    const removed = db.purgeActivityLog(90);
+    expect(removed).toBe(1);
+    expect(db.getActivityLog('m2', 10)).toHaveLength(1);
+  });
+});
