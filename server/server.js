@@ -20,6 +20,10 @@ const PORT = process.env.PORT || 3847;
 
 const server = http.createServer(app);
 initWebSocket(server);
+// Sempre montado, mesmo sem FEATURE_LIVE_ACCESS — inofensivo: sem a flag,
+// nenhuma rota consegue criar sessão (registerSession), então toda conexão
+// em /live recebe 4000 (sessão inexistente) na hora, mesmo custo de a rota
+// não existir. Gatear aqui também só adicionaria uma segunda flag redundante.
 initLiveRelay(server);
 
 // Checagem de boot — pega o cenário do incidente de 2026-09-10 no exato momento

@@ -156,3 +156,39 @@ describe('live_sessions', () => {
     expect(rows.c).toBe(0);
   });
 });
+
+describe('registerMachine — re-key não deixa watchlist_matches órfão', () => {
+  it('deleta watchlist_matches junto quando a máquina duplicada (dupe) é removida', () => {
+    const db = require('./db');
+    const rawDb = db.getDb();
+    const now = new Date().toISOString();
+
+    // canonical: será preservado (re-keyed pro novo UUID)
+    rawDb.prepare(`
+      INSERT INTO machines (id, hostname, location, token, registered_at, last_seen)
+      VALUES ('canonical-id', 'DUPTEST', 'Loja X', 'tok-canonical', ?, ?)
+    `).run(now, now);
+
+    // dupe: será deletado — tem activity_log + watchlist_matches vinculados
+    rawDb.prepare(`
+      INSERT INTO machines (id, hostname, location, token, registered_at, last_seen)
+      VALUES ('dupe-id', 'DUPTEST', 'Temporário', 'tok-dupe', ?, ?)
+    `).run(now, now);
+
+    const { id: activityLogId } = db.insertActivityLog('dupe-id', 'Vagas - LinkedIn', 'chrome.exe');
+    rawDb.prepare(`
+      INSERT INTO watchlist_matches (activity_log_id, keyword, matched_at)
+      VALUES (?, 'vaga', ?)
+    `).run(activityLogId, now);
+
+    db.registerMachine({ machineId: 'novo-uuid', hostname: 'DUPTEST', agentVersion: '1.0' });
+
+    // dupe-id foi removido (re-key preservou o canonical sob o novo UUID)
+    const dupeRow = rawDb.prepare('SELECT id FROM machines WHERE id = ?').get('dupe-id');
+    expect(dupeRow).toBeUndefined();
+
+    // watchlist_matches não pode sobrar órfão apontando pro activity_log deletado
+    const orphan = rawDb.prepare('SELECT * FROM watchlist_matches WHERE activity_log_id = ?').get(activityLogId);
+    expect(orphan).toBeUndefined();
+  });
+});

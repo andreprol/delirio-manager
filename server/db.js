@@ -543,6 +543,16 @@ function registerMachine({ machineId, hostname, agentVersion }) {
             `SELECT id FROM machines WHERE UPPER(hostname) = UPPER(?) AND id != ?`
           ).all(hostname, machineId);
           for (const { id: dupId } of dupes) {
+            // watchlist_matches depende de activity_log (FK), mas o CASCADE não
+            // dispara com foreign_keys=OFF (necessário pro re-key acima) — limpa
+            // antes de deletar activity_log, senão fica linha órfã na tabela de
+            // evidência/auditoria da watchlist.
+            try {
+              d.prepare(
+                `DELETE FROM watchlist_matches WHERE activity_log_id IN
+                 (SELECT id FROM activity_log WHERE machine_id=?)`
+              ).run(dupId);
+            } catch (_) {}
             for (const t of _MACHINE_CHILD_TABLES) {
               try { d.prepare(`DELETE FROM ${t} WHERE machine_id=?`).run(dupId); } catch (_) {}
             }
