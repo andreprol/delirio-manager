@@ -19,6 +19,10 @@ if [ -f "$ECOSYSTEM_FILE" ]; then
     echo "[safe-restart] ABORTADO: CLOCK_PROXY_URL ausente em $ECOSYSTEM_FILE — Módulo RH ficaria fora do ar." >&2
     exit 1
   fi
+  if ! grep -qE "exec_mode:\s*['\"]fork['\"]" "$ECOSYSTEM_FILE"; then
+    echo "[safe-restart] ABORTADO: exec_mode:'fork' ausente em $ECOSYSTEM_FILE — PM2 assume cluster quando 'instances' está presente sem exec_mode explícito, e SQLite single-writer + WebSocket com clients em memória quebram com múltiplos workers (EADDRINUSE crash loop, incidente 23/10/2026)." >&2
+    exit 1
+  fi
 fi
 
 echo "[safe-restart] Matando ghost 'pm2 restart dt-manager'..."
@@ -37,6 +41,16 @@ sleep 1
 echo "[safe-restart] Iniciando via ecosystem.config.js..."
 cd /opt/dt-manager
 pm2 start ecosystem.config.js
+
+sleep 2
+
+echo "[safe-restart] Verificando exec_mode real..."
+REAL_MODE=$(pm2 jlist | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); const p=d.find(x=>x.name==='dt-manager'); console.log(p&&p.pm2_env&&p.pm2_env.exec_mode||'none')")
+if [ "$REAL_MODE" != "fork_mode" ]; then
+  echo "[safe-restart] ABORTADO: dt-manager subiu em '$REAL_MODE', esperado 'fork_mode'. Nao salvando este estado no pm2 save — investigar antes de tentar de novo." >&2
+  exit 1
+fi
+echo "[safe-restart] exec_mode confirmado: fork_mode"
 
 pm2 save
 

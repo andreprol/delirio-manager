@@ -4,6 +4,7 @@ module.exports = {
     script:       './server.js',
     cwd:          '/opt/dt-manager',
     instances:    1,
+    exec_mode:    'fork',
     autorestart:  true,
     watch:        false,
     max_memory_restart: '256M',
