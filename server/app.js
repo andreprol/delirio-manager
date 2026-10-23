@@ -21,6 +21,9 @@ const drRoutes        = require('./routes/dr');
 const relatorioRoutes = require('./routes/relatorio');
 const zamakRoutes     = require('./routes/zamak');
 const adminRoutes     = require('./routes/admin');
+const watchlistRoutes = require('./routes/watchlist');
+const activityRoutes  = require('./routes/activity');
+const liveRoutes      = require('./routes/live');
 
 const logger  = require('./services/logger');
 const VERSION = '1.0.0';
@@ -134,6 +137,12 @@ app.use('/api/dr',        drRoutes);
 app.use('/api/relatorio', relatorioRoutes);
 app.use('/api/zamak',     zamakRoutes);
 app.use('/api/admin',     adminRoutes);
+
+if (process.env.FEATURE_LIVE_ACCESS === 'true') {
+  app.use('/api/watchlist', watchlistRoutes);
+  app.use('/api',           activityRoutes);
+  app.use('/api/live',      liveRoutes);
+}
 
 // ── Arquivos estáticos ────────────────────────────────────────────────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');
