@@ -15,14 +15,37 @@ function runPurgeOnce() {
   } catch (err) {
     // Nunca derruba o processo por isso — um erro de purge não pode virar
     // outage do servidor inteiro (mesma lição do incidente WAL 275GB).
-    logger.error('[ActivityRetention] erro ao purgar activity_log', { message: err.message });
+    logger.error('[ActivityRetention] erro ao purgar activity_log', { error: err.message });
     return 0;
   }
 }
 
-function scheduleDailyPurge() {
-  runPurgeOnce();
-  setInterval(runPurgeOnce, 24 * 60 * 60 * 1000);
+let timer = null;
+
+// Mesmo padrão de scheduleDailySync (services/zamak.js): agenda pra hora fixa
+// de baixo tráfego em vez de setInterval a partir do boot — um deploy de dia
+// faria o purge recorrer todo dia em horário de pico, igual outros serviços
+// deste projeto já corrigiram antes.
+function scheduleNext() {
+  const now  = new Date();
+  const next = new Date();
+  next.setUTCHours(4, 0, 0, 0); // 01:00 BRT = 04:00 UTC
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+  const delayMs = next - now;
+  timer = setTimeout(() => {
+    runPurgeOnce();
+    scheduleNext();
+  }, delayMs);
 }
 
-module.exports = { runPurgeOnce, scheduleDailyPurge, RETENTION_DAYS };
+function scheduleDailyPurge() {
+  runPurgeOnce(); // imediato no boot, não espera até a próxima janela
+  scheduleNext();
+}
+
+function stop() {
+  if (timer) clearTimeout(timer);
+  timer = null;
+}
+
+module.exports = { runPurgeOnce, scheduleDailyPurge, stop, RETENTION_DAYS };

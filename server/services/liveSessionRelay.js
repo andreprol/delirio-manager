@@ -82,7 +82,7 @@ function detachDashboardSocket(sessionId) {
 function safeSend(ws, data) {
   if (ws && ws.readyState === ws.OPEN) {
     ws.send(data, (err) => {
-      if (err) logger.error('[liveSessionRelay] erro ao enviar', { message: err.message });
+      if (err) logger.error('[liveSessionRelay] erro ao enviar', { error: err.message });
     });
   }
 }

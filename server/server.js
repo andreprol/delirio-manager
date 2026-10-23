@@ -243,5 +243,6 @@ process.on('SIGTERM', () => {
   alertEngine.stop();
   insightEngine.stop();
   rhHealthMonitor.stop();
+  activityRetention.stop();
   server.close(() => process.exit(0));
 });
