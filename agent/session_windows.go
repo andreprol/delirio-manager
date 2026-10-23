@@ -125,15 +125,20 @@ const tokenAccessForCreateProcessAsUser = windows.TOKEN_QUERY |
 // O processo herda o token do próprio usuário (não SYSTEM, sem elevação) e
 // aparece normalmente no Gerenciador de Tarefas.
 //
+// Devolve também o handle do processo (aberto, não fechado aqui) — o
+// chamador (sessionWatchLoop) é quem decide quando fechar, porque precisa
+// dele vivo pra checar liveness depois via isCompanionAlive (ver comentário
+// lá: reabrir por PID seria vulnerável a reuso de PID pelo Windows).
+//
 // Não testável em CI — exige contexto SYSTEM real com SeTcbPrivilege e uma
 // sessão desktop real. Verificar manualmente numa VM/PC de teste: logar,
 // confirmar que o serviço lança o companion e que delirio-agent.exe aparece
 // 2x no Gerenciador de Tarefas (serviço + companion), o companion sem
 // privilégio elevado.
-func launchCompanion(sessionID uint32) (companionPID uint32, err error) {
+func launchCompanion(sessionID uint32) (companionPID uint32, companionHandle windows.Handle, err error) {
 	var userToken windows.Token
 	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
-		return 0, fmt.Errorf("WTSQueryUserToken falhou pra sessão %d: %w", sessionID, err)
+		return 0, 0, fmt.Errorf("WTSQueryUserToken falhou pra sessão %d: %w", sessionID, err)
 	}
 	defer userToken.Close() //nolint:errcheck
 
@@ -142,49 +147,65 @@ func launchCompanion(sessionID uint32) (companionPID uint32, err error) {
 		userToken, tokenAccessForCreateProcessAsUser, nil,
 		windows.SecurityImpersonation, windows.TokenPrimary, &primaryToken,
 	); err != nil {
-		return 0, fmt.Errorf("DuplicateTokenEx falhou: %w", err)
+		return 0, 0, fmt.Errorf("DuplicateTokenEx falhou: %w", err)
 	}
 	defer primaryToken.Close() //nolint:errcheck
 
+	// Bloco de ambiente do USUÁRIO da sessão (não do SYSTEM que lança o
+	// processo) — sem isso o companion herdaria %APPDATA%/%USERPROFILE% do
+	// contexto errado. Documentado pela Microsoft como o jeito correto de
+	// popular lpEnvironment em CreateProcessAsUser.
+	var envBlock *uint16
+	if err := windows.CreateEnvironmentBlock(&envBlock, primaryToken, false); err != nil {
+		return 0, 0, fmt.Errorf("CreateEnvironmentBlock falhou: %w", err)
+	}
+	defer windows.DestroyEnvironmentBlock(envBlock) //nolint:errcheck
+
 	exePath, err := os.Executable()
 	if err != nil {
-		return 0, fmt.Errorf("os.Executable: %w", err)
+		return 0, 0, fmt.Errorf("os.Executable: %w", err)
 	}
 	cmdLine := fmt.Sprintf(`"%s" --companion`, exePath)
 	cmdLineUTF16, err := windows.UTF16PtrFromString(cmdLine)
 	if err != nil {
-		return 0, fmt.Errorf("UTF16PtrFromString(cmdLine): %w", err)
+		return 0, 0, fmt.Errorf("UTF16PtrFromString(cmdLine): %w", err)
 	}
 	desktopUTF16, err := windows.UTF16PtrFromString(`winsta0\default`)
 	if err != nil {
-		return 0, fmt.Errorf("UTF16PtrFromString(desktop): %w", err)
+		return 0, 0, fmt.Errorf("UTF16PtrFromString(desktop): %w", err)
 	}
 
 	si := windows.StartupInfo{Desktop: desktopUTF16}
 	si.Cb = uint32(unsafe.Sizeof(si))
 	var pi windows.ProcessInformation
 
+	const createUnicodeEnvironment = windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_NO_WINDOW
 	if err := windows.CreateProcessAsUser(
 		primaryToken, nil, cmdLineUTF16, nil, nil, false,
-		windows.CREATE_NO_WINDOW, nil, nil, &si, &pi,
+		createUnicodeEnvironment, envBlock, nil, &si, &pi,
 	); err != nil {
-		return 0, fmt.Errorf("CreateProcessAsUser falhou: %w", err)
+		return 0, 0, fmt.Errorf("CreateProcessAsUser falhou: %w", err)
 	}
-	defer windows.CloseHandle(pi.Process) //nolint:errcheck
-	defer windows.CloseHandle(pi.Thread)  //nolint:errcheck
+	defer windows.CloseHandle(pi.Thread) //nolint:errcheck
 
-	return pi.ProcessId, nil
+	return pi.ProcessId, pi.Process, nil
 }
 
-// processIsAlive confere se o processo com o pid dado ainda existe — usado
-// pelo watcher pra decidir se o companion precisa ser relançado. Basta
-// SYNCHRONIZE: só precisamos saber se o handle do processo ainda é válido,
-// não esperar por ele terminar.
-func processIsAlive(pid uint32) bool {
-	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
-	if err != nil {
+const stillActive = 259 // STILL_ACTIVE — valor de exit code enquanto o processo roda
+
+// isCompanionAlive confere se o processo do handle dado ainda está rodando.
+// Recebe o handle aberto por launchCompanion (mantido vivo pelo chamador)
+// em vez de reabrir por PID: reabrir por PID é vulnerável a reuso de PID
+// pelo Windows (o companion morre, outro processo não relacionado nasce com
+// o mesmo PID, e processIsAlive(pid) voltaria "vivo" falso, quebrando a
+// auto-cura do watcher silenciosamente).
+func isCompanionAlive(handle windows.Handle) bool {
+	if handle == 0 {
 		return false
 	}
-	defer windows.CloseHandle(h) //nolint:errcheck
-	return true
+	var exitCode uint32
+	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
+		return false
+	}
+	return exitCode == stillActive
 }

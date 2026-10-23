@@ -8,15 +8,17 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
-)
 
+	"golang.org/x/sys/windows"
+)
 
 // Agent e o core do agente: gerencia heartbeat e polling de comandos.
 type Agent struct {
 	cfg         *Config
-	client      *http.Client   // cliente geral (5 min) — comandos longos, NF-Ce
-	hbClient    *http.Client   // cliente exclusivo do heartbeat (10 s) — falha rápido sob pressão de memória
+	client      *http.Client // cliente geral (5 min) — comandos longos, NF-Ce
+	hbClient    *http.Client // cliente exclusivo do heartbeat (10 s) — falha rápido sob pressão de memória
 	stopCh      chan struct{}
 	wolEnabled  *bool  // cached após primeira verificação
 	motherboard string // cached após primeira verificação
@@ -30,10 +32,16 @@ type Agent struct {
 	updating bool
 
 	// acesso remoto (FEATURE_LIVE_ACCESS) — estado do companion lançado por
-	// sessionWatchLoop na sessão ativa. Só esta goroutine escreve nestes
-	// campos (sem concorrência), então sem mutex dedicado.
-	companionPID     uint32
-	companionSession uint32
+	// sessionWatchLoop na sessão ativa. Hoje só esta goroutine lê/escreve
+	// estes campos, mas atomic (em vez de uint32/windows.Handle crus) evita
+	// que o invariante "sem mutex" se torne um data race silencioso no dia
+	// em que outra goroutine (ex: heartbeat reportando status do companion)
+	// passar a lê-los.
+	companionPID              atomic.Uint32
+	companionSession          atomic.Uint32
+	companionHandle           atomic.Uintptr // windows.Handle do processo companion vivo (0 = nenhum)
+	consecutiveLaunchFailures int
+	nextLaunchAttemptAt       time.Time // zero = sem backoff pendente
 }
 
 // HeartbeatPayload e o JSON enviado ao servidor a cada ciclo.
@@ -137,9 +145,9 @@ func (a *Agent) start() error {
 		go a.sessionWatchLoop()
 	}
 
-	safeGo("lhm",        func() { ensureLHM(a.cfg.ServerURL) })
+	safeGo("lhm", func() { ensureLHM(a.cfg.ServerURL) })
 	safeGo("bootEvents", a.collectAndSendBootEvents)
-	safeGo("wolStatus",  a.collectWolStatus)
+	safeGo("wolStatus", a.collectWolStatus)
 
 	return nil
 }
@@ -216,6 +224,7 @@ func (a *Agent) heartbeatLoop() {
 }
 
 const sessionWatchIntervalSecs = 15
+const maxLaunchBackoff = 5 * time.Minute
 
 // sessionWatchLoop roda só no serviço (Session 0): detecta a sessão de
 // usuário ativa e garante que o companion está rodando nela. Relança em
@@ -228,32 +237,73 @@ func (a *Agent) sessionWatchLoop() {
 		case <-a.stopCh:
 			return
 		case <-ticker.C:
-			sessions, err := enumerateSessions()
-			if err != nil {
-				logWarn(fmt.Sprintf("sessionWatch: erro ao enumerar sessões: %v", err))
-				continue
-			}
-			activeID, ok := pickActiveSession(sessions)
-			if !ok {
-				continue // sem usuário logado agora (tela de login) — nada a fazer
-			}
-
-			sessionChanged := activeID != a.companionSession
-			alive := a.companionPID != 0 && processIsAlive(a.companionPID)
-			if !shouldRelaunchCompanion(alive, sessionChanged) {
-				continue
-			}
-
-			pid, err := launchCompanion(activeID)
-			if err != nil {
-				logError(fmt.Sprintf("sessionWatch: falha ao lançar companion: %v", err))
-				continue
-			}
-			a.companionPID = pid
-			a.companionSession = activeID
-			logInfo(fmt.Sprintf("Companion lançado (PID %d, sessão %d).", pid, activeID))
+			// Panic num syscall Win32 aqui (ex: unsafe.Slice em enumerateSessions)
+			// não pode matar o processo do serviço inteiro — mesmo padrão já
+			// usado por heartbeatLoop/hourlySnapshotLoop/serviceMonitorLoop.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logError(fmt.Sprintf("sessionWatch panic: %v", r))
+					}
+				}()
+				a.sessionWatchTick()
+			}()
 		}
 	}
+}
+
+func (a *Agent) sessionWatchTick() {
+	sessions, err := enumerateSessions()
+	if err != nil {
+		logWarn(fmt.Sprintf("sessionWatch: erro ao enumerar sessões: %v", err))
+		return
+	}
+	activeID, ok := pickActiveSession(sessions)
+	if !ok {
+		return // sem usuário logado agora (tela de login) — nada a fazer
+	}
+
+	sessionChanged := activeID != a.companionSession.Load()
+	alive := isCompanionAlive(windows.Handle(a.companionHandle.Load()))
+	if !shouldRelaunchCompanion(alive, sessionChanged) {
+		return
+	}
+
+	// Backoff: se o companion não para de falhar ao lançar (ex: exe
+	// corrompido), não tentar de novo a cada 15s pra sempre — isso seria
+	// churn de processo indefinido em 224 máquinas. Dobra o intervalo até
+	// um teto de 5min a cada falha consecutiva; reseta na primeira lançada
+	// com sucesso.
+	if !a.nextLaunchAttemptAt.IsZero() && time.Now().Before(a.nextLaunchAttemptAt) {
+		return
+	}
+
+	if oldHandle := windows.Handle(a.companionHandle.Swap(0)); oldHandle != 0 {
+		_ = windows.CloseHandle(oldHandle)
+	}
+
+	pid, handle, err := launchCompanion(activeID)
+	if err != nil {
+		a.consecutiveLaunchFailures++
+		backoff := time.Duration(1<<uint(min(a.consecutiveLaunchFailures, 5))) * sessionWatchIntervalSecs * time.Second
+		if backoff > maxLaunchBackoff {
+			backoff = maxLaunchBackoff
+		}
+		a.nextLaunchAttemptAt = time.Now().Add(backoff)
+		logError(fmt.Sprintf("sessionWatch: falha ao lançar companion (tentativa %d, próxima em %s): %v",
+			a.consecutiveLaunchFailures, backoff, err))
+		return
+	}
+
+	if a.consecutiveLaunchFailures > 0 {
+		logInfo(fmt.Sprintf("sessionWatch: lançamento do companion recuperado após %d falha(s) consecutiva(s)", a.consecutiveLaunchFailures))
+	}
+	a.consecutiveLaunchFailures = 0
+	a.nextLaunchAttemptAt = time.Time{}
+	a.companionPID.Store(pid)
+	a.companionSession.Store(activeID)
+	a.companionHandle.Store(uintptr(handle))
+	logInfo(fmt.Sprintf("Companion lançado (PID %d, sessão %d).", pid, activeID))
 }
 
 func (a *Agent) commandLoop() {
@@ -586,5 +636,8 @@ func (a *Agent) reportOfflineEvent(offlineAt, onlineAt time.Time) {
 
 func (a *Agent) stop() {
 	close(a.stopCh)
+	if h := windows.Handle(a.companionHandle.Swap(0)); h != 0 {
+		_ = windows.CloseHandle(h)
+	}
 	logInfo("Agente parado.")
 }
