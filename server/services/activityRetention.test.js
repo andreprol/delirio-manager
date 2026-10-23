@@ -13,4 +13,14 @@ describe('runPurgeOnce', () => {
     expect(db.purgeActivityLog).toHaveBeenCalledWith(90);
     expect(removed).toBe(3);
   });
+
+  it('erro no purge não lança — retorna 0 e segue', () => {
+    const db = require('../db');
+    db.purgeActivityLog.mockImplementationOnce(() => {
+      throw new Error('disco cheio');
+    });
+    let removed;
+    expect(() => { removed = runPurgeOnce(); }).not.toThrow();
+    expect(removed).toBe(0);
+  });
 });

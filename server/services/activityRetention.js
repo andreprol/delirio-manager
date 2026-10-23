@@ -6,11 +6,18 @@ const logger = require('./logger');
 const RETENTION_DAYS = 90;
 
 function runPurgeOnce() {
-  const removed = db.purgeActivityLog(RETENTION_DAYS);
-  if (removed > 0) {
-    logger.info(`[ActivityRetention] ${removed} linhas de activity_log removidas (> ${RETENTION_DAYS}d)`);
+  try {
+    const removed = db.purgeActivityLog(RETENTION_DAYS);
+    if (removed > 0) {
+      logger.info(`[ActivityRetention] ${removed} linhas de activity_log removidas (> ${RETENTION_DAYS}d)`);
+    }
+    return removed;
+  } catch (err) {
+    // Nunca derruba o processo por isso — um erro de purge não pode virar
+    // outage do servidor inteiro (mesma lição do incidente WAL 275GB).
+    logger.error('[ActivityRetention] erro ao purgar activity_log', { message: err.message });
+    return 0;
   }
-  return removed;
 }
 
 function scheduleDailyPurge() {
