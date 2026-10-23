@@ -13,13 +13,12 @@ const ncrMonitor         = require('./services/ncrMonitor');
 const serviceStatusEmail = require('./services/serviceStatusEmail');
 const rhHealthMonitor    = require('./services/rhHealthMonitor');
 const { sendAlert }      = require('./services/resendAlert');
+const { initLiveRelay }  = require('./services/liveSessionRelay');
 
 const PORT = process.env.PORT || 3847;
 
 const server = http.createServer(app);
 initWebSocket(server);
-
-const { initLiveRelay } = require('./services/liveSessionRelay');
 initLiveRelay(server);
 
 // Checagem de boot — pega o cenário do incidente de 2026-09-10 no exato momento

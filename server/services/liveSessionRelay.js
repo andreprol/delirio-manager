@@ -2,6 +2,8 @@
 
 const { WebSocketServer } = require('ws');
 const { URL } = require('url');
+const crypto = require('crypto');
+const logger = require('./logger');
 
 // Estado em memória das sessões ao vivo ativas. Não persiste — histórico/auditoria
 // fica em db.js (tabela live_sessions). Ver spec 2026-10-23: Shadow nunca repassa
@@ -20,6 +22,12 @@ function registerSession(sessionId, { machineId, mode, companionToken, dashboard
     throw new Error(
       `liveSessionRelay: sessão ${sessionId} já registrada — chame unregisterSession antes de registrar de novo`
     );
+  }
+  if (typeof companionToken !== 'string' || !companionToken) {
+    throw new Error('liveSessionRelay: companionToken obrigatório e não-vazio');
+  }
+  if (typeof dashboardToken !== 'string' || !dashboardToken) {
+    throw new Error('liveSessionRelay: dashboardToken obrigatório e não-vazio');
   }
   sessions.set(sessionId, {
     machineId, mode, companionToken, dashboardToken,
@@ -74,9 +82,19 @@ function detachDashboardSocket(sessionId) {
 function safeSend(ws, data) {
   if (ws && ws.readyState === ws.OPEN) {
     ws.send(data, (err) => {
-      if (err) console.error('[liveSessionRelay] erro ao enviar:', err.message);
+      if (err) logger.error('[liveSessionRelay] erro ao enviar', { message: err.message });
     });
   }
+}
+
+// Comparação resistente a timing attack — tokens de autenticação não devem ser
+// comparados com !== direto (tempo de execução vaza quantos bytes bateram).
+function safeTokenEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 // origin: 'dashboard' | 'companion'
@@ -136,7 +154,7 @@ function initLiveRelay(server) {
     }
 
     if (role === 'companion') {
-      if (token !== session.companionToken) {
+      if (!safeTokenEqual(token, session.companionToken)) {
         ws.close(4001, 'token inválido');
         return;
       }
@@ -146,7 +164,7 @@ function initLiveRelay(server) {
       // precisa do dashboardToken emitido junto no POST /start (achado 🔴 do
       // code-reviewer da Task 9: sem isso, qualquer um que soubesse o sessionId
       // abria a sessão como se fosse o operador autorizado).
-      if (token !== session.dashboardToken) {
+      if (!safeTokenEqual(token, session.dashboardToken)) {
         ws.close(4001, 'token inválido');
         return;
       }
@@ -168,7 +186,7 @@ function initLiveRelay(server) {
     });
   });
 
-  console.log('[liveSessionRelay] WebSocket server iniciado em /live');
+  logger.info('[liveSessionRelay] WebSocket server iniciado em /live');
   return wss;
 }
 
