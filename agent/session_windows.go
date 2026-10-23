@@ -101,12 +101,16 @@ func shouldRelaunchCompanion(companionAlive bool, sessionChanged bool) bool {
 }
 
 // tokenAccessForCreateProcessAsUser é o conjunto de direitos que o token
-// primário duplicado precisa ter pra CreateProcessAsUser funcionar — os 5
-// listados na própria documentação da API (TOKEN_QUERY, TOKEN_ASSIGN_PRIMARY,
-// TOKEN_DUPLICATE, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_SESSIONID). Faltar
-// TOKEN_ASSIGN_PRIMARY em particular é a causa clássica de
-// CreateProcessAsUserW falhar com ERROR_PRIVILEGE_NOT_HELD/ACCESS_DENIED —
-// por isso cada direito é nomeado explicitamente em vez de usar
+// primário duplicado precisa ter pra CreateProcessAsUser funcionar.
+// TOKEN_QUERY, TOKEN_DUPLICATE e TOKEN_ASSIGN_PRIMARY são os 3 documentados
+// pela Microsoft como exigidos no parâmetro hToken de CreateProcessAsUser —
+// faltar TOKEN_ASSIGN_PRIMARY em particular é a causa clássica de
+// CreateProcessAsUserW falhar com ERROR_PRIVILEGE_NOT_HELD/ACCESS_DENIED.
+// TOKEN_ADJUST_DEFAULT e TOKEN_ADJUST_SESSIONID são superset defensivo (não
+// estritamente necessários pra este fluxo, que não chama SetTokenInformation
+// pra ajustar sessão/DACL manualmente — WTSQueryUserToken já amarra o token
+// à sessão certa), mantidos por serem inofensivos e comuns em exemplos
+// equivalentes. Cada direito é nomeado explicitamente em vez de usar
 // MAXIMUM_ALLOWED (que dependeria do ACL do token de origem).
 const tokenAccessForCreateProcessAsUser = windows.TOKEN_QUERY |
 	windows.TOKEN_ASSIGN_PRIMARY |
