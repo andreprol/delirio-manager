@@ -10,6 +10,10 @@ jest.mock('../db', () => ({
   deleteWatchlistKeyword:    jest.fn(),
 }));
 
+jest.mock('../services/websocket', () => ({
+  broadcast: jest.fn(),
+}));
+
 function makeApp() {
   const router = require('./watchlist');
   const app = express();
@@ -61,6 +65,15 @@ describe('PUT /api/watchlist/:id', () => {
     const res = await request(app).put('/api/watchlist/1').send({ active: false });
     expect(res.status).toBe(200);
     expect(db.setWatchlistKeywordActive).toHaveBeenCalledWith('1', false);
+  });
+
+  it('400 e não atualiza quando active não é boolean', async () => {
+    const db = require('../db');
+    db.setWatchlistKeywordActive.mockClear();
+    const app = makeApp();
+    const res = await request(app).put('/api/watchlist/1').send({ active: 'yes' });
+    expect(res.status).toBe(400);
+    expect(db.setWatchlistKeywordActive).not.toHaveBeenCalled();
   });
 });
 
