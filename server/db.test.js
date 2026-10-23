@@ -55,4 +55,20 @@ describe('watchlist_keywords CRUD', () => {
     db.deleteWatchlistKeyword(id);
     expect(db.getWatchlistKeywords()).toHaveLength(0);
   });
+
+  it('com duas keywords, lista na ordem DESC e a desativada sai do filtro de ativas', () => {
+    const db = require('./db');
+    const antigaId = db.createWatchlistKeyword('primeira');
+    const novaId = db.createWatchlistKeyword('segunda');
+
+    db.setWatchlistKeywordActive(antigaId, false);
+
+    const all = db.getWatchlistKeywords();
+    expect(all.map(k => k.id)).toEqual([novaId, antigaId]);
+    expect(all.map(k => k.active)).toEqual([1, 0]);
+
+    const active = db.getActiveWatchlistKeywords();
+    expect(active).toHaveLength(1);
+    expect(active[0]).toMatchObject({ id: novaId, keyword: 'segunda', active: 1 });
+  });
 });

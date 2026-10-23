@@ -850,6 +850,18 @@ function deleteGroup(name) {
   getDb().prepare('DELETE FROM groups WHERE name=?').run(name);
 }
 
+function renameGroup(oldName, newName) {
+  getDb().prepare('UPDATE machines SET location=? WHERE location=?').run(newName, oldName);
+  getDb().prepare('UPDATE groups SET name=? WHERE name=?').run(newName, oldName);
+}
+
+function reorderGroups(names) {
+  const stmt = getDb().prepare('UPDATE groups SET sort_order=? WHERE name=?');
+  names.forEach((name, i) => stmt.run(i, name));
+}
+
+// ── Watchlist ─────────────────────────────────────────────────────────────────
+
 function createWatchlistKeyword(keyword) {
   const now = new Date().toISOString();
   const info = getDb().prepare(
@@ -873,16 +885,6 @@ function setWatchlistKeywordActive(id, active) {
 
 function deleteWatchlistKeyword(id) {
   getDb().prepare('DELETE FROM watchlist_keywords WHERE id = ?').run(id);
-}
-
-function renameGroup(oldName, newName) {
-  getDb().prepare('UPDATE machines SET location=? WHERE location=?').run(newName, oldName);
-  getDb().prepare('UPDATE groups SET name=? WHERE name=?').run(newName, oldName);
-}
-
-function reorderGroups(names) {
-  const stmt = getDb().prepare('UPDATE groups SET sort_order=? WHERE name=?');
-  names.forEach((name, i) => stmt.run(i, name));
 }
 
 // ── Win Events ────────────────────────────────────────────────────────────────
