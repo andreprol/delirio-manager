@@ -26,4 +26,18 @@ describe('findMatch', () => {
     const result = findMatch('tela qualquer', [{ id: 3, keyword: '' }]);
     expect(result).toBeNull();
   });
+
+  it('casa mesmo com espaço nas bordas da keyword', () => {
+    const result = findMatch('Vaga de Emprego - Google Chrome', [{ id: 4, keyword: '  vaga de emprego  ' }]);
+    expect(result).toEqual({ id: 4, keyword: '  vaga de emprego  ' });
+  });
+
+  it('retorna a primeira keyword que bater quando mais de uma casa', () => {
+    const result = findMatch('Vaga de Emprego - LinkedIn - Google Chrome', keywords);
+    expect(result.id).toBe(1);
+  });
+
+  it('retorna null quando text não é string', () => {
+    expect(findMatch(123, keywords)).toBeNull();
+  });
 });
