@@ -71,6 +71,16 @@ func enumerateSessions() ([]sessionInfo, error) {
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(pSessionInfo))) //nolint:errcheck
 
+	// Teto de sanidade: WTSEnumerateSessionsW nunca devolve milhares de
+	// sessões numa máquina real (cada uma é um login RDP/console ativo).
+	// Sem este check, um count implausível (corrupção de ABI, bug de driver)
+	// faria unsafe.Slice/make tentar alocar/iterar um array gigante e
+	// panicar, derrubando o processo companion inteiro na máquina.
+	const maxPlausibleSessions = 4096
+	if count > maxPlausibleSessions {
+		return nil, fmt.Errorf("WTSEnumerateSessionsW devolveu count implausível: %d", count)
+	}
+
 	rawSlice := unsafe.Slice(pSessionInfo, count)
 	sessions := make([]sessionInfo, 0, count)
 	for _, raw := range rawSlice {
