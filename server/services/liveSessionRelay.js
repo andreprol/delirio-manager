@@ -1,5 +1,8 @@
 'use strict';
 
+const { WebSocketServer } = require('ws');
+const { URL } = require('url');
+
 // Estado em memória das sessões ao vivo ativas. Não persiste — histórico/auditoria
 // fica em db.js (tabela live_sessions). Ver spec 2026-10-23: Shadow nunca repassa
 // input, mesmo que o dashboard mande por engano/bug — bloqueio aqui, não só na UI.
@@ -33,14 +36,35 @@ function unregisterSession(sessionId) {
   sessions.delete(sessionId);
 }
 
+// Fecha o socket anterior (se houver e for diferente do novo) antes de
+// substituir — uma reconexão não deve deixar a conexão antiga pra trás ainda
+// viva, recebendo/mandando mensagens em paralelo com a nova.
+function closeStale(ws) {
+  if (ws && typeof ws.close === 'function') ws.close(4003, 'substituído por nova conexão');
+}
+
 function attachCompanionSocket(sessionId, ws) {
   const session = sessions.get(sessionId);
-  if (session) session.companionWs = ws;
+  if (!session) return;
+  if (session.companionWs && session.companionWs !== ws) closeStale(session.companionWs);
+  session.companionWs = ws;
 }
 
 function attachDashboardSocket(sessionId, ws) {
   const session = sessions.get(sessionId);
-  if (session) session.dashboardWs = ws;
+  if (!session) return;
+  if (session.dashboardWs && session.dashboardWs !== ws) closeStale(session.dashboardWs);
+  session.dashboardWs = ws;
+}
+
+function detachCompanionSocket(sessionId) {
+  const session = sessions.get(sessionId);
+  if (session) session.companionWs = null;
+}
+
+function detachDashboardSocket(sessionId) {
+  const session = sessions.get(sessionId);
+  if (session) session.dashboardWs = null;
 }
 
 // Nunca deixa um erro de socket (ex: conexão já fechada) escapar e derrubar o
@@ -76,7 +100,73 @@ function routeMessage(sessionId, origin, data) {
   safeSend(session.companionWs, data);
 }
 
+// true se `ws` ainda é o socket anexado pro seu papel nesta sessão — usado
+// tanto no 'message' (não rotear socket substituído) quanto no 'close' (não
+// desanexar a conexão atual por engano de um close tardio da antiga).
+function isCurrentSocket(sessionId, role, ws) {
+  const current = getSession(sessionId);
+  if (!current) return false;
+  if (role === 'companion') return current.companionWs === ws;
+  if (role === 'dashboard') return current.dashboardWs === ws;
+  return false;
+}
+
+// WebSocketServer real em /live — autentica o companion por token, recusa
+// sessão inexistente/role inválido e liga cada socket ao relay em memória
+// acima. Nunca reatribui companionWs/dashboardWs direto: sempre pelos setters
+// attach*/detach* (mesmo padrão em toda esta função, incluindo no close).
+function initLiveRelay(server) {
+  const wss = new WebSocketServer({ server, path: '/live' });
+
+  wss.on('connection', (ws, req) => {
+    // Primeira linha, antes de qualquer close() de rejeição — mesmo padrão de
+    // services/websocket.js: nunca deixa 'error' sem handler derrubar o
+    // processo, mesmo num socket recusado logo em seguida (token/role/sessão).
+    ws.on('error', () => {});
+
+    const url = new URL(req.url, 'http://localhost');
+    const sessionId = url.searchParams.get('sessionId');
+    const role       = url.searchParams.get('role');
+    const token      = url.searchParams.get('token');
+
+    const session = getSession(sessionId);
+    if (!session) {
+      ws.close(4000, 'sessão inexistente');
+      return;
+    }
+
+    if (role === 'companion') {
+      if (token !== session.companionToken) {
+        ws.close(4001, 'token inválido');
+        return;
+      }
+      attachCompanionSocket(sessionId, ws);
+    } else if (role === 'dashboard') {
+      attachDashboardSocket(sessionId, ws);
+    } else {
+      ws.close(4002, 'role inválido');
+      return;
+    }
+
+    ws.on('message', (data) => {
+      if (!isCurrentSocket(sessionId, role, ws)) return;
+      routeMessage(sessionId, role, data);
+    });
+
+    ws.on('close', () => {
+      if (!isCurrentSocket(sessionId, role, ws)) return;
+      if (role === 'companion') detachCompanionSocket(sessionId);
+      if (role === 'dashboard') detachDashboardSocket(sessionId);
+    });
+  });
+
+  console.log('[liveSessionRelay] WebSocket server iniciado em /live');
+  return wss;
+}
+
 module.exports = {
   registerSession, getSession, unregisterSession, routeMessage,
   attachCompanionSocket, attachDashboardSocket,
+  detachCompanionSocket, detachDashboardSocket,
+  initLiveRelay,
 };

@@ -93,3 +93,68 @@ describe('liveSessionRelay', () => {
     expect(getSession('s1').dashboardWs).toBe(dashboardWs);
   });
 });
+
+describe('initLiveRelay — conexão real', () => {
+  const http = require('http');
+  const WebSocket = require('ws');
+  const { registerSession, initLiveRelay, unregisterSession, getSession } = require('./liveSessionRelay');
+
+  let server;
+  let port;
+
+  beforeAll((done) => {
+    server = http.createServer();
+    initLiveRelay(server);
+    server.listen(0, () => { port = server.address().port; done(); });
+  });
+
+  afterAll((done) => { server.close(done); });
+  afterEach(() => unregisterSession('s-real'));
+
+  it('companion autenticado consegue conectar e dashboard recebe o frame', (done) => {
+    registerSession('s-real', { machineId: 'm1', mode: 'shadow', companionToken: 'tok-123' });
+
+    const dashboardWs = new WebSocket(`ws://localhost:${port}/live?sessionId=s-real&role=dashboard`);
+    let companionWs;
+
+    dashboardWs.on('message', (data) => {
+      expect(data.toString()).toBe('frame-de-teste');
+      dashboardWs.close();
+      companionWs.close();
+      done();
+    });
+
+    dashboardWs.on('open', () => {
+      companionWs = new WebSocket(
+        `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
+      );
+      companionWs.on('open', () => companionWs.send('frame-de-teste'));
+    });
+  });
+
+  it('companion com token errado é desconectado', (done) => {
+    registerSession('s-real', { machineId: 'm1', mode: 'shadow', companionToken: 'tok-correto' });
+    const ws = new WebSocket(`ws://localhost:${port}/live?sessionId=s-real&role=companion&token=errado`);
+    ws.on('close', (code) => {
+      expect(code).toBe(4001);
+      done();
+    });
+  });
+
+  it('role inválido é desconectado', (done) => {
+    registerSession('s-real', { machineId: 'm1', mode: 'shadow', companionToken: 'tok-123' });
+    const ws = new WebSocket(`ws://localhost:${port}/live?sessionId=s-real&role=garbage`);
+    ws.on('close', (code) => {
+      expect(code).toBe(4002);
+      done();
+    });
+  });
+
+  it('sessão inexistente é recusada', (done) => {
+    const ws = new WebSocket(`ws://localhost:${port}/live?sessionId=nao-existe&role=dashboard`);
+    ws.on('close', (code) => {
+      expect(code).toBe(4000);
+      done();
+    });
+  });
+});

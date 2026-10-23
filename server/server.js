@@ -19,6 +19,9 @@ const PORT = process.env.PORT || 3847;
 const server = http.createServer(app);
 initWebSocket(server);
 
+const { initLiveRelay } = require('./services/liveSessionRelay');
+initLiveRelay(server);
+
 // Checagem de boot — pega o cenário do incidente de 2026-09-10 no exato momento
 // em que um deploy/restart apaga a env var, em vez de esperar o próximo tick do monitor.
 if (!process.env.CLOCK_PROXY_TOKEN) {
