@@ -14,6 +14,7 @@ const serviceStatusEmail = require('./services/serviceStatusEmail');
 const rhHealthMonitor    = require('./services/rhHealthMonitor');
 const { sendAlert }      = require('./services/resendAlert');
 const { initLiveRelay }  = require('./services/liveSessionRelay');
+const activityRetention  = require('./services/activityRetention');
 
 const PORT = process.env.PORT || 3847;
 
@@ -44,6 +45,9 @@ server.listen(PORT, () => {
   insightEngine.start();
   zamakService.scheduleDailySync();
   _scheduleWalCheckpoint();
+  if (process.env.FEATURE_LIVE_ACCESS === 'true') {
+    activityRetention.scheduleDailyPurge();
+  }
   metricsEmail.scheduleDailyMetricsEmail();
   if (process.env.NCR_MONITOR_ENABLED === 'false') {
     logger.info('NCR monitor desabilitado via NCR_MONITOR_ENABLED=false');
