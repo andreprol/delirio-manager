@@ -850,6 +850,31 @@ function deleteGroup(name) {
   getDb().prepare('DELETE FROM groups WHERE name=?').run(name);
 }
 
+function createWatchlistKeyword(keyword) {
+  const now = new Date().toISOString();
+  const info = getDb().prepare(
+    'INSERT INTO watchlist_keywords (keyword, active, created_at) VALUES (?, 1, ?)'
+  ).run(keyword, now);
+  return info.lastInsertRowid;
+}
+
+function getWatchlistKeywords() {
+  return getDb().prepare('SELECT * FROM watchlist_keywords ORDER BY id DESC').all();
+}
+
+function getActiveWatchlistKeywords() {
+  return getDb().prepare('SELECT * FROM watchlist_keywords WHERE active = 1').all();
+}
+
+function setWatchlistKeywordActive(id, active) {
+  getDb().prepare('UPDATE watchlist_keywords SET active = ? WHERE id = ?')
+    .run(active ? 1 : 0, id);
+}
+
+function deleteWatchlistKeyword(id) {
+  getDb().prepare('DELETE FROM watchlist_keywords WHERE id = ?').run(id);
+}
+
 function renameGroup(oldName, newName) {
   getDb().prepare('UPDATE machines SET location=? WHERE location=?').run(newName, oldName);
   getDb().prepare('UPDATE groups SET name=? WHERE name=?').run(newName, oldName);
@@ -1905,4 +1930,7 @@ module.exports = {
   ncrGetAckTimedOut,
   // service status (NCR BOH)
   upsertServiceStatus, getServiceStatusBOH,
+  // acesso remoto — watchlist
+  createWatchlistKeyword, getWatchlistKeywords, getActiveWatchlistKeywords,
+  setWatchlistKeywordActive, deleteWatchlistKeyword,
 };

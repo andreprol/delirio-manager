@@ -26,3 +26,33 @@ describe('migração de schema — acesso remoto', () => {
     expect(tables).toEqual(['activity_log', 'live_sessions', 'watchlist_keywords', 'watchlist_matches']);
   });
 });
+
+describe('watchlist_keywords CRUD', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    process.env.DB_PATH = ':memory:';
+  });
+
+  afterEach(() => {
+    delete process.env.DB_PATH;
+  });
+
+  it('cria, lista, desativa e deleta uma keyword', () => {
+    const db = require('./db');
+    const id = db.createWatchlistKeyword('vaga de emprego');
+
+    let all = db.getWatchlistKeywords();
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ id, keyword: 'vaga de emprego', active: 1 });
+
+    db.setWatchlistKeywordActive(id, false);
+    all = db.getWatchlistKeywords();
+    expect(all[0].active).toBe(0);
+
+    const active = db.getActiveWatchlistKeywords();
+    expect(active).toHaveLength(0);
+
+    db.deleteWatchlistKeyword(id);
+    expect(db.getWatchlistKeywords()).toHaveLength(0);
+  });
+});
