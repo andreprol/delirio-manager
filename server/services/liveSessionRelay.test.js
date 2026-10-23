@@ -2,6 +2,7 @@
 
 const {
   registerSession, getSession, unregisterSession, routeMessage,
+  attachCompanionSocket, attachDashboardSocket,
 } = require('./liveSessionRelay');
 
 function fakeSocket() {
@@ -60,5 +61,35 @@ describe('liveSessionRelay', () => {
 
   it('routeMessage em sessão inexistente não lança erro', () => {
     expect(() => routeMessage('nao-existe', 'dashboard', 'x')).not.toThrow();
+  });
+
+  it('mode ausente/inválido bloqueia input do dashboard, não só "shadow" exato', () => {
+    registerSession('s1', { machineId: 'm1', mode: undefined, companionToken: 'tok-abc' });
+    const companionWs = fakeSocket();
+    attachCompanionSocket('s1', companionWs);
+
+    routeMessage('s1', 'dashboard', 'x');
+
+    expect(companionWs._sent).toHaveLength(0);
+  });
+
+  it('registrar sessionId já existente lança erro, não sobrescreve em silêncio', () => {
+    registerSession('s1', { machineId: 'm1', mode: 'normal', companionToken: 'tok-abc' });
+    expect(() =>
+      registerSession('s1', { machineId: 'm2', mode: 'shadow', companionToken: 'tok-outro' })
+    ).toThrow();
+    expect(getSession('s1').machineId).toBe('m1');
+  });
+
+  it('attachCompanionSocket/attachDashboardSocket anexam o socket na sessão', () => {
+    registerSession('s1', { machineId: 'm1', mode: 'normal', companionToken: 'tok-abc' });
+    const companionWs = fakeSocket();
+    const dashboardWs = fakeSocket();
+
+    attachCompanionSocket('s1', companionWs);
+    attachDashboardSocket('s1', dashboardWs);
+
+    expect(getSession('s1').companionWs).toBe(companionWs);
+    expect(getSession('s1').dashboardWs).toBe(dashboardWs);
   });
 });
