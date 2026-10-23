@@ -202,6 +202,47 @@ function migrate(db) {
 
     CREATE INDEX IF NOT EXISTS idx_dr_backups_machine
       ON dr_backups(machine_id, backed_at DESC);
+
+    CREATE TABLE IF NOT EXISTS watchlist_keywords (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      keyword    TEXT NOT NULL,
+      active     INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      machine_id    TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      window_title  TEXT NOT NULL DEFAULT '',
+      process_name  TEXT NOT NULL DEFAULT '',
+      captured_at   TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_activity_log_machine_ts
+      ON activity_log(machine_id, captured_at);
+
+    CREATE TABLE IF NOT EXISTS watchlist_matches (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      activity_log_id   INTEGER NOT NULL REFERENCES activity_log(id) ON DELETE CASCADE,
+      keyword           TEXT NOT NULL,
+      screenshot_blob   TEXT,
+      matched_at        TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_watchlist_matches_log
+      ON watchlist_matches(activity_log_id);
+
+    CREATE TABLE IF NOT EXISTS live_sessions (
+      id         TEXT PRIMARY KEY,
+      machine_id TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      mode       TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      ended_at   TEXT,
+      recorded   INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_live_sessions_machine
+      ON live_sessions(machine_id, started_at);
   `);
 
   // Migrações incrementais — seguras para rodar múltiplas vezes
