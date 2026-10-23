@@ -15,11 +15,18 @@ var (
 	logFile     *os.File // handle explícito para fechar antes de truncar
 	evLog       *eventlog.Log
 	logFilePath string
+
+	// logFileName é sobrescrito pelo companion (ver companion.go) antes de
+	// chamar initLogger() — serviço e companion são processos separados que
+	// rodariam concorrentemente no mesmo diretório; compartilhar agent.log
+	// faria o truncamento de um (trimLogIfNeeded) corromper o handle aberto
+	// do outro.
+	logFileName = "agent.log"
 )
 
 func initLogger() {
 	exe, _ := os.Executable()
-	logFilePath = filepath.Join(filepath.Dir(exe), "agent.log")
+	logFilePath = filepath.Join(filepath.Dir(exe), logFileName)
 
 	f, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {

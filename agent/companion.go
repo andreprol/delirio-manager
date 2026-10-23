@@ -19,7 +19,10 @@ func isCompanionMode(args []string) bool {
 // interativa do usuário (lançado pelo serviço via CreateProcessAsUser),
 // nunca no serviço (Session 0). Lê o mesmo config.json do serviço.
 func runCompanion() error {
-	cfg, err := loadConfig()
+	logFileName = "companion.log"
+	initLogger()
+
+	cfg, err := loadConfigReadOnly()
 	if err != nil {
 		logWarn(fmt.Sprintf("companion: erro ao carregar config: %v — usando padrão.", err))
 	}

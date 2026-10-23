@@ -19,6 +19,24 @@ type Config struct {
 	LastHeartbeatAt string `json:"lastHeartbeatAt"` // RFC3339, empty = first run
 }
 
+// loadConfigReadOnly lê e decodifica config.json sem nenhum efeito colateral
+// de escrita (loadConfig faz migração de UUID, recuperação de backup .tmp,
+// etc. — todos escrevem no arquivo). Usado pelo companion, que é um
+// processo separado do serviço e nunca deve competir com ele escrevendo o
+// mesmo config.json; nesse ponto o serviço já terminou seu próprio boot
+// (é ele quem lança o companion), então a migração já rodou há muito tempo.
+func loadConfigReadOnly() (*Config, error) {
+	cfg := defaultConfig()
+	data, err := os.ReadFile(configPath())
+	if err != nil {
+		return cfg, err
+	}
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
 // configPath retorna o caminho do config.json no mesmo diretorio do .exe
 func configPath() string {
 	exe, err := os.Executable()
