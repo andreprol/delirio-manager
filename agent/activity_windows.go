@@ -92,11 +92,13 @@ func captureForegroundWindow() (windowTitle string, processName string, err erro
 	if ret == 0 {
 		// Timeout (janela travada) ou erro — segue sem título em vez de travar
 		// o loop de report de atividade inteiro por causa de 1 app travado.
+		// lastErr logado (não transformado em err de retorno) pra distinguir
+		// timeout de outra falha do SendMessageTimeoutW em produção.
+		logWarn(fmt.Sprintf("captureForegroundWindow: SendMessageTimeoutW falhou/expirou: %v", lastErr))
 		windowTitle = ""
 	} else {
 		windowTitle = syscall.UTF16ToString(buf)
 	}
-	_ = lastErr // SendMessageTimeoutW: erro real só importa pra diagnóstico manual, não pra decisão de fluxo
 
 	var pid uint32
 	_, _, _ = procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid))) //nolint:errcheck
