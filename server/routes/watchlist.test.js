@@ -36,6 +36,15 @@ describe('POST /api/watchlist', () => {
     expect(res.status).toBe(400);
   });
 
+  it('400 e não cria quando keyword não é string', async () => {
+    const db = require('../db');
+    db.createWatchlistKeyword.mockClear();
+    const app = makeApp();
+    const res = await request(app).post('/api/watchlist').send({ keyword: 123 });
+    expect(res.status).toBe(400);
+    expect(db.createWatchlistKeyword).not.toHaveBeenCalled();
+  });
+
   it('201 e cria a keyword quando válida', async () => {
     const db = require('../db');
     const app = makeApp();

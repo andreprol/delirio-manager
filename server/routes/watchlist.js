@@ -12,7 +12,7 @@ router.get('/', (req, res) => {
 // POST /api/watchlist  { keyword: "vaga de emprego" }
 router.post('/', (req, res) => {
   const { keyword } = req.body;
-  if (!keyword || !keyword.trim()) {
+  if (typeof keyword !== 'string' || !keyword.trim()) {
     return res.status(400).json({ error: 'keyword e obrigatoria' });
   }
   const id = db.createWatchlistKeyword(keyword.trim());
