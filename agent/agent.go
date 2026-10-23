@@ -281,11 +281,20 @@ func (a *Agent) sessionWatchTick() {
 	if oldHandle := windows.Handle(a.companionHandle.Swap(0)); oldHandle != 0 {
 		_ = windows.CloseHandle(oldHandle)
 	}
+	// companionPID zerado junto com o handle: enquanto o handle (fonte de
+	// verdade de liveness) estiver 0, companionPID não pode apontar pra um
+	// PID que não corresponde mais a nenhum handle rastreado — senão os três
+	// campos descrevem companions diferentes se launchCompanion falhar abaixo.
+	a.companionPID.Store(0)
 
 	pid, handle, err := launchCompanion(activeID)
 	if err != nil {
 		a.consecutiveLaunchFailures++
-		backoff := time.Duration(1<<uint(min(a.consecutiveLaunchFailures, 5))) * sessionWatchIntervalSecs * time.Second
+		// Expoente = tentativas já feitas ANTES desta (consecutiveLaunchFailures-1),
+		// não o contador pós-incremento — senão a 1ª falha já pula pra 30s em
+		// vez dos 15s documentados (off-by-one: 15·2^n pra n=0,1,2... falhas
+		// anteriores, não pra n=1,2,3... que conta a falha atual também).
+		backoff := time.Duration(1<<uint(min(a.consecutiveLaunchFailures-1, 5))) * sessionWatchIntervalSecs * time.Second
 		if backoff > maxLaunchBackoff {
 			backoff = maxLaunchBackoff
 		}
