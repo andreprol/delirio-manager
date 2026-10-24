@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.5.28"
+	Version            = "1.6.0" // minor bump: nova capacidade (companion/acesso remoto)
 )
 
 func main() {
@@ -28,11 +28,11 @@ func main() {
 		return
 	}
 
-	install    := flag.Bool("install", false, "Instalar como servico Windows")
-	uninstall  := flag.Bool("uninstall", false, "Desinstalar servico Windows")
-	run        := flag.Bool("run", false, "Executar em modo console (debug)")
-	setServer  := flag.String("server", "", "Definir URL do servidor (ex: https://dt-manager.brazilsouth.cloudapp.azure.com)")
-	version    := flag.Bool("version", false, "Exibir versao")
+	install := flag.Bool("install", false, "Instalar como servico Windows")
+	uninstall := flag.Bool("uninstall", false, "Desinstalar servico Windows")
+	run := flag.Bool("run", false, "Executar em modo console (debug)")
+	setServer := flag.String("server", "", "Definir URL do servidor (ex: https://dt-manager.brazilsouth.cloudapp.azure.com)")
+	version := flag.Bool("version", false, "Exibir versao")
 	flag.Parse()
 
 	if *version {
