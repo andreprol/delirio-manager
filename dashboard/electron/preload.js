@@ -65,5 +65,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('live-session-cleanup-and-close', handler)
   },
   cleanupDone: () => ipcRenderer.send('live-session-cleanup-done'),
+  reportCleanupProgress: () => ipcRenderer.send('live-session-cleanup-progress'),
   convertRecording: (arrayBuffer, metadata) => ipcRenderer.invoke('convert-recording', arrayBuffer, metadata),
 })

@@ -16,6 +16,8 @@ export function LiveSessionWindow() {
   const startedAtRef = useRef(null)
   const sessionRef = useRef(null)
   const recordingSecsRef = useRef(0)
+  const endSessionPromiseRef = useRef(null)
+  const [ending, setEnding] = useState(false)
 
   sessionRef.current = session
   recordingSecsRef.current = recordingSecs
@@ -69,21 +71,37 @@ export function LiveSessionWindow() {
     }
   }, [])
 
-  const endSession = useCallback(async () => {
-    const wasRecording = !!mediaRecorderRef.current
-    await stopRecordingIfActive()
-    if (sessionRef.current?.sessionId) {
-      await api.live.stop(sessionRef.current.sessionId, wasRecording)
+  // endSession pode ser chamado por 2 caminhos concorrentes: o botão
+  // "Encerrar sessão" (handleEndSessionClick) e o X da janela
+  // (onCleanupAndClose, via main.js) — um clique no botão seguido de um
+  // fechamento pelo X antes do primeiro terminar (ou duplo clique no botão)
+  // chamaria api.live.stop 2x pra mesma sessão sem isso. endSessionPromiseRef
+  // guarda a MESMA promise entre chamadas: quem chama primeiro faz o
+  // trabalho de verdade, qualquer chamada concorrente espera essa mesma
+  // promise em vez de disparar um 2º stop (achado 🟠 da revisão
+  // cross-cutting — nunca reseta pra null: uma vez iniciado, este fluxo só
+  // deve rodar 1x na vida desta janela).
+  const endSession = useCallback(() => {
+    if (!endSessionPromiseRef.current) {
+      endSessionPromiseRef.current = (async () => {
+        setEnding(true)
+        const wasRecording = !!mediaRecorderRef.current
+        await stopRecordingIfActive()
+        if (sessionRef.current?.sessionId) {
+          await api.live.stop(sessionRef.current.sessionId, wasRecording)
+        }
+      })()
     }
+    return endSessionPromiseRef.current
   }, [stopRecordingIfActive])
 
   // Clique no botão usa o MESMO fluxo de limpeza do X da janela (endSession
   // + cleanupDone) em vez de chamar window.close() — window.close() faria o
   // main process (ver liveWin.on('close', ...)) mandar outro
-  // 'live-session-cleanup-and-close', rodando endSession() (e portanto
-  // api.live.stop) uma 2ª vez. cleanupDone() direto já deixa o main process
-  // fechar a janela de verdade (__cleanupDone vira true, sem passar pelo
-  // preventDefault).
+  // 'live-session-cleanup-and-close', rodando endSession() de novo (inócuo
+  // agora, já que endSession compartilha a promise — mas redundante).
+  // cleanupDone() direto já deixa o main process fechar a janela de verdade
+  // (__cleanupDone vira true, sem passar pelo preventDefault).
   const handleEndSessionClick = useCallback(async () => {
     await endSession()
     window.electronAPI?.cleanupDone()
@@ -91,7 +109,18 @@ export function LiveSessionWindow() {
 
   useEffect(() => {
     const unsubscribe = window.electronAPI?.onCleanupAndClose(async () => {
-      await endSession()
+      // Heartbeat: avisa o main process (armCleanupSafetyTimer) que o
+      // cleanup está de fato em andamento enquanto durar — sem isso, a
+      // rede de segurança do main.js forçaria o fechamento da janela
+      // ainda com a conversão/dialog de salvar em andamento, perdendo a
+      // gravação em silêncio (achado 🔴 da revisão cross-cutting).
+      window.electronAPI.reportCleanupProgress?.()
+      const heartbeat = setInterval(() => window.electronAPI.reportCleanupProgress?.(), 4000)
+      try {
+        await endSession()
+      } finally {
+        clearInterval(heartbeat)
+      }
       window.electronAPI.cleanupDone()
     })
     return unsubscribe
@@ -154,8 +183,8 @@ export function LiveSessionWindow() {
         </span>
         {recording && <span style={{ color: '#ef4444' }}>⏺ Gravando {recordingSecs}s</span>}
         <div style={{ flex: 1 }} />
-        <button onClick={toggleRecording}>{recording ? '⏹ Parar gravação' : '⏺ Gravar'}</button>
-        <button onClick={handleEndSessionClick}>Encerrar sessão</button>
+        <button onClick={toggleRecording} disabled={ending}>{recording ? '⏹ Parar gravação' : '⏺ Gravar'}</button>
+        <button onClick={handleEndSessionClick} disabled={ending}>{ending ? 'Encerrando...' : 'Encerrar sessão'}</button>
       </div>
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto' }}>
         <canvas

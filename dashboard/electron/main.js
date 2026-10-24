@@ -113,21 +113,18 @@ function createLiveSessionWindow(params) {
   // ele confirmar via 'live-session-cleanup-done'. Sem isso, o companion
   // continuaria transmitindo sem ninguém olhando, e uma gravação em
   // andamento seria descartada sem perguntar.
+  //
+  // __cleanupStarted evita mandar 'live-session-cleanup-and-close' de novo
+  // se o usuário insistir no X enquanto o cleanup já está em andamento —
+  // sem isso o renderer reiniciaria o heartbeat a cada clique repetido.
   liveWin.on('close', (event) => {
     if (liveWin.__cleanupDone) return
     event.preventDefault()
-    liveWin.webContents.send('live-session-cleanup-and-close')
-    // Rede de segurança: se o renderer nunca confirmar (fechou a janela
-    // antes do React montar e se inscrever, preload falhou, travou no meio
-    // da conversão), a janela ficaria IMPOSSÍVEL de fechar pra sempre —
-    // event.preventDefault() já bloqueou o close, e nada mais chamaria
-    // cleanupDone(). Força o fechamento depois de 10s mesmo sem resposta.
-    setTimeout(() => {
-      if (!liveWin.isDestroyed() && !liveWin.__cleanupDone) {
-        liveWin.__cleanupDone = true
-        liveWin.close()
-      }
-    }, 10000)
+    if (!liveWin.__cleanupStarted) {
+      liveWin.__cleanupStarted = true
+      liveWin.webContents.send('live-session-cleanup-and-close')
+    }
+    armCleanupSafetyTimer(liveWin)
   })
 
   liveWin.webContents.setWindowOpenHandler(({ url }) => {
@@ -136,6 +133,31 @@ function createLiveSessionWindow(params) {
   })
 
   return liveWin
+}
+
+// Rede de segurança do cleanup ao fechar a janela de sessão ao vivo: se o
+// renderer nunca confirmar (fechou antes do React montar, preload falhou,
+// travou de verdade), a janela ficaria IMPOSSÍVEL de fechar pra sempre —
+// event.preventDefault() já bloqueou o close, e nada mais chamaria
+// cleanupDone(). Um timeout fixo curto, porém, força o fechamento mesmo com
+// o cleanup legitimamente em andamento — ex: operador decidindo onde salvar
+// a gravação no dialog.showSaveDialog, que pode levar bem mais que alguns
+// segundos — perdendo a gravação em silêncio (achado 🔴 da revisão
+// cross-cutting independente). Por isso o timer é REARMADO a cada
+// 'live-session-cleanup-progress' que o renderer manda enquanto está de
+// fato trabalhando (ver LiveSessionWindow.jsx, heartbeat de 4s durante o
+// cleanup) — só expira de verdade se o renderer parar de responder por
+// completo (travado/morto), não enquanto espera decisão humana.
+const CLEANUP_SAFETY_TIMEOUT_MS = 15000
+
+function armCleanupSafetyTimer(liveWin) {
+  clearTimeout(liveWin.__cleanupSafetyTimer)
+  liveWin.__cleanupSafetyTimer = setTimeout(() => {
+    if (!liveWin.isDestroyed() && !liveWin.__cleanupDone) {
+      liveWin.__cleanupDone = true
+      liveWin.close()
+    }
+  }, CLEANUP_SAFETY_TIMEOUT_MS)
 }
 
 function setupAutoUpdater(win) {
@@ -274,9 +296,18 @@ app.whenReady().then(() => {
   ipcMain.on('live-session-cleanup-done', (event) => {
     const senderWin = BrowserWindow.fromWebContents(event.sender)
     if (senderWin && !senderWin.isDestroyed()) {
+      clearTimeout(senderWin.__cleanupSafetyTimer)
       senderWin.__cleanupDone = true
       senderWin.close()
     }
+  })
+
+  // IPC: a janela de sessão avisa que o cleanup ainda está em andamento de
+  // verdade — rearma a rede de segurança (armCleanupSafetyTimer) pra não
+  // forçar o fechamento no meio de um trabalho legítimo.
+  ipcMain.on('live-session-cleanup-progress', (event) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    if (senderWin && !senderWin.isDestroyed()) armCleanupSafetyTimer(senderWin)
   })
 
   // IPC: converte a gravação WebM (MediaRecorder, renderer) pra MP4 via
@@ -301,6 +332,12 @@ app.whenReady().then(() => {
           else reject(new Error(`ffmpeg saiu com código ${code}: ${stderr.slice(-500)}`))
         })
       })
+    } catch (err) {
+      // Em erro, o ffmpeg pode ter escrito mp4Path parcialmente antes de
+      // falhar — sem isso, ficava órfão em app.getPath('temp') pra sempre a
+      // cada conversão que falhasse (achado 🟠 da revisão cross-cutting).
+      fs.unlink(mp4Path, () => {})
+      throw err
     } finally {
       fs.unlink(webmPath, () => {})
     }

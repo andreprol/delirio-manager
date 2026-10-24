@@ -32,6 +32,7 @@ beforeEach(() => {
     onLiveSessionInit: vi.fn(() => () => {}),
     onCleanupAndClose: vi.fn(() => () => {}),
     cleanupDone: vi.fn(),
+    reportCleanupProgress: vi.fn(),
     convertRecording: vi.fn().mockResolvedValue({ saved: true }),
   }
 })
@@ -114,5 +115,50 @@ describe('LiveSessionWindow', () => {
     expect(window.electronAPI.convertRecording).toHaveBeenCalled()
     expect(api.live.stop).toHaveBeenCalledWith('s1', true)
     expect(window.electronAPI.cleanupDone).toHaveBeenCalled()
+  })
+
+  // Regressão achada na revisão cross-cutting: clicar "Encerrar sessão" e,
+  // antes dessa chamada terminar, o X da janela também disparar o cleanup
+  // (ou vice-versa) chamava api.live.stop 2x pra mesma sessão — os dois
+  // caminhos agora compartilham a mesma promise de endSession.
+  it('botão Encerrar + X da janela quase juntos só chamam api.live.stop 1x', async () => {
+    let resolveStop
+    api.live.stop.mockImplementation(() => new Promise((resolve) => { resolveStop = resolve }))
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    const cleanupCb = window.electronAPI.onCleanupAndClose.mock.calls[0][0]
+
+    let cleanupPromise
+    await act(async () => {
+      fireEvent.click(screen.getByText('Encerrar sessão')) // dispara endSession, ainda não resolveu
+      cleanupPromise = cleanupCb() // X da janela, enquanto o 1º ainda está em voo
+      // deixa o microtask chain de endSession (await stopRecordingIfActive)
+      // avançar até de fato chamar api.live.stop, pra resolveStop existir.
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      resolveStop({ ok: true })
+      await cleanupPromise
+    })
+
+    expect(api.live.stop).toHaveBeenCalledTimes(1)
+    api.live.stop.mockResolvedValue({ ok: true }) // restaura o default pros próximos testes
+  })
+
+  // Regressão: sem o heartbeat, a rede de segurança de timeout fixo do
+  // main.js forçaria o fechamento da janela com o cleanup ainda em
+  // andamento (ex: dialog de salvar a gravação aberto), perdendo a
+  // gravação em silêncio.
+  it('cleanup via X da janela manda reportCleanupProgress (heartbeat pro main process)', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    const cleanupCb = window.electronAPI.onCleanupAndClose.mock.calls[0][0]
+
+    await act(async () => { await cleanupCb() })
+
+    expect(window.electronAPI.reportCleanupProgress).toHaveBeenCalled()
   })
 })

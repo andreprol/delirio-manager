@@ -26,14 +26,20 @@ const RECONNECT_DELAY_MS = 3000
 
 // useLiveSession conecta no WS /live como role=dashboard, desenha cada frame
 // recebido no canvas apontado por canvasRef, e expõe sendInput pra mandar
-// eventos de mouse/teclado de volta (quem decide SE deve capturar e chamar
-// sendInput, com base no mode, é o componente — ver LiveSessionWindow — este
-// hook só transporta, não filtra por mode).
+// eventos de mouse/teclado de volta. O componente (LiveSessionWindow) só
+// registra os listeners de mouse/teclado em mode normal, mas isso por si só
+// não é garantia estrutural — um guard esquecido no componente mandaria
+// input numa sessão Shadow sem nenhuma segunda barreira do lado cliente. Por
+// isso sendInput também recusa (defesa em profundidade, mesmo princípio do
+// relay no servidor — liveSessionRelay.routeMessage nunca repassa input em
+// Shadow mesmo que o dashboard mande por engano/bug).
 export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange }) {
   const wsRef = useRef(null)
   const hasRetriedRef = useRef(false)
   const frameSizeRef = useRef({ width: 0, height: 0 })
   const mountedRef = useRef(true)
+  const modeRef = useRef(mode)
+  modeRef.current = mode
 
   const notifyStatus = useCallback((status) => {
     onStatusChange?.(status)
@@ -92,6 +98,7 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
   }, [])
 
   const sendInput = useCallback((msg) => {
+    if (modeRef.current !== 'normal') return
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg))

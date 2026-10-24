@@ -127,6 +127,29 @@ describe('useLiveSession', () => {
     expect(JSON.parse(ws.sent[0])).toEqual({ type: 'mousedown', x: 10, y: 20, button: 'left' })
   })
 
+  // Regressão achada na revisão cross-cutting: antes, o filtro por mode
+  // existia só no componente (LiveSessionWindow) — o hook mandava qualquer
+  // coisa, de qualquer mode. Defesa em profundidade: mesmo chamando
+  // sendInput/sendMouseEvent/sendKeyEvent direto, numa sessão Shadow nada
+  // sai pelo WS, igual ao servidor nunca repassar input numa sessão Shadow
+  // mesmo que o dashboard mande por engano/bug.
+  it('mode shadow: sendInput/sendMouseEvent/sendKeyEvent não mandam nada mesmo com WS aberto', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://s.example.com', sessionId: 's1', dashboardToken: 'tok', mode: 'shadow', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    act(() => { ws._open() })
+
+    act(() => {
+      result.current.sendInput({ type: 'mousedown', x: 10, y: 20, button: 'left' })
+      result.current.sendMouseEvent('mousemove', 5, 5)
+      result.current.sendKeyEvent('keydown', 65)
+    })
+
+    expect(ws.sent).toHaveLength(0)
+  })
+
   it('sendInput não manda nada se o WS ainda não abriu', () => {
     const canvasRef = makeCanvasRef()
     const { result } = renderHook(() => useLiveSession({
