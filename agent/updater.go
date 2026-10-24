@@ -58,6 +58,16 @@ func (a *Agent) checkAndUpdate(latest UpdateInfo) {
 		return
 	}
 
+	// 4. Mata o companion rastreado (se houver) ANTES de sair — este
+	//    processo sai via os.Exit(1), sem passar por stop()/defer nenhum, e
+	//    o serviço novo (depois do restart do SCM) nasce sem nenhuma
+	//    memória de qual companion estava vivo. Sem isso, o companion
+	//    antigo ficaria órfão a cada self-update (não é caso raro — é o
+	//    caminho principal de deploy em produção), e continuaria detendo a
+	//    pipe (winio.ListenPipe/FILE_CREATE falha se já existir uma
+	//    instância), impedindo o companion novo de nascer de verdade depois.
+	a.terminateCompanion()
+
 	// 5. Sai com codigo nao-zero — o SCM aplica a recovery action e reinicia
 	//    o servico com o novo binario ja no lugar.
 	logInfo("Atualizacao aplicada. Encerrando para o SCM reiniciar com nova versao...")

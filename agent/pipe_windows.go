@@ -21,6 +21,33 @@ const pipeName = `\\.\pipe\DelirioCompanion`
 // por consequência, o wg.Wait() do shutdown gracioso) pra sempre.
 const pipeHandlerDeadline = 10 * time.Second
 
+// pipeProbeTimeout é o quão rápido pipeHasLiveServer desiste — curto de
+// propósito: no caso comum (nenhum outro companion vivo), toda vez que o
+// companion nasce ele paga esse custo antes de começar a trabalhar.
+const pipeProbeTimeout = 300 * time.Millisecond
+
+// pipeHasLiveServer confere se já existe ALGUÉM servindo a pipe — conectar
+// com sucesso já é prova suficiente (não precisa trocar mensagem; o
+// listener só aceita a conexão se já tiver chamado winio.ListenPipe antes).
+// Usada por runCompanion (companion.go) como defesa em profundidade: o
+// serviço mata o companion antigo antes de relançar/parar/self-update
+// (terminateCompanion em agent.go/updater.go), mas se o SERVIÇO morrer sem
+// passar por nenhum desses caminhos (crash, kill -9, queda de energia), o
+// serviço novo nasce sem nenhuma memória do companion órfão e tentaria
+// lançar outro — colidindo na pipe (winio.ListenPipe usa FILE_CREATE na 1ª
+// instância, falha se já existir uma). Essa checagem evita o companion
+// NOVO crashar/falhar silenciosamente nesse cenário residual — ele desiste
+// e sai limpo em vez de tentar (e falhar) abrir a mesma pipe.
+func pipeHasLiveServer() bool {
+	timeout := pipeProbeTimeout
+	conn, err := winio.DialPipe(pipeName, &timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 // pipeMessage é o protocolo local entre serviço (cliente) e companion
 // (servidor da pipe). RequestID correlaciona pedido/resposta; Error
 // preenchido só na resposta, em caso de falha do lado do companion.
@@ -30,7 +57,6 @@ type pipeMessage struct {
 	SessionID        string `json:"sessionId,omitempty"`
 	Mode             string `json:"mode,omitempty"`
 	CompanionToken   string `json:"companionToken,omitempty"`
-	ServerURL        string `json:"serverUrl,omitempty"`
 	ResultJPEGBase64 string `json:"resultJpegBase64,omitempty"`
 	Error            string `json:"error,omitempty"`
 }

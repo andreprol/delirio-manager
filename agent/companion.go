@@ -28,6 +28,19 @@ func isCompanionMode(args []string) bool {
 func runCompanion() error {
 	initLogger("companion.log")
 
+	if pipeHasLiveServer() {
+		// Defesa em profundidade (ver comentário de pipeHasLiveServer):
+		// alguém já está respondendo nesta pipe. O serviço normalmente mata
+		// o companion antigo antes de lançar um novo (terminateCompanion),
+		// mas se isso não aconteceu por algum motivo (crash do serviço sem
+		// passar por stop()/checkAndUpdate, etc.), colidir tentando abrir a
+		// mesma pipe (FILE_CREATE falha se já existir) seria pior que só
+		// desistir — desiste e sai limpo em vez de girar em erro.
+		err := fmt.Errorf("companion: outra instância já está servindo %s — encerrando (instância única)", pipeName)
+		logError(err.Error())
+		return err
+	}
+
 	cfg, err := loadConfigReadOnly()
 	if err != nil {
 		logWarn(fmt.Sprintf("companion: erro ao carregar config: %v — usando padrão.", err))
@@ -46,9 +59,11 @@ func runCompanion() error {
 
 	// stopCh ainda não é observado por este select — nenhuma task implementou
 	// shutdown gracioso via pipe ainda. Até lá, o processo só encerra morto
-	// externamente pelo serviço (TerminateProcess). Quando start/stop-live-
-	// session (companionPipeLoop) ganhar um sinal de "encerrar", trocar este
-	// select{} por `select { case <-stopCh: return nil }` pra sair de fato.
+	// externamente pelo serviço, via terminateCompanion (agent.go/updater.go
+	// — TerminateProcess de verdade, não só CloseHandle). Quando start/stop-
+	// live-session (companionPipeLoop) ganhar um sinal de "encerrar", trocar
+	// este select{} por `select { case <-stopCh: return nil }` pra sair de
+	// fato.
 	stopCh := make(chan struct{})
 	// FEATURE_LIVE_ACCESS: mesma flag do server (ver server/app.js) — feature
 	// ainda incompleta (Task 3/13 do agente), nunca reportar atividade pro

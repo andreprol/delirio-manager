@@ -278,14 +278,16 @@ func (a *Agent) sessionWatchTick() {
 		return
 	}
 
-	if oldHandle := windows.Handle(a.companionHandle.Swap(0)); oldHandle != 0 {
-		_ = windows.CloseHandle(oldHandle)
-	}
-	// companionPID zerado junto com o handle: enquanto o handle (fonte de
-	// verdade de liveness) estiver 0, companionPID não pode apontar pra um
-	// PID que não corresponde mais a nenhum handle rastreado — senão os três
-	// campos descrevem companions diferentes se launchCompanion falhar abaixo.
-	a.companionPID.Store(0)
+	// terminateCompanion (não só CloseHandle): o companion antigo precisa
+	// morrer de verdade antes do novo ser lançado, senão ele fica órfão
+	// rodando na sessão desconectada E ainda detém a pipe (winio.ListenPipe
+	// usa FILE_CREATE na 1ª instância — falha se a pipe já existir), fazendo
+	// o companion novo nunca conseguir abrir a pipe. Zera companionPID
+	// também: enquanto o handle (fonte de verdade de liveness) estiver 0,
+	// companionPID não pode apontar pra um PID que não corresponde mais a
+	// nenhum handle rastreado — senão os três campos descrevem companions
+	// diferentes se launchCompanion falhar abaixo.
+	a.terminateCompanion()
 
 	pid, handle, err := launchCompanion(activeID)
 	if err != nil {
@@ -652,8 +654,33 @@ func (a *Agent) reportOfflineEvent(offlineAt, onlineAt time.Time) {
 
 func (a *Agent) stop() {
 	close(a.stopCh)
-	if h := windows.Handle(a.companionHandle.Swap(0)); h != 0 {
-		_ = windows.CloseHandle(h)
-	}
+	a.terminateCompanion()
 	logInfo("Agente parado.")
+}
+
+// terminateCompanion mata de fato o processo companion rastreado (se
+// houver) e limpa o estado associado. Sem isso, o companion sobrevivia ao
+// relançamento/parada do serviço — ver histórico do finding CRÍTICO da
+// revisão final cross-cutting deste plano: o comentário original em
+// companion.go (runCompanion) dizia "só encerra morto externamente pelo
+// serviço (TerminateProcess)", mas esse TerminateProcess nunca existiu de
+// verdade em nenhum lugar do branch. Resultado real: em logoff/logon
+// (sessionChanged) e a cada self-update (updater.go:checkAndUpdate sai via
+// os.Exit(1), sem passar por stop()), o companion antigo ficava órfão
+// rodando pra sempre — e como winio.ListenPipe usa FILE_CREATE na 1ª
+// instância (falha se qualquer instância da pipe já existir, mesmo de
+// processo não relacionado), o companion NOVO lançado depois nunca
+// conseguia abrir a pipe: toda sessão ao vivo/capture-screenshot acabava
+// sendo servida pelo companion ÓRFÃO (sessão desconectada errada), não
+// pelo novo.
+func (a *Agent) terminateCompanion() {
+	h := windows.Handle(a.companionHandle.Swap(0))
+	a.companionPID.Store(0)
+	if h == 0 {
+		return
+	}
+	if err := windows.TerminateProcess(h, 1); err != nil {
+		logWarn(fmt.Sprintf("terminateCompanion: TerminateProcess falhou: %v", err))
+	}
+	_ = windows.CloseHandle(h)
 }
