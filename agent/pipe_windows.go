@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
+	"sync"
 	"time"
 
 	"github.com/Microsoft/go-winio"
@@ -26,15 +28,39 @@ type pipeMessage struct {
 	Error            string `json:"error,omitempty"`
 }
 
+// pipeDialRetryInterval é o intervalo entre tentativas de conexão em
+// sendPipeRequest, enquanto o deadline total não expira.
+const pipeDialRetryInterval = 50 * time.Millisecond
+
 // sendPipeRequest conecta na pipe do companion, manda a mensagem, lê UMA
 // linha de resposta. Usado pelo SERVIÇO (cliente). timeout cobre conexão +
 // resposta — se o companion não estiver rodando ou travado, falha rápido
 // em vez de travar o handler de comando indefinidamente.
+//
+// Retry próprio em volta de winio.DialPipe: o retry interno dessa função
+// só cobre ERROR_PIPE_BUSY (pipe existe mas sem instância livre) — nunca
+// ERROR_FILE_NOT_FOUND, que é exatamente o erro quando o companion acabou
+// de ser lançado (sessionWatchLoop → launchCompanion) e ainda não chegou a
+// chamar listenPipe/winio.ListenPipe. Sem este retry, uma chamada feita
+// logo depois do companion nascer falharia na hora por corrida de
+// inicialização, não por timeout real — confirmado via repro isolado
+// (dial falha em ~500µs com "file not found", nunca espera o timeout).
 func sendPipeRequest(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
 	var resp pipeMessage
-	conn, err := winio.DialPipe(pipeName, &timeout)
-	if err != nil {
-		return resp, fmt.Errorf("conectar na pipe do companion: %w", err)
+	deadline := time.Now().Add(timeout)
+
+	var conn net.Conn
+	var err error
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return resp, fmt.Errorf("conectar na pipe do companion: timeout após %s: %w", timeout, err)
+		}
+		conn, err = winio.DialPipe(pipeName, &remaining)
+		if err == nil {
+			break
+		}
+		time.Sleep(pipeDialRetryInterval)
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(timeout)) // melhor esforço — se falhar, timeout já cobre a chamada via DialPipe
@@ -149,26 +175,34 @@ func currentUserSID() (string, error) {
 // desta task. O que esta ACL garante de fato, na prática, é bloquear
 // Everyone/anônimo/outros usuários da máquina — não bloqueia outro processo
 // do MESMO usuário logado.
-func pipeSecurityDescriptor() string {
+func pipeSecurityDescriptor() (string, error) {
 	selfSID, err := currentUserSID()
 	if err != nil {
-		// Não deveria acontecer em condições normais (todo processo tem um
-		// token primário com User SID) — mas se acontecer, cair pro default
-		// do Windows (nil) é a única forma do companion continuar
-		// funcionando. Loga alto (ERROR, vai pro Windows Event Log também)
-		// porque isso reabre a exposição a Everyone/anônimo documentada no
-		// item 1 acima, e precisa ser investigado se aparecer em produção.
-		logError(fmt.Sprintf("companion: não obteve SID própria pra restringir ACL da pipe — usando default do Windows (mais permissivo, ver comentário em pipe_windows.go#pipeSecurityDescriptor): %v", err))
-		return ""
+		return "", fmt.Errorf("obter SID própria pra restringir ACL da pipe: %w", err)
 	}
-	return fmt.Sprintf("D:P(A;;GA;;;SY)(A;;GA;;;%s)(A;;GA;;;BA)", selfSID)
+	return fmt.Sprintf("D:P(A;;GA;;;SY)(A;;GA;;;%s)(A;;GA;;;BA)", selfSID), nil
 }
 
 // listenPipe roda no COMPANION: aceita conexões na pipe local e despacha
 // cada mensagem pro handler correspondente. O DACL aplicado (ver
 // pipeSecurityDescriptor acima) restringe quem consegue abrir a pipe.
+//
+// Fail-closed: se pipeSecurityDescriptor() falhar (não deveria acontecer em
+// condições normais — todo processo tem um token primário com User SID),
+// a pipe NÃO é aberta. O default do Windows pra SecurityDescriptor vazio é
+// o ACL permissivo documentado acima (Everyone-read + Creator-Owner-controle-
+// total) — exatamente o que esta função existe pra evitar; abrir mesmo
+// assim (fail-open) numa feature de captura de tela/acesso remoto trocaria
+// disponibilidade por um buraco de segurança silencioso. Sem IPC, o
+// companion simplesmente não atende comandos até o problema (que precisa
+// ser investigado via o ERROR abaixo) ser corrigido.
 func listenPipe(handler func(pipeMessage) pipeMessage, stopCh <-chan struct{}) {
-	cfg := &winio.PipeConfig{SecurityDescriptor: pipeSecurityDescriptor()}
+	sd, err := pipeSecurityDescriptor()
+	if err != nil {
+		logError(fmt.Sprintf("companion: não restringiu ACL da pipe, recusando abrir (fail-closed): %v", err))
+		return
+	}
+	cfg := &winio.PipeConfig{SecurityDescriptor: sd}
 	listener, err := winio.ListenPipe(pipeName, cfg)
 	if err != nil {
 		logError(fmt.Sprintf("companion: falha ao abrir pipe: %v", err))
@@ -181,12 +215,20 @@ func listenPipe(handler func(pipeMessage) pipeMessage, stopCh <-chan struct{}) {
 		listener.Close()
 	}()
 
+	// wg espera handlers em andamento antes de listenPipe retornar — sem
+	// isso, fechar stopCh no meio de uma operação longa (ex: capture-
+	// screenshot) abandonaria o handler no meio em vez de deixá-lo terminar.
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			return // listener fechado (stopCh) ou erro — encerra o loop
 		}
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			defer conn.Close()
 			line, err := bufio.NewReader(conn).ReadBytes('\n')
 			if err != nil {

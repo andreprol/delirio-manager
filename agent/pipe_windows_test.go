@@ -50,11 +50,10 @@ func TestPipeRoundtrip(t *testing.T) {
 		listenPipe(handler, stopCh)
 	}()
 
-	// Dá tempo do listener abrir a pipe antes do cliente tentar conectar.
-	// sendPipeRequest já tem retry/timeout próprio via DialPipe, mas uma
-	// pequena espera evita flakiness na primeira tentativa.
-	time.Sleep(100 * time.Millisecond)
-
+	// SEM sleep aqui de propósito: sendPipeRequest agora tem retry próprio
+	// (pipeDialRetryInterval) especificamente pra cobrir o caso de o
+	// listener ainda não ter chamado winio.ListenPipe quando o cliente já
+	// tenta conectar — é exatamente essa corrida que este teste exercita.
 	resp, err := sendPipeRequest(pipeMessage{Type: "ping", RequestID: "req-roundtrip"}, 2*time.Second)
 	if err != nil {
 		t.Fatalf("sendPipeRequest: %v", err)
