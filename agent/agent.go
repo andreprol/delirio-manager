@@ -51,7 +51,25 @@ type Agent struct {
 	// em session_windows.go pro porquê: reusar entre sessões diferentes
 	// arriscaria AssignProcessToJobObject falhar por mismatch de sessão).
 	companionJob atomic.Uintptr
+
+	// terminateCompanionFn: substituível em teste (TestSessionWatchTick) —
+	// nil usa o método real terminateCompanion. Mesmo padrão de
+	// enumerateSessionsFn/isCompanionAliveFn/launchCompanionFn abaixo, só
+	// que como campo porque terminateCompanion precisa dos atomics acima
+	// (não é função livre).
+	terminateCompanionFn func()
 }
+
+// enumerateSessionsFn/isCompanionAliveFn/launchCompanionFn: substituíveis em
+// teste, mesmo padrão já usado neste pacote (captureScreenJPEGFn em
+// companion.go, requestScreenshotFromCompanionFn em commands.go) — sem isso,
+// sessionWatchTick só é testável chamando enumerateSessions/isCompanionAlive/
+// launchCompanion de verdade (syscalls Win32, não disponíveis em CI).
+var (
+	enumerateSessionsFn = enumerateSessions
+	isCompanionAliveFn  = isCompanionAlive
+	launchCompanionFn   = launchCompanion
+)
 
 // HeartbeatPayload e o JSON enviado ao servidor a cada ciclo.
 type HeartbeatPayload struct {
@@ -272,7 +290,7 @@ func (a *Agent) sessionWatchLoop() {
 const companionMinHealthyUptime = 30 * time.Second
 
 func (a *Agent) sessionWatchTick() {
-	sessions, err := enumerateSessions()
+	sessions, err := enumerateSessionsFn()
 	if err != nil {
 		logWarn(fmt.Sprintf("sessionWatch: erro ao enumerar sessões: %v", err))
 		return
@@ -283,7 +301,7 @@ func (a *Agent) sessionWatchTick() {
 	}
 
 	sessionChanged := activeID != a.companionSession.Load()
-	alive := isCompanionAlive(windows.Handle(a.companionHandle.Load()))
+	alive := isCompanionAliveFn(windows.Handle(a.companionHandle.Load()))
 
 	// Reseta o backoff aqui — não em recordCompanionLaunched (que roda
 	// assim que o processo nasce, não depois dele provar que ficou de pé).
@@ -309,9 +327,15 @@ func (a *Agent) sessionWatchTick() {
 	}
 
 	if a.companionDiedQuickly(alive, sessionChanged) {
-		a.terminateCompanion() // limpa handle/job do companion que morreu rápido
+		a.doTerminateCompanion() // limpa handle/job do companion que morreu rápido
 		a.applyLaunchBackoff(fmt.Errorf("companion morreu %s após o lançamento (uptime mínimo esperado: %s)",
 			time.Since(a.companionLaunchedAt).Round(time.Second), companionMinHealthyUptime))
+		// Zera companionLaunchedAt: sem isso, se o tick seguinte ainda cair
+		// dentro de companionMinHealthyUptime (ex: variação de tempo entre
+		// ticks) e companionDiedQuickly rodar de novo antes de um novo
+		// lançamento acontecer, a MESMA morte seria contada duas vezes como
+		// falha — um degrau extra de backoff indevido.
+		a.companionLaunchedAt = time.Time{}
 		return
 	}
 
@@ -320,9 +344,9 @@ func (a *Agent) sessionWatchTick() {
 	// rodando na sessão desconectada E ainda detém a pipe (winio.ListenPipe
 	// usa FILE_CREATE na 1ª instância — falha se a pipe já existir), fazendo
 	// o companion novo nunca conseguir abrir a pipe.
-	a.terminateCompanion()
+	a.doTerminateCompanion()
 
-	pid, handle, job, err := launchCompanion(activeID)
+	pid, handle, job, err := launchCompanionFn(activeID)
 	if err != nil {
 		a.applyLaunchBackoff(err)
 		return
@@ -721,6 +745,18 @@ func (a *Agent) reportOfflineEvent(offlineAt, onlineAt time.Time) {
 	logInfo(fmt.Sprintf("offlineEvent reportado: %.0f min (desde %s)", durationMin, offlineAt.Format("15:04")))
 }
 
+// doTerminateCompanion chama terminateCompanionFn se setado (TestSessionWatchTick),
+// senão o método real — único ponto de terminação usado por sessionWatchTick.
+// stop()/checkAndUpdate() chamam a.terminateCompanion() direto (nunca
+// mockado): rodam só em produção, nunca no teste do estado de sessionWatchTick.
+func (a *Agent) doTerminateCompanion() {
+	if a.terminateCompanionFn != nil {
+		a.terminateCompanionFn()
+		return
+	}
+	a.terminateCompanion()
+}
+
 func (a *Agent) stop() {
 	close(a.stopCh)
 	a.terminateCompanion()
@@ -773,9 +809,17 @@ func (a *Agent) terminateCompanion() {
 	// stop e self-update, mascarando uma falha de TerminateProcess real
 	// nesse mesmo log. Com TerminateProcess primeiro, o job só fecha
 	// depois do processo já estar confirmadamente morto (ou do timeout).
+	//
+	// Só chama TerminateProcess se o processo ainda está vivo: chamar num
+	// processo que já saiu (ex: ramo de morte rápida em sessionWatchTick,
+	// ou !alive em geral) sempre falha com ACCESS_DENIED — era um WARN
+	// falso em todo ciclo de morte rápida, mascarando o cenário em que
+	// TerminateProcess falha de verdade num processo que AINDA está vivo.
 	if h != 0 {
-		if err := windows.TerminateProcess(h, 1); err != nil {
-			logWarn(fmt.Sprintf("terminateCompanion: TerminateProcess falhou: %v", err))
+		if isCompanionAlive(h) {
+			if err := windows.TerminateProcess(h, 1); err != nil {
+				logWarn(fmt.Sprintf("terminateCompanion: TerminateProcess falhou: %v", err))
+			}
 		}
 		if event, err := windows.WaitForSingleObject(h, uint32(terminateCompanionWaitTimeout.Milliseconds())); err != nil {
 			logWarn(fmt.Sprintf("terminateCompanion: WaitForSingleObject falhou: %v", err))

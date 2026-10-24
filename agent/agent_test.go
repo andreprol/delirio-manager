@@ -1,45 +1,55 @@
 package main
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/windows"
 )
 
-// TestCompanionBackoffEscalatesAcrossQuickDeaths é um teste de regressão
-// direto pro bug encontrado na revisão final cross-cutting deste plano:
-// recordCompanionLaunched resetava consecutiveLaunchFailures a cada
+// TestSessionWatchTick_BackoffEscalatesAcrossQuickDeaths é um teste de
+// regressão direto pro bug encontrado na revisão final cross-cutting deste
+// plano: recordCompanionLaunched resetava consecutiveLaunchFailures a cada
 // CreateProcessAsUser bem-sucedido, não depois do companion sobreviver
 // companionMinHealthyUptime — num ciclo "lança, morre rápido, lança de
 // novo", o contador oscilava 0→1→0→1... pra sempre, e o backoff nunca
 // escalava além de 15s (confirmado isolado antes do fix: 6 ciclos deram
 // "tentativa 1, próxima em 15s" todas as vezes).
 //
-// Dirige as peças puras do estado (companionDiedQuickly/applyLaunchBackoff/
-// recordCompanionLaunched) direto, sem chamar sessionWatchTick inteiro —
-// essa função depende de enumerateSessions/isCompanionAlive/launchCompanion
-// (syscalls Win32 reais, não testáveis em CI), mas a lógica de backoff em
-// si é pura e não devia precisar deles pra ser verificada.
-func TestCompanionBackoffEscalatesAcrossQuickDeaths(t *testing.T) {
-	a := &Agent{}
+// Dirige sessionWatchTick de verdade (não as peças de estado isoladas) via
+// enumerateSessionsFn/isCompanionAliveFn/launchCompanionFn/terminateCompanionFn
+// mockados — achado 🟡 da 5ª rodada de revisão: a versão anterior deste
+// teste chamava companionDiedQuickly/applyLaunchBackoff/recordCompanionLaunched
+// direto, o que deixaria passar sem nenhum teste falhar: (a) tirar a chamada
+// de resetBackoffIfCompanionHealthy de sessionWatchTick; (b) inverter a
+// ordem das checagens de backoff/morte rápida; (c) a sequência
+// saudável→reset→nova morte rápida não voltar a 15s. Cobre as 3 agora.
+func TestSessionWatchTick_BackoffEscalatesAcrossQuickDeaths(t *testing.T) {
+	origEnum, origAlive, origLaunch := enumerateSessionsFn, isCompanionAliveFn, launchCompanionFn
+	defer func() { enumerateSessionsFn, isCompanionAliveFn, launchCompanionFn = origEnum, origAlive, origLaunch }()
+
+	enumerateSessionsFn = func() ([]sessionInfo, error) {
+		return []sessionInfo{{ID: 1, State: wtsStateActive}}, nil
+	}
+	launchCompanionFn = func(sessionID uint32) (uint32, windows.Handle, windows.Handle, error) {
+		return 100, windows.Handle(1), windows.Handle(2), nil
+	}
+	alive := false
+	isCompanionAliveFn = func(windows.Handle) bool { return alive }
+
+	a := &Agent{terminateCompanionFn: func() {}} // no-op: nunca chama Win32 de verdade
 
 	wantBackoffSecs := []int{15, 30, 60}
 	for cycle, wantSecs := range wantBackoffSecs {
-		// "Lança" com sucesso — recordCompanionLaunched NÃO deve resetar
-		// o contador de falhas (ele só reseta depois de companionMinHealthyUptime
-		// de uptime real, via resetBackoffIfCompanionHealthy).
-		a.recordCompanionLaunched(1, 100, windows.Handle(1), windows.Handle(2))
+		alive = false
+		a.nextLaunchAttemptAt = time.Time{} // libera o ciclo (simula o backoff anterior já ter expirado)
 
-		// Simula o companion morrendo rápido (companionLaunchedAt no
-		// passado, dentro da janela de companionMinHealthyUptime).
-		a.companionLaunchedAt = time.Now().Add(-1 * time.Second)
-
-		if !a.companionDiedQuickly(false /* alive */, false /* sessionChanged */) {
-			t.Fatalf("ciclo %d: companionDiedQuickly = false, want true", cycle)
+		a.sessionWatchTick() // tick 1: companion não está vivo → relança
+		if a.companionLaunchedAt.IsZero() {
+			t.Fatalf("ciclo %d: companionLaunchedAt zero após tick de lançamento", cycle)
 		}
-		a.applyLaunchBackoff(fmt.Errorf("morte simulada no ciclo %d", cycle))
+
+		a.sessionWatchTick() // tick 2: ainda não vivo, dentro de companionMinHealthyUptime → morte rápida
 
 		wantBackoff := time.Duration(wantSecs) * time.Second
 		gotBackoff := time.Until(a.nextLaunchAttemptAt)
@@ -48,9 +58,39 @@ func TestCompanionBackoffEscalatesAcrossQuickDeaths(t *testing.T) {
 			t.Errorf("ciclo %d: backoff ≈ %v, want ≈%v (consecutiveLaunchFailures=%d) — backoff não escalou, bug reintroduzido",
 				cycle, gotBackoff.Round(time.Second), wantBackoff, a.consecutiveLaunchFailures)
 		}
+		if !a.companionLaunchedAt.IsZero() {
+			t.Errorf("ciclo %d: companionLaunchedAt não foi zerado após morte rápida contada — próximo tick contaria a mesma morte 2x", cycle)
+		}
+	}
 
-		// Simula o backoff expirando, pra liberar o próximo ciclo.
-		a.nextLaunchAttemptAt = time.Time{}
+	// Companion fica saudável por >= companionMinHealthyUptime: deve resetar.
+	alive = false
+	a.nextLaunchAttemptAt = time.Time{}
+	a.sessionWatchTick() // relança (companionLaunchedAt estava zerado pela última morte rápida)
+	if a.companionLaunchedAt.IsZero() {
+		t.Fatal("esperava companion lançado antes do teste de reset")
+	}
+	a.companionLaunchedAt = time.Now().Add(-companionMinHealthyUptime - time.Second)
+	alive = true
+	a.sessionWatchTick() // vivo, mesma sessão, saudável há tempo suficiente → reset
+	if a.consecutiveLaunchFailures != 0 {
+		t.Fatalf("esperava consecutiveLaunchFailures == 0 após companion saudável, got %d", a.consecutiveLaunchFailures)
+	}
+
+	// Nova morte rápida DEPOIS do reset: o companion saudável morrendo não é
+	// "morte rápida" (sobreviveu companionMinHealthyUptime) — relança direto,
+	// e só a PRÓXIMA morte (agora sim rápida) deve contar como falha. O
+	// backoff precisa voltar a ~15s, não continuar escalando de 60s.
+	alive = false
+	a.sessionWatchTick() // companion (antigo, saudável) morreu → relança direto, sem contar falha
+	if a.consecutiveLaunchFailures != 0 {
+		t.Fatalf("relançamento de companion que foi saudável não deveria contar como falha, got consecutiveLaunchFailures=%d", a.consecutiveLaunchFailures)
+	}
+	a.sessionWatchTick() // morte rápida do companion recém-relançado → agora sim conta
+	gotBackoff := time.Until(a.nextLaunchAttemptAt)
+	want := 15 * time.Second
+	if gotBackoff < want-time.Second || gotBackoff > want+time.Second {
+		t.Errorf("backoff pós-reset ≈ %v, want ≈15s — reset não voltou a escalada ao início", gotBackoff.Round(time.Second))
 	}
 }
 
