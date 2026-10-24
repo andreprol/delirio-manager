@@ -168,6 +168,13 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 // servidor (liveSessionRelay.routeMessage) de nunca repassar input numa
 // sessão Shadow.
 func readLiveSessionInput(conn *websocket.Conn, mode string) {
+	if mode != liveSessionNormalMode {
+		// mode é fixo pra vida inteira da conexão — se for != normal, vai
+		// recusar TODA mensagem até a conexão cair. Loga 1x aqui, não a
+		// cada mensagem dentro do loop (handleLiveSessionInput também
+		// recusa, em silêncio, por já ter sido logado aqui).
+		logError(fmt.Sprintf("companion: sessão não-normal (mode=%q) — input desabilitado nesta conexão", mode))
+	}
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {

@@ -47,12 +47,15 @@ var (
 // repassar input pra uma sessão Shadow (liveSessionRelay.routeMessage), mas
 // o companion não confia só nisso pra algo desta sensibilidade — controlar
 // o mouse do usuário sem ele saber seria uma violação grave do desenho
-// Normal/Shadow da feature. Loga alto porque, se isso disparar em
-// produção, é sinal de bug no servidor ou de alguém testando o protocolo
-// manualmente.
+// Normal/Shadow da feature. O log (ERROR, sinal de bug no servidor ou de
+// alguém testando o protocolo manualmente) acontece 1x por conexão em
+// readLiveSessionInput, não aqui — mode é fixo pra conexão inteira.
 func handleLiveSessionInput(data []byte, mode string) {
 	if mode != liveSessionNormalMode {
-		logError(fmt.Sprintf("companion: input recebido fora do mode normal (mode=%q) — ignorado", mode))
+		// Já logado 1x por readLiveSessionInput (mode é fixo pra conexão
+		// inteira, ver comentário lá) — aqui só recusa, sem logar de novo
+		// por mensagem, senão uma sessão não-normal inundaria companion.log
+		// na taxa de mensagens da WS.
 		return
 	}
 	msg, err := parseInputMessage(data)
@@ -116,6 +119,10 @@ type input struct {
 // existem em screencapture_windows.go — reusados aqui também.
 var procSendInput = user32.NewProc("SendInput")
 
+func clampInt32(v, lo, hi int32) int32 {
+	return max(lo, min(v, hi))
+}
+
 func injectMouseMove(x, y int32) error {
 	// Coordenadas absolutas normalizadas (0-65535) — ver doc MOUSEINPUT.
 	screenW, _, _ := procGetSystemMetrics.Call(smCxScreen)
@@ -123,8 +130,16 @@ func injectMouseMove(x, y int32) error {
 	if screenW == 0 || screenH == 0 {
 		return fmt.Errorf("injectMouseMove: GetSystemMetrics retornou tela com dimensão zero")
 	}
-	normX := x * 65536 / int32(screenW)
-	normY := y * 65536 / int32(screenH)
+	// x/y vêm do dashboard via WS→servidor→pipe, sem validação em nenhum
+	// ponto do caminho. Clampar ANTES da conta em int64 — fazer a conta em
+	// int32 com x/y fora de [-32768,32767] overflowa (ex: x=100000,
+	// screenW=1920 → normX negativo: o sinal inverte silenciosamente, sem
+	// erro Go, e o cursor pularia pra ESQUERDA em vez de ser limitado à
+	// direita da tela).
+	x = clampInt32(x, 0, int32(screenW)-1)
+	y = clampInt32(y, 0, int32(screenH)-1)
+	normX := int32(int64(x) * 65536 / int64(screenW))
+	normY := int32(int64(y) * 65536 / int64(screenH))
 
 	in := input{
 		Type: inputMouse,

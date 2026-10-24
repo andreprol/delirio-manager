@@ -1,5 +1,11 @@
 package main
 
+// Este arquivo mocka injectMouseMoveFn/injectMouseButtonFn (vars globais
+// mutáveis, mesmo padrão de captureScreenJPEGFn/startLiveSessionFn em
+// outros arquivos do pacote) — nenhum teste deste pacote usa t.Parallel()
+// hoje; não adicionar enquanto mocks dessas vars existirem, ou corrompe
+// outros testes silenciosamente.
+
 import (
 	"fmt"
 	"testing"
@@ -129,4 +135,39 @@ func TestHandleLiveSessionInputNormalModeInjects(t *testing.T) {
 		}
 		handleLiveSessionInput([]byte("não é json"), liveSessionNormalMode)
 	})
+}
+
+// TestClampInt32 cobre o fix de overflow: sem clamp, x=100000 com
+// screenW=1920 faria x*65536/screenW overflowar int32 e virar negativo
+// (normX=-1060590 em vez de ~65501) — confirmado isolado antes deste
+// teste existir. clampInt32 evita isso limitando x/y aos bounds da tela
+// ANTES da conta de normalização.
+func TestClampInt32(t *testing.T) {
+	cases := []struct {
+		name            string
+		v, lo, hi, want int32
+	}{
+		{"dentro do range", 500, 0, 1919, 500},
+		{"abaixo do mínimo", -10, 0, 1919, 0},
+		{"acima do máximo (causaria overflow sem clamp)", 100000, 0, 1919, 1919},
+	}
+	for _, c := range cases {
+		if got := clampInt32(c.v, c.lo, c.hi); got != c.want {
+			t.Errorf("%s: clampInt32(%d, %d, %d) = %d, want %d", c.name, c.v, c.lo, c.hi, got, c.want)
+		}
+	}
+}
+
+// TestInjectMouseButtonUnknownButton cobre o único branch de
+// injectMouseMove/injectMouseButton testável em CI sem desktop real: o
+// default (botão desconhecido) retorna erro ANTES de montar o struct
+// input ou chamar sendInputStruct/SendInput — fail-safe, nenhum efeito
+// colateral com entrada inválida.
+func TestInjectMouseButtonUnknownButton(t *testing.T) {
+	if err := injectMouseButton("middle", true); err == nil {
+		t.Error("esperava erro pra botão desconhecido \"middle\"")
+	}
+	if err := injectMouseButton("", false); err == nil {
+		t.Error("esperava erro pra botão vazio")
+	}
 }
