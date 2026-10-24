@@ -27,14 +27,21 @@ var (
 
 // startLiveSession conecta no WebSocket /live do servidor como companion e
 // começa a transmitir frames de tela em loop, até stopLiveSession ser
-// chamado ou a conexão cair. Não testável em CI de ponta a ponta (exige
-// desktop real + servidor real) — verificar manualmente.
-func startLiveSession(sessionID, mode, companionToken, serverURL string) {
+// chamado ou a conexão cair. Devolve false se sessionID já estava ativo
+// (start duplicado ignorado) — o chamador (handleCompanionPipeMessage) usa
+// esse retorno, não um pre-check separado, pra decidir Error vs sucesso no
+// ACK: um pre-check via isLiveSessionActive teria uma janela de
+// check-then-act real (a pipe aceita conexões concorrentes de qualquer
+// processo do mesmo usuário, ver pipeSecurityDescriptor) entre o check e
+// esta chamada, fazendo o ACK mentir sobre o que de fato aconteceu. Não
+// testável em CI de ponta a ponta (exige desktop real + servidor real) —
+// verificar manualmente.
+func startLiveSession(sessionID, mode, companionToken, serverURL string) bool {
 	liveSessionsMu.Lock()
 	if _, exists := liveSessions[sessionID]; exists {
 		liveSessionsMu.Unlock()
 		logWarn(fmt.Sprintf("companion: sessão %s já está ativa, ignorando start duplicado", sessionID))
-		return
+		return false
 	}
 	handle := &liveSessionHandle{stopCh: make(chan struct{})}
 	liveSessions[sessionID] = handle
@@ -59,6 +66,7 @@ func startLiveSession(sessionID, mode, companionToken, serverURL string) {
 		}
 		liveSessionsMu.Unlock()
 	})
+	return true
 }
 
 func stopLiveSession(sessionID string) {
@@ -161,11 +169,20 @@ func readLiveSessionInput(conn *websocket.Conn) {
 	}
 }
 
+// frameWriter é o subconjunto de *websocket.Conn que sendLiveSessionFrame
+// precisa — extraído pra permitir testar a lógica de contagem de falhas/
+// throttle de log/recuperação (a parte rica desta função) com um fake, sem
+// discar um WebSocket real.
+type frameWriter interface {
+	SetWriteDeadline(time.Time) error
+	WriteMessage(messageType int, data []byte) error
+}
+
 // sendLiveSessionFrame captura e envia um frame. Retorna false quando o
 // loop de runLiveSessionLoop deve encerrar a sessão (falha de escrita —
 // conexão provavelmente morta); falha de captura é só pulada (true), já
 // que é tipicamente transitória.
-func sendLiveSessionFrame(conn *websocket.Conn, sessionID string, captureFailures *int) bool {
+func sendLiveSessionFrame(conn frameWriter, sessionID string, captureFailures *int) bool {
 	frame, err := captureScreenJPEGFn(defaultJPEGQuality)
 	if err != nil {
 		*captureFailures++

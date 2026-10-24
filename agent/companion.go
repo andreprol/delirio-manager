@@ -161,18 +161,27 @@ func handleCompanionPipeMessage(msg pipeMessage) pipeMessage {
 			ResultJPEGBase64: base64.StdEncoding.EncodeToString(jpegBytes),
 		}
 	case "start-live-session":
+		if msg.SessionID == "" {
+			// A pipe é uma fronteira de confiança própria — o ACL (ver
+			// pipeSecurityDescriptor) permite qualquer processo do mesmo
+			// usuário conectar, não só o serviço. Não confiar ciegamente no
+			// que chega, mesmo padrão já validado em commands.go pro lado
+			// do serviço (handleStartLiveSession/handleStopLiveSession).
+			return pipeMessage{RequestID: msg.RequestID, Error: "start-live-session: sessionId obrigatório e ausente"}
+		}
 		logInfo(fmt.Sprintf("companion: start-live-session recebido (sessão %s, mode %s)", msg.SessionID, msg.Mode))
-		// isLiveSessionActive só evita que o servidor receba "sucesso" num
-		// start duplicado (startLiveSession já ignora duplicatas por conta
-		// própria, atomicamente, sob o mesmo mutex — esta checagem aqui é
-		// só pra reportar o Error de volta, mesmo com a janela de
-		// check-then-act entre as duas chamadas).
-		if isLiveSessionActive(msg.SessionID) {
+		// startLiveSessionFn devolve o resultado real (não um pre-check
+		// separado via isLiveSessionActive) — um pre-check teria uma janela
+		// de check-then-act real entre ele e esta chamada (pipe aceita
+		// conexões concorrentes), fazendo o ACK mentir sobre duplicata.
+		if !startLiveSessionFn(msg.SessionID, msg.Mode, msg.CompanionToken, msg.ServerURL) {
 			return pipeMessage{RequestID: msg.RequestID, Error: fmt.Sprintf("sessão %s já está ativa", msg.SessionID)}
 		}
-		startLiveSessionFn(msg.SessionID, msg.Mode, msg.CompanionToken, msg.ServerURL)
 		return pipeMessage{RequestID: msg.RequestID}
 	case "stop-live-session":
+		if msg.SessionID == "" {
+			return pipeMessage{RequestID: msg.RequestID, Error: "stop-live-session: sessionId obrigatório e ausente"}
+		}
 		logInfo(fmt.Sprintf("companion: stop-live-session recebido (sessão %s)", msg.SessionID))
 		stopLiveSessionFn(msg.SessionID)
 		return pipeMessage{RequestID: msg.RequestID}
@@ -190,5 +199,5 @@ func handleCompanionPipeMessage(msg pipeMessage) pipeMessage {
 // Var global mutável, mesmo cuidado das outras: nenhum teste deste pacote
 // usa t.Parallel() hoje; não adicionar enquanto mocks destas vars existirem,
 // ou corrompe outros testes silenciosamente.
-var startLiveSessionFn = startLiveSession
+var startLiveSessionFn = startLiveSession // bool: false = duplicado, ignorado
 var stopLiveSessionFn = stopLiveSession

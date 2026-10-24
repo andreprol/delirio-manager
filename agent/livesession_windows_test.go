@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLiveSessionFrameIntervalMs(t *testing.T) {
@@ -91,4 +93,87 @@ func TestIsLiveSessionActive(t *testing.T) {
 	if !isLiveSessionActive(sid) {
 		t.Fatal("esperava true com sessão registrada")
 	}
+}
+
+// fakeFrameWriter implementa frameWriter sem WebSocket real — permite
+// testar a lógica de contagem de falhas/throttle de log/recuperação de
+// sendLiveSessionFrame (a parte com estado desta função) isoladamente.
+type fakeFrameWriter struct {
+	writeErr error
+	writes   int
+}
+
+func (f *fakeFrameWriter) SetWriteDeadline(time.Time) error { return nil }
+
+func (f *fakeFrameWriter) WriteMessage(messageType int, data []byte) error {
+	f.writes++
+	return f.writeErr
+}
+
+func TestSendLiveSessionFrame(t *testing.T) {
+	originalCapture := captureScreenJPEGFn
+	defer func() { captureScreenJPEGFn = originalCapture }()
+
+	t.Run("sucesso simples", func(t *testing.T) {
+		captureScreenJPEGFn = func(q int) ([]byte, error) { return []byte("frame"), nil }
+		w := &fakeFrameWriter{}
+		failures := 0
+		if !sendLiveSessionFrame(w, "s1", &failures) {
+			t.Fatal("esperava true no caminho de sucesso")
+		}
+		if w.writes != 1 {
+			t.Errorf("writes = %d, want 1", w.writes)
+		}
+		if failures != 0 {
+			t.Errorf("failures = %d, want 0", failures)
+		}
+	})
+
+	t.Run("falha de captura não derruba a sessão", func(t *testing.T) {
+		captureScreenJPEGFn = func(q int) ([]byte, error) { return nil, fmt.Errorf("falha de captura") }
+		w := &fakeFrameWriter{}
+		failures := 0
+		if !sendLiveSessionFrame(w, "s1", &failures) {
+			t.Fatal("falha de captura não deveria encerrar a sessão")
+		}
+		if failures != 1 {
+			t.Errorf("failures = %d, want 1", failures)
+		}
+		if w.writes != 0 {
+			t.Errorf("writes = %d, want 0 (não deveria escrever sem frame capturado)", w.writes)
+		}
+	})
+
+	t.Run("recupera após falhas consecutivas", func(t *testing.T) {
+		callCount := 0
+		captureScreenJPEGFn = func(q int) ([]byte, error) {
+			callCount++
+			if callCount <= 2 {
+				return nil, fmt.Errorf("falha transitória")
+			}
+			return []byte("frame"), nil
+		}
+		w := &fakeFrameWriter{}
+		failures := 0
+		sendLiveSessionFrame(w, "s1", &failures)
+		sendLiveSessionFrame(w, "s1", &failures)
+		if failures != 2 {
+			t.Fatalf("failures = %d, want 2 antes da recuperação", failures)
+		}
+		if !sendLiveSessionFrame(w, "s1", &failures) {
+			t.Fatal("esperava true na recuperação")
+		}
+		if failures != 0 {
+			t.Errorf("failures = %d, want 0 após recuperação", failures)
+		}
+	})
+
+	t.Run("falha de escrita encerra a sessão", func(t *testing.T) {
+		captureScreenJPEGFn = func(q int) ([]byte, error) { return []byte("frame"), nil }
+		w := &fakeFrameWriter{writeErr: fmt.Errorf("conexão morta")}
+		failures := 0
+		if sendLiveSessionFrame(w, "s1", &failures) {
+			t.Fatal("falha de escrita deveria encerrar a sessão (false)")
+		}
+	})
 }

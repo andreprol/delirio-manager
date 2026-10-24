@@ -124,8 +124,9 @@ func TestHandleCompanionPipeMessage_StartLiveSession(t *testing.T) {
 	defer func() { startLiveSessionFn = original }()
 
 	var gotSessionID, gotMode, gotToken, gotServerURL string
-	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) {
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) bool {
 		gotSessionID, gotMode, gotToken, gotServerURL = sessionID, mode, companionToken, serverURL
+		return true
 	}
 
 	resp := handleCompanionPipeMessage(pipeMessage{
@@ -145,6 +146,50 @@ func TestHandleCompanionPipeMessage_StartLiveSession(t *testing.T) {
 	if gotSessionID != "s1" || gotMode != "shadow" || gotToken != "tok-abc" || gotServerURL != "https://exemplo.test" {
 		t.Errorf("startLiveSessionFn recebeu params incompletos: sessionID=%q mode=%q token=%q serverURL=%q",
 			gotSessionID, gotMode, gotToken, gotServerURL)
+	}
+}
+
+// TestHandleCompanionPipeMessage_StartLiveSessionDuplicate confirma que
+// handleCompanionPipeMessage devolve Error quando startLiveSessionFn
+// devolve false (duplicata) — o ACK reflete o retorno real da função, não
+// um pre-check separado sujeito a corrida.
+func TestHandleCompanionPipeMessage_StartLiveSessionDuplicate(t *testing.T) {
+	original := startLiveSessionFn
+	defer func() { startLiveSessionFn = original }()
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) bool {
+		return false
+	}
+
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "start-live-session", RequestID: "req-dup", SessionID: "s1"})
+	if resp.Error == "" {
+		t.Fatal("esperava Error quando startLiveSessionFn devolve false (duplicata)")
+	}
+}
+
+func TestHandleCompanionPipeMessage_StartLiveSessionRequiresSessionID(t *testing.T) {
+	original := startLiveSessionFn
+	defer func() { startLiveSessionFn = original }()
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) bool {
+		t.Fatal("não deveria chamar startLiveSessionFn sem sessionId")
+		return false
+	}
+
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "start-live-session", RequestID: "req-6"})
+	if resp.Error == "" {
+		t.Fatal("esperava Error com sessionId ausente")
+	}
+}
+
+func TestHandleCompanionPipeMessage_StopLiveSessionRequiresSessionID(t *testing.T) {
+	original := stopLiveSessionFn
+	defer func() { stopLiveSessionFn = original }()
+	stopLiveSessionFn = func(sessionID string) {
+		t.Fatal("não deveria chamar stopLiveSessionFn sem sessionId")
+	}
+
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "stop-live-session", RequestID: "req-7"})
+	if resp.Error == "" {
+		t.Fatal("esperava Error com sessionId ausente")
 	}
 }
 
