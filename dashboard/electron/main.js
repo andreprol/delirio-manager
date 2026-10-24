@@ -1,11 +1,18 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
 const path = require('path')
 const fs   = require('fs')
+const { spawn } = require('child_process')
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 const IS_DEV      = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+// app.asar.unpacked: ffmpeg-static embute um binário nativo, que não pode
+// ser executado de dentro do .asar — asarUnpack (package.json/build) copia
+// esse binário pra fora, em app.asar.unpacked; em dev (sem asar) a troca de
+// string não encontra 'app.asar' e não faz nada, path já está certo.
+const ffmpegPath = require('ffmpeg-static').replace('app.asar', 'app.asar.unpacked')
 
 function loadConfig() {
   try {
@@ -62,6 +69,95 @@ function createWindow() {
   })
 
   return win
+}
+
+// Janela separada por sessão ao vivo (acesso remoto) — uma por máquina, o
+// operador pode abrir mais de uma ao mesmo tempo. Carrega o MESMO bundle
+// (dist/index.html) que a janela principal; main.jsx decide qual React root
+// montar checando `electronAPI.isLiveSessionWindow` (flag em process.argv,
+// lida no preload — nunca segredo ali). Os parâmetros da sessão (incluindo
+// dashboardToken) viajam só por IPC, depois da janela terminar de carregar
+// — nunca em URL/hash (ver spec 2026-10-24: evita token em histórico de
+// navegação ou devtools).
+function createLiveSessionWindow(params) {
+  const liveWin = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 960,
+    minHeight: 600,
+    title: 'Delirio Manager — Sessão ao vivo',
+    backgroundColor: '#0f1117',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      additionalArguments: ['--live-session'],
+    },
+  })
+
+  liveWin.setMenuBarVisibility(false)
+
+  if (IS_DEV) {
+    liveWin.loadURL('http://localhost:5173')
+  } else {
+    liveWin.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
+  }
+
+  liveWin.webContents.once('did-finish-load', () => {
+    liveWin.webContents.send('live-session-init', params)
+  })
+
+  // Fechar a janela (X) é equivalente a "Encerrar sessão" (decisão da spec
+  // 2026-10-24) — mas não fecha na hora: pede pro renderer limpar primeiro
+  // (parar gravação em andamento + POST /stop), só destrói a janela quando
+  // ele confirmar via 'live-session-cleanup-done'. Sem isso, o companion
+  // continuaria transmitindo sem ninguém olhando, e uma gravação em
+  // andamento seria descartada sem perguntar.
+  //
+  // __cleanupStarted evita mandar 'live-session-cleanup-and-close' de novo
+  // se o usuário insistir no X enquanto o cleanup já está em andamento —
+  // sem isso o renderer reiniciaria o heartbeat a cada clique repetido.
+  liveWin.on('close', (event) => {
+    if (liveWin.__cleanupDone) return
+    event.preventDefault()
+    if (!liveWin.__cleanupStarted) {
+      liveWin.__cleanupStarted = true
+      liveWin.webContents.send('live-session-cleanup-and-close')
+    }
+    armCleanupSafetyTimer(liveWin)
+  })
+
+  liveWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  return liveWin
+}
+
+// Rede de segurança do cleanup ao fechar a janela de sessão ao vivo: se o
+// renderer nunca confirmar (fechou antes do React montar, preload falhou,
+// travou de verdade), a janela ficaria IMPOSSÍVEL de fechar pra sempre —
+// event.preventDefault() já bloqueou o close, e nada mais chamaria
+// cleanupDone(). Um timeout fixo curto, porém, força o fechamento mesmo com
+// o cleanup legitimamente em andamento — ex: operador decidindo onde salvar
+// a gravação no dialog.showSaveDialog, que pode levar bem mais que alguns
+// segundos — perdendo a gravação em silêncio (achado 🔴 da revisão
+// cross-cutting independente). Por isso o timer é REARMADO a cada
+// 'live-session-cleanup-progress' que o renderer manda enquanto está de
+// fato trabalhando (ver LiveSessionWindow.jsx, heartbeat de 4s durante o
+// cleanup) — só expira de verdade se o renderer parar de responder por
+// completo (travado/morto), não enquanto espera decisão humana.
+const CLEANUP_SAFETY_TIMEOUT_MS = 15000
+
+function armCleanupSafetyTimer(liveWin) {
+  clearTimeout(liveWin.__cleanupSafetyTimer)
+  liveWin.__cleanupSafetyTimer = setTimeout(() => {
+    if (!liveWin.isDestroyed() && !liveWin.__cleanupDone) {
+      liveWin.__cleanupDone = true
+      liveWin.close()
+    }
+  }, CLEANUP_SAFETY_TIMEOUT_MS)
 }
 
 function setupAutoUpdater(win) {
@@ -187,6 +283,84 @@ app.whenReady().then(() => {
     const newMinW = Math.max(currentMinW, Math.ceil(neededWidth))
     if (newMinW !== currentMinW) win.setMinimumSize(newMinW, currentMinH)
     if (newW    !== currentW)    win.setSize(newW, currentH, true) // true = animate
+  })
+
+  // IPC: abre a janela de sessão ao vivo (acesso remoto)
+  ipcMain.handle('live-session:open', (_, params) => {
+    createLiveSessionWindow(params)
+    return true
+  })
+
+  // IPC: a janela de sessão confirmou que já limpou (parou gravação, avisou
+  // o servidor) — agora pode fechar de verdade.
+  ipcMain.on('live-session-cleanup-done', (event) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    if (senderWin && !senderWin.isDestroyed()) {
+      clearTimeout(senderWin.__cleanupSafetyTimer)
+      senderWin.__cleanupDone = true
+      senderWin.close()
+    }
+  })
+
+  // IPC: a janela de sessão avisa que o cleanup ainda está em andamento de
+  // verdade — rearma a rede de segurança (armCleanupSafetyTimer) pra não
+  // forçar o fechamento no meio de um trabalho legítimo.
+  ipcMain.on('live-session-cleanup-progress', (event) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    if (senderWin && !senderWin.isDestroyed()) armCleanupSafetyTimer(senderWin)
+  })
+
+  // IPC: converte a gravação WebM (MediaRecorder, renderer) pra MP4 via
+  // ffmpeg-static, pergunta onde salvar, grava .mp4 + .json de metadados.
+  ipcMain.handle('convert-recording', async (event, arrayBuffer, metadata) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    const tmpDir    = app.getPath('temp')
+    const stamp     = Date.now()
+    const webmPath  = path.join(tmpDir, `delirio-live-${stamp}.webm`)
+    const mp4Path   = path.join(tmpDir, `delirio-live-${stamp}.mp4`)
+
+    fs.writeFileSync(webmPath, Buffer.from(arrayBuffer))
+
+    try {
+      await new Promise((resolve, reject) => {
+        const proc = spawn(ffmpegPath, ['-y', '-i', webmPath, '-c:v', 'libx264', '-preset', 'fast', mp4Path])
+        let stderr = ''
+        proc.stderr.on('data', (d) => { stderr += d.toString() })
+        proc.on('error', reject)
+        proc.on('close', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`ffmpeg saiu com código ${code}: ${stderr.slice(-500)}`))
+        })
+      })
+    } catch (err) {
+      // Em erro, o ffmpeg pode ter escrito mp4Path parcialmente antes de
+      // falhar — sem isso, ficava órfão em app.getPath('temp') pra sempre a
+      // cada conversão que falhasse (achado 🟠 da revisão cross-cutting).
+      fs.unlink(mp4Path, () => {})
+      throw err
+    } finally {
+      fs.unlink(webmPath, () => {})
+    }
+
+    const suggestedName = `${metadata?.hostname || metadata?.machineId || 'sessao'}_${stamp}.mp4`
+    const { canceled, filePath } = await dialog.showSaveDialog(senderWin, {
+      title: 'Salvar gravação da sessão ao vivo',
+      defaultPath: path.join(app.getPath('downloads'), suggestedName),
+      filters: [{ name: 'Vídeo MP4', extensions: ['mp4'] }],
+    })
+
+    if (canceled || !filePath) {
+      fs.unlink(mp4Path, () => {})
+      return { saved: false }
+    }
+
+    fs.copyFileSync(mp4Path, filePath)
+    fs.unlink(mp4Path, () => {})
+
+    const jsonPath = filePath.replace(/\.mp4$/i, '.json')
+    fs.writeFileSync(jsonPath, JSON.stringify(metadata, null, 2))
+
+    return { saved: true, filePath, jsonPath }
   })
 
   const win = createWindow()

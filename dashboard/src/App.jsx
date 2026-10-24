@@ -11,7 +11,8 @@ import { RhModule } from './components/RhModule'
 import { AlohaModule } from './components/AlohaModule'
 import { DRModule } from './components/DRModule'
 import { ReportModule } from './components/ReportModule'
-import { api, setServerUrl, getServerUrl, setInternalApiKey } from './api'
+import { WatchlistModule } from './components/WatchlistModule'
+import { api, setServerUrl, getServerUrl, setInternalApiKey, setAdminSecret } from './api'
 
 function fmtAge(min) {
   if (min == null) return 'Nunca sincronizado'
@@ -33,6 +34,7 @@ function IntSyncPill({ label, ok, ageMinutes, syncing }) {
 export default function App() {
   const [serverUrl, setServerUrlState] = useState('https://dt-manager.brazilsouth.cloudapp.azure.com')
   const [internalApiKey, setInternalApiKeyState] = useState('')
+  const [adminSecret, setAdminSecretState] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [showUpdate,   setShowUpdate]   = useState(false)
   const [search, setSearch] = useState('')
@@ -62,6 +64,7 @@ export default function App() {
   const [showAloha, setShowAloha] = useState(false)
   const [showDR,         setShowDR]         = useState(false)
   const [showRelatorio,  setShowRelatorio]  = useState(false)
+  const [showWatchlist,  setShowWatchlist]  = useState(false)
   const [biosState,    setBiosState]    = useState(null) // null | 'loading' | 'done' | 'error'
   const [biosSavePath, setBiosSavePath] = useState(null)
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
@@ -165,22 +168,28 @@ export default function App() {
     async function load() {
       let url = serverUrl
       let key = internalApiKey
+      let admin = adminSecret
       try {
         if (window.electronAPI) {
           const cfg = await window.electronAPI.getConfig()
           if (cfg?.serverUrl)      url = cfg.serverUrl
           if (cfg?.internalApiKey) key = cfg.internalApiKey
+          if (cfg?.adminSecret)    admin = cfg.adminSecret
         } else {
           const savedUrl = localStorage.getItem('serverUrl')
           const savedKey = localStorage.getItem('internalApiKey')
+          const savedAdmin = localStorage.getItem('adminSecret')
           if (savedUrl) url = savedUrl
           if (savedKey) key = savedKey
+          if (savedAdmin) admin = savedAdmin
         }
       } catch {}
       setServerUrlState(url)
       setServerUrl(url)
       setInternalApiKeyState(key)
       setInternalApiKey(key)
+      setAdminSecretState(admin)
+      setAdminSecret(admin)
       setConfigLoaded(true)
       try {
         const settings = await api.getSettings()
@@ -194,17 +203,20 @@ export default function App() {
   // Salva URL do servidor e chave interna juntas — electronAPI.setConfig
   // SOBRESCREVE o arquivo inteiro (não mescla), então as duas sempre viajam
   // juntas pra uma nunca apagar a outra.
-  async function saveServerUrl(url, key = internalApiKey) {
+  async function saveServerUrl(url, key = internalApiKey, admin = adminSecret) {
     setServerUrlState(url)
     setServerUrl(url)
     setInternalApiKeyState(key)
     setInternalApiKey(key)
+    setAdminSecretState(admin)
+    setAdminSecret(admin)
     try {
       if (window.electronAPI) {
-        await window.electronAPI.setConfig({ serverUrl: url, internalApiKey: key })
+        await window.electronAPI.setConfig({ serverUrl: url, internalApiKey: key, adminSecret: admin })
       } else {
         localStorage.setItem('serverUrl', url)
         localStorage.setItem('internalApiKey', key)
+        localStorage.setItem('adminSecret', admin)
       }
     } catch {}
     setShowSettings(false)
@@ -459,6 +471,9 @@ export default function App() {
             <button className="pill-btn" onClick={() => setShowRelatorio(true)} title="Módulo Relatório — Score de risco por loja">
               📊 Rel.
             </button>
+            <button className="pill-btn" onClick={() => setShowWatchlist(true)} title="Módulo Watchlist — Palavras-chave de acesso remoto">
+              🔎 Watch
+            </button>
           </div>
 
           <button
@@ -601,6 +616,7 @@ export default function App() {
         <SettingsModal
           currentUrl={serverUrl}
           currentInternalKey={internalApiKey}
+          currentAdminSecret={adminSecret}
           onSave={saveServerUrl}
           onClose={() => setShowSettings(false)}
         />
@@ -617,14 +633,16 @@ export default function App() {
       {showAloha && <AlohaModule onClose={() => setShowAloha(false)} machines={machines} />}
       {showDR && <DRModule onClose={() => setShowDR(false)} />}
       {showRelatorio && <ReportModule onClose={() => setShowRelatorio(false)} />}
+      {showWatchlist && <WatchlistModule onClose={() => setShowWatchlist(false)} />}
       <UpdateToast />
     </div>
   )
 }
 
-function SettingsModal({ currentUrl, currentInternalKey, onSave, onClose }) {
+function SettingsModal({ currentUrl, currentInternalKey, currentAdminSecret, onSave, onClose }) {
   const [url, setUrl] = useState(currentUrl)
   const [internalKey, setInternalKey] = useState(currentInternalKey || '')
+  const [adminSecretInput, setAdminSecretInput] = useState(currentAdminSecret || '')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
 
@@ -698,6 +716,18 @@ function SettingsModal({ currentUrl, currentInternalKey, onSave, onClose }) {
           autoComplete="new-password"
         />
 
+        <label className="form-label" style={{ marginTop: 10 }}>
+          Admin secret (protege Watchlist e Acesso Remoto)
+        </label>
+        <input
+          className="form-input"
+          type="password"
+          value={adminSecretInput}
+          onChange={e => setAdminSecretInput(e.target.value)}
+          placeholder="X-Admin-Secret configurado no servidor"
+          autoComplete="new-password"
+        />
+
         {testResult && (
           <div className={`test-result ${testResult.ok ? 'ok' : 'err'}`}>
             {testResult.msg}
@@ -708,7 +738,7 @@ function SettingsModal({ currentUrl, currentInternalKey, onSave, onClose }) {
           <button className="btn btn-secondary" onClick={testConnection} disabled={testing}>
             {testing ? 'Testando...' : 'Testar conexao'}
           </button>
-          <button className="btn btn-primary" onClick={() => onSave(url, internalKey)}>
+          <button className="btn btn-primary" onClick={() => onSave(url, internalKey, adminSecretInput)}>
             Salvar URL
           </button>
           <button className="btn btn-secondary" onClick={onClose}>

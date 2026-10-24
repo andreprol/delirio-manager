@@ -595,3 +595,29 @@ describe('POST /api/rh/clock/:ip/mark-new', () => {
     expect(res.body.error).toBe('IP invalido');
   });
 });
+
+describe('feature flag FEATURE_LIVE_ACCESS', () => {
+  const ORIGINAL = process.env.FEATURE_LIVE_ACCESS;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.FEATURE_LIVE_ACCESS;
+    else process.env.FEATURE_LIVE_ACCESS = ORIGINAL;
+  });
+
+  it('404 em /api/live/* quando a flag está desligada', async () => {
+    delete process.env.FEATURE_LIVE_ACCESS;
+    jest.resetModules();
+    const request = require('supertest');
+    const app = require('./app');
+    const res = await request(app).post('/api/live/m1/start').send({ mode: 'shadow' });
+    expect(res.status).toBe(404);
+  });
+
+  it('rota existe quando a flag está ligada (não 404)', async () => {
+    process.env.FEATURE_LIVE_ACCESS = 'true';
+    jest.resetModules();
+    const request = require('supertest');
+    const app = require('./app');
+    const res = await request(app).post('/api/live/m1/start').send({ mode: 'shadow' });
+    expect(res.status).not.toBe(404);
+  });
+});

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MachineCard } from '../components/MachineCard'
 
@@ -12,7 +12,9 @@ vi.mock('../components/InsightsTab', () => ({
 vi.mock('../api', () => ({
   api: {
     dr: { setup: vi.fn(), backupNow: vi.fn() },
+    live: { start: vi.fn() },
   },
+  getServerUrl: vi.fn(() => 'https://mock.example.com'),
 }))
 
 function makeMachine(overrides = {}) {
@@ -271,5 +273,57 @@ describe('MachineCard — métricas (tab expandida)', () => {
     expect(screen.getByText('CPU')).toBeInTheDocument()
     expect(screen.getByText('RAM')).toBeInTheDocument()
     expect(screen.getByText('Disco')).toBeInTheDocument()
+  })
+})
+
+// ── Acesso remoto ──────────────────────────────────────────────────────────
+
+import { api } from '../api'
+
+describe('MachineCard — acesso remoto', () => {
+  function expandCard(container) {
+    fireEvent.click(container.querySelector('.mc'))
+  }
+
+  beforeEach(() => {
+    window.electronAPI = { openLiveSessionWindow: vi.fn() }
+  })
+
+  it('botões Shadow/Normal desabilitados quando a máquina está offline', () => {
+    const { container } = render(<MachineCard machine={makeMachine({ status: 'offline' })}
+      onCommand={noop} onWol={noop} onMoveToGroup={noop} onDeleteMachine={noop} />)
+    expandCard(container)
+    expect(screen.getByText('✍️ Shadow')).toBeDisabled()
+    expect(screen.getByText('🖥 Normal')).toBeDisabled()
+  })
+
+  it('clicar em Normal chama api.live.start e abre a janela com os parâmetros da resposta', async () => {
+    api.live.start.mockResolvedValue({ ok: true, sessionId: 'sess-1', mode: 'normal', dashboardToken: 'tok-xyz' })
+    const { container } = render(<MachineCard machine={makeMachine({ id: 'mach-test', status: 'online' })}
+      onCommand={noop} onWol={noop} onMoveToGroup={noop} onDeleteMachine={noop} />)
+    expandCard(container)
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('🖥 Normal'))
+    })
+
+    expect(api.live.start).toHaveBeenCalledWith('mach-test', 'normal')
+    expect(window.electronAPI.openLiveSessionWindow).toHaveBeenCalledWith({
+      sessionId: 'sess-1', machineId: 'mach-test', mode: 'normal', dashboardToken: 'tok-xyz', serverUrl: expect.any(String),
+    })
+  })
+
+  it('erro no start mostra mensagem e não abre janela', async () => {
+    api.live.start.mockRejectedValue(new Error('Máquina não encontrada'))
+    const { container } = render(<MachineCard machine={makeMachine({ status: 'online' })}
+      onCommand={noop} onWol={noop} onMoveToGroup={noop} onDeleteMachine={noop} />)
+    expandCard(container)
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('✍️ Shadow'))
+    })
+
+    expect(screen.getByText(/Máquina não encontrada/)).toBeInTheDocument()
+    expect(window.electronAPI.openLiveSessionWindow).not.toHaveBeenCalled()
   })
 })

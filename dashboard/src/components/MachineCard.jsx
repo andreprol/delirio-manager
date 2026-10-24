@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { EventsTab } from './EventsTab'
 import { InsightsTab } from './InsightsTab'
-import { api } from '../api'
+import { api, getServerUrl } from '../api'
 
 const STATUS_COLOR = { online: '#22c55e', offline: '#ef4444', unknown: '#6b7280' }
 const STATUS_LABEL = { online: 'Online', offline: 'Offline', unknown: 'Desconhecido' }
@@ -34,6 +34,8 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
   const [insightsUnread, setInsightsUnread] = useState(0)
   const [drLoading, setDrLoading] = useState(false)
   const [drMsg,     setDrMsg]     = useState(null)
+  const [liveLoading, setLiveLoading] = useState(false)
+  const [liveError,   setLiveError]   = useState(null)
   const [editingName, setEditingName] = useState(false)
   const [nameInput,   setNameInput]   = useState('')
   const nameInputRef = useRef(null)
@@ -129,6 +131,24 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
     } catch (e) {
       setDrMsg('Erro: ' + (e.message || 'falhou'))
     } finally { setDrLoading(false) }
+  }
+
+  async function handleStartLiveSession(mode) {
+    setLiveLoading(true); setLiveError(null)
+    try {
+      const resp = await api.live.start(machine.id, mode)
+      window.electronAPI?.openLiveSessionWindow({
+        sessionId: resp.sessionId,
+        machineId: machine.id,
+        mode: resp.mode,
+        dashboardToken: resp.dashboardToken,
+        serverUrl: getServerUrl(),
+      })
+    } catch (e) {
+      setLiveError(e.message || 'falhou')
+    } finally {
+      setLiveLoading(false)
+    }
   }
 
   async function execCommand(type, confirmVal) {
@@ -351,6 +371,17 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
                     onClick={() => handleCommand('uninstall')}>
                     Desinstalar
                   </button>
+                  <button className="btn btn-secondary"
+                    disabled={liveLoading || status !== 'online'}
+                    onClick={() => handleStartLiveSession('shadow')}>
+                    ✍️ Shadow
+                  </button>
+                  <button className="btn btn-secondary"
+                    disabled={liveLoading || status !== 'online'}
+                    onClick={() => handleStartLiveSession('normal')}>
+                    🖥 Normal
+                  </button>
+                  {liveError && <div className="test-result err">{liveError}</div>}
                 </div>
               ) : (
                 <div className="confirm-box">

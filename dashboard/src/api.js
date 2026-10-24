@@ -21,9 +21,21 @@ export function getInternalApiKey() {
   return internalApiKey
 }
 
-async function request(method, path, body, { authed = false } = {}) {
+// X-Admin-Secret — protege /api/watchlist e /api/live/* (acesso remoto).
+let adminSecret = ''
+
+export function setAdminSecret(secret) {
+  adminSecret = secret || ''
+}
+
+export function getAdminSecret() {
+  return adminSecret
+}
+
+async function request(method, path, body, { authed = false, admin = false } = {}) {
   const headers = { 'Content-Type': 'application/json' }
   if (authed && internalApiKey) headers['x-internal-key'] = internalApiKey
+  if (admin && adminSecret) headers['X-Admin-Secret'] = adminSecret
   const res = await fetch(`${serverUrl}${path}`, {
     method,
     headers,
@@ -156,6 +168,21 @@ export const api = {
       request('GET', '/api/rh/next-ref1'),
     markClockNew: (ip) =>
       request('POST', `/api/rh/clock/${ip}/mark-new`),
+  },
+
+  // Watchlist (acesso remoto) — CRUD de palavras-chave monitoradas
+  watchlist: {
+    list:      ()              => request('GET',    '/api/watchlist', null, { admin: true }),
+    create:    (keyword)       => request('POST',   '/api/watchlist', { keyword }, { admin: true }),
+    setActive: (id, active)    => request('PUT',    `/api/watchlist/${id}`, { active }, { admin: true }),
+    remove:    (id)            => request('DELETE', `/api/watchlist/${id}`, null, { admin: true }),
+  },
+
+  // Sessão ao vivo (acesso remoto) — start/stop; o stream em si é WebSocket direto
+  // (ver dashboard/src/hooks/useLiveSession.js), não passa por aqui.
+  live: {
+    start: (machineId, mode)        => request('POST', `/api/live/${machineId}/start`, { mode }, { admin: true }),
+    stop:  (sessionId, recorded)    => request('POST', `/api/live/${sessionId}/stop`, { recorded: !!recorded }, { admin: true }),
   },
 
   // DR — Bare Metal Recovery
