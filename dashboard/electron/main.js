@@ -1,11 +1,18 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
 const path = require('path')
 const fs   = require('fs')
+const { spawn } = require('child_process')
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 const IS_DEV      = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+// app.asar.unpacked: ffmpeg-static embute um binário nativo, que não pode
+// ser executado de dentro do .asar — asarUnpack (package.json/build) copia
+// esse binário pra fora, em app.asar.unpacked; em dev (sem asar) a troca de
+// string não encontra 'app.asar' e não faz nada, path já está certo.
+const ffmpegPath = require('ffmpeg-static').replace('app.asar', 'app.asar.unpacked')
 
 function loadConfig() {
   try {
@@ -259,6 +266,53 @@ app.whenReady().then(() => {
       senderWin.__cleanupDone = true
       senderWin.close()
     }
+  })
+
+  // IPC: converte a gravação WebM (MediaRecorder, renderer) pra MP4 via
+  // ffmpeg-static, pergunta onde salvar, grava .mp4 + .json de metadados.
+  ipcMain.handle('convert-recording', async (event, arrayBuffer, metadata) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    const tmpDir    = app.getPath('temp')
+    const stamp     = Date.now()
+    const webmPath  = path.join(tmpDir, `delirio-live-${stamp}.webm`)
+    const mp4Path   = path.join(tmpDir, `delirio-live-${stamp}.mp4`)
+
+    fs.writeFileSync(webmPath, Buffer.from(arrayBuffer))
+
+    try {
+      await new Promise((resolve, reject) => {
+        const proc = spawn(ffmpegPath, ['-y', '-i', webmPath, '-c:v', 'libx264', '-preset', 'fast', mp4Path])
+        let stderr = ''
+        proc.stderr.on('data', (d) => { stderr += d.toString() })
+        proc.on('error', reject)
+        proc.on('close', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`ffmpeg saiu com código ${code}: ${stderr.slice(-500)}`))
+        })
+      })
+    } finally {
+      fs.unlink(webmPath, () => {})
+    }
+
+    const suggestedName = `${metadata?.hostname || metadata?.machineId || 'sessao'}_${stamp}.mp4`
+    const { canceled, filePath } = await dialog.showSaveDialog(senderWin, {
+      title: 'Salvar gravação da sessão ao vivo',
+      defaultPath: path.join(app.getPath('downloads'), suggestedName),
+      filters: [{ name: 'Vídeo MP4', extensions: ['mp4'] }],
+    })
+
+    if (canceled || !filePath) {
+      fs.unlink(mp4Path, () => {})
+      return { saved: false }
+    }
+
+    fs.copyFileSync(mp4Path, filePath)
+    fs.unlink(mp4Path, () => {})
+
+    const jsonPath = filePath.replace(/\.mp4$/i, '.json')
+    fs.writeFileSync(jsonPath, JSON.stringify(metadata, null, 2))
+
+    return { saved: true, filePath, jsonPath }
   })
 
   const win = createWindow()
