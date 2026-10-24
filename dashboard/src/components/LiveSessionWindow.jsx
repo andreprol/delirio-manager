@@ -110,7 +110,12 @@ export function LiveSessionWindow() {
         // continua — e o operador vê o erro (recordingError), não só um
         // console.error silencioso.
         console.error('Falha ao converter gravação:', err)
-        setRecordingError(err.message || 'falha ao salvar a gravação')
+        // err?.message, não err.message: uma rejeição sem motivo (ex:
+        // Promise.reject() sem argumento) faria err.message lançar
+        // TypeError aqui dentro, sem handler — reintroduzindo o exato
+        // bug 🟠 que este fluxo corrigiu (fila trava, próximas gravações
+        // nunca convertem). Achado 🟡 da 8ª rodada de verificação.
+        setRecordingError(err?.message || 'falha ao salvar a gravação')
       }
     }
 
@@ -188,7 +193,7 @@ export function LiveSessionWindow() {
       await endSession()
       window.electronAPI?.cleanupDone()
     } catch (err) {
-      setEndError(err.message || 'falha ao encerrar a sessão')
+      setEndError(err?.message || 'falha ao encerrar a sessão')
     }
   }, [endSession])
 
