@@ -42,6 +42,10 @@ type Agent struct {
 	companionHandle           atomic.Uintptr // windows.Handle do processo companion vivo (0 = nenhum)
 	consecutiveLaunchFailures int
 	nextLaunchAttemptAt       time.Time // zero = sem backoff pendente
+	// companionJob: criado 1x em start(), nunca reatribuído depois — só
+	// leitura concorrente (sessionWatchTick), sem necessidade de atomic.
+	// Ver createCompanionJobObject (session_windows.go) pro porquê.
+	companionJob windows.Handle
 }
 
 // HeartbeatPayload e o JSON enviado ao servidor a cada ciclo.
@@ -141,7 +145,15 @@ func (a *Agent) start() error {
 	// FEATURE_LIVE_ACCESS: mesma flag usada em companion.go — feature ainda
 	// incompleta (Task 5/13 do agente), não lançar o companion em produção
 	// antes do servidor e do restante da feature estarem prontos.
-	if os.Getenv("FEATURE_LIVE_ACCESS") == "true" {
+	if featureLiveAccessEnabled() {
+		job, err := createCompanionJobObject()
+		if err != nil {
+			// Não impede a feature de funcionar — só perde o backstop de
+			// cleanup automático (launchCompanion trata job=0 como
+			// "AssignProcessToJobObject falhou", loga e segue sem ele).
+			logError(fmt.Sprintf("start: createCompanionJobObject falhou, companion vai rodar sem o backstop de cleanup automático: %v", err))
+		}
+		a.companionJob = job
 		go a.sessionWatchLoop()
 	}
 
@@ -289,7 +301,7 @@ func (a *Agent) sessionWatchTick() {
 	// diferentes se launchCompanion falhar abaixo.
 	a.terminateCompanion()
 
-	pid, handle, err := launchCompanion(activeID)
+	pid, handle, err := launchCompanion(activeID, a.companionJob)
 	if err != nil {
 		a.consecutiveLaunchFailures++
 		// Expoente = tentativas já feitas ANTES desta (consecutiveLaunchFailures-1),
@@ -673,6 +685,15 @@ func (a *Agent) stop() {
 // conseguia abrir a pipe: toda sessão ao vivo/capture-screenshot acabava
 // sendo servida pelo companion ÓRFÃO (sessão desconectada errada), não
 // pelo novo.
+// terminateCompanionWaitTimeout é quanto terminateCompanion espera o
+// processo morrer de verdade (WaitForSingleObject) antes de devolver —
+// TerminateProcess só PEDE a terminação, é assíncrono; sem esperar,
+// sessionWatchTick lançaria o companion novo enquanto o antigo ainda está
+// saindo, e o novo podia perder a corrida pela pipe (FILE_CREATE falha se
+// a instância antiga ainda não tiver liberado) ou pelo pipeHasLiveServer
+// (que acharia o antigo, ainda morrendo, e desistiria por engano).
+const terminateCompanionWaitTimeout = 5 * time.Second
+
 func (a *Agent) terminateCompanion() {
 	h := windows.Handle(a.companionHandle.Swap(0))
 	a.companionPID.Store(0)
@@ -681,6 +702,9 @@ func (a *Agent) terminateCompanion() {
 	}
 	if err := windows.TerminateProcess(h, 1); err != nil {
 		logWarn(fmt.Sprintf("terminateCompanion: TerminateProcess falhou: %v", err))
+	}
+	if _, err := windows.WaitForSingleObject(h, uint32(terminateCompanionWaitTimeout.Milliseconds())); err != nil {
+		logWarn(fmt.Sprintf("terminateCompanion: WaitForSingleObject falhou: %v", err))
 	}
 	_ = windows.CloseHandle(h)
 }

@@ -133,39 +133,53 @@ const tokenAccessForCreateProcessAsUser = windows.TOKEN_QUERY |
 // metade da feature ativa (sessionWatchLoop lança o companion) e a outra
 // metade inativa (activityReportLoop gated pela mesma flag, mas lida
 // localmente dentro do companion via os.Getenv), sem nenhum erro visível.
-func injectFeatureFlagIntoEnvBlock(block *uint16, key, value string) (*uint16, error) {
-	var entries []string
+// parseEnvBlockEntries lê block (formato CreateEnvironmentBlock: strings
+// UTF16 cada uma terminada em \0, bloco inteiro terminado em \0 duplo) e
+// devolve cada entrada como []uint16 CRU, sem decodificar — slice que
+// aponta pra dentro da memória de block, não uma cópia. Compartilhada
+// entre produção (injectFeatureFlagIntoEnvBlock) e teste
+// (session_windows_test.go), pra não ter 2 cópias do mesmo loop de
+// parsing que pudessem divergir silenciosamente.
+func parseEnvBlockEntries(block *uint16) [][]uint16 {
+	var entries [][]uint16
 	start := 0
 	for i := 0; ; i++ {
-		c := *(*uint16)(unsafe.Pointer(uintptr(unsafe.Pointer(block)) + uintptr(i)*2))
+		c := *(*uint16)(unsafe.Add(unsafe.Pointer(block), uintptr(i)*2))
 		if c != 0 {
 			continue
 		}
 		if i == start {
 			break // string vazia (dois \0 seguidos) = fim do bloco
 		}
-		entries = append(entries, windows.UTF16ToString(unsafe.Slice(block, i)[start:i]))
+		entries = append(entries, unsafe.Slice(block, i)[start:i])
 		start = i + 1
 	}
+	return entries
+}
 
+func injectFeatureFlagIntoEnvBlock(block *uint16, key, value string) (*uint16, error) {
+	// Entradas mantidas são copiadas como []uint16 CRU (não decodificadas
+	// via UTF16ToString e reencodadas via UTF16FromString) — um round-trip
+	// de decode/reencode substitui qualquer surrogate UTF-16 desemparelhado
+	// por U+FFFD, corrompendo um valor que já estivesse assim (raro numa
+	// variável de ambiente, mas sem motivo pra arriscar quando copiar os
+	// bytes originais direto é igualmente simples).
 	prefix := strings.ToUpper(key) + "="
-	filtered := entries[:0]
-	for _, e := range entries {
-		if !strings.HasPrefix(strings.ToUpper(e), prefix) {
-			filtered = append(filtered, e)
-		}
-	}
-	filtered = append(filtered, key+"="+value)
-
 	var buf []uint16
-	for _, e := range filtered {
-		u, err := windows.UTF16FromString(e)
-		if err != nil {
-			return nil, fmt.Errorf("UTF16FromString(%q): %w", e, err)
+	for _, entry := range parseEnvBlockEntries(block) {
+		if strings.HasPrefix(strings.ToUpper(windows.UTF16ToString(entry)), prefix) {
+			continue // será substituída pela entrada nova, abaixo
 		}
-		buf = append(buf, u...) // já inclui o \0 final de cada entrada
+		buf = append(buf, entry...)
+		buf = append(buf, 0)
 	}
-	buf = append(buf, 0) // \0 duplo (fim do bloco inteiro)
+
+	newEntry, err := windows.UTF16FromString(key + "=" + value)
+	if err != nil {
+		return nil, fmt.Errorf("UTF16FromString(%q): %w", key+"="+value, err)
+	}
+	buf = append(buf, newEntry...) // já inclui o \0 final
+	buf = append(buf, 0)           // \0 duplo (fim do bloco inteiro)
 
 	return &buf[0], nil
 }
@@ -187,7 +201,43 @@ func injectFeatureFlagIntoEnvBlock(block *uint16, key, value string) (*uint16, e
 // confirmar que o serviço lança o companion e que delirio-agent.exe aparece
 // 2x no Gerenciador de Tarefas (serviço + companion), o companion sem
 // privilégio elevado.
-func launchCompanion(sessionID uint32) (companionPID uint32, companionHandle windows.Handle, err error) {
+// createCompanionJobObject cria um Job Object sem nome com
+// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE — qualquer processo atribuído a ele
+// (via AssignProcessToJobObject em launchCompanion) morre junto quando o
+// handle do job é fechado. Como o handle só existe na tabela de handles do
+// próprio SERVIÇO, fechar — explicitamente, ou implicitamente quando o
+// processo do serviço termina de QUALQUER forma (stop normal, panic sem
+// recover em algum handler, kill externo, SCM matando por timeout) — mata
+// o companion junto, sem depender de nenhum código de cleanup rodar antes.
+//
+// Backstop estrutural: terminateCompanion (agent.go) continua sendo o
+// caminho RÁPIDO e deliberado pras transições conhecidas (logoff/logon,
+// stop, self-update, uninstall) — o Job Object existe pros caminhos que
+// esse código não cobre. Ver finding da 2ª revisão final cross-cutting
+// deste plano: sem isso, um companion órfão (serviço morto sem passar por
+// nenhum caminho de cleanup) ficava detendo a pipe pra sempre, e o
+// companion novo nunca mais conseguia nascer de verdade.
+func createCompanionJobObject() (windows.Handle, error) {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return 0, fmt.Errorf("CreateJobObject falhou: %w", err)
+	}
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
+			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+		},
+	}
+	if _, err := windows.SetInformationJobObject(
+		job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)),
+	); err != nil {
+		_ = windows.CloseHandle(job)
+		return 0, fmt.Errorf("SetInformationJobObject falhou: %w", err)
+	}
+	return job, nil
+}
+
+func launchCompanion(sessionID uint32, job windows.Handle) (companionPID uint32, companionHandle windows.Handle, err error) {
 	var userToken windows.Token
 	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
 		return 0, 0, fmt.Errorf("WTSQueryUserToken falhou pra sessão %d: %w", sessionID, err)
@@ -219,7 +269,7 @@ func launchCompanion(sessionID uint32) (companionPID uint32, companionHandle win
 	// cross-cutting: sem isso, a flag podia estar ligada só no processo do
 	// serviço e nunca chegar ao companion, ativando metade da feature sem
 	// erro nenhum).
-	patchedEnvBlock, err := injectFeatureFlagIntoEnvBlock(envBlock, "FEATURE_LIVE_ACCESS", os.Getenv("FEATURE_LIVE_ACCESS"))
+	patchedEnvBlock, err := injectFeatureFlagIntoEnvBlock(envBlock, featureLiveAccessEnvVar, os.Getenv(featureLiveAccessEnvVar))
 	if err != nil {
 		return 0, 0, fmt.Errorf("injectFeatureFlagIntoEnvBlock falhou: %w", err)
 	}
@@ -242,16 +292,45 @@ func launchCompanion(sessionID uint32) (companionPID uint32, companionHandle win
 	si.Cb = uint32(unsafe.Sizeof(si))
 	var pi windows.ProcessInformation
 
-	const createUnicodeEnvironment = windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_NO_WINDOW
+	// CREATE_SUSPENDED: nasce suspenso pra poder entrar no Job Object ANTES
+	// de rodar uma única instrução — sem isso haveria uma janela (por menor
+	// que seja) em que o companion já está executando mas ainda não está
+	// sob o guarda-chuva de kill-on-close do job.
+	const createFlags = windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_NO_WINDOW | windows.CREATE_SUSPENDED
 	if err := windows.CreateProcessAsUser(
 		primaryToken, nil, cmdLineUTF16, nil, nil, false,
-		createUnicodeEnvironment, patchedEnvBlock, nil, &si, &pi,
+		createFlags, patchedEnvBlock, nil, &si, &pi,
 	); err != nil {
 		return 0, 0, fmt.Errorf("CreateProcessAsUser falhou: %w", err)
 	}
 	defer windows.CloseHandle(pi.Thread) //nolint:errcheck
 
+	if err := assignToJobAndResume(job, pi); err != nil {
+		return 0, 0, err
+	}
+
 	return pi.ProcessId, pi.Process, nil
+}
+
+// assignToJobAndResume atribui o processo recém-criado (ainda suspenso) ao
+// Job Object e resume a thread principal. Extraído de launchCompanion só
+// pra manter a complexidade ciclomática dela dentro do limite do projeto
+// (cyclop, max 10) — sem mudança de comportamento.
+func assignToJobAndResume(job windows.Handle, pi windows.ProcessInformation) error {
+	if err := windows.AssignProcessToJobObject(job, pi.Process); err != nil {
+		// Não fatal pro companion em si (segue funcionando sem o backstop
+		// do Job Object) — mas loga alto porque perde a garantia de
+		// cleanup automático em caminhos de saída não previstos.
+		logError(fmt.Sprintf("launchCompanion: AssignProcessToJobObject falhou (companion roda sem o backstop de cleanup): %v", err))
+	}
+	if _, err := windows.ResumeThread(pi.Thread); err != nil {
+		// Suspenso pra sempre seria peor que não ter companion nenhum —
+		// mata e devolve erro, pro watcher tentar de novo com backoff.
+		_ = windows.TerminateProcess(pi.Process, 1)
+		_ = windows.CloseHandle(pi.Process)
+		return fmt.Errorf("ResumeThread falhou: %w", err)
+	}
+	return nil
 }
 
 const stillActive = 259 // STILL_ACTIVE — valor de exit code enquanto o processo roda
