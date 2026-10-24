@@ -176,6 +176,41 @@ describe('LiveSessionWindow', () => {
     expect(window.electronAPI.cleanupDone).toHaveBeenCalled()
   })
 
+  // Regressão achada na 3ª rodada de verificação (não na 2ª): wasRecording
+  // era recalculado de mediaRecorderRef.current em cada tentativa, mas
+  // stopRecordingIfActive já zera essa ref antes de api.live.stop poder
+  // falhar — numa 2ª tentativa (depois de uma 1ª falha de rede), o
+  // `recorded` mandado ao servidor vinha errado (false), mesmo com a
+  // gravação de verdade feita e salva no disco do operador.
+  it('retry depois de falha de rede ainda manda recorded=true se gravou', async () => {
+    let recorderInstance
+    HTMLCanvasElement.prototype.captureStream = vi.fn(() => ({}))
+    global.MediaRecorder = vi.fn(function FakeMediaRecorder() {
+      recorderInstance = this
+      this.start = vi.fn()
+      this.stop = vi.fn(() => { this.onstop?.() })
+    })
+    api.live.stop.mockRejectedValueOnce(new Error('rede indisponível'))
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { fireEvent.click(screen.getByText('⏺ Gravar')) })
+    expect(recorderInstance.start).toHaveBeenCalled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Encerrar sessão')) // 1ª tentativa, falha
+    })
+    expect(screen.getByText(/rede indisponível/)).toBeInTheDocument()
+
+    api.live.stop.mockResolvedValueOnce({ ok: true })
+    await act(async () => {
+      fireEvent.click(screen.getByText('Encerrar sessão')) // 2ª tentativa, sucesso
+    })
+
+    expect(api.live.stop).toHaveBeenNthCalledWith(2, 's1', true)
+  })
+
   // Regressão: sem o heartbeat, a rede de segurança de timeout fixo do
   // main.js forçaria o fechamento da janela com o cleanup ainda em
   // andamento (ex: dialog de salvar a gravação aberto), perdendo a

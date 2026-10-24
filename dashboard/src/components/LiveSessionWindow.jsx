@@ -17,6 +17,7 @@ export function LiveSessionWindow() {
   const sessionRef = useRef(null)
   const recordingSecsRef = useRef(0)
   const endSessionPromiseRef = useRef(null)
+  const wasRecordingRef = useRef(false)
   const [ending, setEnding] = useState(false)
   const [endError, setEndError] = useState(null)
 
@@ -94,10 +95,18 @@ export function LiveSessionWindow() {
       endSessionPromiseRef.current = (async () => {
         setEnding(true)
         try {
-          const wasRecording = !!mediaRecorderRef.current
+          // wasRecordingRef é "pegajoso" (só liga, nunca desliga sozinho)
+          // entre tentativas — achado 🟠 da 3ª rodada de verificação:
+          // stopRecordingIfActive já zera mediaRecorderRef ANTES de
+          // api.live.stop poder falhar, então recalcular `!!mediaRecorderRef
+          // .current` numa 2ª tentativa (depois de uma 1ª falha de rede)
+          // sempre dava false, mesmo tendo gravado — o `recorded` que
+          // finalmente chegava ao servidor (setLiveSessionRecorded) vinha
+          // errado, mesmo com o .mp4 já salvo no disco do operador.
+          wasRecordingRef.current = wasRecordingRef.current || !!mediaRecorderRef.current
           await stopRecordingIfActive()
           if (sessionRef.current?.sessionId) {
-            await api.live.stop(sessionRef.current.sessionId, wasRecording)
+            await api.live.stop(sessionRef.current.sessionId, wasRecordingRef.current)
           }
         } catch (err) {
           endSessionPromiseRef.current = null
