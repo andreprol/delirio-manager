@@ -51,12 +51,15 @@ func runCompanion() error {
 	logInfo("Companion iniciado.")
 
 	// stopCh ainda não é observado por este select — nenhuma task implementou
-	// shutdown gracioso via pipe ainda. Até lá, o processo só encerra morto
-	// externamente pelo serviço, via terminateCompanion (agent.go/updater.go
-	// — TerminateProcess de verdade, não só CloseHandle). Quando start/stop-
-	// live-session (companionPipeLoop) ganhar um sinal de "encerrar", trocar
-	// este select{} por `select { case <-stopCh: return nil }` pra sair de
-	// fato.
+	// shutdown gracioso via pipe ainda. Até lá, o processo encerra de 3
+	// formas: (1) morto externamente pelo serviço via terminateCompanion
+	// (agent.go/updater.go — TerminateProcess de verdade, não só
+	// CloseHandle), (2) morto pelo Job Object (kill-on-close) se o serviço
+	// morrer sem passar por (1), ou (3) sozinho, via os.Exit em
+	// companionPipeLoop, se não conseguir abrir a pipe (ver listenPipe,
+	// pipe_windows.go). Quando start/stop-live-session (companionPipeLoop)
+	// ganhar um sinal de "encerrar" normal, trocar este select{} por
+	// `select { case <-stopCh: return nil }` pra sair de fato.
 	stopCh := make(chan struct{})
 	// FEATURE_LIVE_ACCESS: mesma flag do server (ver server/app.js) — feature
 	// ainda incompleta (Task 3/13 do agente), nunca reportar atividade pro

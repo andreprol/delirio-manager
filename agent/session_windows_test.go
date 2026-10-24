@@ -61,7 +61,7 @@ func TestParseEnvBlockEntries(t *testing.T) {
 		}
 	})
 
-	t.Run("chave prefixo de outra não colide", func(t *testing.T) {
+	t.Run("múltiplas entradas preservam ordem (a colisão de prefixo é testada em injectFeatureFlagIntoEnvBlock, não aqui — este parser só separa, não compara chaves)", func(t *testing.T) {
 		block := buildTestEnvBlock(t, "FEATURE_LIVE_ACCESS=true", "FEATURE_LIVE_ACCESS_X=outra-coisa")
 		got := parseEnvBlockEntries(block)
 		if len(got) != 2 {

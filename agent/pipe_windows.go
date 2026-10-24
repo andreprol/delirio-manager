@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -254,7 +255,20 @@ func listenPipe(handler func(pipeMessage) pipeMessage, stopCh <-chan struct{}) e
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			return nil // listener fechado (stopCh) ou erro — encerra o loop
+			if errors.Is(err, net.ErrClosed) {
+				// Fechamento intencional (stopCh, via a goroutine acima) —
+				// shutdown normal, não erro. go-winio usa exatamente
+				// net.ErrClosed pra isso (ErrPipeListenerClosed = net.ErrClosed).
+				return nil
+			}
+			// Erro de Accept que NÃO foi nosso próprio Close — diferente de
+			// shutdown normal, o listener pode continuar "vivo" mas
+			// incapaz de aceitar. Sem este caso, companionPipeLoop nunca
+			// saberia (devolveríamos nil igual ao shutdown normal) e o
+			// companion ficaria vivo pra sempre em select{} sem pipe
+			// funcionando — exatamente o que esta mudança existe pra
+			// eliminar.
+			return fmt.Errorf("Accept falhou: %w", err)
 		}
 		wg.Add(1)
 		go func() {

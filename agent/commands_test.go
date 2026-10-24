@@ -334,7 +334,7 @@ func TestExecuteCommand_CancelShutdown_NoActiveShutdown(t *testing.T) {
 // ── capture-screenshot ────────────────────────────────────────────────────────
 
 func TestHandleCaptureScreenshot(t *testing.T) {
-	t.Setenv("FEATURE_LIVE_ACCESS", "true")
+	t.Setenv(featureLiveAccessEnvVar, "true")
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()
 
@@ -354,7 +354,7 @@ func TestHandleCaptureScreenshot(t *testing.T) {
 }
 
 func TestHandleCaptureScreenshotCompanionError(t *testing.T) {
-	t.Setenv("FEATURE_LIVE_ACCESS", "true")
+	t.Setenv(featureLiveAccessEnvVar, "true")
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()
 
@@ -370,7 +370,7 @@ func TestHandleCaptureScreenshotCompanionError(t *testing.T) {
 }
 
 func TestHandleCaptureScreenshotEmptyPayload(t *testing.T) {
-	t.Setenv("FEATURE_LIVE_ACCESS", "true")
+	t.Setenv(featureLiveAccessEnvVar, "true")
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()
 
@@ -390,7 +390,7 @@ func TestHandleCaptureScreenshotFeatureDisabled(t *testing.T) {
 	// FEATURE_LIVE_ACCESS=true no ambiente real (ex: dev/staging, onde a
 	// feature está sendo testada de propósito) — sem isso o teste passaria
 	// por acidente lá e falharia aqui, dependendo de onde roda.
-	t.Setenv("FEATURE_LIVE_ACCESS", "false")
+	t.Setenv(featureLiveAccessEnvVar, "false")
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()
 	requestScreenshotFromCompanionFn = func() ([]byte, error) {
@@ -406,7 +406,7 @@ func TestHandleCaptureScreenshotFeatureDisabled(t *testing.T) {
 }
 
 func TestExecuteCommand_CaptureScreenshot_Registered(t *testing.T) {
-	t.Setenv("FEATURE_LIVE_ACCESS", "true")
+	t.Setenv(featureLiveAccessEnvVar, "true")
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()
 
@@ -424,7 +424,7 @@ func TestExecuteCommand_CaptureScreenshot_Registered(t *testing.T) {
 // ── start-live-session / stop-live-session ───────────────────────────────────
 
 func TestHandleStartLiveSession(t *testing.T) {
-	t.Setenv("FEATURE_LIVE_ACCESS", "true")
+	t.Setenv(featureLiveAccessEnvVar, "true")
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 
@@ -450,7 +450,7 @@ func TestHandleStartLiveSession(t *testing.T) {
 }
 
 func TestHandleStopLiveSession(t *testing.T) {
-	t.Setenv("FEATURE_LIVE_ACCESS", "true")
+	t.Setenv(featureLiveAccessEnvVar, "true")
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 
@@ -505,7 +505,7 @@ func TestHandleStopLiveSessionRequiresSessionID(t *testing.T) {
 }
 
 func TestHandleStartLiveSessionFeatureDisabled(t *testing.T) {
-	t.Setenv("FEATURE_LIVE_ACCESS", "false") // explícito — ver comentário em TestHandleCaptureScreenshotFeatureDisabled
+	t.Setenv(featureLiveAccessEnvVar, "false") // explícito — ver comentário em TestHandleCaptureScreenshotFeatureDisabled
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
@@ -522,7 +522,7 @@ func TestHandleStartLiveSessionFeatureDisabled(t *testing.T) {
 }
 
 func TestHandleStopLiveSessionFeatureDisabled(t *testing.T) {
-	t.Setenv("FEATURE_LIVE_ACCESS", "false") // explícito — ver comentário em TestHandleCaptureScreenshotFeatureDisabled
+	t.Setenv(featureLiveAccessEnvVar, "false") // explícito — ver comentário em TestHandleCaptureScreenshotFeatureDisabled
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
