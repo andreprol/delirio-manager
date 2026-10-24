@@ -281,8 +281,11 @@ describe('MachineCard — métricas (tab expandida)', () => {
 import { api } from '../api'
 
 describe('MachineCard — acesso remoto', () => {
+  // Botões Shadow/Normal moram na aba "🔐 Acesso Remoto" (não no action row
+  // principal) — expandir o card não é suficiente, precisa clicar na aba.
   function expandCard(container) {
     fireEvent.click(container.querySelector('.mc'))
+    fireEvent.click(screen.getByText('🔐 Acesso Remoto'))
   }
 
   beforeEach(() => {

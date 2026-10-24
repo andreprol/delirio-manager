@@ -262,6 +262,10 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
               style={{ background: activeTab === 'dr' ? '#6366f120' : 'transparent', color: activeTab === 'dr' ? '#818cf8' : '#888', border: 'none', padding: '4px 10px', cursor: 'pointer', borderRadius: 4, fontSize: '0.8em' }}>
               🔒 DR
             </button>
+            <button onClick={() => setActiveTab('acesso-remoto')}
+              style={{ background: activeTab === 'acesso-remoto' ? '#6366f120' : 'transparent', color: activeTab === 'acesso-remoto' ? '#818cf8' : '#888', border: 'none', padding: '4px 10px', cursor: 'pointer', borderRadius: 4, fontSize: '0.8em' }}>
+              🔐 Acesso Remoto
+            </button>
           </div>
 
           {activeTab === 'metrics' && (
@@ -371,17 +375,6 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
                     onClick={() => handleCommand('uninstall')}>
                     Desinstalar
                   </button>
-                  <button className="btn btn-secondary"
-                    disabled={liveLoading || status !== 'online'}
-                    onClick={() => handleStartLiveSession('shadow')}>
-                    ✍️ Shadow
-                  </button>
-                  <button className="btn btn-secondary"
-                    disabled={liveLoading || status !== 'online'}
-                    onClick={() => handleStartLiveSession('normal')}>
-                    🖥 Normal
-                  </button>
-                  {liveError && <div className="test-result err">{liveError}</div>}
                 </div>
               ) : (
                 <div className="confirm-box">
@@ -463,6 +456,26 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
               {drMsg && (
                 <div style={{ marginTop: 8, fontSize: '0.78em', color: '#f59e0b' }}>{drMsg}</div>
               )}
+            </div>
+          )}
+          {activeTab === 'acesso-remoto' && (
+            <div style={{ padding: '10px 0' }}>
+              <div style={{ marginBottom: 10, fontSize: '0.82em', color: '#aaa' }}>
+                ✍️ Shadow: só visualização, sem aviso na máquina. 🖥 Normal: controle total, com aviso visível pro usuário.
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-secondary"
+                  disabled={liveLoading || status !== 'online'}
+                  onClick={() => handleStartLiveSession('shadow')}>
+                  ✍️ Shadow
+                </button>
+                <button className="btn btn-secondary"
+                  disabled={liveLoading || status !== 'online'}
+                  onClick={() => handleStartLiveSession('normal')}>
+                  🖥 Normal
+                </button>
+              </div>
+              {liveError && <div className="test-result err" style={{ marginTop: 8 }}>{liveError}</div>}
             </div>
           )}
         </div>
