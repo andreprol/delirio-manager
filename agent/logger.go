@@ -17,9 +17,15 @@ var (
 	logFilePath string
 )
 
-func initLogger() {
+// initLogger recebe o nome do arquivo explicitamente (não var global) —
+// serviço e companion são processos separados que rodam concorrentemente
+// no mesmo diretório de instalação; compartilhar agent.log faria o
+// truncamento de um (trimLogIfNeeded) corromper o handle aberto do outro.
+// Chamadores: agent.go#newAgent → initLogger("agent.log"),
+// companion.go#runCompanion → initLogger("companion.log").
+func initLogger(fileName string) {
 	exe, _ := os.Executable()
-	logFilePath = filepath.Join(filepath.Dir(exe), "agent.log")
+	logFilePath = filepath.Join(filepath.Dir(exe), fileName)
 
 	f, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {

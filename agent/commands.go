@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -57,6 +58,9 @@ func (a *Agent) commandHandlers() map[string]func(Command) (string, error) {
 		"dr-status":              handleDRStatus,
 		"run_powershell":         handleRunPowershell,
 		"get_agent_log":          handleGetAgentLog,
+		"capture-screenshot":     handleCaptureScreenshot,
+		"start-live-session":     a.handleStartLiveSession,
+		"stop-live-session":      handleStopLiveSession,
 	}
 }
 
@@ -287,6 +291,138 @@ func handleGetAgentLog(cmd Command) (string, error) {
 		logLines = logLines[len(logLines)-params.Lines:]
 	}
 	return strings.Join(logLines, "\n"), nil
+}
+
+// ── Sessão ao vivo (start/stop) ───────────────────────────────────────────────
+
+// featureLiveAccessEnvVar é o nome da env var única que gateia toda a
+// feature de acesso remoto — mesma flag lida em agent.go (sessionWatchLoop),
+// companion.go (activityReportLoop) e session_windows.go
+// (injectFeatureFlagIntoEnvBlock). Constante compartilhada pra nunca
+// divergir o literal entre os pontos que checam.
+const featureLiveAccessEnvVar = "FEATURE_LIVE_ACCESS"
+
+// featureLiveAccessEnabled confere a mesma flag que gateia sessionWatchLoop
+// (agent.go) e activityReportLoop (companion.go). Os 3 handlers que falam
+// com o companion via pipe (capture-screenshot, start/stop-live-session)
+// checam isso ANTES de chamar sendPipeRequestFn/requestScreenshotFromCompanionFn:
+// com a flag desligada neste agente (rollout parcial, ou servidor ligou a
+// flag antes da frota inteira atualizar), sessionWatchLoop nunca lança o
+// companion — então a pipe nunca tem servidor, e sem este check cada
+// comando desses bloquearia o processamento sequencial de QUALQUER outro
+// comando (handleCommand, agent.go) pelos pipeHandlerDeadline (10s) inteiros
+// de retry fútil, em vez de falhar na hora com um erro claro.
+func featureLiveAccessEnabled() bool {
+	return os.Getenv(featureLiveAccessEnvVar) == "true"
+}
+
+// handleStartLiveSession repassa o pedido de sessão ao vivo pro companion
+// via pipe local. Não repassa ServerURL na mensagem — pipeMessage nem tem
+// esse campo (removido): a pipe aceita conexões de qualquer processo do
+// mesmo usuário (ver pipeSecurityDescriptor), então nunca fez sentido
+// confiar num serverURL vindo dela; o companion usa o cfg LOCAL dele
+// próprio (loadConfigReadOnly, nunca init()+loadConfig() — isso
+// reintroduziria a race de escrita concorrente em config.json que motivou
+// loadConfigReadOnly() na Task 1 deste plano). Método ligado a *Agent por
+// histórico (chegou a precisar de a.cfg.ServerURL antes desse campo ser
+// removido do protocolo) — inofensivo manter assim.
+func (a *Agent) handleStartLiveSession(cmd Command) (string, error) {
+	var params struct {
+		SessionID      string `json:"sessionId"`
+		Mode           string `json:"mode"`
+		CompanionToken string `json:"companionToken"`
+	}
+	if err := json.Unmarshal(cmd.Params, &params); err != nil {
+		return "", fmt.Errorf("start-live-session: params inválidos: %w", err)
+	}
+	if params.SessionID == "" {
+		return "", fmt.Errorf("start-live-session: sessionId obrigatório e ausente")
+	}
+	if !featureLiveAccessEnabled() {
+		return "", fmt.Errorf("start-live-session: FEATURE_LIVE_ACCESS desabilitada neste agente")
+	}
+	logInfo(fmt.Sprintf("Comando START-LIVE-SESSION recebido (ID: %s, mode: %s).", cmd.ID, params.Mode))
+
+	_, err := sendPipeRequestFn(pipeMessage{
+		Type: "start-live-session", RequestID: generateUUID(),
+		SessionID: params.SessionID, Mode: params.Mode, CompanionToken: params.CompanionToken,
+	}, pipeHandlerDeadline)
+	if err != nil {
+		return "", fmt.Errorf("start-live-session: %w", err)
+	}
+	return "Sessão ao vivo iniciada no companion.", nil
+}
+
+// handleStopLiveSession não precisa de a.cfg (não repassa ServerURL pro
+// companion) — fica standalone, mesmo padrão de handleReboot/handleWoL etc.
+func handleStopLiveSession(cmd Command) (string, error) {
+	var params struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(cmd.Params, &params); err != nil {
+		return "", fmt.Errorf("stop-live-session: params inválidos: %w", err)
+	}
+	if params.SessionID == "" {
+		return "", fmt.Errorf("stop-live-session: sessionId obrigatório e ausente")
+	}
+	if !featureLiveAccessEnabled() {
+		return "", fmt.Errorf("stop-live-session: FEATURE_LIVE_ACCESS desabilitada neste agente")
+	}
+	logInfo(fmt.Sprintf("Comando STOP-LIVE-SESSION recebido (ID: %s).", cmd.ID))
+
+	_, err := sendPipeRequestFn(pipeMessage{
+		Type: "stop-live-session", RequestID: generateUUID(), SessionID: params.SessionID,
+	}, pipeHandlerDeadline)
+	if err != nil {
+		return "", fmt.Errorf("stop-live-session: %w", err)
+	}
+	return "Sessão ao vivo encerrada.", nil
+}
+
+// ── Captura de tela ───────────────────────────────────────────────────────────
+
+// requestScreenshotFromCompanionFn pede 1 frame pro companion via IPC local
+// (named pipe, ver pipe_windows.go) e aguarda a resposta. Var (não const)
+// pra ser mockável em teste — os testes deste pacote hoje mockam ela
+// diretamente em vez de exercitar sendPipeRequest/listenPipe de ponta a
+// ponta (ver TestHandleCaptureScreenshot* em commands_test.go).
+//
+// É var global de pacote, não campo de *Agent: nenhum teste deste pacote usa
+// t.Parallel() hoje, mas qualquer teste futuro que adicione isso enquanto
+// mocka esta var corromperia silenciosamente outros testes do pacote — se
+// algum refactor futuro tiver motivo pra tocar aqui, considerar migrar pra
+// um campo injetado em Agent (mesmo padrão de a.handleUpdate/a.handleDRSetup)
+// pra eliminar o estado global. Decisão desta task: manter como var global,
+// já que não há necessidade concreta de paralelismo nos testes hoje.
+//
+// O timeout usa pipeHandlerDeadline (pipe_windows.go) — o mesmo valor que o
+// SERVIDOR da pipe (companion, listenPipe) usa pra limitar quanto tempo
+// espera por handler — pra não divergir os dois lados silenciosamente caso
+// um seja ajustado sem o outro.
+var requestScreenshotFromCompanionFn = func() ([]byte, error) {
+	resp, err := sendPipeRequest(pipeMessage{Type: "capture-screenshot", RequestID: generateUUID()}, pipeHandlerDeadline)
+	if err != nil {
+		return nil, err
+	}
+	return base64.StdEncoding.DecodeString(resp.ResultJPEGBase64)
+}
+
+func handleCaptureScreenshot(cmd Command) (string, error) {
+	if !featureLiveAccessEnabled() {
+		return "", fmt.Errorf("capture-screenshot: FEATURE_LIVE_ACCESS desabilitada neste agente")
+	}
+	logInfo(fmt.Sprintf("Comando CAPTURE-SCREENSHOT recebido (ID: %s).", cmd.ID))
+	jpegBytes, err := requestScreenshotFromCompanionFn()
+	if err != nil {
+		return "", fmt.Errorf("capture-screenshot: %w", err)
+	}
+	if len(jpegBytes) == 0 {
+		// Sem este check, (nil, nil) do companion seria aceito como sucesso
+		// (EncodeToString(nil) == "") e o ACK sairia Success:true com
+		// Message:"" — sucesso fantasma sem nenhum sinal de erro.
+		return "", fmt.Errorf("capture-screenshot: companion retornou payload vazio")
+	}
+	return base64.StdEncoding.EncodeToString(jpegBytes), nil
 }
 
 // ── Utilitários ───────────────────────────────────────────────────────────────

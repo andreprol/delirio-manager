@@ -8,15 +8,17 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
-)
 
+	"golang.org/x/sys/windows"
+)
 
 // Agent e o core do agente: gerencia heartbeat e polling de comandos.
 type Agent struct {
 	cfg         *Config
-	client      *http.Client   // cliente geral (5 min) — comandos longos, NF-Ce
-	hbClient    *http.Client   // cliente exclusivo do heartbeat (10 s) — falha rápido sob pressão de memória
+	client      *http.Client // cliente geral (5 min) — comandos longos, NF-Ce
+	hbClient    *http.Client // cliente exclusivo do heartbeat (10 s) — falha rápido sob pressão de memória
 	stopCh      chan struct{}
 	wolEnabled  *bool  // cached após primeira verificação
 	motherboard string // cached após primeira verificação
@@ -28,7 +30,46 @@ type Agent struct {
 
 	// update deduplication — previne goroutines concorrentes de update
 	updating bool
+
+	// acesso remoto (FEATURE_LIVE_ACCESS) — estado do companion lançado por
+	// sessionWatchLoop na sessão ativa. companionPID/Handle/Job são
+	// lidos/escritos por 3 goroutines diferentes (sessionWatchTick, stop()
+	// — goroutine do SCM — e checkAndUpdate — goroutine do updater, ambas
+	// via terminateCompanion), não só sessionWatchTick — atomic é o que
+	// garante que só UM desses chamadores feche cada handle (Swap), não
+	// um mutex dedicado. consecutiveLaunchFailures/nextLaunchAttemptAt/
+	// companionLaunchedAt continuam só-sessionWatchTick de verdade (campos
+	// de decisão do backoff, nunca lidos fora dali).
+	companionPID              atomic.Uint32
+	companionSession          atomic.Uint32
+	companionHandle           atomic.Uintptr // windows.Handle do processo companion vivo (0 = nenhum)
+	consecutiveLaunchFailures int
+	nextLaunchAttemptAt       time.Time // zero = sem backoff pendente
+	companionLaunchedAt       time.Time // zero = nenhum companion lançado ainda; ver companionMinHealthyUptime
+	// companionJob: um Job Object NOVO por geração de companion (não 1 job
+	// reusado pra vida inteira do serviço — ver doc de createCompanionJobObject
+	// em session_windows.go pro porquê: reusar entre sessões diferentes
+	// arriscaria AssignProcessToJobObject falhar por mismatch de sessão).
+	companionJob atomic.Uintptr
+
+	// terminateCompanionFn: substituível em teste (TestSessionWatchTick) —
+	// nil usa o método real terminateCompanion. Mesmo padrão de
+	// enumerateSessionsFn/isCompanionAliveFn/launchCompanionFn abaixo, só
+	// que como campo porque terminateCompanion precisa dos atomics acima
+	// (não é função livre).
+	terminateCompanionFn func()
 }
+
+// enumerateSessionsFn/isCompanionAliveFn/launchCompanionFn: substituíveis em
+// teste, mesmo padrão já usado neste pacote (captureScreenJPEGFn em
+// companion.go, requestScreenshotFromCompanionFn em commands.go) — sem isso,
+// sessionWatchTick só é testável chamando enumerateSessions/isCompanionAlive/
+// launchCompanion de verdade (syscalls Win32, não disponíveis em CI).
+var (
+	enumerateSessionsFn = enumerateSessions
+	isCompanionAliveFn  = isCompanionAlive
+	launchCompanionFn   = launchCompanion
+)
 
 // HeartbeatPayload e o JSON enviado ao servidor a cada ciclo.
 type HeartbeatPayload struct {
@@ -84,7 +125,7 @@ func newAgent() *Agent {
 		logWarn(fmt.Sprintf("Erro ao carregar config: %v — usando padrao.", err))
 	}
 
-	initLogger()
+	initLogger("agent.log")
 
 	return &Agent{
 		cfg:    cfg,
@@ -124,9 +165,16 @@ func (a *Agent) start() error {
 	// Monitoramento de serviços NCR Voyix (apenas máquinas BOH)
 	go a.serviceMonitorLoop()
 
-	safeGo("lhm",        func() { ensureLHM(a.cfg.ServerURL) })
+	// FEATURE_LIVE_ACCESS: mesma flag usada em companion.go — feature ainda
+	// incompleta (Task 5/13 do agente), não lançar o companion em produção
+	// antes do servidor e do restante da feature estarem prontos.
+	if featureLiveAccessEnabled() {
+		go a.sessionWatchLoop()
+	}
+
+	safeGo("lhm", func() { ensureLHM(a.cfg.ServerURL) })
 	safeGo("bootEvents", a.collectAndSendBootEvents)
-	safeGo("wolStatus",  a.collectWolStatus)
+	safeGo("wolStatus", a.collectWolStatus)
 
 	return nil
 }
@@ -200,6 +248,166 @@ func (a *Agent) heartbeatLoop() {
 			return
 		}
 	}
+}
+
+const sessionWatchIntervalSecs = 15
+const maxLaunchBackoff = 5 * time.Minute
+
+// sessionWatchLoop roda só no serviço (Session 0): detecta a sessão de
+// usuário ativa e garante que o companion está rodando nela. Relança em
+// logoff/logon (sessão muda) ou se o companion morreu por qualquer motivo.
+func (a *Agent) sessionWatchLoop() {
+	ticker := time.NewTicker(sessionWatchIntervalSecs * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			// Panic num syscall Win32 aqui (ex: unsafe.Slice em enumerateSessions)
+			// não pode matar o processo do serviço inteiro — mesmo padrão já
+			// usado por heartbeatLoop/hourlySnapshotLoop/serviceMonitorLoop.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logError(fmt.Sprintf("sessionWatch panic: %v", r))
+					}
+				}()
+				a.sessionWatchTick()
+			}()
+		}
+	}
+}
+
+// companionMinHealthyUptime: um companion que morre ANTES de ficar vivo por
+// esse tempo é tratado como falha de lançamento pros fins do backoff (ver
+// sessionWatchTick), mesmo que launchCompanion em si não tenha devolvido
+// erro nenhum — ele só lança o processo, não garante que o companion
+// consiga de fato funcionar (ex: listenPipe falhar e o companion chamar
+// os.Exit). Sem isso, um companion que nasce e morre rápido repetidamente
+// nunca incrementaria consecutiveLaunchFailures, e o watcher tentaria
+// CreateProcessAsUser a cada 15s pra sempre (~5.760/dia/máquina).
+const companionMinHealthyUptime = 30 * time.Second
+
+func (a *Agent) sessionWatchTick() {
+	sessions, err := enumerateSessionsFn()
+	if err != nil {
+		logWarn(fmt.Sprintf("sessionWatch: erro ao enumerar sessões: %v", err))
+		return
+	}
+	activeID, ok := pickActiveSession(sessions)
+	if !ok {
+		return // sem usuário logado agora (tela de login) — nada a fazer
+	}
+
+	sessionChanged := activeID != a.companionSession.Load()
+	alive := isCompanionAliveFn(windows.Handle(a.companionHandle.Load()))
+
+	// Reseta o backoff aqui — não em recordCompanionLaunched (que roda
+	// assim que o processo nasce, não depois dele provar que ficou de pé).
+	// Resetar no nascimento fazia o backoff NUNCA escalar de verdade: um
+	// companion que nasce e morre rápido repetidamente oscilava
+	// 0 falhas→lança→(tick seguinte) morte detectada→1 falha→15s→lança
+	// de novo→0 falhas→... pra sempre, preso em 15s, porque cada
+	// lançamento bem-sucedido zerava o contador antes do próximo tick
+	// poder registrar a morte rápida como falha real.
+	a.resetBackoffIfCompanionHealthy(alive, sessionChanged)
+
+	if !shouldRelaunchCompanion(alive, sessionChanged) {
+		return
+	}
+
+	// Backoff: se o companion não para de falhar ao lançar (ex: exe
+	// corrompido), não tentar de novo a cada 15s pra sempre — isso seria
+	// churn de processo indefinido em 224 máquinas. Dobra o intervalo até
+	// um teto de 5min a cada falha consecutiva; reseta (acima) só depois
+	// do companion sobreviver companionMinHealthyUptime.
+	if !a.nextLaunchAttemptAt.IsZero() && time.Now().Before(a.nextLaunchAttemptAt) {
+		return
+	}
+
+	if a.companionDiedQuickly(alive, sessionChanged) {
+		a.doTerminateCompanion() // limpa handle/job do companion que morreu rápido
+		a.applyLaunchBackoff(fmt.Errorf("companion morreu %s após o lançamento (uptime mínimo esperado: %s)",
+			time.Since(a.companionLaunchedAt).Round(time.Second), companionMinHealthyUptime))
+		// Zera companionLaunchedAt: sem isso, se o tick seguinte ainda cair
+		// dentro de companionMinHealthyUptime (ex: variação de tempo entre
+		// ticks) e companionDiedQuickly rodar de novo antes de um novo
+		// lançamento acontecer, a MESMA morte seria contada duas vezes como
+		// falha — um degrau extra de backoff indevido.
+		a.companionLaunchedAt = time.Time{}
+		return
+	}
+
+	// terminateCompanion (não só CloseHandle): o companion antigo precisa
+	// morrer de verdade antes do novo ser lançado, senão ele fica órfão
+	// rodando na sessão desconectada E ainda detém a pipe (winio.ListenPipe
+	// usa FILE_CREATE na 1ª instância — falha se a pipe já existir), fazendo
+	// o companion novo nunca conseguir abrir a pipe.
+	a.doTerminateCompanion()
+
+	pid, handle, job, err := launchCompanionFn(activeID)
+	if err != nil {
+		a.applyLaunchBackoff(err)
+		return
+	}
+	a.recordCompanionLaunched(activeID, pid, handle, job)
+}
+
+// resetBackoffIfCompanionHealthy zera consecutiveLaunchFailures/
+// nextLaunchAttemptAt quando o companion atual está vivo, na sessão
+// esperada, e já sobreviveu companionMinHealthyUptime desde que nasceu —
+// ver sessionWatchTick pro porquê do reset não acontecer no nascimento.
+// Extraído só pra manter sessionWatchTick dentro do limite de
+// complexidade ciclomática do projeto (cyclop, max 10).
+func (a *Agent) resetBackoffIfCompanionHealthy(alive, sessionChanged bool) {
+	if !alive || sessionChanged || a.consecutiveLaunchFailures == 0 ||
+		time.Since(a.companionLaunchedAt) < companionMinHealthyUptime {
+		return
+	}
+	logInfo(fmt.Sprintf("sessionWatch: companion saudável há >= %s — resetando backoff (%d falha(s) consecutiva(s) zeradas)",
+		companionMinHealthyUptime, a.consecutiveLaunchFailures))
+	a.consecutiveLaunchFailures = 0
+	a.nextLaunchAttemptAt = time.Time{}
+}
+
+// companionDiedQuickly reporta se o companion rastreado morreu antes de
+// companionMinHealthyUptime desde o último lançamento — ver doc da
+// constante pro porquê disso contar como falha de lançamento.
+func (a *Agent) companionDiedQuickly(alive, sessionChanged bool) bool {
+	return !alive && !sessionChanged && !a.companionLaunchedAt.IsZero() &&
+		time.Since(a.companionLaunchedAt) < companionMinHealthyUptime
+}
+
+// recordCompanionLaunched grava o estado do companion recém-lançado. NÃO
+// reseta consecutiveLaunchFailures/nextLaunchAttemptAt — o processo só
+// acabou de nascer, não provou nada ainda; o reset (ver sessionWatchTick)
+// só acontece depois dele sobreviver companionMinHealthyUptime.
+func (a *Agent) recordCompanionLaunched(activeID, pid uint32, handle, job windows.Handle) {
+	a.companionLaunchedAt = time.Now()
+	a.companionPID.Store(pid)
+	a.companionSession.Store(activeID)
+	a.companionHandle.Store(uintptr(handle))
+	a.companionJob.Store(uintptr(job))
+	logInfo(fmt.Sprintf("Companion lançado (PID %d, sessão %d).", pid, activeID))
+}
+
+// applyLaunchBackoff registra uma falha de lançamento (ou de sobrevivência
+// mínima, ver companionMinHealthyUptime) e agenda a próxima tentativa com
+// backoff exponencial (15s, 30s, 60s... teto 5min).
+func (a *Agent) applyLaunchBackoff(err error) {
+	a.consecutiveLaunchFailures++
+	// Expoente = tentativas já feitas ANTES desta (consecutiveLaunchFailures-1),
+	// não o contador pós-incremento — senão a 1ª falha já pula pra 30s em
+	// vez dos 15s documentados (off-by-one: 15·2^n pra n=0,1,2... falhas
+	// anteriores, não pra n=1,2,3... que conta a falha atual também).
+	backoff := time.Duration(1<<uint(min(a.consecutiveLaunchFailures-1, 5))) * sessionWatchIntervalSecs * time.Second
+	if backoff > maxLaunchBackoff {
+		backoff = maxLaunchBackoff
+	}
+	a.nextLaunchAttemptAt = time.Now().Add(backoff)
+	logError(fmt.Sprintf("sessionWatch: falha ao lançar/manter companion (tentativa %d, próxima em %s): %v",
+		a.consecutiveLaunchFailures, backoff, err))
 }
 
 func (a *Agent) commandLoop() {
@@ -353,11 +561,18 @@ func (a *Agent) handleCommand(cmd Command) {
 	msg, err := a.executeCommand(cmd)
 	success := err == nil
 
+	// %.200s nos dois ramos trunca o que vai pro log (companion.log/Event
+	// Log) — o ACK abaixo leva msg/err inteiros pro servidor. Sem isso, um
+	// payload grande (ex: base64 de JPEG de capture-screenshot, Task 7+9)
+	// inundaria o log a cada comando, forçando rotação constante em
+	// companion.log e gravação equivalente no Windows Event Log (sem a
+	// mesma rotação) — tanto se vier no resultado de sucesso quanto
+	// embutido numa mensagem de erro de um handler futuro.
 	if err != nil {
-		logError(fmt.Sprintf("Comando %s falhou: %v", cmd.ID, err))
+		logError(fmt.Sprintf("Comando %s falhou: %.200s", cmd.ID, err.Error()))
 		msg = err.Error()
 	} else {
-		logInfo(fmt.Sprintf("Comando %s OK: %s", cmd.ID, msg))
+		logInfo(fmt.Sprintf("Comando %s OK: %.200s", cmd.ID, msg))
 	}
 
 	// Envia ACK ao servidor
@@ -530,7 +745,91 @@ func (a *Agent) reportOfflineEvent(offlineAt, onlineAt time.Time) {
 	logInfo(fmt.Sprintf("offlineEvent reportado: %.0f min (desde %s)", durationMin, offlineAt.Format("15:04")))
 }
 
+// doTerminateCompanion chama terminateCompanionFn se setado (TestSessionWatchTick),
+// senão o método real — único ponto de terminação usado por sessionWatchTick.
+// stop()/checkAndUpdate() chamam a.terminateCompanion() direto (nunca
+// mockado): rodam só em produção, nunca no teste do estado de sessionWatchTick.
+func (a *Agent) doTerminateCompanion() {
+	if a.terminateCompanionFn != nil {
+		a.terminateCompanionFn()
+		return
+	}
+	a.terminateCompanion()
+}
+
 func (a *Agent) stop() {
 	close(a.stopCh)
+	a.terminateCompanion()
 	logInfo("Agente parado.")
+}
+
+// terminateCompanionWaitTimeout é quanto terminateCompanion espera o
+// processo morrer de verdade (WaitForSingleObject) antes de devolver —
+// TerminateProcess só PEDE a terminação, é assíncrono; sem esperar,
+// sessionWatchTick lançaria o companion novo enquanto o antigo ainda está
+// saindo, e o novo podia perder a corrida pela pipe (FILE_CREATE falha se
+// a instância antiga ainda não tiver liberado).
+const terminateCompanionWaitTimeout = 5 * time.Second
+
+// waitTimeoutEventCode é o valor que WaitForSingleObject devolve (sem
+// err != nil — a chamada em si teve sucesso) quando o timeout expira SEM
+// o objeto ser sinalizado, ou seja: o processo não morreu dentro do
+// timeout. Checar isso explicitamente, não só err, porque err == nil
+// nesse caso (WAIT_TIMEOUT não é erro de chamada de API). windows.WAIT_TIMEOUT
+// é syscall.Errno (258), não uint32 — convertido aqui pra comparar direto
+// com event (uint32, devolvido por WaitForSingleObject), em vez de
+// duplicar o literal 0x102.
+const waitTimeoutEventCode = uint32(windows.WAIT_TIMEOUT)
+
+// terminateCompanion mata de fato o processo companion rastreado (se
+// houver), espera a morte de verdade, fecha o Job Object desta geração, e
+// limpa o estado associado. Sem o TerminateProcess/espera, o companion
+// sobrevivia ao relançamento/parada do serviço — ver histórico do finding
+// CRÍTICO da revisão final cross-cutting deste plano: o comentário
+// original em companion.go (runCompanion) dizia "só encerra morto
+// externamente pelo serviço (TerminateProcess)", mas esse TerminateProcess
+// nunca existiu de verdade em nenhum lugar do branch. Resultado real: em
+// logoff/logon (sessionChanged) e a cada self-update (updater.go:
+// checkAndUpdate sai via os.Exit(1), sem passar por stop()), o companion
+// antigo ficava órfão rodando pra sempre — e como winio.ListenPipe usa
+// FILE_CREATE na 1ª instância (falha se qualquer instância da pipe já
+// existir, mesmo de processo não relacionado), o companion NOVO lançado
+// depois nunca conseguia abrir a pipe: toda sessão ao vivo/capture-
+// screenshot acabava sendo servida pelo companion ÓRFÃO (sessão
+// desconectada errada), não pelo novo.
+func (a *Agent) terminateCompanion() {
+	h := windows.Handle(a.companionHandle.Swap(0))
+	a.companionPID.Store(0)
+	job := windows.Handle(a.companionJob.Swap(0))
+
+	// TerminateProcess ANTES de fechar o job (não depois): fechar o job
+	// primeiro já mata o processo via KILL_ON_JOB_CLOSE, e TerminateProcess
+	// num processo que já está morrendo/morto falha com ACCESS_DENIED
+	// (documentado pela Microsoft) — logaria WARN em TODO logoff/logon,
+	// stop e self-update, mascarando uma falha de TerminateProcess real
+	// nesse mesmo log. Com TerminateProcess primeiro, o job só fecha
+	// depois do processo já estar confirmadamente morto (ou do timeout).
+	//
+	// Só chama TerminateProcess se o processo ainda está vivo: chamar num
+	// processo que já saiu (ex: ramo de morte rápida em sessionWatchTick,
+	// ou !alive em geral) sempre falha com ACCESS_DENIED — era um WARN
+	// falso em todo ciclo de morte rápida, mascarando o cenário em que
+	// TerminateProcess falha de verdade num processo que AINDA está vivo.
+	if h != 0 {
+		if isCompanionAlive(h) {
+			if err := windows.TerminateProcess(h, 1); err != nil {
+				logWarn(fmt.Sprintf("terminateCompanion: TerminateProcess falhou: %v", err))
+			}
+		}
+		if event, err := windows.WaitForSingleObject(h, uint32(terminateCompanionWaitTimeout.Milliseconds())); err != nil {
+			logWarn(fmt.Sprintf("terminateCompanion: WaitForSingleObject falhou: %v", err))
+		} else if event == waitTimeoutEventCode {
+			logWarn(fmt.Sprintf("terminateCompanion: processo não morreu dentro de %s (WAIT_TIMEOUT) — fechando o handle mesmo assim", terminateCompanionWaitTimeout))
+		}
+		_ = windows.CloseHandle(h)
+	}
+
+	if job != 0 {
+		_ = windows.CloseHandle(job)
+	}
 }
