@@ -366,6 +366,21 @@ func TestHandleCaptureScreenshotCompanionError(t *testing.T) {
 	}
 }
 
+func TestHandleCaptureScreenshotEmptyPayload(t *testing.T) {
+	original := requestScreenshotFromCompanionFn
+	defer func() { requestScreenshotFromCompanionFn = original }()
+
+	requestScreenshotFromCompanionFn = func() ([]byte, error) {
+		return nil, nil // companion sem erro, mas sem frame — não pode ser sucesso
+	}
+
+	cmd := Command{ID: "cmd-1", Type: "capture-screenshot", Params: json.RawMessage(`{}`)}
+	_, err := handleCaptureScreenshot(cmd)
+	if err == nil {
+		t.Fatal("esperava erro com payload vazio (nil, nil), veio sucesso")
+	}
+}
+
 func TestExecuteCommand_CaptureScreenshot_Registered(t *testing.T) {
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()

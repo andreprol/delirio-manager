@@ -466,15 +466,17 @@ func (a *Agent) handleCommand(cmd Command) {
 	msg, err := a.executeCommand(cmd)
 	success := err == nil
 
+	// %.200s nos dois ramos trunca o que vai pro log (companion.log/Event
+	// Log) — o ACK abaixo leva msg/err inteiros pro servidor. Sem isso, um
+	// payload grande (ex: base64 de JPEG de capture-screenshot, Task 7+9)
+	// inundaria o log a cada comando, forçando rotação constante em
+	// companion.log e gravação equivalente no Windows Event Log (sem a
+	// mesma rotação) — tanto se vier no resultado de sucesso quanto
+	// embutido numa mensagem de erro de um handler futuro.
 	if err != nil {
-		logError(fmt.Sprintf("Comando %s falhou: %v", cmd.ID, err))
+		logError(fmt.Sprintf("Comando %s falhou: %.200s", cmd.ID, err.Error()))
 		msg = err.Error()
 	} else {
-		// %.200s trunca o que vai pro log (companion.log/Event Log) — o ACK
-		// abaixo leva msg inteira pro servidor. Sem isso, um resultado grande
-		// (ex: base64 de um JPEG de capture-screenshot, Task 7+9) inundaria o
-		// log a cada comando, forçando rotação constante em companion.log e
-		// gravação equivalente no Windows Event Log (sem a mesma rotação).
 		logInfo(fmt.Sprintf("Comando %s OK: %.200s", cmd.ID, msg))
 	}
 

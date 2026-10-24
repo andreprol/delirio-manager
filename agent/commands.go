@@ -296,6 +296,13 @@ func handleGetAgentLog(cmd Command) (string, error) {
 // requestScreenshotFromCompanionFn pede 1 frame pro companion via IPC local
 // e aguarda a resposta (timeout interno). Var (não const) pra ser mockável
 // em teste. Implementação real: Task 9 (named pipe).
+//
+// É var global de pacote, não campo de *Agent: nenhum teste deste pacote usa
+// t.Parallel() hoje, mas qualquer teste futuro que adicione isso enquanto
+// mocka esta var corromperia silenciosamente outros testes do pacote — se
+// a Task 9 (ou qualquer refactor futuro) tiver motivo pra tocar aqui,
+// considerar migrar pra um campo injetado em Agent (mesmo padrão de
+// a.handleUpdate/a.handleDRSetup) pra eliminar o estado global.
 var requestScreenshotFromCompanionFn = func() ([]byte, error) {
 	return nil, fmt.Errorf("IPC com companion ainda não implementado")
 }
@@ -305,6 +312,12 @@ func handleCaptureScreenshot(cmd Command) (string, error) {
 	jpegBytes, err := requestScreenshotFromCompanionFn()
 	if err != nil {
 		return "", fmt.Errorf("capture-screenshot: %w", err)
+	}
+	if len(jpegBytes) == 0 {
+		// Sem este check, (nil, nil) do companion seria aceito como sucesso
+		// (EncodeToString(nil) == "") e o ACK sairia Success:true com
+		// Message:"" — sucesso fantasma sem nenhum sinal de erro.
+		return "", fmt.Errorf("capture-screenshot: companion retornou payload vazio")
 	}
 	return base64.StdEncoding.EncodeToString(jpegBytes), nil
 }
