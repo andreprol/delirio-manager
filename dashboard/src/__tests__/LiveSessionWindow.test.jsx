@@ -243,6 +243,46 @@ describe('LiveSessionWindow', () => {
     expect(api.live.stop).toHaveBeenCalledWith('s1', true)
   })
 
+  // Regressão achada na 5ª rodada de verificação (🔴 CRÍTICO): parar a
+  // gravação manualmente e clicar "Encerrar sessão" em seguida, ANTES da
+  // conversão (ffmpeg + dialog de salvar) terminar, fazia endSession ver
+  // mediaRecorderRef já null (zerado sincronamente pela parada manual) e
+  // seguir direto pra api.live.stop/cleanupDone — fechando a janela com a
+  // conversão da 1ª chamada ainda rodando contra ela. stopRecordingIfActive
+  // agora compartilha a mesma promise entre as 2 chamadas.
+  it('parar manualmente + Encerrar sessão rápido espera a conversão terminar antes de api.live.stop', async () => {
+    HTMLCanvasElement.prototype.captureStream = vi.fn(() => ({}))
+    global.MediaRecorder = vi.fn(function FakeMediaRecorder() {
+      this.start = vi.fn()
+      this.stop = vi.fn(() => { this.onstop?.() })
+    })
+    let resolveConvert
+    window.electronAPI.convertRecording = vi.fn(() => new Promise((resolve) => { resolveConvert = resolve }))
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { fireEvent.click(screen.getByText('⏺ Gravar')) })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('⏹ Parar gravação')) // dispara a conversão, ainda não resolveu
+      fireEvent.click(screen.getByText('Encerrar sessão')) // quase junto, antes da conversão terminar
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(api.live.stop).not.toHaveBeenCalled() // ainda esperando a mesma conversão
+    expect(window.electronAPI.cleanupDone).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveConvert({ saved: true })
+    })
+
+    expect(api.live.stop).toHaveBeenCalledWith('s1', true)
+    expect(window.electronAPI.cleanupDone).toHaveBeenCalled()
+  })
+
   // Regressão: sem o heartbeat, a rede de segurança de timeout fixo do
   // main.js forçaria o fechamento da janela com o cleanup ainda em
   // andamento (ex: dialog de salvar a gravação aberto), perdendo a

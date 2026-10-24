@@ -16,9 +16,11 @@ export function LiveSessionWindow() {
   const sessionRef = useRef(null)
   const recordingSecsRef = useRef(0)
   const endSessionPromiseRef = useRef(null)
+  const stoppingRef = useRef(null)
   const wasRecordingRef = useRef(false)
   const [ending, setEnding] = useState(false)
   const [endError, setEndError] = useState(null)
+  const [recordingError, setRecordingError] = useState(null)
 
   sessionRef.current = session
   recordingSecsRef.current = recordingSecs
@@ -41,39 +43,55 @@ export function LiveSessionWindow() {
   // session/recordingSecs direto) pra poderem ser estáveis (sem recriar a
   // cada mudança de estado) e ainda assim ler o valor mais recente — usadas
   // dentro do listener de IPC (onCleanupAndClose), que só se inscreve 1x.
-  const stopRecordingIfActive = useCallback(async () => {
-    if (!mediaRecorderRef.current) return
-    const recorder = mediaRecorderRef.current
+  //
+  // stoppingRef guarda a MESMA promise entre chamadas concorrentes de
+  // ORIGENS diferentes — achado 🔴 da 5ª rodada de verificação: parar a
+  // gravação manualmente (toggleRecording, fire-and-forget) e clicar
+  // "Encerrar sessão" logo depois, antes da conversão/dialog de salvar
+  // terminar, fazia a chamada de dentro de endSession ver
+  // mediaRecorderRef.current já null (zerado sincronamente pela 1ª chamada)
+  // e retornar na hora — endSession seguia pra api.live.stop/cleanupDone()
+  // e fechava a janela enquanto o ffmpeg/dialog da 1ª chamada ainda
+  // rodavam contra ela, perdendo a gravação em silêncio. Mesmo padrão de
+  // endSessionPromiseRef, mas reseta pra null ao terminar (não "pra sempre"
+  // como lá) — gravar de novo depois é uma ação legítima nesta janela.
+  const stopRecordingIfActive = useCallback(() => {
+    if (stoppingRef.current) return stoppingRef.current
+    if (!mediaRecorderRef.current) return Promise.resolve()
+
+    const { recorder, chunks } = mediaRecorderRef.current
     mediaRecorderRef.current = null
     clearInterval(recordingTimerRef.current)
     setRecording(false)
 
-    const stopped = new Promise((resolve) => { recorder.onstop = resolve })
-    recorder.stop()
-    await stopped
+    stoppingRef.current = (async () => {
+      const stopped = new Promise((resolve) => { recorder.onstop = resolve })
+      recorder.stop()
+      await stopped
 
-    // recorder._chunks (não uma ref compartilhada no componente): achado 🟡
-    // da 4ª rodada de verificação — um ciclo rápido parar→gravar de novo,
-    // antes do onstop da gravação anterior resolver, misturaria chunks da
-    // gravação antiga com a nova numa ref única. Cada instância de
-    // MediaRecorder dono dos seus próprios chunks elimina isso de raiz.
-    const blob = new Blob(recorder._chunks, { type: 'video/webm' })
-    const arrayBuffer = await blob.arrayBuffer()
-    // Falha na conversão (ffmpeg) não pode travar o encerramento da sessão —
-    // sem o catch, endSession nunca chegaria em api.live.stop/cleanupDone, e
-    // o botão "Encerrar sessão"/fechar a janela pareceria simplesmente não
-    // fazer nada. A gravação se perde nesse caso, mas a sessão encerra.
-    try {
-      await window.electronAPI.convertRecording(arrayBuffer, {
-        machineId: sessionRef.current?.machineId,
-        mode: sessionRef.current?.mode,
-        startedAt: startedAtRef.current,
-        endedAt: new Date().toISOString(),
-        durationSec: recordingSecsRef.current,
-      })
-    } catch (err) {
-      console.error('Falha ao converter gravação:', err)
-    }
+      const blob = new Blob(chunks, { type: 'video/webm' })
+      const arrayBuffer = await blob.arrayBuffer()
+      // Falha na conversão (ffmpeg) não pode travar o encerramento da
+      // sessão — sem o catch, endSession nunca chegaria em
+      // api.live.stop/cleanupDone, e "Encerrar sessão"/fechar a janela
+      // pareceria simplesmente não fazer nada. A gravação se perde nesse
+      // caso, mas a sessão encerra — e o operador agora vê o erro
+      // (recordingError), não só um console.error silencioso.
+      try {
+        await window.electronAPI.convertRecording(arrayBuffer, {
+          machineId: sessionRef.current?.machineId,
+          mode: sessionRef.current?.mode,
+          startedAt: startedAtRef.current,
+          endedAt: new Date().toISOString(),
+          durationSec: recordingSecsRef.current,
+        })
+      } catch (err) {
+        console.error('Falha ao converter gravação:', err)
+        setRecordingError(err.message || 'falha ao salvar a gravação')
+      }
+    })().finally(() => { stoppingRef.current = null })
+
+    return stoppingRef.current
   }, [])
 
   // endSession pode ser chamado por 2 caminhos concorrentes: o botão
@@ -175,14 +193,19 @@ export function LiveSessionWindow() {
     if (!canvas || typeof canvas.captureStream !== 'function') return
     const stream = canvas.captureStream(10)
     const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' })
-    recorder._chunks = []
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) recorder._chunks.push(e.data) }
+    const chunks = []
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
     recorder.start()
-    mediaRecorderRef.current = recorder
+    // { recorder, chunks } — não recorder._chunks: mutar a instância nativa
+    // de MediaRecorder com um campo de app é code smell (achado 🔵 da 5ª
+    // rodada de verificação); um objeto próprio evita isso sem perder o
+    // dono-por-instância que elimina a mistura de chunks entre gravações.
+    mediaRecorderRef.current = { recorder, chunks }
     // Setado aqui, não dentro de endSession: é o único momento que sabe de
     // verdade que uma gravação começou, independente de quando/se a sessão
     // vier a ser encerrada depois.
     wasRecordingRef.current = true
+    setRecordingError(null)
     startedAtRef.current = new Date().toISOString()
     setRecordingSecs(0)
     setRecording(true)
@@ -228,6 +251,7 @@ export function LiveSessionWindow() {
         {recording && <span style={{ color: '#ef4444' }}>⏺ Gravando {recordingSecs}s</span>}
         <div style={{ flex: 1 }} />
         {endError && <span style={{ color: '#ef4444' }}>Erro ao encerrar: {endError}</span>}
+        {recordingError && <span style={{ color: '#ef4444' }}>Erro na gravação: {recordingError}</span>}
         <button onClick={toggleRecording} disabled={ending}>{recording ? '⏹ Parar gravação' : '⏺ Gravar'}</button>
         <button onClick={handleEndSessionClick} disabled={ending}>{ending ? 'Encerrando...' : 'Encerrar sessão'}</button>
       </div>
