@@ -85,4 +85,34 @@ describe('LiveSessionWindow', () => {
     expect(api.live.stop).toHaveBeenCalledWith('s1', false)
     expect(window.electronAPI.cleanupDone).toHaveBeenCalled()
   })
+
+  // Regressão achada na revisão cross-cutting: sem o try/catch em
+  // stopRecordingIfActive, uma falha do ffmpeg (convertRecording rejeitado)
+  // travava endSession pra sempre — "Encerrar sessão" com gravação ativa
+  // parecia simplesmente não fazer nada.
+  it('se converter a gravação falhar, ainda chama api.live.stop e cleanupDone (não trava o encerramento)', async () => {
+    let recorderInstance
+    HTMLCanvasElement.prototype.captureStream = vi.fn(() => ({}))
+    global.MediaRecorder = vi.fn(function FakeMediaRecorder() {
+      recorderInstance = this
+      this.start = vi.fn()
+      this.stop = vi.fn(() => { this.onstop?.() })
+    })
+    window.electronAPI.convertRecording = vi.fn().mockRejectedValue(new Error('ffmpeg falhou'))
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { fireEvent.click(screen.getByText('⏺ Gravar')) })
+    expect(recorderInstance.start).toHaveBeenCalled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Encerrar sessão'))
+    })
+
+    expect(recorderInstance.stop).toHaveBeenCalled()
+    expect(window.electronAPI.convertRecording).toHaveBeenCalled()
+    expect(api.live.stop).toHaveBeenCalledWith('s1', true)
+    expect(window.electronAPI.cleanupDone).toHaveBeenCalled()
+  })
 })
