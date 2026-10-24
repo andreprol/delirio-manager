@@ -335,6 +335,59 @@ describe('LiveSessionWindow', () => {
     expect(window.electronAPI.convertRecording).toHaveBeenCalledTimes(2)
   })
 
+  // Regressão achada na 7ª rodada de verificação (🟠 ALTO): o try/catch
+  // dentro de convertThisRecording cobria só convertRecording, não
+  // new Blob(...)/blob.arrayBuffer() — uma falha ali rejeitava a promise
+  // encadeada sem handler, envenenando a fila inteira (qualquer gravação
+  // enfileirada atrás nunca rodava).
+  it('falha ao ler o blob da gravação A não envenena a fila — gravação B seguinte ainda roda', async () => {
+    const recorders = []
+    HTMLCanvasElement.prototype.captureStream = vi.fn(() => ({}))
+    global.MediaRecorder = vi.fn(function FakeMediaRecorder() {
+      recorders.push(this)
+      this.start = vi.fn()
+      this.stop = vi.fn(() => { this.onstop?.() })
+    })
+    const originalArrayBuffer = Blob.prototype.arrayBuffer
+    let blobCallCount = 0
+    Blob.prototype.arrayBuffer = vi.fn(function () {
+      blobCallCount++
+      if (blobCallCount === 1) return Promise.reject(new Error('falha ao ler blob'))
+      return originalArrayBuffer.call(this)
+    })
+
+    try {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+      // Grava e para A — blob.arrayBuffer() falha, antes de chegar em convertRecording
+      act(() => { fireEvent.click(screen.getByText('⏺ Gravar')) })
+      await act(async () => {
+        fireEvent.click(screen.getByText('⏹ Parar gravação'))
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(screen.getByText(/falha ao ler blob/)).toBeInTheDocument()
+
+      // Grava e para B — tem que rodar normal, não travado pela falha de A
+      act(() => { fireEvent.click(screen.getByText('⏺ Gravar')) })
+      await act(async () => {
+        fireEvent.click(screen.getByText('⏹ Parar gravação'))
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(recorders).toHaveLength(2)
+      // A nunca chegou em convertRecording (falhou antes, em arrayBuffer);
+      // B chegou — só 1 chamada no total.
+      expect(window.electronAPI.convertRecording).toHaveBeenCalledTimes(1)
+    } finally {
+      Blob.prototype.arrayBuffer = originalArrayBuffer
+    }
+  })
+
   // Regressão: sem o heartbeat, a rede de segurança de timeout fixo do
   // main.js forçaria o fechamento da janela com o cleanup ainda em
   // andamento (ex: dialog de salvar a gravação aberto), perdendo a

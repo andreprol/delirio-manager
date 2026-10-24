@@ -87,19 +87,28 @@ export function LiveSessionWindow() {
     const stopped = new Promise((resolve) => { recorder.onstop = resolve })
     recorder.stop()
 
+    // convertThisRecording NUNCA pode rejeitar — é o invariante que a fila
+    // em stoppingRef depende pra sempre drenar: como chainedB encadeia via
+    // previous.then(convertB) (linha abaixo), uma rejeição aqui se
+    // propagaria pela cadeia inteira sem handler, e qualquer conversão já
+    // enfileirada atrás desta nunca rodaria — perdida em silêncio, sem
+    // nem setar recordingError pra ela (achado 🟠 da 7ª rodada de
+    // verificação: o try/catch cobria só convertRecording, não new
+    // Blob/blob.arrayBuffer logo acima, que também podem lançar/rejeitar).
     const convertThisRecording = async () => {
-      await stopped
-      const blob = new Blob(chunks, { type: 'video/webm' })
-      const arrayBuffer = await blob.arrayBuffer()
-      // Falha na conversão (ffmpeg) não pode travar o encerramento da
-      // sessão — sem o catch, endSession nunca chegaria em
-      // api.live.stop/cleanupDone, e "Encerrar sessão"/fechar a janela
-      // pareceria simplesmente não fazer nada. A gravação se perde nesse
-      // caso, mas a sessão encerra — e o operador agora vê o erro
-      // (recordingError), não só um console.error silencioso.
       try {
+        await stopped
+        const blob = new Blob(chunks, { type: 'video/webm' })
+        const arrayBuffer = await blob.arrayBuffer()
         await window.electronAPI.convertRecording(arrayBuffer, metadata)
       } catch (err) {
+        // Falha em qualquer parte da conversão (ffmpeg) não pode travar o
+        // encerramento da sessão nem a fila — sem o catch, endSession
+        // nunca chegaria em api.live.stop/cleanupDone, e "Encerrar
+        // sessão"/fechar a janela pareceria simplesmente não fazer nada.
+        // A gravação se perde nesse caso, mas a sessão encerra e a fila
+        // continua — e o operador vê o erro (recordingError), não só um
+        // console.error silencioso.
         console.error('Falha ao converter gravação:', err)
         setRecordingError(err.message || 'falha ao salvar a gravação')
       }
