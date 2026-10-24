@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -326,4 +328,55 @@ func TestExecuteCommand_CancelShutdown_NoActiveShutdown(t *testing.T) {
 	// Em CI nao ha shutdown pendente — erro e esperado. So verifica que nao panica.
 	_ = err
 	t.Log("cancel-shutdown sem shutdown ativo:", err)
+}
+
+// ── capture-screenshot ────────────────────────────────────────────────────────
+
+func TestHandleCaptureScreenshot(t *testing.T) {
+	original := requestScreenshotFromCompanionFn
+	defer func() { requestScreenshotFromCompanionFn = original }()
+
+	requestScreenshotFromCompanionFn = func() ([]byte, error) {
+		return []byte("fake-jpeg-bytes"), nil
+	}
+
+	cmd := Command{ID: "cmd-1", Type: "capture-screenshot", Params: json.RawMessage(`{"activityLogId":42}`)}
+	result, err := handleCaptureScreenshot(cmd)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	want := base64.StdEncoding.EncodeToString([]byte("fake-jpeg-bytes"))
+	if result != want {
+		t.Errorf("esperava base64 %q, obteve %q", want, result)
+	}
+}
+
+func TestHandleCaptureScreenshotCompanionError(t *testing.T) {
+	original := requestScreenshotFromCompanionFn
+	defer func() { requestScreenshotFromCompanionFn = original }()
+
+	requestScreenshotFromCompanionFn = func() ([]byte, error) {
+		return nil, fmt.Errorf("companion não respondeu")
+	}
+
+	cmd := Command{ID: "cmd-1", Type: "capture-screenshot", Params: json.RawMessage(`{}`)}
+	_, err := handleCaptureScreenshot(cmd)
+	if err == nil {
+		t.Fatal("esperava erro quando companion falha")
+	}
+}
+
+func TestExecuteCommand_CaptureScreenshot_Registered(t *testing.T) {
+	original := requestScreenshotFromCompanionFn
+	defer func() { requestScreenshotFromCompanionFn = original }()
+
+	requestScreenshotFromCompanionFn = func() ([]byte, error) {
+		return []byte("fake-jpeg-bytes"), nil
+	}
+
+	a := newTestAgent("https://dt.example.com")
+	_, err := a.executeCommand(Command{ID: "cmd-1", Type: "capture-screenshot", Params: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatalf("capture-screenshot deve estar registrado no mapa de handlers: %v", err)
+	}
 }

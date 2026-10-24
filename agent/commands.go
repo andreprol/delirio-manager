@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -57,6 +58,7 @@ func (a *Agent) commandHandlers() map[string]func(Command) (string, error) {
 		"dr-status":              handleDRStatus,
 		"run_powershell":         handleRunPowershell,
 		"get_agent_log":          handleGetAgentLog,
+		"capture-screenshot":     handleCaptureScreenshot,
 	}
 }
 
@@ -287,6 +289,24 @@ func handleGetAgentLog(cmd Command) (string, error) {
 		logLines = logLines[len(logLines)-params.Lines:]
 	}
 	return strings.Join(logLines, "\n"), nil
+}
+
+// ── Captura de tela ───────────────────────────────────────────────────────────
+
+// requestScreenshotFromCompanionFn pede 1 frame pro companion via IPC local
+// e aguarda a resposta (timeout interno). Var (não const) pra ser mockável
+// em teste. Implementação real: Task 9 (named pipe).
+var requestScreenshotFromCompanionFn = func() ([]byte, error) {
+	return nil, fmt.Errorf("IPC com companion ainda não implementado")
+}
+
+func handleCaptureScreenshot(cmd Command) (string, error) {
+	logInfo(fmt.Sprintf("Comando CAPTURE-SCREENSHOT recebido (ID: %s).", cmd.ID))
+	jpegBytes, err := requestScreenshotFromCompanionFn()
+	if err != nil {
+		return "", fmt.Errorf("capture-screenshot: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(jpegBytes), nil
 }
 
 // ── Utilitários ───────────────────────────────────────────────────────────────
