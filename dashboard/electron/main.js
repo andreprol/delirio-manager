@@ -64,6 +64,62 @@ function createWindow() {
   return win
 }
 
+// Janela separada por sessão ao vivo (acesso remoto) — uma por máquina, o
+// operador pode abrir mais de uma ao mesmo tempo. Carrega o MESMO bundle
+// (dist/index.html) que a janela principal; main.jsx decide qual React root
+// montar checando `electronAPI.isLiveSessionWindow` (flag em process.argv,
+// lida no preload — nunca segredo ali). Os parâmetros da sessão (incluindo
+// dashboardToken) viajam só por IPC, depois da janela terminar de carregar
+// — nunca em URL/hash (ver spec 2026-10-24: evita token em histórico de
+// navegação ou devtools).
+function createLiveSessionWindow(params) {
+  const liveWin = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 960,
+    minHeight: 600,
+    title: 'Delirio Manager — Sessão ao vivo',
+    backgroundColor: '#0f1117',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      additionalArguments: ['--live-session'],
+    },
+  })
+
+  liveWin.setMenuBarVisibility(false)
+
+  if (IS_DEV) {
+    liveWin.loadURL('http://localhost:5173')
+  } else {
+    liveWin.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
+  }
+
+  liveWin.webContents.once('did-finish-load', () => {
+    liveWin.webContents.send('live-session-init', params)
+  })
+
+  // Fechar a janela (X) é equivalente a "Encerrar sessão" (decisão da spec
+  // 2026-10-24) — mas não fecha na hora: pede pro renderer limpar primeiro
+  // (parar gravação em andamento + POST /stop), só destrói a janela quando
+  // ele confirmar via 'live-session-cleanup-done'. Sem isso, o companion
+  // continuaria transmitindo sem ninguém olhando, e uma gravação em
+  // andamento seria descartada sem perguntar.
+  liveWin.on('close', (event) => {
+    if (liveWin.__cleanupDone) return
+    event.preventDefault()
+    liveWin.webContents.send('live-session-cleanup-and-close')
+  })
+
+  liveWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  return liveWin
+}
+
 function setupAutoUpdater(win) {
   // Só verifica updates em producao (app empacotado)
   if (!app.isPackaged) return
@@ -187,6 +243,22 @@ app.whenReady().then(() => {
     const newMinW = Math.max(currentMinW, Math.ceil(neededWidth))
     if (newMinW !== currentMinW) win.setMinimumSize(newMinW, currentMinH)
     if (newW    !== currentW)    win.setSize(newW, currentH, true) // true = animate
+  })
+
+  // IPC: abre a janela de sessão ao vivo (acesso remoto)
+  ipcMain.handle('live-session:open', (_, params) => {
+    createLiveSessionWindow(params)
+    return true
+  })
+
+  // IPC: a janela de sessão confirmou que já limpou (parou gravação, avisou
+  // o servidor) — agora pode fechar de verdade.
+  ipcMain.on('live-session-cleanup-done', (event) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    if (senderWin && !senderWin.isDestroyed()) {
+      senderWin.__cleanupDone = true
+      senderWin.close()
+    }
   })
 
   const win = createWindow()
