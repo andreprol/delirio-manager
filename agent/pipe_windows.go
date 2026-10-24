@@ -70,7 +70,14 @@ func sendPipeRequest(msg pipeMessage, timeout time.Duration) (pipeMessage, error
 		time.Sleep(pipeDialRetryInterval)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout)) // melhor esforço — se falhar, timeout já cobre a chamada via DialPipe
+	// deadline (não time.Now().Add(timeout) de novo): o loop de retry acima
+	// já pode ter consumido parte do timeout em tentativas de dial — rearmar
+	// o timeout inteiro aqui faria uma chamada bloquear até ~2×timeout no
+	// pior caso (ex: ~20s com pipeHandlerDeadline=10s), contrariando "timeout
+	// cobre conexão + resposta" documentado no comentário da função. Como
+	// handleCommand (agent.go) processa comandos sequencialmente, isso
+	// travaria o processamento de QUALQUER outro comando da mesma leva.
+	_ = conn.SetDeadline(deadline) // melhor esforço — se falhar, timeout já cobre a chamada via DialPipe
 
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -86,6 +93,14 @@ func sendPipeRequest(msg pipeMessage, timeout time.Duration) (pipeMessage, error
 	}
 	if err := json.Unmarshal(line, &resp); err != nil {
 		return resp, fmt.Errorf("decodificar resposta: %w", err)
+	}
+	if resp.RequestID != msg.RequestID {
+		// RequestID existe exatamente pra correlacionar pedido/resposta —
+		// inofensivo hoje (1 conexão síncrona por requisição), mas sem este
+		// check o campo nunca é de fato verificado; se o transporte evoluir
+		// pra multiplexar (ex: Task 10, start/stop-live-session concorrentes
+		// numa conexão persistente), uma resposta trocada passaria em silêncio.
+		return resp, fmt.Errorf("pipe: RequestID da resposta (%s) diverge do pedido (%s)", resp.RequestID, msg.RequestID)
 	}
 	if resp.Error != "" {
 		return resp, fmt.Errorf("companion retornou erro: %s", resp.Error)
