@@ -234,10 +234,11 @@ func TestCompanionPipeLoop_CaptureScreenshotEndToEnd(t *testing.T) {
 
 	stopCh := make(chan struct{})
 	done := make(chan struct{})
+	var listenErr error
 	go func() {
 		defer close(done)
 		cfg := &Config{}
-		listenPipe(func(msg pipeMessage) pipeMessage {
+		listenErr = listenPipe(func(msg pipeMessage) pipeMessage {
 			return handleCompanionPipeMessage(msg, cfg)
 		}, stopCh)
 	}()
@@ -247,6 +248,9 @@ func TestCompanionPipeLoop_CaptureScreenshotEndToEnd(t *testing.T) {
 		case <-done:
 		case <-time.After(2 * time.Second):
 			t.Fatal("listenPipe não encerrou após stopCh fechado")
+		}
+		if listenErr != nil {
+			t.Errorf("listenPipe devolveu %v após shutdown normal via stopCh, want nil", listenErr)
 		}
 	}()
 

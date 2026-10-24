@@ -76,7 +76,7 @@ func TestParseEnvBlockEntries(t *testing.T) {
 func TestInjectFeatureFlagIntoEnvBlock(t *testing.T) {
 	t.Run("sobrescreve valor existente sem duplicar nem afetar outras entradas", func(t *testing.T) {
 		block := buildTestEnvBlock(t, `PATH=C:\x`, "FEATURE_LIVE_ACCESS=false", `TEMP=C:\temp`)
-		patched, err := injectFeatureFlagIntoEnvBlock(block, "FEATURE_LIVE_ACCESS", "true")
+		patched, err := injectFeatureFlagIntoEnvBlock(block, featureLiveAccessEnvVar, "true")
 		if err != nil {
 			t.Fatalf("erro inesperado: %v", err)
 		}
@@ -99,7 +99,7 @@ func TestInjectFeatureFlagIntoEnvBlock(t *testing.T) {
 
 	t.Run("case-insensitive: KEY minúsculo existente também é sobrescrito", func(t *testing.T) {
 		block := buildTestEnvBlock(t, "feature_live_access=false")
-		patched, err := injectFeatureFlagIntoEnvBlock(block, "FEATURE_LIVE_ACCESS", "true")
+		patched, err := injectFeatureFlagIntoEnvBlock(block, featureLiveAccessEnvVar, "true")
 		if err != nil {
 			t.Fatalf("erro inesperado: %v", err)
 		}
@@ -111,7 +111,7 @@ func TestInjectFeatureFlagIntoEnvBlock(t *testing.T) {
 
 	t.Run("adiciona quando a key não existia", func(t *testing.T) {
 		block := buildTestEnvBlock(t, `PATH=C:\x`)
-		patched, err := injectFeatureFlagIntoEnvBlock(block, "FEATURE_LIVE_ACCESS", "true")
+		patched, err := injectFeatureFlagIntoEnvBlock(block, featureLiveAccessEnvVar, "true")
 		if err != nil {
 			t.Fatalf("erro inesperado: %v", err)
 		}
@@ -124,7 +124,7 @@ func TestInjectFeatureFlagIntoEnvBlock(t *testing.T) {
 
 	t.Run("não colide com chave que é prefixo de outra", func(t *testing.T) {
 		block := buildTestEnvBlock(t, "FEATURE_LIVE_ACCESS_X=outra-coisa")
-		patched, err := injectFeatureFlagIntoEnvBlock(block, "FEATURE_LIVE_ACCESS", "true")
+		patched, err := injectFeatureFlagIntoEnvBlock(block, featureLiveAccessEnvVar, "true")
 		if err != nil {
 			t.Fatalf("erro inesperado: %v", err)
 		}

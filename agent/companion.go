@@ -56,8 +56,9 @@ func runCompanion() error {
 	// (agent.go/updater.go — TerminateProcess de verdade, não só
 	// CloseHandle), (2) morto pelo Job Object (kill-on-close) se o serviço
 	// morrer sem passar por (1), ou (3) sozinho, via os.Exit em
-	// companionPipeLoop, se não conseguir abrir a pipe (ver listenPipe,
-	// pipe_windows.go). Quando start/stop-live-session (companionPipeLoop)
+	// companionPipeLoop, se não conseguir abrir a pipe OU se o Accept()
+	// dela falhar por um motivo real (não o fechamento intencional via
+	// stopCh — ver listenPipe, pipe_windows.go). Quando start/stop-live-session (companionPipeLoop)
 	// ganhar um sinal de "encerrar" normal, trocar este select{} por
 	// `select { case <-stopCh: return nil }` pra sair de fato.
 	stopCh := make(chan struct{})

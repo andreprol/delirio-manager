@@ -225,10 +225,12 @@ func pipeSecurityDescriptor() (string, error) {
 // companion simplesmente não atende comandos até o problema ser corrigido
 // (companionPipeLoop, chamador, loga o erro devolvido e sai do processo).
 //
-// Devolve erro só quando a pipe NEM CHEGA a abrir (ACL não montada, ou
-// winio.ListenPipe falhou — ex: colisão de instância, ver companionPipeLoop
-// em companion.go, que trata isso como fatal). Shutdown normal via stopCh
-// devolve nil.
+// Devolve erro quando a pipe NEM CHEGA a abrir (ACL não montada, ou
+// winio.ListenPipe falhou — ex: colisão de instância) OU quando Accept()
+// falha por um motivo que NÃO é o fechamento intencional via stopCh (ver
+// errors.Is(err, net.ErrClosed) no loop abaixo) — em ambos os casos,
+// companionPipeLoop (chamador) trata como fatal. Shutdown normal via
+// stopCh devolve nil.
 func listenPipe(handler func(pipeMessage) pipeMessage, stopCh <-chan struct{}) error {
 	sd, err := pipeSecurityDescriptor()
 	if err != nil {

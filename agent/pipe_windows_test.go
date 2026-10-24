@@ -37,6 +37,7 @@ func TestPipeRequestTimeout(t *testing.T) {
 func TestPipeRoundtrip(t *testing.T) {
 	stopCh := make(chan struct{})
 	done := make(chan struct{})
+	var listenErr error
 
 	handler := func(msg pipeMessage) pipeMessage {
 		if msg.Type != "ping" || msg.RequestID != "req-roundtrip" {
@@ -47,7 +48,7 @@ func TestPipeRoundtrip(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		listenPipe(handler, stopCh)
+		listenErr = listenPipe(handler, stopCh)
 	}()
 
 	// SEM sleep aqui de propósito: sendPipeRequest agora tem retry próprio
@@ -68,5 +69,12 @@ func TestPipeRoundtrip(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("listenPipe não encerrou após stopCh fechado")
+	}
+	// Contrato que companionPipeLoop depende pra decidir fatal vs shutdown
+	// normal: stopCh fechado -> listenPipe devolve nil (não um erro). Se
+	// errors.Is(err, net.ErrClosed) parar de bater (ex: go-winio mudar o
+	// valor de ErrPipeListenerClosed), este teste pega a regressão.
+	if listenErr != nil {
+		t.Errorf("listenPipe devolveu %v após shutdown normal via stopCh, want nil", listenErr)
 	}
 }
