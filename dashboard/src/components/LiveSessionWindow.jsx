@@ -11,7 +11,6 @@ export function LiveSessionWindow() {
   const [recordingSecs, setRecordingSecs] = useState(0)
   const canvasRef = useRef(null)
   const mediaRecorderRef = useRef(null)
-  const chunksRef = useRef([])
   const recordingTimerRef = useRef(null)
   const startedAtRef = useRef(null)
   const sessionRef = useRef(null)
@@ -53,8 +52,12 @@ export function LiveSessionWindow() {
     recorder.stop()
     await stopped
 
-    const blob = new Blob(chunksRef.current, { type: 'video/webm' })
-    chunksRef.current = []
+    // recorder._chunks (não uma ref compartilhada no componente): achado 🟡
+    // da 4ª rodada de verificação — um ciclo rápido parar→gravar de novo,
+    // antes do onstop da gravação anterior resolver, misturaria chunks da
+    // gravação antiga com a nova numa ref única. Cada instância de
+    // MediaRecorder dono dos seus próprios chunks elimina isso de raiz.
+    const blob = new Blob(recorder._chunks, { type: 'video/webm' })
     const arrayBuffer = await blob.arrayBuffer()
     // Falha na conversão (ffmpeg) não pode travar o encerramento da sessão —
     // sem o catch, endSession nunca chegaria em api.live.stop/cleanupDone, e
@@ -95,15 +98,16 @@ export function LiveSessionWindow() {
       endSessionPromiseRef.current = (async () => {
         setEnding(true)
         try {
-          // wasRecordingRef é "pegajoso" (só liga, nunca desliga sozinho)
-          // entre tentativas — achado 🟠 da 3ª rodada de verificação:
-          // stopRecordingIfActive já zera mediaRecorderRef ANTES de
-          // api.live.stop poder falhar, então recalcular `!!mediaRecorderRef
-          // .current` numa 2ª tentativa (depois de uma 1ª falha de rede)
-          // sempre dava false, mesmo tendo gravado — o `recorded` que
-          // finalmente chegava ao servidor (setLiveSessionRecorded) vinha
-          // errado, mesmo com o .mp4 já salvo no disco do operador.
-          wasRecordingRef.current = wasRecordingRef.current || !!mediaRecorderRef.current
+          // wasRecordingRef.current já reflete "gravou em algum momento
+          // desta sessão" — setado no INÍCIO de toggleRecording (achado 🟠
+          // da 4ª rodada: setar aqui, derivado de mediaRecorderRef.current,
+          // ficava false se o operador tivesse parado a gravação manualmente
+          // ANTES de encerrar a sessão — mediaRecorderRef já estaria null).
+          // É pegajoso entre tentativas de endSession também (achado 🟠 da
+          // 3ª rodada): stopRecordingIfActive zera mediaRecorderRef ANTES de
+          // api.live.stop poder falhar, então recalcular a partir dele numa
+          // 2ª tentativa (depois de uma 1ª falha de rede) sempre daria
+          // false, mesmo tendo gravado.
           await stopRecordingIfActive()
           if (sessionRef.current?.sessionId) {
             await api.live.stop(sessionRef.current.sessionId, wasRecordingRef.current)
@@ -164,17 +168,21 @@ export function LiveSessionWindow() {
 
   function toggleRecording() {
     if (mediaRecorderRef.current) {
-      stopRecordingIfActive()
+      stopRecordingIfActive().catch((err) => console.error('Falha ao parar gravação:', err))
       return
     }
     const canvas = canvasRef.current
     if (!canvas || typeof canvas.captureStream !== 'function') return
     const stream = canvas.captureStream(10)
     const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' })
-    chunksRef.current = []
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+    recorder._chunks = []
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) recorder._chunks.push(e.data) }
     recorder.start()
     mediaRecorderRef.current = recorder
+    // Setado aqui, não dentro de endSession: é o único momento que sabe de
+    // verdade que uma gravação começou, independente de quando/se a sessão
+    // vier a ser encerrada depois.
+    wasRecordingRef.current = true
     startedAtRef.current = new Date().toISOString()
     setRecordingSecs(0)
     setRecording(true)

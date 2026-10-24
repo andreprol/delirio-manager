@@ -211,6 +211,38 @@ describe('LiveSessionWindow', () => {
     expect(api.live.stop).toHaveBeenNthCalledWith(2, 's1', true)
   })
 
+  // Regressão achada na 4ª rodada de verificação: wasRecordingRef só era
+  // setado dentro de endSession (derivado de mediaRecorderRef.current) — se
+  // o operador parasse a gravação manualmente (⏹) ANTES de clicar "Encerrar
+  // sessão", mediaRecorderRef já estaria null quando endSession rodasse, e
+  // recorded=false seria mandado ao servidor mesmo com o .mp4 real já salvo.
+  it('parar a gravação manualmente antes de encerrar ainda manda recorded=true', async () => {
+    let recorderInstance
+    HTMLCanvasElement.prototype.captureStream = vi.fn(() => ({}))
+    global.MediaRecorder = vi.fn(function FakeMediaRecorder() {
+      recorderInstance = this
+      this.start = vi.fn()
+      this.stop = vi.fn(() => { this.onstop?.() })
+    })
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { fireEvent.click(screen.getByText('⏺ Gravar')) })
+    expect(recorderInstance.start).toHaveBeenCalled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('⏹ Parar gravação')) // para ANTES de encerrar
+    })
+    expect(recorderInstance.stop).toHaveBeenCalled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Encerrar sessão')) // sem gravar de novo
+    })
+
+    expect(api.live.stop).toHaveBeenCalledWith('s1', true)
+  })
+
   // Regressão: sem o heartbeat, a rede de segurança de timeout fixo do
   // main.js forçaria o fechamento da janela com o cleanup ainda em
   // andamento (ex: dialog de salvar a gravação aberto), perdendo a
