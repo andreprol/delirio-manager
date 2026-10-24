@@ -50,4 +50,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('download-progress', handler)
     return () => ipcRenderer.removeListener('download-progress', handler)
   },
+
+  // Sessão ao vivo (acesso remoto) — ver dashboard/electron/main.js
+  isLiveSessionWindow: process.argv.includes('--live-session'),
+  openLiveSessionWindow: (params) => ipcRenderer.invoke('live-session:open', params),
+  onLiveSessionInit: (cb) => {
+    const handler = (_, data) => cb(data)
+    ipcRenderer.on('live-session-init', handler)
+    return () => ipcRenderer.removeListener('live-session-init', handler)
+  },
+  onCleanupAndClose: (cb) => {
+    const handler = () => cb()
+    ipcRenderer.on('live-session-cleanup-and-close', handler)
+    return () => ipcRenderer.removeListener('live-session-cleanup-and-close', handler)
+  },
+  cleanupDone: () => ipcRenderer.send('live-session-cleanup-done'),
+  convertRecording: (arrayBuffer, metadata) => ipcRenderer.invoke('convert-recording', arrayBuffer, metadata),
 })
