@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestParseCompanionFlags(t *testing.T) {
@@ -66,5 +69,85 @@ func TestSendActivityPayload_StatusError(t *testing.T) {
 	err := sendActivityPayload(srv.Client(), cfg, buildActivityPayload("t", "p.exe"))
 	if err == nil {
 		t.Fatal("esperava erro com status 401, veio nil")
+	}
+}
+
+func TestHandleCompanionPipeMessage(t *testing.T) {
+	original := captureScreenJPEGFn
+	defer func() { captureScreenJPEGFn = original }()
+	captureScreenJPEGFn = func(quality int) ([]byte, error) {
+		return []byte("fake-jpeg"), nil
+	}
+
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "capture-screenshot", RequestID: "req-1"})
+	if resp.Error != "" {
+		t.Fatalf("erro inesperado: %s", resp.Error)
+	}
+	if resp.ResultJPEGBase64 == "" {
+		t.Fatal("esperava resultJpegBase64 preenchido")
+	}
+}
+
+func TestHandleCompanionPipeMessageUnknownType(t *testing.T) {
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "tipo-desconhecido", RequestID: "req-2"})
+	if resp.Error == "" {
+		t.Fatal("esperava erro pra tipo de mensagem desconhecido")
+	}
+}
+
+// TestHandleCompanionPipeMessageCaptureError confirma que uma falha de
+// captureScreenJPEGFn vira Error preenchido (não ResultJPEGBase64vazio
+// mascarado como sucesso) — o contrato de que handleCaptureScreenshot
+// (commands.go) depende do outro lado da pipe.
+func TestHandleCompanionPipeMessageCaptureError(t *testing.T) {
+	original := captureScreenJPEGFn
+	defer func() { captureScreenJPEGFn = original }()
+	captureScreenJPEGFn = func(quality int) ([]byte, error) {
+		return nil, fmt.Errorf("falha simulada de captura")
+	}
+
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "capture-screenshot", RequestID: "req-3"})
+	if resp.Error == "" {
+		t.Fatal("esperava Error preenchido quando captureScreenJPEGFn falha")
+	}
+	if resp.ResultJPEGBase64 != "" {
+		t.Errorf("esperava ResultJPEGBase64 vazio no caminho de erro, obteve %q", resp.ResultJPEGBase64)
+	}
+}
+
+// TestCompanionPipeLoop_CaptureScreenshotEndToEnd sobe um listener real
+// (listenPipe + handleCompanionPipeMessage, como companionPipeLoop faz) e
+// chama requestScreenshotFromCompanionFn (cliente real, commands.go) do
+// outro lado — a única diferença de produção é captureScreenJPEGFn mockado
+// (sem GDI/desktop real em CI). Exercita o fio ponta a ponta que é o
+// objetivo desta task, em vez de só o handler isolado.
+func TestCompanionPipeLoop_CaptureScreenshotEndToEnd(t *testing.T) {
+	original := captureScreenJPEGFn
+	defer func() { captureScreenJPEGFn = original }()
+	captureScreenJPEGFn = func(quality int) ([]byte, error) {
+		return []byte("fake-jpeg-e2e"), nil
+	}
+
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		listenPipe(handleCompanionPipeMessage, stopCh)
+	}()
+	defer func() {
+		close(stopCh)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("listenPipe não encerrou após stopCh fechado")
+		}
+	}()
+
+	jpegBytes, err := requestScreenshotFromCompanionFn()
+	if err != nil {
+		t.Fatalf("requestScreenshotFromCompanionFn: %v", err)
+	}
+	if !bytes.Equal(jpegBytes, []byte("fake-jpeg-e2e")) {
+		t.Errorf("jpegBytes = %q, want %q", jpegBytes, "fake-jpeg-e2e")
 	}
 }

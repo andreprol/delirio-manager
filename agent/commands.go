@@ -294,17 +294,29 @@ func handleGetAgentLog(cmd Command) (string, error) {
 // ── Captura de tela ───────────────────────────────────────────────────────────
 
 // requestScreenshotFromCompanionFn pede 1 frame pro companion via IPC local
-// e aguarda a resposta (timeout interno). Var (não const) pra ser mockável
-// em teste. Implementação real: Task 9 (named pipe).
+// (named pipe, ver pipe_windows.go) e aguarda a resposta. Var (não const)
+// pra ser mockável em teste — os testes deste pacote hoje mockam ela
+// diretamente em vez de exercitar sendPipeRequest/listenPipe de ponta a
+// ponta (ver TestHandleCaptureScreenshot* em commands_test.go).
 //
 // É var global de pacote, não campo de *Agent: nenhum teste deste pacote usa
 // t.Parallel() hoje, mas qualquer teste futuro que adicione isso enquanto
 // mocka esta var corromperia silenciosamente outros testes do pacote — se
-// a Task 9 (ou qualquer refactor futuro) tiver motivo pra tocar aqui,
-// considerar migrar pra um campo injetado em Agent (mesmo padrão de
-// a.handleUpdate/a.handleDRSetup) pra eliminar o estado global.
+// algum refactor futuro tiver motivo pra tocar aqui, considerar migrar pra
+// um campo injetado em Agent (mesmo padrão de a.handleUpdate/a.handleDRSetup)
+// pra eliminar o estado global. Decisão desta task: manter como var global,
+// já que não há necessidade concreta de paralelismo nos testes hoje.
+//
+// O timeout usa pipeHandlerDeadline (pipe_windows.go) — o mesmo valor que o
+// SERVIDOR da pipe (companion, listenPipe) usa pra limitar quanto tempo
+// espera por handler — pra não divergir os dois lados silenciosamente caso
+// um seja ajustado sem o outro.
 var requestScreenshotFromCompanionFn = func() ([]byte, error) {
-	return nil, fmt.Errorf("IPC com companion ainda não implementado")
+	resp, err := sendPipeRequest(pipeMessage{Type: "capture-screenshot", RequestID: generateUUID()}, pipeHandlerDeadline)
+	if err != nil {
+		return nil, err
+	}
+	return base64.StdEncoding.DecodeString(resp.ResultJPEGBase64)
 }
 
 func handleCaptureScreenshot(cmd Command) (string, error) {

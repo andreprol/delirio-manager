@@ -19,12 +19,13 @@ func clampJPEGQuality(q int) int {
 	return q
 }
 
-const defaultJPEGQuality = 70 //nolint:unused // ligado pela Task 7 (fio que chama captureScreenJPEG)
+const defaultJPEGQuality = 70
+
+// captureScreenJPEGFn permite mock em teste — produção chama captureScreenJPEG de verdade.
+var captureScreenJPEGFn = captureScreenJPEG
 
 // user32 já é declarado em activity_windows.go (mesmo pacote) — reusado aqui
 // pra procGetDC/procReleaseDC/procGetSystemMetrics.
-//
-//nolint:unused // ligado pela Task 7 (captureScreenJPEG ainda não é chamada por nada)
 var (
 	gdi32                      = syscall.NewLazyDLL("gdi32.dll")
 	procGetDC                  = user32.NewProc("GetDC")
@@ -39,7 +40,6 @@ var (
 	procDeleteObject           = gdi32.NewProc("DeleteObject")
 )
 
-//nolint:unused // ligado pela Task 7
 const (
 	smCxScreen   = 0
 	smCyScreen   = 1
@@ -48,7 +48,7 @@ const (
 	dibRGBColors = 0
 )
 
-//nolint:unused // ligado pela Task 7 (layout usado por GetDIBits em captureScreenJPEG)
+// bitmapInfoHeader é o layout usado por GetDIBits em captureScreenJPEG.
 type bitmapInfoHeader struct {
 	Size          uint32
 	Width         int32
@@ -72,9 +72,6 @@ type bitmapInfoHeader struct {
 // task futura caso necessário.
 //
 // Não testável em CI (precisa de desktop real) — verificar manualmente.
-// Ainda não é chamada por nada: a Task 7 liga o fio.
-//
-//nolint:unused // ligado pela Task 7
 func captureScreenJPEG(quality int) ([]byte, error) {
 	quality = clampJPEGQuality(quality)
 

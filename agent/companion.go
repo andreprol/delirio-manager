@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -140,7 +141,26 @@ func sendActivityPayload(client *http.Client, cfg *Config, payload ActivityPaylo
 	return nil
 }
 
-// companionPipeLoop é stub — implementação nas próximas tasks.
+// companionPipeLoop roda no companion: abre a pipe local e despacha cada
+// mensagem recebida do serviço pra handleCompanionPipeMessage.
 func companionPipeLoop(cfg *Config, stopCh <-chan struct{}) {
-	<-stopCh
+	listenPipe(handleCompanionPipeMessage, stopCh)
+}
+
+// handleCompanionPipeMessage despacha mensagens recebidas do serviço via
+// pipe. Testável isoladamente (não depende do listener de pipe em si).
+func handleCompanionPipeMessage(msg pipeMessage) pipeMessage {
+	switch msg.Type {
+	case "capture-screenshot":
+		jpegBytes, err := captureScreenJPEGFn(defaultJPEGQuality)
+		if err != nil {
+			return pipeMessage{RequestID: msg.RequestID, Error: err.Error()}
+		}
+		return pipeMessage{
+			RequestID:        msg.RequestID,
+			ResultJPEGBase64: base64.StdEncoding.EncodeToString(jpegBytes),
+		}
+	default:
+		return pipeMessage{RequestID: msg.RequestID, Error: fmt.Sprintf("tipo de mensagem desconhecido: %s", msg.Type)}
+	}
 }
