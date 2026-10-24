@@ -470,7 +470,12 @@ func (a *Agent) handleCommand(cmd Command) {
 		logError(fmt.Sprintf("Comando %s falhou: %v", cmd.ID, err))
 		msg = err.Error()
 	} else {
-		logInfo(fmt.Sprintf("Comando %s OK: %s", cmd.ID, msg))
+		// %.200s trunca o que vai pro log (companion.log/Event Log) — o ACK
+		// abaixo leva msg inteira pro servidor. Sem isso, um resultado grande
+		// (ex: base64 de um JPEG de capture-screenshot, Task 7+9) inundaria o
+		// log a cada comando, forçando rotação constante em companion.log e
+		// gravação equivalente no Windows Event Log (sem a mesma rotação).
+		logInfo(fmt.Sprintf("Comando %s OK: %.200s", cmd.ID, msg))
 	}
 
 	// Envia ACK ao servidor
