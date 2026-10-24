@@ -11,6 +11,7 @@ import { RhModule } from './components/RhModule'
 import { AlohaModule } from './components/AlohaModule'
 import { DRModule } from './components/DRModule'
 import { ReportModule } from './components/ReportModule'
+import { WatchlistModule } from './components/WatchlistModule'
 import { api, setServerUrl, getServerUrl, setInternalApiKey, setAdminSecret } from './api'
 
 function fmtAge(min) {
@@ -63,6 +64,7 @@ export default function App() {
   const [showAloha, setShowAloha] = useState(false)
   const [showDR,         setShowDR]         = useState(false)
   const [showRelatorio,  setShowRelatorio]  = useState(false)
+  const [showWatchlist,  setShowWatchlist]  = useState(false)
   const [biosState,    setBiosState]    = useState(null) // null | 'loading' | 'done' | 'error'
   const [biosSavePath, setBiosSavePath] = useState(null)
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
@@ -469,6 +471,9 @@ export default function App() {
             <button className="pill-btn" onClick={() => setShowRelatorio(true)} title="Módulo Relatório — Score de risco por loja">
               📊 Rel.
             </button>
+            <button className="pill-btn" onClick={() => setShowWatchlist(true)} title="Módulo Watchlist — Palavras-chave de acesso remoto">
+              🔎 Watch
+            </button>
           </div>
 
           <button
@@ -628,6 +633,7 @@ export default function App() {
       {showAloha && <AlohaModule onClose={() => setShowAloha(false)} machines={machines} />}
       {showDR && <DRModule onClose={() => setShowDR(false)} />}
       {showRelatorio && <ReportModule onClose={() => setShowRelatorio(false)} />}
+      {showWatchlist && <WatchlistModule onClose={() => setShowWatchlist(false)} />}
       <UpdateToast />
     </div>
   )
