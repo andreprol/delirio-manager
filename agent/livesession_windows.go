@@ -160,6 +160,14 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 	}
 }
 
+// messageReader é o subconjunto de *websocket.Conn que readLiveSessionInput
+// precisa — extraído (mesmo padrão de frameWriter/sendLiveSessionFrame
+// neste arquivo) pra permitir testar o throttle de log de 1x-por-conexão
+// com um fake de N mensagens, sem WebSocket real.
+type messageReader interface {
+	ReadMessage() (messageType int, p []byte, err error)
+}
+
 // readLiveSessionInput lê mensagens da conexão até ela cair (erro de rede
 // ou conn.Close() chamado pelo defer de runLiveSessionLoop ao encerrar).
 // mode é repassado pra handleLiveSessionInput como defesa em profundidade:
@@ -167,7 +175,7 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 // mode desta sessão, ele for "normal" — não confia só na garantia do
 // servidor (liveSessionRelay.routeMessage) de nunca repassar input numa
 // sessão Shadow.
-func readLiveSessionInput(conn *websocket.Conn, mode string) {
+func readLiveSessionInput(conn messageReader, mode string) {
 	if mode != liveSessionNormalMode {
 		// mode é fixo pra vida inteira da conexão — se for != normal, vai
 		// recusar TODA mensagem até a conexão cair. Loga 1x aqui, não a

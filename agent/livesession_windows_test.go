@@ -110,6 +110,55 @@ func (f *fakeFrameWriter) WriteMessage(messageType int, data []byte) error {
 	return f.writeErr
 }
 
+// fakeMessageReader implementa messageReader sem WebSocket real — devolve
+// cada mensagem de `messages` em sequência e, depois da última, um erro
+// (simula a conexão caindo, igual readLiveSessionInput espera pra sair do
+// loop).
+type fakeMessageReader struct {
+	messages [][]byte
+	i        int
+}
+
+func (r *fakeMessageReader) ReadMessage() (int, []byte, error) {
+	if r.i >= len(r.messages) {
+		return 0, nil, fmt.Errorf("fakeMessageReader: sem mais mensagens")
+	}
+	msg := r.messages[r.i]
+	r.i++
+	return 0, msg, nil
+}
+
+// TestReadLiveSessionInputNonNormalModeConsumesAllMessages confirma que,
+// em mode != normal, readLiveSessionInput ainda consome TODAS as mensagens
+// até a conexão cair (o loop não trava/sai antes do tempo) e nenhuma delas
+// chega a injectMouseMoveFn/injectMouseButtonFn — defesa em profundidade
+// (ver handleLiveSessionInput) continua valendo mensagem a mensagem, não
+// só na primeira. Não assere a contagem exata de logError (exigiria tornar
+// logError mockável globalmente, mudança maior demais pra justificar só
+// por este teste) — cobre o comportamento observável do loop/dispatch.
+func TestReadLiveSessionInputNonNormalModeConsumesAllMessages(t *testing.T) {
+	originalMove, originalButton := injectMouseMoveFn, injectMouseButtonFn
+	defer func() { injectMouseMoveFn, injectMouseButtonFn = originalMove, originalButton }()
+
+	calls := 0
+	injectMouseMoveFn = func(x, y int32) error { calls++; return nil }
+	injectMouseButtonFn = func(button string, down bool) error { calls++; return nil }
+
+	reader := &fakeMessageReader{messages: [][]byte{
+		[]byte(`{"type":"mousemove","x":1,"y":1}`),
+		[]byte(`{"type":"mousedown","button":"left"}`),
+		[]byte(`{"type":"mousemove","x":2,"y":2}`),
+	}}
+	readLiveSessionInput(reader, "shadow")
+
+	if reader.i != len(reader.messages) {
+		t.Errorf("mensagens consumidas = %d, want %d (loop deveria ler todas antes de sair por erro)", reader.i, len(reader.messages))
+	}
+	if calls != 0 {
+		t.Errorf("injectMouseMoveFn/injectMouseButtonFn chamadas %d vez(es) em mode shadow, want 0", calls)
+	}
+}
+
 func TestSendLiveSessionFrame(t *testing.T) {
 	originalCapture := captureScreenJPEGFn
 	defer func() { captureScreenJPEGFn = originalCapture }()
