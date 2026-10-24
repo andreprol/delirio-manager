@@ -142,7 +142,7 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 	// `go` puro) porque handleLiveSessionInput vai processar dado vindo
 	// direto da rede (Task 12/SendInput) — panic ali não pode derrubar o
 	// processo do agent inteiro.
-	safeGo("liveSession-reader-"+sessionID, func() { readLiveSessionInput(conn) })
+	safeGo("liveSession-reader-"+sessionID, func() { readLiveSessionInput(conn, mode) })
 
 	ticker := time.NewTicker(time.Duration(liveSessionFrameIntervalMs()) * time.Millisecond)
 	defer ticker.Stop()
@@ -162,13 +162,18 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 
 // readLiveSessionInput lê mensagens da conexão até ela cair (erro de rede
 // ou conn.Close() chamado pelo defer de runLiveSessionLoop ao encerrar).
-func readLiveSessionInput(conn *websocket.Conn) {
+// mode é repassado pra handleLiveSessionInput como defesa em profundidade:
+// o companion só injeta input se, pelo seu próprio conhecimento local do
+// mode desta sessão, ele for "normal" — não confia só na garantia do
+// servidor (liveSessionRelay.routeMessage) de nunca repassar input numa
+// sessão Shadow.
+func readLiveSessionInput(conn *websocket.Conn, mode string) {
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			return
 		}
-		handleLiveSessionInput(data)
+		handleLiveSessionInput(data, mode)
 	}
 }
 
@@ -211,8 +216,5 @@ func sendLiveSessionFrame(conn frameWriter, sessionID string, captureFailures *i
 	return true
 }
 
-// handleLiveSessionInput ainda não faz nada — a Task 12 implementa a
-// injeção via SendInput (só mode Normal).
-func handleLiveSessionInput(data []byte) {
-	// Implementado na Task 12 (SendInput).
-}
+// handleLiveSessionInput está implementado em input_windows.go (Task 12 —
+// injeção via SendInput, só mode Normal).
