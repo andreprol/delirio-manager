@@ -84,28 +84,37 @@ func captureScreenJPEG(quality int) ([]byte, error) {
 		return nil, fmt.Errorf("GetSystemMetrics retornou tela com dimensão zero")
 	}
 
-	hdcScreen, _, _ := procGetDC.Call(0)
+	hdcScreen, _, lastErr := procGetDC.Call(0)
 	if hdcScreen == 0 {
-		return nil, fmt.Errorf("GetDC falhou")
+		return nil, fmt.Errorf("GetDC falhou: %w", lastErr)
 	}
 	defer procReleaseDC.Call(0, hdcScreen) //nolint:errcheck
 
-	hdcMem, _, _ := procCreateCompatibleDC.Call(hdcScreen)
+	hdcMem, _, lastErr := procCreateCompatibleDC.Call(hdcScreen)
 	if hdcMem == 0 {
-		return nil, fmt.Errorf("CreateCompatibleDC falhou")
+		return nil, fmt.Errorf("CreateCompatibleDC falhou: %w", lastErr)
 	}
 	defer procDeleteDC.Call(hdcMem) //nolint:errcheck
 
-	hBitmap, _, _ := procCreateCompatibleBitmap.Call(hdcScreen, width, height)
+	hBitmap, _, lastErr := procCreateCompatibleBitmap.Call(hdcScreen, width, height)
 	if hBitmap == 0 {
-		return nil, fmt.Errorf("CreateCompatibleBitmap falhou")
+		return nil, fmt.Errorf("CreateCompatibleBitmap falhou: %w", lastErr)
 	}
-	defer procDeleteObject.Call(hBitmap) //nolint:errcheck
+	// hOld é o bitmap monocromático 1x1 default que já estava selecionado em
+	// hdcMem. hBitmap precisa ser DESSELECIONADO (restaurando hOld) antes de
+	// ser deletado — DeleteObject num objeto ainda selecionado num DC é um
+	// caso não suportado pelo GDI (a Microsoft documenta restaurar o bitmap
+	// antigo antes de deletar o novo em todo exemplo de captura de tela) e
+	// pode falhar silenciosamente, vazando o handle GDI a cada captura. Por
+	// isso o defer da restauração é registrado DEPOIS do defer de
+	// DeleteObject: LIFO garante que a restauração roda PRIMEIRO.
+	hOld, _, _ := procSelectObject.Call(hdcMem, hBitmap)
+	defer procDeleteObject.Call(hBitmap)      //nolint:errcheck
+	defer procSelectObject.Call(hdcMem, hOld) //nolint:errcheck
 
-	procSelectObject.Call(hdcMem, hBitmap) //nolint:errcheck
-	ret, _, _ := procBitBlt.Call(hdcMem, 0, 0, width, height, hdcScreen, 0, 0, srcCopy)
+	ret, _, lastErr := procBitBlt.Call(hdcMem, 0, 0, width, height, hdcScreen, 0, 0, srcCopy)
 	if ret == 0 {
-		return nil, fmt.Errorf("BitBlt falhou")
+		return nil, fmt.Errorf("BitBlt falhou: %w", lastErr)
 	}
 
 	bi := bitmapInfoHeader{
@@ -117,23 +126,31 @@ func captureScreenJPEG(quality int) ([]byte, error) {
 		Compression: biRGB,
 	}
 	buf := make([]byte, width*height*4)
-	ret, _, _ = procGetDIBits.Call(
+	ret, _, lastErr = procGetDIBits.Call(
 		hdcMem, hBitmap, 0, uintptr(height),
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bi)), dibRGBColors,
 	)
 	if ret == 0 {
-		return nil, fmt.Errorf("GetDIBits falhou")
+		return nil, fmt.Errorf("GetDIBits falhou: %w", lastErr)
 	}
 
-	img := image.NewRGBA(image.Rect(0, 0, int(width), int(height)))
-	for i := 0; i < int(width*height); i++ {
-		b, g, r, a := buf[i*4], buf[i*4+1], buf[i*4+2], buf[i*4+3]
-		img.Pix[i*4], img.Pix[i*4+1], img.Pix[i*4+2], img.Pix[i*4+3] = r, g, b, a
-	}
+	img := bgraToRGBA(buf, int(width), int(height))
 
 	var out bytes.Buffer
 	if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: quality}); err != nil {
 		return nil, fmt.Errorf("jpeg.Encode: %w", err)
 	}
 	return out.Bytes(), nil
+}
+
+// bgraToRGBA converte um buffer BGRA (ordem de bytes que GetDIBits devolve
+// pra bitmaps BI_RGB de 32bpp no Windows) pra um *image.RGBA — separado de
+// captureScreenJPEG pra ser testável sem depender de GDI/desktop real.
+func bgraToRGBA(buf []byte, width, height int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for i := 0; i < width*height; i++ {
+		b, g, r, a := buf[i*4], buf[i*4+1], buf[i*4+2], buf[i*4+3]
+		img.Pix[i*4], img.Pix[i*4+1], img.Pix[i*4+2], img.Pix[i*4+3] = r, g, b, a
+	}
+	return img
 }
