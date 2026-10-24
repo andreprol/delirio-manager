@@ -18,6 +18,7 @@ export function LiveSessionWindow() {
   const recordingSecsRef = useRef(0)
   const endSessionPromiseRef = useRef(null)
   const [ending, setEnding] = useState(false)
+  const [endError, setEndError] = useState(null)
 
   sessionRef.current = session
   recordingSecsRef.current = recordingSecs
@@ -78,17 +79,30 @@ export function LiveSessionWindow() {
   // chamaria api.live.stop 2x pra mesma sessão sem isso. endSessionPromiseRef
   // guarda a MESMA promise entre chamadas: quem chama primeiro faz o
   // trabalho de verdade, qualquer chamada concorrente espera essa mesma
-  // promise em vez de disparar um 2º stop (achado 🟠 da revisão
-  // cross-cutting — nunca reseta pra null: uma vez iniciado, este fluxo só
-  // deve rodar 1x na vida desta janela).
+  // promise em vez de disparar um 2º stop.
+  //
+  // Em caso de falha (ex: api.live.stop rejeita por erro de rede), limpa
+  // endSessionPromiseRef e `ending` antes de relançar — achado da verificação
+  // da revisão cross-cutting: sem isso, a promise rejeitada ficava cacheada
+  // pra sempre, travando "Encerrar sessão" em "Encerrando..." permanente (só
+  // o timeout de 15s do main process acabava fechando a janela, sem nunca
+  // avisar o servidor de verdade). Com o reset, uma nova tentativa (novo
+  // clique, ou o main process reenviando o cleanup) pode rodar o fluxo de
+  // novo.
   const endSession = useCallback(() => {
     if (!endSessionPromiseRef.current) {
       endSessionPromiseRef.current = (async () => {
         setEnding(true)
-        const wasRecording = !!mediaRecorderRef.current
-        await stopRecordingIfActive()
-        if (sessionRef.current?.sessionId) {
-          await api.live.stop(sessionRef.current.sessionId, wasRecording)
+        try {
+          const wasRecording = !!mediaRecorderRef.current
+          await stopRecordingIfActive()
+          if (sessionRef.current?.sessionId) {
+            await api.live.stop(sessionRef.current.sessionId, wasRecording)
+          }
+        } catch (err) {
+          endSessionPromiseRef.current = null
+          setEnding(false)
+          throw err
         }
       })()
     }
@@ -101,10 +115,17 @@ export function LiveSessionWindow() {
   // 'live-session-cleanup-and-close', rodando endSession() de novo (inócuo
   // agora, já que endSession compartilha a promise — mas redundante).
   // cleanupDone() direto já deixa o main process fechar a janela de verdade
-  // (__cleanupDone vira true, sem passar pelo preventDefault).
+  // (__cleanupDone vira true, sem passar pelo preventDefault). Em falha,
+  // mostra o erro e NÃO chama cleanupDone — a janela fica aberta pro
+  // operador ver o erro e tentar de novo.
   const handleEndSessionClick = useCallback(async () => {
-    await endSession()
-    window.electronAPI?.cleanupDone()
+    setEndError(null)
+    try {
+      await endSession()
+      window.electronAPI?.cleanupDone()
+    } catch (err) {
+      setEndError(err.message || 'falha ao encerrar a sessão')
+    }
   }, [endSession])
 
   useEffect(() => {
@@ -118,10 +139,16 @@ export function LiveSessionWindow() {
       const heartbeat = setInterval(() => window.electronAPI.reportCleanupProgress?.(), 4000)
       try {
         await endSession()
+        window.electronAPI.cleanupDone()
+      } catch (err) {
+        // Falha ao encerrar via X da janela: não fecha sozinho, não chama
+        // cleanupDone — deixa o timeout de 15s do main process decidir, ou
+        // o operador tentar de novo clicando "Encerrar sessão" (agora
+        // visível de novo, ending foi resetado dentro de endSession).
+        console.error('Falha ao encerrar sessão ao vivo:', err)
       } finally {
         clearInterval(heartbeat)
       }
-      window.electronAPI.cleanupDone()
     })
     return unsubscribe
   }, [endSession])
@@ -183,6 +210,7 @@ export function LiveSessionWindow() {
         </span>
         {recording && <span style={{ color: '#ef4444' }}>⏺ Gravando {recordingSecs}s</span>}
         <div style={{ flex: 1 }} />
+        {endError && <span style={{ color: '#ef4444' }}>Erro ao encerrar: {endError}</span>}
         <button onClick={toggleRecording} disabled={ending}>{recording ? '⏹ Parar gravação' : '⏺ Gravar'}</button>
         <button onClick={handleEndSessionClick} disabled={ending}>{ending ? 'Encerrando...' : 'Encerrar sessão'}</button>
       </div>

@@ -148,6 +148,34 @@ describe('LiveSessionWindow', () => {
     api.live.stop.mockResolvedValue({ ok: true }) // restaura o default pros próximos testes
   })
 
+  // Regressão achada na VERIFICAÇÃO do fix anterior (não no fix original):
+  // sem resetar endSessionPromiseRef/ending em caso de falha, uma rejeição
+  // de api.live.stop (erro de rede) deixava a promise compartilhada
+  // cacheada pra sempre — "Encerrar sessão" ficava travado em
+  // "Encerrando..." permanentemente, sem nenhuma tentativa nova possível.
+  it('falha ao encerrar mostra erro, reabilita o botão, e uma 2ª tentativa funciona', async () => {
+    api.live.stop.mockRejectedValueOnce(new Error('rede indisponível'))
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Encerrar sessão'))
+    })
+
+    expect(screen.getByText(/rede indisponível/)).toBeInTheDocument()
+    expect(screen.getByText('Encerrar sessão')).not.toBeDisabled()
+    expect(window.electronAPI.cleanupDone).not.toHaveBeenCalled()
+
+    api.live.stop.mockResolvedValueOnce({ ok: true })
+    await act(async () => {
+      fireEvent.click(screen.getByText('Encerrar sessão'))
+    })
+
+    expect(api.live.stop).toHaveBeenCalledTimes(2)
+    expect(window.electronAPI.cleanupDone).toHaveBeenCalled()
+  })
+
   // Regressão: sem o heartbeat, a rede de segurança de timeout fixo do
   // main.js forçaria o fechamento da janela com o cleanup ainda em
   // andamento (ex: dialog de salvar a gravação aberto), perdendo a
