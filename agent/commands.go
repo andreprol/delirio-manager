@@ -311,13 +311,16 @@ func (a *Agent) handleStartLiveSession(cmd Command) (string, error) {
 	if err := json.Unmarshal(cmd.Params, &params); err != nil {
 		return "", fmt.Errorf("start-live-session: params inválidos: %w", err)
 	}
+	if params.SessionID == "" {
+		return "", fmt.Errorf("start-live-session: sessionId obrigatório e ausente")
+	}
 	logInfo(fmt.Sprintf("Comando START-LIVE-SESSION recebido (ID: %s, mode: %s).", cmd.ID, params.Mode))
 
 	_, err := sendPipeRequestFn(pipeMessage{
 		Type: "start-live-session", RequestID: generateUUID(),
 		SessionID: params.SessionID, Mode: params.Mode, CompanionToken: params.CompanionToken,
 		ServerURL: a.cfg.ServerURL,
-	}, 10*time.Second)
+	}, pipeHandlerDeadline)
 	if err != nil {
 		return "", fmt.Errorf("start-live-session: %w", err)
 	}
@@ -333,11 +336,14 @@ func handleStopLiveSession(cmd Command) (string, error) {
 	if err := json.Unmarshal(cmd.Params, &params); err != nil {
 		return "", fmt.Errorf("stop-live-session: params inválidos: %w", err)
 	}
+	if params.SessionID == "" {
+		return "", fmt.Errorf("stop-live-session: sessionId obrigatório e ausente")
+	}
 	logInfo(fmt.Sprintf("Comando STOP-LIVE-SESSION recebido (ID: %s).", cmd.ID))
 
 	_, err := sendPipeRequestFn(pipeMessage{
 		Type: "stop-live-session", RequestID: generateUUID(), SessionID: params.SessionID,
-	}, 10*time.Second)
+	}, pipeHandlerDeadline)
 	if err != nil {
 		return "", fmt.Errorf("stop-live-session: %w", err)
 	}

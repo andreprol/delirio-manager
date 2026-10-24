@@ -176,6 +176,11 @@ func handleCompanionPipeMessage(msg pipeMessage) pipeMessage {
 // startLiveSessionFn e stopLiveSessionFn são stubs temporários — a Task 11
 // deste plano implementa a conexão WebSocket de verdade. Vars (não funções
 // fixas) pra serem mockáveis em teste, mesmo padrão já usado neste pacote
-// (captureScreenJPEGFn) e em commands.go (requestScreenshotFromCompanionFn).
+// (captureScreenJPEGFn) e em commands.go/pipe_windows.go
+// (requestScreenshotFromCompanionFn/sendPipeRequestFn).
+//
+// Var global mutável, mesmo cuidado das outras: nenhum teste deste pacote
+// usa t.Parallel() hoje; não adicionar enquanto mocks destas vars existirem,
+// ou corrompe outros testes silenciosamente.
 var startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) {}
 var stopLiveSessionFn = func(sessionID string) {}

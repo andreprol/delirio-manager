@@ -429,9 +429,9 @@ func TestHandleStopLiveSession(t *testing.T) {
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 
-	var gotType string
+	var gotMsg pipeMessage
 	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
-		gotType = msg.Type
+		gotMsg = msg
 		return pipeMessage{RequestID: msg.RequestID}, nil
 	}
 
@@ -440,7 +440,41 @@ func TestHandleStopLiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
-	if gotType != "stop-live-session" {
-		t.Errorf("tipo repassado = %q, want stop-live-session", gotType)
+	if gotMsg.Type != "stop-live-session" {
+		t.Errorf("tipo repassado = %q, want stop-live-session", gotMsg.Type)
+	}
+	if gotMsg.SessionID != "s1" {
+		t.Errorf("SessionID repassado = %q, want %q", gotMsg.SessionID, "s1")
+	}
+}
+
+func TestHandleStartLiveSessionRequiresSessionID(t *testing.T) {
+	original := sendPipeRequestFn
+	defer func() { sendPipeRequestFn = original }()
+	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
+		t.Fatal("não deveria chamar a pipe sem sessionId")
+		return pipeMessage{}, nil
+	}
+
+	a := newTestAgent("https://exemplo.test")
+	cmd := Command{ID: "cmd-1", Type: "start-live-session", Params: json.RawMessage(`{"mode":"shadow"}`)}
+	_, err := a.handleStartLiveSession(cmd)
+	if err == nil {
+		t.Fatal("esperava erro com sessionId ausente")
+	}
+}
+
+func TestHandleStopLiveSessionRequiresSessionID(t *testing.T) {
+	original := sendPipeRequestFn
+	defer func() { sendPipeRequestFn = original }()
+	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
+		t.Fatal("não deveria chamar a pipe sem sessionId")
+		return pipeMessage{}, nil
+	}
+
+	cmd := Command{ID: "cmd-2", Type: "stop-live-session", Params: json.RawMessage(`{}`)}
+	_, err := handleStopLiveSession(cmd)
+	if err == nil {
+		t.Fatal("esperava erro com sessionId ausente")
 	}
 }
