@@ -162,6 +162,14 @@ func handleCompanionPipeMessage(msg pipeMessage) pipeMessage {
 		}
 	case "start-live-session":
 		logInfo(fmt.Sprintf("companion: start-live-session recebido (sessão %s, mode %s)", msg.SessionID, msg.Mode))
+		// isLiveSessionActive só evita que o servidor receba "sucesso" num
+		// start duplicado (startLiveSession já ignora duplicatas por conta
+		// própria, atomicamente, sob o mesmo mutex — esta checagem aqui é
+		// só pra reportar o Error de volta, mesmo com a janela de
+		// check-then-act entre as duas chamadas).
+		if isLiveSessionActive(msg.SessionID) {
+			return pipeMessage{RequestID: msg.RequestID, Error: fmt.Sprintf("sessão %s já está ativa", msg.SessionID)}
+		}
 		startLiveSessionFn(msg.SessionID, msg.Mode, msg.CompanionToken, msg.ServerURL)
 		return pipeMessage{RequestID: msg.RequestID}
 	case "stop-live-session":
@@ -173,14 +181,14 @@ func handleCompanionPipeMessage(msg pipeMessage) pipeMessage {
 	}
 }
 
-// startLiveSessionFn e stopLiveSessionFn são stubs temporários — a Task 11
-// deste plano implementa a conexão WebSocket de verdade. Vars (não funções
-// fixas) pra serem mockáveis em teste, mesmo padrão já usado neste pacote
-// (captureScreenJPEGFn) e em commands.go/pipe_windows.go
+// startLiveSessionFn e stopLiveSessionFn apontam pra implementação real em
+// livesession_windows.go (conexão WebSocket /live + loop de frames). Vars
+// (não funções fixas) pra serem mockáveis em teste, mesmo padrão já usado
+// neste pacote (captureScreenJPEGFn) e em commands.go/pipe_windows.go
 // (requestScreenshotFromCompanionFn/sendPipeRequestFn).
 //
 // Var global mutável, mesmo cuidado das outras: nenhum teste deste pacote
 // usa t.Parallel() hoje; não adicionar enquanto mocks destas vars existirem,
 // ou corrompe outros testes silenciosamente.
-var startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) {}
-var stopLiveSessionFn = func(sessionID string) {}
+var startLiveSessionFn = startLiveSession
+var stopLiveSessionFn = stopLiveSession
