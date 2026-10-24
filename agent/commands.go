@@ -295,6 +295,13 @@ func handleGetAgentLog(cmd Command) (string, error) {
 
 // ── Sessão ao vivo (start/stop) ───────────────────────────────────────────────
 
+// featureLiveAccessEnvVar é o nome da env var única que gateia toda a
+// feature de acesso remoto — mesma flag lida em agent.go (sessionWatchLoop),
+// companion.go (activityReportLoop) e session_windows.go
+// (injectFeatureFlagIntoEnvBlock). Constante compartilhada pra nunca
+// divergir o literal entre os pontos que checam.
+const featureLiveAccessEnvVar = "FEATURE_LIVE_ACCESS"
+
 // featureLiveAccessEnabled confere a mesma flag que gateia sessionWatchLoop
 // (agent.go) e activityReportLoop (companion.go). Os 3 handlers que falam
 // com o companion via pipe (capture-screenshot, start/stop-live-session)
@@ -306,7 +313,7 @@ func handleGetAgentLog(cmd Command) (string, error) {
 // comando (handleCommand, agent.go) pelos pipeHandlerDeadline (10s) inteiros
 // de retry fútil, em vez de falhar na hora com um erro claro.
 func featureLiveAccessEnabled() bool {
-	return os.Getenv("FEATURE_LIVE_ACCESS") == "true"
+	return os.Getenv(featureLiveAccessEnvVar) == "true"
 }
 
 // handleStartLiveSession repassa o pedido de sessão ao vivo pro companion
