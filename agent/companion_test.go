@@ -79,7 +79,7 @@ func TestHandleCompanionPipeMessage(t *testing.T) {
 		return []byte("fake-jpeg"), nil
 	}
 
-	resp := handleCompanionPipeMessage(pipeMessage{Type: "capture-screenshot", RequestID: "req-1"})
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "capture-screenshot", RequestID: "req-1"}, &Config{})
 	if resp.Error != "" {
 		t.Fatalf("erro inesperado: %s", resp.Error)
 	}
@@ -89,7 +89,7 @@ func TestHandleCompanionPipeMessage(t *testing.T) {
 }
 
 func TestHandleCompanionPipeMessageUnknownType(t *testing.T) {
-	resp := handleCompanionPipeMessage(pipeMessage{Type: "tipo-desconhecido", RequestID: "req-2"})
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "tipo-desconhecido", RequestID: "req-2"}, &Config{})
 	if resp.Error == "" {
 		t.Fatal("esperava erro pra tipo de mensagem desconhecido")
 	}
@@ -106,7 +106,7 @@ func TestHandleCompanionPipeMessageCaptureError(t *testing.T) {
 		return nil, fmt.Errorf("falha simulada de captura")
 	}
 
-	resp := handleCompanionPipeMessage(pipeMessage{Type: "capture-screenshot", RequestID: "req-3"})
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "capture-screenshot", RequestID: "req-3"}, &Config{})
 	if resp.Error == "" {
 		t.Fatal("esperava Error preenchido quando captureScreenJPEGFn falha")
 	}
@@ -116,9 +116,10 @@ func TestHandleCompanionPipeMessageCaptureError(t *testing.T) {
 }
 
 // TestHandleCompanionPipeMessage_StartLiveSession confirma que a mensagem
-// "start-live-session" repassa sessionId/mode/companionToken/serverUrl pro
-// stub startLiveSessionFn (implementação real de verdade fica pra Task 11) e
-// responde sem erro.
+// "start-live-session" repassa sessionId/mode/companionToken pro stub
+// startLiveSessionFn e responde sem erro. ServerURL NÃO vem da mensagem —
+// vem do cfg local do companion (ver TestHandleCompanionPipeMessage_
+// StartLiveSessionIgnoresMessageServerURL pro porquê).
 func TestHandleCompanionPipeMessage_StartLiveSession(t *testing.T) {
 	original := startLiveSessionFn
 	defer func() { startLiveSessionFn = original }()
@@ -135,17 +136,46 @@ func TestHandleCompanionPipeMessage_StartLiveSession(t *testing.T) {
 		SessionID:      "s1",
 		Mode:           "shadow",
 		CompanionToken: "tok-abc",
-		ServerURL:      "https://exemplo.test",
-	})
+	}, &Config{ServerURL: "https://real.exemplo.test"})
 	if resp.Error != "" {
 		t.Fatalf("erro inesperado: %s", resp.Error)
 	}
 	if resp.RequestID != "req-4" {
 		t.Errorf("RequestID = %q, want req-4", resp.RequestID)
 	}
-	if gotSessionID != "s1" || gotMode != "shadow" || gotToken != "tok-abc" || gotServerURL != "https://exemplo.test" {
+	if gotSessionID != "s1" || gotMode != "shadow" || gotToken != "tok-abc" || gotServerURL != "https://real.exemplo.test" {
 		t.Errorf("startLiveSessionFn recebeu params incompletos: sessionID=%q mode=%q token=%q serverURL=%q",
 			gotSessionID, gotMode, gotToken, gotServerURL)
+	}
+}
+
+// TestHandleCompanionPipeMessage_StartLiveSessionIgnoresMessageServerURL
+// confirma o fix de segurança: msg.ServerURL (vindo da pipe, que aceita
+// conexões de qualquer processo do mesmo usuário — ver
+// pipeSecurityDescriptor) é ignorado; só cfg.ServerURL (carregado
+// localmente pelo companion) é usado pra discar o WebSocket. Sem este
+// comportamento, um processo malicioso rodando como o mesmo usuário
+// poderia apontar o streaming de tela pra um servidor arbitrário.
+func TestHandleCompanionPipeMessage_StartLiveSessionIgnoresMessageServerURL(t *testing.T) {
+	original := startLiveSessionFn
+	defer func() { startLiveSessionFn = original }()
+
+	var gotServerURL string
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) bool {
+		gotServerURL = serverURL
+		return true
+	}
+
+	handleCompanionPipeMessage(pipeMessage{
+		Type:      "start-live-session",
+		RequestID: "req-attack",
+		SessionID: "s1",
+		ServerURL: "https://attacker.exemplo.evil",
+	}, &Config{ServerURL: "https://real.exemplo.test"})
+
+	if gotServerURL != "https://real.exemplo.test" {
+		t.Errorf("startLiveSessionFn recebeu serverURL = %q, want cfg.ServerURL (%q) — msg.ServerURL não deveria ser usado",
+			gotServerURL, "https://real.exemplo.test")
 	}
 }
 
@@ -160,7 +190,7 @@ func TestHandleCompanionPipeMessage_StartLiveSessionDuplicate(t *testing.T) {
 		return false
 	}
 
-	resp := handleCompanionPipeMessage(pipeMessage{Type: "start-live-session", RequestID: "req-dup", SessionID: "s1"})
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "start-live-session", RequestID: "req-dup", SessionID: "s1"}, &Config{})
 	if resp.Error == "" {
 		t.Fatal("esperava Error quando startLiveSessionFn devolve false (duplicata)")
 	}
@@ -174,7 +204,7 @@ func TestHandleCompanionPipeMessage_StartLiveSessionRequiresSessionID(t *testing
 		return false
 	}
 
-	resp := handleCompanionPipeMessage(pipeMessage{Type: "start-live-session", RequestID: "req-6"})
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "start-live-session", RequestID: "req-6"}, &Config{})
 	if resp.Error == "" {
 		t.Fatal("esperava Error com sessionId ausente")
 	}
@@ -187,7 +217,7 @@ func TestHandleCompanionPipeMessage_StopLiveSessionRequiresSessionID(t *testing.
 		t.Fatal("não deveria chamar stopLiveSessionFn sem sessionId")
 	}
 
-	resp := handleCompanionPipeMessage(pipeMessage{Type: "stop-live-session", RequestID: "req-7"})
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "stop-live-session", RequestID: "req-7"}, &Config{})
 	if resp.Error == "" {
 		t.Fatal("esperava Error com sessionId ausente")
 	}
@@ -205,7 +235,7 @@ func TestHandleCompanionPipeMessage_StopLiveSession(t *testing.T) {
 		gotSessionID = sessionID
 	}
 
-	resp := handleCompanionPipeMessage(pipeMessage{Type: "stop-live-session", RequestID: "req-5", SessionID: "s1"})
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "stop-live-session", RequestID: "req-5", SessionID: "s1"}, &Config{})
 	if resp.Error != "" {
 		t.Fatalf("erro inesperado: %s", resp.Error)
 	}
@@ -234,7 +264,10 @@ func TestCompanionPipeLoop_CaptureScreenshotEndToEnd(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		listenPipe(handleCompanionPipeMessage, stopCh)
+		cfg := &Config{}
+		listenPipe(func(msg pipeMessage) pipeMessage {
+			return handleCompanionPipeMessage(msg, cfg)
+		}, stopCh)
 	}()
 	defer func() {
 		close(stopCh)

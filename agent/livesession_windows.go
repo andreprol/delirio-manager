@@ -79,10 +79,13 @@ func stopLiveSession(sessionID string) {
 }
 
 // isLiveSessionActive reporta se sessionID já tem um streaming em
-// andamento. Usado só pra sinalizar duplicata pro chamador (pipe); a
-// garantia de correção contra corrida real é o guard dentro de
-// startLiveSession, que roda sob o mesmo mutex sem essa janela de
-// check-then-act.
+// andamento. Consulta pura, sem efeito colateral — hoje sem consumidor de
+// produção (o case "start-live-session" de handleCompanionPipeMessage usou
+// isto como pre-check numa versão anterior, mas isso tinha uma janela real
+// de check-then-act; foi substituído pelo retorno de startLiveSession, que
+// decide sob o mesmo lock sem essa janela). Mantida como utilitário de
+// consulta — útil pra um futuro comando de status, por exemplo — só o
+// teste TestIsLiveSessionActive a exercita por ora.
 func isLiveSessionActive(sessionID string) bool {
 	liveSessionsMu.Lock()
 	defer liveSessionsMu.Unlock()

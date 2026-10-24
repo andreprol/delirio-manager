@@ -142,14 +142,28 @@ func sendActivityPayload(client *http.Client, cfg *Config, payload ActivityPaylo
 }
 
 // companionPipeLoop roda no companion: abre a pipe local e despacha cada
-// mensagem recebida do serviço pra handleCompanionPipeMessage.
+// mensagem recebida do serviço pra handleCompanionPipeMessage. Fecha cfg
+// sobre o handler (closure) porque listenPipe exige func(pipeMessage)
+// pipeMessage — cfg não cabe na assinatura do protocolo da pipe.
 func companionPipeLoop(cfg *Config, stopCh <-chan struct{}) {
-	listenPipe(handleCompanionPipeMessage, stopCh)
+	listenPipe(func(msg pipeMessage) pipeMessage {
+		return handleCompanionPipeMessage(msg, cfg)
+	}, stopCh)
 }
 
 // handleCompanionPipeMessage despacha mensagens recebidas do serviço via
 // pipe. Testável isoladamente (não depende do listener de pipe em si).
-func handleCompanionPipeMessage(msg pipeMessage) pipeMessage {
+//
+// cfg é o config do COMPANION, carregado localmente por runCompanion via
+// loadConfigReadOnly — nunca msg.ServerURL. A pipe aceita conexões
+// concorrentes de qualquer processo rodando sob o mesmo SID do usuário
+// (ver pipeSecurityDescriptor), não só do serviço; confiar em ServerURL
+// vindo da mensagem deixaria um processo local não relacionado instruir o
+// companion a transmitir a tela do usuário (10fps, mode Normal/Shadow) pra
+// um servidor arbitrário — exfiltração completa, não só ruído/DoS local.
+// cfg.ServerURL garante que o companion só conecta no servidor real,
+// mesmo que o resto da mensagem tenha vindo de um processo não confiável.
+func handleCompanionPipeMessage(msg pipeMessage, cfg *Config) pipeMessage {
 	switch msg.Type {
 	case "capture-screenshot":
 		jpegBytes, err := captureScreenJPEGFn(defaultJPEGQuality)
@@ -174,7 +188,9 @@ func handleCompanionPipeMessage(msg pipeMessage) pipeMessage {
 		// separado via isLiveSessionActive) — um pre-check teria uma janela
 		// de check-then-act real entre ele e esta chamada (pipe aceita
 		// conexões concorrentes), fazendo o ACK mentir sobre duplicata.
-		if !startLiveSessionFn(msg.SessionID, msg.Mode, msg.CompanionToken, msg.ServerURL) {
+		// cfg.ServerURL (local), nunca msg.ServerURL — ver comentário da
+		// função sobre por quê.
+		if !startLiveSessionFn(msg.SessionID, msg.Mode, msg.CompanionToken, cfg.ServerURL) {
 			return pipeMessage{RequestID: msg.RequestID, Error: fmt.Sprintf("sessão %s já está ativa", msg.SessionID)}
 		}
 		return pipeMessage{RequestID: msg.RequestID}
