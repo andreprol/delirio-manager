@@ -28,19 +28,12 @@ func isCompanionMode(args []string) bool {
 func runCompanion() error {
 	initLogger("companion.log")
 
-	if pipeHasLiveServer() {
-		// Defesa em profundidade (ver comentário de pipeHasLiveServer):
-		// alguém já está respondendo nesta pipe. O serviço normalmente mata
-		// o companion antigo antes de lançar um novo (terminateCompanion),
-		// mas se isso não aconteceu por algum motivo (crash do serviço sem
-		// passar por stop()/checkAndUpdate, etc.), colidir tentando abrir a
-		// mesma pipe (FILE_CREATE falha se já existir) seria pior que só
-		// desistir — desiste e sai limpo em vez de girar em erro.
-		err := fmt.Errorf("companion: outra instância já está servindo %s — encerrando (instância única)", pipeName)
-		logError(err.Error())
-		return err
-	}
-
+	// Instância única garantida por companionPipeLoop (não por um probe
+	// separado aqui): se já existir outra instância servindo a pipe,
+	// winio.ListenPipe falha (FILE_CREATE na 1ª instância) e
+	// companionPipeLoop encerra o processo. Um probe prévio seria só
+	// check-then-act redundante — winio.ListenPipe JÁ É a checagem atômica
+	// de instância única que importa.
 	cfg, err := loadConfigReadOnly()
 	if err != nil {
 		logWarn(fmt.Sprintf("companion: erro ao carregar config: %v — usando padrão.", err))
@@ -69,7 +62,7 @@ func runCompanion() error {
 	// ainda incompleta (Task 3/13 do agente), nunca reportar atividade pro
 	// servidor antes dele ter a rota /api/activity habilitada, senão as 224
 	// máquinas martelam 404 a cada 4s indefinidamente.
-	if os.Getenv("FEATURE_LIVE_ACCESS") == "true" {
+	if featureLiveAccessEnabled() {
 		go activityReportLoop(cfg, stopCh)
 	}
 	go companionPipeLoop(cfg, stopCh)
@@ -161,9 +154,19 @@ func sendActivityPayload(client *http.Client, cfg *Config, payload ActivityPaylo
 // sobre o handler (closure) porque listenPipe exige func(pipeMessage)
 // pipeMessage — cfg não cabe na assinatura do protocolo da pipe.
 func companionPipeLoop(cfg *Config, stopCh <-chan struct{}) {
-	listenPipe(func(msg pipeMessage) pipeMessage {
+	err := listenPipe(func(msg pipeMessage) pipeMessage {
 		return handleCompanionPipeMessage(msg, cfg)
 	}, stopCh)
+	if err != nil {
+		// Fatal: sem pipe aberta este companion não atende nenhum comando
+		// (nenhum capture-screenshot/start-live-session chega) e pode estar
+		// competindo por uma pipe que um órfão da sessão anterior ainda
+		// detém (ver garantia de instância única em runCompanion). Sai e
+		// deixa sessionWatchLoop (serviço) relançar com backoff, em vez de
+		// ficar vivo pra sempre em select{} sem funcionar.
+		logError(fmt.Sprintf("companion: listenPipe falhou, encerrando processo: %v", err))
+		os.Exit(1)
+	}
 }
 
 // handleCompanionPipeMessage despacha mensagens recebidas do serviço via

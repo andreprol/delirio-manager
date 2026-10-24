@@ -21,33 +21,6 @@ const pipeName = `\\.\pipe\DelirioCompanion`
 // por consequência, o wg.Wait() do shutdown gracioso) pra sempre.
 const pipeHandlerDeadline = 10 * time.Second
 
-// pipeProbeTimeout é o quão rápido pipeHasLiveServer desiste — curto de
-// propósito: no caso comum (nenhum outro companion vivo), toda vez que o
-// companion nasce ele paga esse custo antes de começar a trabalhar.
-const pipeProbeTimeout = 300 * time.Millisecond
-
-// pipeHasLiveServer confere se já existe ALGUÉM servindo a pipe — conectar
-// com sucesso já é prova suficiente (não precisa trocar mensagem; o
-// listener só aceita a conexão se já tiver chamado winio.ListenPipe antes).
-// Usada por runCompanion (companion.go) como defesa em profundidade: o
-// serviço mata o companion antigo antes de relançar/parar/self-update
-// (terminateCompanion em agent.go/updater.go), mas se o SERVIÇO morrer sem
-// passar por nenhum desses caminhos (crash, kill -9, queda de energia), o
-// serviço novo nasce sem nenhuma memória do companion órfão e tentaria
-// lançar outro — colidindo na pipe (winio.ListenPipe usa FILE_CREATE na 1ª
-// instância, falha se já existir uma). Essa checagem evita o companion
-// NOVO crashar/falhar silenciosamente nesse cenário residual — ele desiste
-// e sai limpo em vez de tentar (e falhar) abrir a mesma pipe.
-func pipeHasLiveServer() bool {
-	timeout := pipeProbeTimeout
-	conn, err := winio.DialPipe(pipeName, &timeout)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
 // pipeMessage é o protocolo local entre serviço (cliente) e companion
 // (servidor da pipe). RequestID correlaciona pedido/resposta; Error
 // preenchido só na resposta, em caso de falha do lado do companion.
@@ -248,19 +221,22 @@ func pipeSecurityDescriptor() (string, error) {
 // total) — exatamente o que esta função existe pra evitar; abrir mesmo
 // assim (fail-open) numa feature de captura de tela/acesso remoto trocaria
 // disponibilidade por um buraco de segurança silencioso. Sem IPC, o
-// companion simplesmente não atende comandos até o problema (que precisa
-// ser investigado via o ERROR abaixo) ser corrigido.
-func listenPipe(handler func(pipeMessage) pipeMessage, stopCh <-chan struct{}) {
+// companion simplesmente não atende comandos até o problema ser corrigido
+// (companionPipeLoop, chamador, loga o erro devolvido e sai do processo).
+//
+// Devolve erro só quando a pipe NEM CHEGA a abrir (ACL não montada, ou
+// winio.ListenPipe falhou — ex: colisão de instância, ver companionPipeLoop
+// em companion.go, que trata isso como fatal). Shutdown normal via stopCh
+// devolve nil.
+func listenPipe(handler func(pipeMessage) pipeMessage, stopCh <-chan struct{}) error {
 	sd, err := pipeSecurityDescriptor()
 	if err != nil {
-		logError(fmt.Sprintf("companion: não restringiu ACL da pipe, recusando abrir (fail-closed): %v", err))
-		return
+		return fmt.Errorf("não restringiu ACL da pipe, recusando abrir (fail-closed): %w", err)
 	}
 	cfg := &winio.PipeConfig{SecurityDescriptor: sd}
 	listener, err := winio.ListenPipe(pipeName, cfg)
 	if err != nil {
-		logError(fmt.Sprintf("companion: falha ao abrir pipe: %v", err))
-		return
+		return fmt.Errorf("falha ao abrir pipe: %w", err)
 	}
 	defer listener.Close()
 
@@ -278,7 +254,7 @@ func listenPipe(handler func(pipeMessage) pipeMessage, stopCh <-chan struct{}) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			return // listener fechado (stopCh) ou erro — encerra o loop
+			return nil // listener fechado (stopCh) ou erro — encerra o loop
 		}
 		wg.Add(1)
 		go func() {
