@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestAgent cria um Agent minimo para testes de executeCommand.
@@ -393,5 +394,53 @@ func TestExecuteCommand_CaptureScreenshot_Registered(t *testing.T) {
 	_, err := a.executeCommand(Command{ID: "cmd-1", Type: "capture-screenshot", Params: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("capture-screenshot deve estar registrado no mapa de handlers: %v", err)
+	}
+}
+
+// ── start-live-session / stop-live-session ───────────────────────────────────
+
+func TestHandleStartLiveSession(t *testing.T) {
+	original := sendPipeRequestFn
+	defer func() { sendPipeRequestFn = original }()
+
+	var gotMsg pipeMessage
+	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
+		gotMsg = msg
+		return pipeMessage{RequestID: msg.RequestID}, nil
+	}
+
+	a := newTestAgent("https://exemplo.test")
+
+	params := `{"sessionId":"s1","mode":"shadow","companionToken":"tok-abc"}`
+	cmd := Command{ID: "cmd-1", Type: "start-live-session", Params: json.RawMessage(params)}
+	_, err := a.handleStartLiveSession(cmd)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if gotMsg.SessionID != "s1" || gotMsg.Mode != "shadow" || gotMsg.CompanionToken != "tok-abc" {
+		t.Errorf("mensagem repassada pro companion incompleta: %+v", gotMsg)
+	}
+	if gotMsg.ServerURL != "https://exemplo.test" {
+		t.Errorf("ServerURL repassado = %q, want %q", gotMsg.ServerURL, "https://exemplo.test")
+	}
+}
+
+func TestHandleStopLiveSession(t *testing.T) {
+	original := sendPipeRequestFn
+	defer func() { sendPipeRequestFn = original }()
+
+	var gotType string
+	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
+		gotType = msg.Type
+		return pipeMessage{RequestID: msg.RequestID}, nil
+	}
+
+	cmd := Command{ID: "cmd-2", Type: "stop-live-session", Params: json.RawMessage(`{"sessionId":"s1"}`)}
+	_, err := handleStopLiveSession(cmd)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if gotType != "stop-live-session" {
+		t.Errorf("tipo repassado = %q, want stop-live-session", gotType)
 	}
 }

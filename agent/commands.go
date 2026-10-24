@@ -59,6 +59,8 @@ func (a *Agent) commandHandlers() map[string]func(Command) (string, error) {
 		"run_powershell":         handleRunPowershell,
 		"get_agent_log":          handleGetAgentLog,
 		"capture-screenshot":     handleCaptureScreenshot,
+		"start-live-session":     a.handleStartLiveSession,
+		"stop-live-session":      handleStopLiveSession,
 	}
 }
 
@@ -289,6 +291,57 @@ func handleGetAgentLog(cmd Command) (string, error) {
 		logLines = logLines[len(logLines)-params.Lines:]
 	}
 	return strings.Join(logLines, "\n"), nil
+}
+
+// ── Sessão ao vivo (start/stop) ───────────────────────────────────────────────
+
+// handleStartLiveSession repassa o pedido de sessão ao vivo pro companion via
+// pipe local. ServerURL vem de a.cfg (o SERVIÇO já tem isso carregado desde a
+// inicialização normal, sem efeitos colaterais) — nunca de um init() que
+// recarregasse config.json, pois isso rodaria também no processo companion
+// (mesmo binário, init() não distingue qual branch de main() vai executar) e
+// reintroduziria a race de escrita concorrente em config.json que motivou
+// loadConfigReadOnly() na Task 1 deste plano.
+func (a *Agent) handleStartLiveSession(cmd Command) (string, error) {
+	var params struct {
+		SessionID      string `json:"sessionId"`
+		Mode           string `json:"mode"`
+		CompanionToken string `json:"companionToken"`
+	}
+	if err := json.Unmarshal(cmd.Params, &params); err != nil {
+		return "", fmt.Errorf("start-live-session: params inválidos: %w", err)
+	}
+	logInfo(fmt.Sprintf("Comando START-LIVE-SESSION recebido (ID: %s, mode: %s).", cmd.ID, params.Mode))
+
+	_, err := sendPipeRequestFn(pipeMessage{
+		Type: "start-live-session", RequestID: generateUUID(),
+		SessionID: params.SessionID, Mode: params.Mode, CompanionToken: params.CompanionToken,
+		ServerURL: a.cfg.ServerURL,
+	}, 10*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("start-live-session: %w", err)
+	}
+	return "Sessão ao vivo iniciada no companion.", nil
+}
+
+// handleStopLiveSession não precisa de a.cfg (não repassa ServerURL pro
+// companion) — fica standalone, mesmo padrão de handleReboot/handleWoL etc.
+func handleStopLiveSession(cmd Command) (string, error) {
+	var params struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(cmd.Params, &params); err != nil {
+		return "", fmt.Errorf("stop-live-session: params inválidos: %w", err)
+	}
+	logInfo(fmt.Sprintf("Comando STOP-LIVE-SESSION recebido (ID: %s).", cmd.ID))
+
+	_, err := sendPipeRequestFn(pipeMessage{
+		Type: "stop-live-session", RequestID: generateUUID(), SessionID: params.SessionID,
+	}, 10*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("stop-live-session: %w", err)
+	}
+	return "Sessão ao vivo encerrada.", nil
 }
 
 // ── Captura de tela ───────────────────────────────────────────────────────────

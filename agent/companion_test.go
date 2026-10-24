@@ -115,6 +115,63 @@ func TestHandleCompanionPipeMessageCaptureError(t *testing.T) {
 	}
 }
 
+// TestHandleCompanionPipeMessage_StartLiveSession confirma que a mensagem
+// "start-live-session" repassa sessionId/mode/companionToken/serverUrl pro
+// stub startLiveSessionFn (implementação real de verdade fica pra Task 11) e
+// responde sem erro.
+func TestHandleCompanionPipeMessage_StartLiveSession(t *testing.T) {
+	original := startLiveSessionFn
+	defer func() { startLiveSessionFn = original }()
+
+	var gotSessionID, gotMode, gotToken, gotServerURL string
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) {
+		gotSessionID, gotMode, gotToken, gotServerURL = sessionID, mode, companionToken, serverURL
+	}
+
+	resp := handleCompanionPipeMessage(pipeMessage{
+		Type:           "start-live-session",
+		RequestID:      "req-4",
+		SessionID:      "s1",
+		Mode:           "shadow",
+		CompanionToken: "tok-abc",
+		ServerURL:      "https://exemplo.test",
+	})
+	if resp.Error != "" {
+		t.Fatalf("erro inesperado: %s", resp.Error)
+	}
+	if resp.RequestID != "req-4" {
+		t.Errorf("RequestID = %q, want req-4", resp.RequestID)
+	}
+	if gotSessionID != "s1" || gotMode != "shadow" || gotToken != "tok-abc" || gotServerURL != "https://exemplo.test" {
+		t.Errorf("startLiveSessionFn recebeu params incompletos: sessionID=%q mode=%q token=%q serverURL=%q",
+			gotSessionID, gotMode, gotToken, gotServerURL)
+	}
+}
+
+// TestHandleCompanionPipeMessage_StopLiveSession confirma que a mensagem
+// "stop-live-session" repassa sessionId pro stub stopLiveSessionFn e
+// responde sem erro.
+func TestHandleCompanionPipeMessage_StopLiveSession(t *testing.T) {
+	original := stopLiveSessionFn
+	defer func() { stopLiveSessionFn = original }()
+
+	var gotSessionID string
+	stopLiveSessionFn = func(sessionID string) {
+		gotSessionID = sessionID
+	}
+
+	resp := handleCompanionPipeMessage(pipeMessage{Type: "stop-live-session", RequestID: "req-5", SessionID: "s1"})
+	if resp.Error != "" {
+		t.Fatalf("erro inesperado: %s", resp.Error)
+	}
+	if resp.RequestID != "req-5" {
+		t.Errorf("RequestID = %q, want req-5", resp.RequestID)
+	}
+	if gotSessionID != "s1" {
+		t.Errorf("stopLiveSessionFn recebeu sessionID = %q, want s1", gotSessionID)
+	}
+}
+
 // TestCompanionPipeLoop_CaptureScreenshotEndToEnd sobe um listener real
 // (listenPipe + handleCompanionPipeMessage, como companionPipeLoop faz) e
 // chama requestScreenshotFromCompanionFn (cliente real, commands.go) do

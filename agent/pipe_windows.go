@@ -108,6 +108,12 @@ func sendPipeRequest(msg pipeMessage, timeout time.Duration) (pipeMessage, error
 	return resp, nil
 }
 
+// sendPipeRequestFn permite mock em teste — produção chama sendPipeRequest de verdade.
+// Var global mutável, mesmo cuidado de requestScreenshotFromCompanionFn (commands.go):
+// nenhum teste deste pacote usa t.Parallel() hoje; não adicionar enquanto
+// mocks desta var existirem, ou corrompe outros testes silenciosamente.
+var sendPipeRequestFn = sendPipeRequest
+
 // currentUserSID devolve a SID textual (S-1-...) da conta sob a qual o
 // processo atual está rodando, lendo o token primário do próprio processo.
 // Usada por pipeSecurityDescriptor para montar o DACL da pipe sem precisar

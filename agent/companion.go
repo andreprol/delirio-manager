@@ -160,7 +160,22 @@ func handleCompanionPipeMessage(msg pipeMessage) pipeMessage {
 			RequestID:        msg.RequestID,
 			ResultJPEGBase64: base64.StdEncoding.EncodeToString(jpegBytes),
 		}
+	case "start-live-session":
+		logInfo(fmt.Sprintf("companion: start-live-session recebido (sessão %s, mode %s)", msg.SessionID, msg.Mode))
+		startLiveSessionFn(msg.SessionID, msg.Mode, msg.CompanionToken, msg.ServerURL)
+		return pipeMessage{RequestID: msg.RequestID}
+	case "stop-live-session":
+		logInfo(fmt.Sprintf("companion: stop-live-session recebido (sessão %s)", msg.SessionID))
+		stopLiveSessionFn(msg.SessionID)
+		return pipeMessage{RequestID: msg.RequestID}
 	default:
 		return pipeMessage{RequestID: msg.RequestID, Error: fmt.Sprintf("tipo de mensagem desconhecido: %s", msg.Type)}
 	}
 }
+
+// startLiveSessionFn e stopLiveSessionFn são stubs temporários — a Task 11
+// deste plano implementa a conexão WebSocket de verdade. Vars (não funções
+// fixas) pra serem mockáveis em teste, mesmo padrão já usado neste pacote
+// (captureScreenJPEGFn) e em commands.go (requestScreenshotFromCompanionFn).
+var startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) {}
+var stopLiveSessionFn = func(sessionID string) {}
