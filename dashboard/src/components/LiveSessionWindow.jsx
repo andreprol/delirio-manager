@@ -44,31 +44,51 @@ export function LiveSessionWindow() {
   // cada mudança de estado) e ainda assim ler o valor mais recente — usadas
   // dentro do listener de IPC (onCleanupAndClose), que só se inscreve 1x.
   //
-  // stoppingRef guarda a MESMA promise entre chamadas concorrentes de
-  // ORIGENS diferentes — achado 🔴 da 5ª rodada de verificação: parar a
-  // gravação manualmente (toggleRecording, fire-and-forget) e clicar
-  // "Encerrar sessão" logo depois, antes da conversão/dialog de salvar
-  // terminar, fazia a chamada de dentro de endSession ver
-  // mediaRecorderRef.current já null (zerado sincronamente pela 1ª chamada)
-  // e retornar na hora — endSession seguia pra api.live.stop/cleanupDone()
-  // e fechava a janela enquanto o ffmpeg/dialog da 1ª chamada ainda
-  // rodavam contra ela, perdendo a gravação em silêncio. Mesmo padrão de
-  // endSessionPromiseRef, mas reseta pra null ao terminar (não "pra sempre"
-  // como lá) — gravar de novo depois é uma ação legítima nesta janela.
+  // stoppingRef guarda a fila de conversões pendentes — achado 🔴 da 5ª
+  // rodada de verificação: parar a gravação manualmente (toggleRecording,
+  // fire-and-forget) e clicar "Encerrar sessão" logo depois, antes da
+  // conversão/dialog de salvar terminar, fazia a chamada de dentro de
+  // endSession ver mediaRecorderRef.current já null (zerado sincronamente
+  // pela 1ª chamada) e retornar na hora — endSession seguia pra
+  // api.live.stop/cleanupDone() e fechava a janela enquanto o ffmpeg/dialog
+  // da 1ª chamada ainda rodavam contra ela, perdendo a gravação em
+  // silêncio.
+  //
+  // Checar mediaRecorderRef.current ANTES de stoppingRef.current (não o
+  // contrário) é o que importa aqui — achado 🔴 da 6ª rodada de
+  // verificação: checar stoppingRef primeiro faria uma 2ª gravação (B),
+  // começada enquanto a conversão de uma 1ª (A) ainda está rodando, nunca
+  // ser parada de verdade — stopRecordingIfActive devolveria a promise
+  // velha de A sem nunca tocar em B, perdendo B em silêncio quando a
+  // sessão encerrar. recorder.stop() de quem está ativo AGORA roda sempre
+  // na hora (flush imediato, não espera fila); só a conversão (ffmpeg +
+  // convertRecording) é encadeada atrás de qualquer conversão anterior
+  // ainda pendente — nunca 2 conversões concorrentes, e a promise
+  // devolvida representa "todas as paradas pendentes até aqui".
   const stopRecordingIfActive = useCallback(() => {
-    if (stoppingRef.current) return stoppingRef.current
-    if (!mediaRecorderRef.current) return Promise.resolve()
+    const current = mediaRecorderRef.current
+    if (!current) {
+      return stoppingRef.current ?? Promise.resolve()
+    }
 
-    const { recorder, chunks } = mediaRecorderRef.current
     mediaRecorderRef.current = null
     clearInterval(recordingTimerRef.current)
     setRecording(false)
 
-    stoppingRef.current = (async () => {
-      const stopped = new Promise((resolve) => { recorder.onstop = resolve })
-      recorder.stop()
-      await stopped
+    const { recorder, chunks } = current
+    const metadata = {
+      machineId: sessionRef.current?.machineId,
+      mode: sessionRef.current?.mode,
+      startedAt: startedAtRef.current,
+      endedAt: new Date().toISOString(),
+      durationSec: recordingSecsRef.current,
+    }
 
+    const stopped = new Promise((resolve) => { recorder.onstop = resolve })
+    recorder.stop()
+
+    const convertThisRecording = async () => {
+      await stopped
       const blob = new Blob(chunks, { type: 'video/webm' })
       const arrayBuffer = await blob.arrayBuffer()
       // Falha na conversão (ffmpeg) não pode travar o encerramento da
@@ -78,20 +98,24 @@ export function LiveSessionWindow() {
       // caso, mas a sessão encerra — e o operador agora vê o erro
       // (recordingError), não só um console.error silencioso.
       try {
-        await window.electronAPI.convertRecording(arrayBuffer, {
-          machineId: sessionRef.current?.machineId,
-          mode: sessionRef.current?.mode,
-          startedAt: startedAtRef.current,
-          endedAt: new Date().toISOString(),
-          durationSec: recordingSecsRef.current,
-        })
+        await window.electronAPI.convertRecording(arrayBuffer, metadata)
       } catch (err) {
         console.error('Falha ao converter gravação:', err)
         setRecordingError(err.message || 'falha ao salvar a gravação')
       }
-    })().finally(() => { stoppingRef.current = null })
+    }
 
-    return stoppingRef.current
+    const previous = stoppingRef.current ?? Promise.resolve()
+    const chained = previous.then(convertThisRecording)
+    stoppingRef.current = chained
+    chained.finally(() => {
+      // Só limpa se nada mais recente já tiver encadeado por cima
+      // enquanto esta promise rodava (outra gravação pode ter começado e
+      // parado nesse meio-tempo).
+      if (stoppingRef.current === chained) stoppingRef.current = null
+    })
+
+    return chained
   }, [])
 
   // endSession pode ser chamado por 2 caminhos concorrentes: o botão

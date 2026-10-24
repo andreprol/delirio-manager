@@ -283,6 +283,58 @@ describe('LiveSessionWindow', () => {
     expect(window.electronAPI.cleanupDone).toHaveBeenCalled()
   })
 
+  // Regressão achada na 6ª rodada de verificação (🔴 CRÍTICO): checar
+  // stoppingRef.current ANTES de mediaRecorderRef.current fazia uma 2ª
+  // gravação (B), começada enquanto a conversão de uma 1ª (A) ainda está
+  // rodando, nunca ser parada de verdade — stopRecordingIfActive devolvia
+  // a promise velha de A sem nunca chamar recorder.stop() em B, perdendo B
+  // em silêncio. A ordem certa: recorder.stop() de quem está ativo agora
+  // roda na hora; só a conversão é que fica na fila atrás da anterior.
+  it('gravação B não é perdida se começar enquanto a conversão de A ainda está rodando', async () => {
+    const recorders = []
+    HTMLCanvasElement.prototype.captureStream = vi.fn(() => ({}))
+    global.MediaRecorder = vi.fn(function FakeMediaRecorder() {
+      recorders.push(this)
+      this.start = vi.fn()
+      this.stop = vi.fn(() => { this.onstop?.() })
+    })
+    let resolveConvertA
+    window.electronAPI.convertRecording = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveConvertA = resolve }))
+      .mockResolvedValueOnce({ saved: true })
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    // Grava e para A — conversão de A fica pendente (resolveConvertA nunca chamado ainda)
+    act(() => { fireEvent.click(screen.getByText('⏺ Gravar')) })
+    await act(async () => {
+      fireEvent.click(screen.getByText('⏹ Parar gravação'))
+    })
+    expect(recorders).toHaveLength(1)
+    expect(recorders[0].stop).toHaveBeenCalled()
+
+    // Grava B enquanto a conversão de A ainda está em voo, e para B também
+    act(() => { fireEvent.click(screen.getByText('⏺ Gravar')) })
+    expect(recorders).toHaveLength(2)
+    await act(async () => {
+      fireEvent.click(screen.getByText('⏹ Parar gravação'))
+    })
+
+    // B precisa ter sido parado DE VERDADE, não ignorado por causa da fila de A
+    expect(recorders[1].stop).toHaveBeenCalled()
+
+    // Resolve a conversão de A — a de B deve rodar em seguida, sequencial
+    await act(async () => {
+      resolveConvertA({ saved: true })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.convertRecording).toHaveBeenCalledTimes(2)
+  })
+
   // Regressão: sem o heartbeat, a rede de segurança de timeout fixo do
   // main.js forçaria o fechamento da janela com o cleanup ainda em
   // andamento (ex: dialog de salvar a gravação aberto), perdendo a
