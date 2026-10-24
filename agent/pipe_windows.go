@@ -14,6 +14,13 @@ import (
 
 const pipeName = `\\.\pipe\DelirioCompanion`
 
+// pipeHandlerDeadline limita quanto tempo o SERVIDOR da pipe (companion,
+// listenPipe) espera leitura/escrita numa conexão aceita — generoso o
+// bastante pra cobrir uma captura de tela real (Task 9+), mas finito, pra
+// uma conexão travada/maliciosa não travar a goroutine do handler (e,
+// por consequência, o wg.Wait() do shutdown gracioso) pra sempre.
+const pipeHandlerDeadline = 10 * time.Second
+
 // pipeMessage é o protocolo local entre serviço (cliente) e companion
 // (servidor da pipe). RequestID correlaciona pedido/resposta; Error
 // preenchido só na resposta, em caso de falha do lado do companion.
@@ -230,6 +237,12 @@ func listenPipe(handler func(pipeMessage) pipeMessage, stopCh <-chan struct{}) {
 		go func() {
 			defer wg.Done()
 			defer conn.Close()
+			// Sem deadline aqui, um cliente que conecta e nunca manda nada
+			// (ou nunca lê a resposta) travaria esta goroutine pra sempre —
+			// e wg.Wait() no shutdown junto com ela, derrotando o próprio
+			// propósito do WaitGroup acima (esperar handlers terminarem, não
+			// travar o shutdown indefinidamente por causa de 1 conexão presa).
+			_ = conn.SetDeadline(time.Now().Add(pipeHandlerDeadline))
 			line, err := bufio.NewReader(conn).ReadBytes('\n')
 			if err != nil {
 				return
