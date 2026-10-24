@@ -11,7 +11,7 @@ import { RhModule } from './components/RhModule'
 import { AlohaModule } from './components/AlohaModule'
 import { DRModule } from './components/DRModule'
 import { ReportModule } from './components/ReportModule'
-import { api, setServerUrl, getServerUrl, setInternalApiKey } from './api'
+import { api, setServerUrl, getServerUrl, setInternalApiKey, setAdminSecret } from './api'
 
 function fmtAge(min) {
   if (min == null) return 'Nunca sincronizado'
@@ -33,6 +33,7 @@ function IntSyncPill({ label, ok, ageMinutes, syncing }) {
 export default function App() {
   const [serverUrl, setServerUrlState] = useState('https://dt-manager.brazilsouth.cloudapp.azure.com')
   const [internalApiKey, setInternalApiKeyState] = useState('')
+  const [adminSecret, setAdminSecretState] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [showUpdate,   setShowUpdate]   = useState(false)
   const [search, setSearch] = useState('')
@@ -165,22 +166,28 @@ export default function App() {
     async function load() {
       let url = serverUrl
       let key = internalApiKey
+      let admin = adminSecret
       try {
         if (window.electronAPI) {
           const cfg = await window.electronAPI.getConfig()
           if (cfg?.serverUrl)      url = cfg.serverUrl
           if (cfg?.internalApiKey) key = cfg.internalApiKey
+          if (cfg?.adminSecret)    admin = cfg.adminSecret
         } else {
           const savedUrl = localStorage.getItem('serverUrl')
           const savedKey = localStorage.getItem('internalApiKey')
+          const savedAdmin = localStorage.getItem('adminSecret')
           if (savedUrl) url = savedUrl
           if (savedKey) key = savedKey
+          if (savedAdmin) admin = savedAdmin
         }
       } catch {}
       setServerUrlState(url)
       setServerUrl(url)
       setInternalApiKeyState(key)
       setInternalApiKey(key)
+      setAdminSecretState(admin)
+      setAdminSecret(admin)
       setConfigLoaded(true)
       try {
         const settings = await api.getSettings()
@@ -194,17 +201,20 @@ export default function App() {
   // Salva URL do servidor e chave interna juntas — electronAPI.setConfig
   // SOBRESCREVE o arquivo inteiro (não mescla), então as duas sempre viajam
   // juntas pra uma nunca apagar a outra.
-  async function saveServerUrl(url, key = internalApiKey) {
+  async function saveServerUrl(url, key = internalApiKey, admin = adminSecret) {
     setServerUrlState(url)
     setServerUrl(url)
     setInternalApiKeyState(key)
     setInternalApiKey(key)
+    setAdminSecretState(admin)
+    setAdminSecret(admin)
     try {
       if (window.electronAPI) {
-        await window.electronAPI.setConfig({ serverUrl: url, internalApiKey: key })
+        await window.electronAPI.setConfig({ serverUrl: url, internalApiKey: key, adminSecret: admin })
       } else {
         localStorage.setItem('serverUrl', url)
         localStorage.setItem('internalApiKey', key)
+        localStorage.setItem('adminSecret', admin)
       }
     } catch {}
     setShowSettings(false)
@@ -601,6 +611,7 @@ export default function App() {
         <SettingsModal
           currentUrl={serverUrl}
           currentInternalKey={internalApiKey}
+          currentAdminSecret={adminSecret}
           onSave={saveServerUrl}
           onClose={() => setShowSettings(false)}
         />
@@ -622,9 +633,10 @@ export default function App() {
   )
 }
 
-function SettingsModal({ currentUrl, currentInternalKey, onSave, onClose }) {
+function SettingsModal({ currentUrl, currentInternalKey, currentAdminSecret, onSave, onClose }) {
   const [url, setUrl] = useState(currentUrl)
   const [internalKey, setInternalKey] = useState(currentInternalKey || '')
+  const [adminSecretInput, setAdminSecretInput] = useState(currentAdminSecret || '')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
 
@@ -698,6 +710,18 @@ function SettingsModal({ currentUrl, currentInternalKey, onSave, onClose }) {
           autoComplete="new-password"
         />
 
+        <label className="form-label" style={{ marginTop: 10 }}>
+          Admin secret (protege Watchlist e Acesso Remoto)
+        </label>
+        <input
+          className="form-input"
+          type="password"
+          value={adminSecretInput}
+          onChange={e => setAdminSecretInput(e.target.value)}
+          placeholder="X-Admin-Secret configurado no servidor"
+          autoComplete="new-password"
+        />
+
         {testResult && (
           <div className={`test-result ${testResult.ok ? 'ok' : 'err'}`}>
             {testResult.msg}
@@ -708,7 +732,7 @@ function SettingsModal({ currentUrl, currentInternalKey, onSave, onClose }) {
           <button className="btn btn-secondary" onClick={testConnection} disabled={testing}>
             {testing ? 'Testando...' : 'Testar conexao'}
           </button>
-          <button className="btn btn-primary" onClick={() => onSave(url, internalKey)}>
+          <button className="btn btn-primary" onClick={() => onSave(url, internalKey, adminSecretInput)}>
             Salvar URL
           </button>
           <button className="btn btn-secondary" onClick={onClose}>
