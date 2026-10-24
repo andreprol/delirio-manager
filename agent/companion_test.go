@@ -117,9 +117,11 @@ func TestHandleCompanionPipeMessageCaptureError(t *testing.T) {
 
 // TestHandleCompanionPipeMessage_StartLiveSession confirma que a mensagem
 // "start-live-session" repassa sessionId/mode/companionToken pro stub
-// startLiveSessionFn e responde sem erro. ServerURL NÃO vem da mensagem —
-// vem do cfg local do companion (ver TestHandleCompanionPipeMessage_
-// StartLiveSessionIgnoresMessageServerURL pro porquê).
+// startLiveSessionFn e responde sem erro. ServerURL vem do cfg LOCAL do
+// companion, nunca da mensagem — pipeMessage nem tem mais esse campo (foi
+// removido: a pipe aceita conexões de qualquer processo do mesmo usuário,
+// ver pipeSecurityDescriptor, então nunca fez sentido confiar num
+// serverURL vindo dela — ver histórico no commit que corrigiu isso).
 func TestHandleCompanionPipeMessage_StartLiveSession(t *testing.T) {
 	original := startLiveSessionFn
 	defer func() { startLiveSessionFn = original }()
@@ -146,36 +148,6 @@ func TestHandleCompanionPipeMessage_StartLiveSession(t *testing.T) {
 	if gotSessionID != "s1" || gotMode != "shadow" || gotToken != "tok-abc" || gotServerURL != "https://real.exemplo.test" {
 		t.Errorf("startLiveSessionFn recebeu params incompletos: sessionID=%q mode=%q token=%q serverURL=%q",
 			gotSessionID, gotMode, gotToken, gotServerURL)
-	}
-}
-
-// TestHandleCompanionPipeMessage_StartLiveSessionIgnoresMessageServerURL
-// confirma o fix de segurança: msg.ServerURL (vindo da pipe, que aceita
-// conexões de qualquer processo do mesmo usuário — ver
-// pipeSecurityDescriptor) é ignorado; só cfg.ServerURL (carregado
-// localmente pelo companion) é usado pra discar o WebSocket. Sem este
-// comportamento, um processo malicioso rodando como o mesmo usuário
-// poderia apontar o streaming de tela pra um servidor arbitrário.
-func TestHandleCompanionPipeMessage_StartLiveSessionIgnoresMessageServerURL(t *testing.T) {
-	original := startLiveSessionFn
-	defer func() { startLiveSessionFn = original }()
-
-	var gotServerURL string
-	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) bool {
-		gotServerURL = serverURL
-		return true
-	}
-
-	handleCompanionPipeMessage(pipeMessage{
-		Type:      "start-live-session",
-		RequestID: "req-attack",
-		SessionID: "s1",
-		ServerURL: "https://attacker.exemplo.evil",
-	}, &Config{ServerURL: "https://real.exemplo.test"})
-
-	if gotServerURL != "https://real.exemplo.test" {
-		t.Errorf("startLiveSessionFn recebeu serverURL = %q, want cfg.ServerURL (%q) — msg.ServerURL não deveria ser usado",
-			gotServerURL, "https://real.exemplo.test")
 	}
 }
 

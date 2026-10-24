@@ -334,6 +334,7 @@ func TestExecuteCommand_CancelShutdown_NoActiveShutdown(t *testing.T) {
 // ── capture-screenshot ────────────────────────────────────────────────────────
 
 func TestHandleCaptureScreenshot(t *testing.T) {
+	t.Setenv("FEATURE_LIVE_ACCESS", "true")
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()
 
@@ -353,6 +354,7 @@ func TestHandleCaptureScreenshot(t *testing.T) {
 }
 
 func TestHandleCaptureScreenshotCompanionError(t *testing.T) {
+	t.Setenv("FEATURE_LIVE_ACCESS", "true")
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()
 
@@ -368,6 +370,7 @@ func TestHandleCaptureScreenshotCompanionError(t *testing.T) {
 }
 
 func TestHandleCaptureScreenshotEmptyPayload(t *testing.T) {
+	t.Setenv("FEATURE_LIVE_ACCESS", "true")
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()
 
@@ -382,7 +385,24 @@ func TestHandleCaptureScreenshotEmptyPayload(t *testing.T) {
 	}
 }
 
+func TestHandleCaptureScreenshotFeatureDisabled(t *testing.T) {
+	// Sem t.Setenv — flag ausente/false é o padrão do processo de teste.
+	original := requestScreenshotFromCompanionFn
+	defer func() { requestScreenshotFromCompanionFn = original }()
+	requestScreenshotFromCompanionFn = func() ([]byte, error) {
+		t.Fatal("não deveria chamar requestScreenshotFromCompanionFn com a flag desabilitada")
+		return nil, nil
+	}
+
+	cmd := Command{ID: "cmd-1", Type: "capture-screenshot", Params: json.RawMessage(`{}`)}
+	_, err := handleCaptureScreenshot(cmd)
+	if err == nil {
+		t.Fatal("esperava erro com FEATURE_LIVE_ACCESS desabilitada")
+	}
+}
+
 func TestExecuteCommand_CaptureScreenshot_Registered(t *testing.T) {
+	t.Setenv("FEATURE_LIVE_ACCESS", "true")
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()
 
@@ -400,6 +420,7 @@ func TestExecuteCommand_CaptureScreenshot_Registered(t *testing.T) {
 // ── start-live-session / stop-live-session ───────────────────────────────────
 
 func TestHandleStartLiveSession(t *testing.T) {
+	t.Setenv("FEATURE_LIVE_ACCESS", "true")
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 
@@ -420,12 +441,12 @@ func TestHandleStartLiveSession(t *testing.T) {
 	if gotMsg.SessionID != "s1" || gotMsg.Mode != "shadow" || gotMsg.CompanionToken != "tok-abc" {
 		t.Errorf("mensagem repassada pro companion incompleta: %+v", gotMsg)
 	}
-	if gotMsg.ServerURL != "https://exemplo.test" {
-		t.Errorf("ServerURL repassado = %q, want %q", gotMsg.ServerURL, "https://exemplo.test")
-	}
+	// pipeMessage não tem campo ServerURL (removido — companion usa cfg
+	// local, nunca o da mensagem; ver comentário de handleStartLiveSession).
 }
 
 func TestHandleStopLiveSession(t *testing.T) {
+	t.Setenv("FEATURE_LIVE_ACCESS", "true")
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 
@@ -476,5 +497,37 @@ func TestHandleStopLiveSessionRequiresSessionID(t *testing.T) {
 	_, err := handleStopLiveSession(cmd)
 	if err == nil {
 		t.Fatal("esperava erro com sessionId ausente")
+	}
+}
+
+func TestHandleStartLiveSessionFeatureDisabled(t *testing.T) {
+	// Sem t.Setenv — flag ausente/false é o padrão do processo de teste.
+	original := sendPipeRequestFn
+	defer func() { sendPipeRequestFn = original }()
+	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
+		t.Fatal("não deveria chamar a pipe com a flag desabilitada")
+		return pipeMessage{}, nil
+	}
+
+	a := newTestAgent("https://exemplo.test")
+	cmd := Command{ID: "cmd-1", Type: "start-live-session", Params: json.RawMessage(`{"sessionId":"s1"}`)}
+	_, err := a.handleStartLiveSession(cmd)
+	if err == nil {
+		t.Fatal("esperava erro com FEATURE_LIVE_ACCESS desabilitada")
+	}
+}
+
+func TestHandleStopLiveSessionFeatureDisabled(t *testing.T) {
+	original := sendPipeRequestFn
+	defer func() { sendPipeRequestFn = original }()
+	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
+		t.Fatal("não deveria chamar a pipe com a flag desabilitada")
+		return pipeMessage{}, nil
+	}
+
+	cmd := Command{ID: "cmd-2", Type: "stop-live-session", Params: json.RawMessage(`{"sessionId":"s1"}`)}
+	_, err := handleStopLiveSession(cmd)
+	if err == nil {
+		t.Fatal("esperava erro com FEATURE_LIVE_ACCESS desabilitada")
 	}
 }

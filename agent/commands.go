@@ -295,13 +295,30 @@ func handleGetAgentLog(cmd Command) (string, error) {
 
 // ── Sessão ao vivo (start/stop) ───────────────────────────────────────────────
 
-// handleStartLiveSession repassa o pedido de sessão ao vivo pro companion via
-// pipe local. ServerURL vem de a.cfg (o SERVIÇO já tem isso carregado desde a
-// inicialização normal, sem efeitos colaterais) — nunca de um init() que
-// recarregasse config.json, pois isso rodaria também no processo companion
-// (mesmo binário, init() não distingue qual branch de main() vai executar) e
+// featureLiveAccessEnabled confere a mesma flag que gateia sessionWatchLoop
+// (agent.go) e activityReportLoop (companion.go). Os 3 handlers que falam
+// com o companion via pipe (capture-screenshot, start/stop-live-session)
+// checam isso ANTES de chamar sendPipeRequestFn/requestScreenshotFromCompanionFn:
+// com a flag desligada neste agente (rollout parcial, ou servidor ligou a
+// flag antes da frota inteira atualizar), sessionWatchLoop nunca lança o
+// companion — então a pipe nunca tem servidor, e sem este check cada
+// comando desses bloquearia o processamento sequencial de QUALQUER outro
+// comando (handleCommand, agent.go) pelos pipeHandlerDeadline (10s) inteiros
+// de retry fútil, em vez de falhar na hora com um erro claro.
+func featureLiveAccessEnabled() bool {
+	return os.Getenv("FEATURE_LIVE_ACCESS") == "true"
+}
+
+// handleStartLiveSession repassa o pedido de sessão ao vivo pro companion
+// via pipe local. Não repassa ServerURL na mensagem — pipeMessage nem tem
+// esse campo (removido): a pipe aceita conexões de qualquer processo do
+// mesmo usuário (ver pipeSecurityDescriptor), então nunca fez sentido
+// confiar num serverURL vindo dela; o companion usa o cfg LOCAL dele
+// próprio (loadConfigReadOnly, nunca init()+loadConfig() — isso
 // reintroduziria a race de escrita concorrente em config.json que motivou
-// loadConfigReadOnly() na Task 1 deste plano.
+// loadConfigReadOnly() na Task 1 deste plano). Método ligado a *Agent por
+// histórico (chegou a precisar de a.cfg.ServerURL antes desse campo ser
+// removido do protocolo) — inofensivo manter assim.
 func (a *Agent) handleStartLiveSession(cmd Command) (string, error) {
 	var params struct {
 		SessionID      string `json:"sessionId"`
@@ -314,12 +331,14 @@ func (a *Agent) handleStartLiveSession(cmd Command) (string, error) {
 	if params.SessionID == "" {
 		return "", fmt.Errorf("start-live-session: sessionId obrigatório e ausente")
 	}
+	if !featureLiveAccessEnabled() {
+		return "", fmt.Errorf("start-live-session: FEATURE_LIVE_ACCESS desabilitada neste agente")
+	}
 	logInfo(fmt.Sprintf("Comando START-LIVE-SESSION recebido (ID: %s, mode: %s).", cmd.ID, params.Mode))
 
 	_, err := sendPipeRequestFn(pipeMessage{
 		Type: "start-live-session", RequestID: generateUUID(),
 		SessionID: params.SessionID, Mode: params.Mode, CompanionToken: params.CompanionToken,
-		ServerURL: a.cfg.ServerURL,
 	}, pipeHandlerDeadline)
 	if err != nil {
 		return "", fmt.Errorf("start-live-session: %w", err)
@@ -338,6 +357,9 @@ func handleStopLiveSession(cmd Command) (string, error) {
 	}
 	if params.SessionID == "" {
 		return "", fmt.Errorf("stop-live-session: sessionId obrigatório e ausente")
+	}
+	if !featureLiveAccessEnabled() {
+		return "", fmt.Errorf("stop-live-session: FEATURE_LIVE_ACCESS desabilitada neste agente")
 	}
 	logInfo(fmt.Sprintf("Comando STOP-LIVE-SESSION recebido (ID: %s).", cmd.ID))
 
@@ -379,6 +401,9 @@ var requestScreenshotFromCompanionFn = func() ([]byte, error) {
 }
 
 func handleCaptureScreenshot(cmd Command) (string, error) {
+	if !featureLiveAccessEnabled() {
+		return "", fmt.Errorf("capture-screenshot: FEATURE_LIVE_ACCESS desabilitada neste agente")
+	}
 	logInfo(fmt.Sprintf("Comando CAPTURE-SCREENSHOT recebido (ID: %s).", cmd.ID))
 	jpegBytes, err := requestScreenshotFromCompanionFn()
 	if err != nil {
