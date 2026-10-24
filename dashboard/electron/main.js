@@ -117,6 +117,17 @@ function createLiveSessionWindow(params) {
     if (liveWin.__cleanupDone) return
     event.preventDefault()
     liveWin.webContents.send('live-session-cleanup-and-close')
+    // Rede de segurança: se o renderer nunca confirmar (fechou a janela
+    // antes do React montar e se inscrever, preload falhou, travou no meio
+    // da conversão), a janela ficaria IMPOSSÍVEL de fechar pra sempre —
+    // event.preventDefault() já bloqueou o close, e nada mais chamaria
+    // cleanupDone(). Força o fechamento depois de 10s mesmo sem resposta.
+    setTimeout(() => {
+      if (!liveWin.isDestroyed() && !liveWin.__cleanupDone) {
+        liveWin.__cleanupDone = true
+        liveWin.close()
+      }
+    }, 10000)
   })
 
   liveWin.webContents.setWindowOpenHandler(({ url }) => {

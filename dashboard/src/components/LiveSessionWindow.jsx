@@ -52,13 +52,21 @@ export function LiveSessionWindow() {
     const blob = new Blob(chunksRef.current, { type: 'video/webm' })
     chunksRef.current = []
     const arrayBuffer = await blob.arrayBuffer()
-    await window.electronAPI.convertRecording(arrayBuffer, {
-      machineId: sessionRef.current?.machineId,
-      mode: sessionRef.current?.mode,
-      startedAt: startedAtRef.current,
-      endedAt: new Date().toISOString(),
-      durationSec: recordingSecsRef.current,
-    })
+    // Falha na conversão (ffmpeg) não pode travar o encerramento da sessão —
+    // sem o catch, endSession nunca chegaria em api.live.stop/cleanupDone, e
+    // o botão "Encerrar sessão"/fechar a janela pareceria simplesmente não
+    // fazer nada. A gravação se perde nesse caso, mas a sessão encerra.
+    try {
+      await window.electronAPI.convertRecording(arrayBuffer, {
+        machineId: sessionRef.current?.machineId,
+        mode: sessionRef.current?.mode,
+        startedAt: startedAtRef.current,
+        endedAt: new Date().toISOString(),
+        durationSec: recordingSecsRef.current,
+      })
+    } catch (err) {
+      console.error('Falha ao converter gravação:', err)
+    }
   }, [])
 
   const endSession = useCallback(async () => {
