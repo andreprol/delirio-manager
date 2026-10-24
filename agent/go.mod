@@ -1,11 +1,11 @@
 module delirio/agent
 
-go 1.26.0
+go 1.22
 
 require (
-	github.com/Microsoft/go-winio v0.6.4
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/shirou/gopsutil/v3 v3.24.5
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.21.0
 )
 
 require (
