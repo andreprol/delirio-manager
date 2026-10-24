@@ -386,7 +386,11 @@ func TestHandleCaptureScreenshotEmptyPayload(t *testing.T) {
 }
 
 func TestHandleCaptureScreenshotFeatureDisabled(t *testing.T) {
-	// Sem t.Setenv — flag ausente/false é o padrão do processo de teste.
+	// Explícito (não "sem t.Setenv"): quem roda os testes pode ter
+	// FEATURE_LIVE_ACCESS=true no ambiente real (ex: dev/staging, onde a
+	// feature está sendo testada de propósito) — sem isso o teste passaria
+	// por acidente lá e falharia aqui, dependendo de onde roda.
+	t.Setenv("FEATURE_LIVE_ACCESS", "false")
 	original := requestScreenshotFromCompanionFn
 	defer func() { requestScreenshotFromCompanionFn = original }()
 	requestScreenshotFromCompanionFn = func() ([]byte, error) {
@@ -501,7 +505,7 @@ func TestHandleStopLiveSessionRequiresSessionID(t *testing.T) {
 }
 
 func TestHandleStartLiveSessionFeatureDisabled(t *testing.T) {
-	// Sem t.Setenv — flag ausente/false é o padrão do processo de teste.
+	t.Setenv("FEATURE_LIVE_ACCESS", "false") // explícito — ver comentário em TestHandleCaptureScreenshotFeatureDisabled
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
@@ -518,6 +522,7 @@ func TestHandleStartLiveSessionFeatureDisabled(t *testing.T) {
 }
 
 func TestHandleStopLiveSessionFeatureDisabled(t *testing.T) {
+	t.Setenv("FEATURE_LIVE_ACCESS", "false") // explícito — ver comentário em TestHandleCaptureScreenshotFeatureDisabled
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {

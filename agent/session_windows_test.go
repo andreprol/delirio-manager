@@ -2,7 +2,6 @@ package main
 
 import (
 	"testing"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -26,22 +25,52 @@ func buildTestEnvBlock(t *testing.T, entries ...string) *uint16 {
 }
 
 // parseTestEnvBlock desfaz buildTestEnvBlock — usado só pra ler de volta o
-// que injectFeatureFlagIntoEnvBlock produziu, nas asserções do teste.
+// que injectFeatureFlagIntoEnvBlock produziu, nas asserções do teste. Chama
+// a MESMA parseEnvBlockEntries que a produção usa (não uma cópia do loop
+// de parsing) — só decodifica pra string pra facilitar a asserção.
+// TestParseEnvBlockEntries, abaixo, testa o parser em si de forma
+// independente, então usá-lo aqui pra verificar injectFeatureFlagIntoEnvBlock
+// não é circular.
 func parseTestEnvBlock(block *uint16) []string {
 	var entries []string
-	start := 0
-	for i := 0; ; i++ {
-		c := *(*uint16)(unsafe.Pointer(uintptr(unsafe.Pointer(block)) + uintptr(i)*2))
-		if c != 0 {
-			continue
-		}
-		if i == start {
-			break
-		}
-		entries = append(entries, windows.UTF16ToString(unsafe.Slice(block, i)[start:i]))
-		start = i + 1
+	for _, raw := range parseEnvBlockEntries(block) {
+		entries = append(entries, windows.UTF16ToString(raw))
 	}
 	return entries
+}
+
+// TestParseEnvBlockEntries testa o parser em si (usado tanto por produção
+// quanto pelo teste acima), isoladamente, cobrindo os edge cases que
+// motivaram extraí-lo: bloco vazio, valor contendo "=", e uma chave que é
+// prefixo de outra (não deve colidir — a comparação de prefixo em
+// injectFeatureFlagIntoEnvBlock inclui o "=" justamente pra evitar isso).
+func TestParseEnvBlockEntries(t *testing.T) {
+	t.Run("bloco vazio", func(t *testing.T) {
+		block := buildTestEnvBlock(t)
+		got := parseEnvBlockEntries(block)
+		if len(got) != 0 {
+			t.Errorf("got = %v, want vazio", got)
+		}
+	})
+
+	t.Run("valor contendo sinal de igual", func(t *testing.T) {
+		block := buildTestEnvBlock(t, `SOME_PATH=C:\a=b\c`)
+		got := parseEnvBlockEntries(block)
+		if len(got) != 1 || windows.UTF16ToString(got[0]) != `SOME_PATH=C:\a=b\c` {
+			t.Errorf("got = %v, want [%q]", got, `SOME_PATH=C:\a=b\c`)
+		}
+	})
+
+	t.Run("chave prefixo de outra não colide", func(t *testing.T) {
+		block := buildTestEnvBlock(t, "FEATURE_LIVE_ACCESS=true", "FEATURE_LIVE_ACCESS_X=outra-coisa")
+		got := parseEnvBlockEntries(block)
+		if len(got) != 2 {
+			t.Fatalf("got %d entradas, want 2", len(got))
+		}
+		if windows.UTF16ToString(got[0]) != "FEATURE_LIVE_ACCESS=true" || windows.UTF16ToString(got[1]) != "FEATURE_LIVE_ACCESS_X=outra-coisa" {
+			t.Errorf("got = %v", got)
+		}
+	})
 }
 
 func TestInjectFeatureFlagIntoEnvBlock(t *testing.T) {
@@ -90,6 +119,19 @@ func TestInjectFeatureFlagIntoEnvBlock(t *testing.T) {
 		want := []string{`PATH=C:\x`, "FEATURE_LIVE_ACCESS=true"}
 		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 			t.Errorf("got = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("não colide com chave que é prefixo de outra", func(t *testing.T) {
+		block := buildTestEnvBlock(t, "FEATURE_LIVE_ACCESS_X=outra-coisa")
+		patched, err := injectFeatureFlagIntoEnvBlock(block, "FEATURE_LIVE_ACCESS", "true")
+		if err != nil {
+			t.Fatalf("erro inesperado: %v", err)
+		}
+		got := parseTestEnvBlock(patched)
+		want := []string{"FEATURE_LIVE_ACCESS_X=outra-coisa", "FEATURE_LIVE_ACCESS=true"}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("got = %v, want %v (FEATURE_LIVE_ACCESS_X não deveria ser removida)", got, want)
 		}
 	})
 }
