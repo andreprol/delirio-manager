@@ -119,20 +119,6 @@ const tokenAccessForCreateProcessAsUser = windows.TOKEN_QUERY |
 	windows.TOKEN_ADJUST_DEFAULT |
 	windows.TOKEN_ADJUST_SESSIONID
 
-// injectFeatureFlagIntoEnvBlock devolve uma CÓPIA do bloco de ambiente no
-// formato que CreateEnvironmentBlock/CreateProcessAsUser esperam (sequência
-// de strings UTF16 cada uma terminada em \0, bloco inteiro terminado em \0
-// duplo) com key=value adicionado — ou sobrescrito, se key já existisse
-// (comparação case-insensitive, como o Windows trata nomes de variável de
-// ambiente). Existe pra garantir que o companion veja EXATAMENTE o valor
-// de FEATURE_LIVE_ACCESS que o SERVIÇO vê, em vez de depender de onde a
-// flag foi configurada no sistema (HKLM\Environment, visível a todo
-// processo, vs HKCU do usuário da sessão, que é a fonte real do bloco
-// devolvido por CreateEnvironmentBlock) — sem isso, a flag podia estar
-// ligada só no ambiente do serviço e nunca chegar ao companion, deixando
-// metade da feature ativa (sessionWatchLoop lança o companion) e a outra
-// metade inativa (activityReportLoop gated pela mesma flag, mas lida
-// localmente dentro do companion via os.Getenv), sem nenhum erro visível.
 // parseEnvBlockEntries lê block (formato CreateEnvironmentBlock: strings
 // UTF16 cada uma terminada em \0, bloco inteiro terminado em \0 duplo) e
 // devolve cada entrada como []uint16 CRU, sem decodificar — slice que
@@ -157,6 +143,20 @@ func parseEnvBlockEntries(block *uint16) [][]uint16 {
 	return entries
 }
 
+// injectFeatureFlagIntoEnvBlock devolve uma CÓPIA do bloco de ambiente no
+// formato que CreateEnvironmentBlock/CreateProcessAsUser esperam (sequência
+// de strings UTF16 cada uma terminada em \0, bloco inteiro terminado em \0
+// duplo) com key=value adicionado — ou sobrescrito, se key já existisse
+// (comparação case-insensitive, como o Windows trata nomes de variável de
+// ambiente). Existe pra garantir que o companion veja EXATAMENTE o valor
+// de FEATURE_LIVE_ACCESS que o SERVIÇO vê, em vez de depender de onde a
+// flag foi configurada no sistema (HKLM\Environment, visível a todo
+// processo, vs HKCU do usuário da sessão, que é a fonte real do bloco
+// devolvido por CreateEnvironmentBlock) — sem isso, a flag podia estar
+// ligada só no ambiente do serviço e nunca chegar ao companion, deixando
+// metade da feature ativa (sessionWatchLoop lança o companion) e a outra
+// metade inativa (activityReportLoop gated pela mesma flag, mas lida
+// localmente dentro do companion via os.Getenv), sem nenhum erro visível.
 func injectFeatureFlagIntoEnvBlock(block *uint16, key, value string) (*uint16, error) {
 	// Entradas mantidas são copiadas como []uint16 CRU (não decodificadas
 	// via UTF16ToString e reencodadas via UTF16FromString) — um round-trip
@@ -184,31 +184,26 @@ func injectFeatureFlagIntoEnvBlock(block *uint16, key, value string) (*uint16, e
 	return &buf[0], nil
 }
 
-// launchCompanion lança delirio-agent.exe --companion na sessão sessionID,
-// usando o token do usuário logado nela (WTSQueryUserToken + DuplicateTokenEx
-// + CreateProcessAsUser — o padrão Session-0-isolation de qualquer serviço
-// que precisa de um processo auxiliar na sessão interativa do usuário).
-// O processo herda o token do próprio usuário (não SYSTEM, sem elevação) e
-// aparece normalmente no Gerenciador de Tarefas.
-//
-// Devolve também o handle do processo (aberto, não fechado aqui) — o
-// chamador (sessionWatchLoop) é quem decide quando fechar, porque precisa
-// dele vivo pra checar liveness depois via isCompanionAlive (ver comentário
-// lá: reabrir por PID seria vulnerável a reuso de PID pelo Windows).
-//
-// Não testável em CI — exige contexto SYSTEM real com SeTcbPrivilege e uma
-// sessão desktop real. Verificar manualmente numa VM/PC de teste: logar,
-// confirmar que o serviço lança o companion e que delirio-agent.exe aparece
-// 2x no Gerenciador de Tarefas (serviço + companion), o companion sem
-// privilégio elevado.
 // createCompanionJobObject cria um Job Object sem nome com
 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE — qualquer processo atribuído a ele
 // (via AssignProcessToJobObject em launchCompanion) morre junto quando o
 // handle do job é fechado. Como o handle só existe na tabela de handles do
-// próprio SERVIÇO, fechar — explicitamente, ou implicitamente quando o
-// processo do serviço termina de QUALQUER forma (stop normal, panic sem
-// recover em algum handler, kill externo, SCM matando por timeout) — mata
-// o companion junto, sem depender de nenhum código de cleanup rodar antes.
+// próprio SERVIÇO, fechar — explicitamente (terminateCompanion, a cada
+// relançamento/stop), ou implicitamente quando o processo do serviço
+// termina de QUALQUER forma (crash, kill externo, SCM matando por timeout)
+// — mata o companion junto, sem depender de nenhum código de cleanup
+// rodar antes.
+//
+// Um job NOVO é criado a cada chamada de launchCompanion (não 1 job
+// reusado pra vida inteira do serviço) de propósito: a documentação da
+// Microsoft pra CreateJobObject diz que um job fica "sem sessão" até o
+// PRIMEIRO AssignProcessToJobObject, e passa a ficar associado à sessão
+// desse primeiro processo — reusar o mesmo job entre relançamentos em
+// SESSÕES DIFERENTES (logoff/logon pra outro usuário) arriscaria o
+// AssignProcessToJobObject do companion novo falhar por mismatch de
+// sessão com o companion antigo que já usou esse job. Um job por geração
+// de companion evita essa ambiguidade — current.Session nunca é
+// reaproveitada.
 //
 // Backstop estrutural: terminateCompanion (agent.go) continua sendo o
 // caminho RÁPIDO e deliberado pras transições conhecidas (logoff/logon,
@@ -237,10 +232,61 @@ func createCompanionJobObject() (windows.Handle, error) {
 	return job, nil
 }
 
-func launchCompanion(sessionID uint32, job windows.Handle) (companionPID uint32, companionHandle windows.Handle, err error) {
+// buildCompanionEnvBlock monta o bloco de ambiente do USUÁRIO da sessão
+// (não do SYSTEM que lança o processo — sem isso o companion herdaria
+// %APPDATA%/%USERPROFILE% do contexto errado; documentado pela Microsoft
+// como o jeito correto de popular lpEnvironment em CreateProcessAsUser),
+// com FEATURE_LIVE_ACCESS injetada explicitamente com o valor que o
+// SERVIÇO vê (os.Getenv), não deixada pro bloco de ambiente do usuário —
+// ver injectFeatureFlagIntoEnvBlock pro porquê (finding da revisão final
+// cross-cutting: sem isso, a flag podia estar ligada só no processo do
+// serviço e nunca chegar ao companion, ativando metade da feature sem
+// erro nenhum).
+//
+// Extraído de launchCompanion só pra manter a complexidade ciclomática
+// dela dentro do limite do projeto (cyclop, max 10). O chamador deve
+// chamar cleanup (fecha o bloco original via DestroyEnvironmentBlock)
+// depois de terminar de usar patchedEnvBlock em CreateProcessAsUser —
+// cleanup nunca é nil, mesmo em erro, pra sempre poder ser chamado via
+// defer sem checar antes.
+func buildCompanionEnvBlock(primaryToken windows.Token) (patchedEnvBlock *uint16, cleanup func(), err error) {
+	var envBlock *uint16
+	if err := windows.CreateEnvironmentBlock(&envBlock, primaryToken, false); err != nil {
+		return nil, func() {}, fmt.Errorf("CreateEnvironmentBlock falhou: %w", err)
+	}
+	cleanup = func() { _ = windows.DestroyEnvironmentBlock(envBlock) }
+
+	patchedEnvBlock, err = injectFeatureFlagIntoEnvBlock(envBlock, featureLiveAccessEnvVar, os.Getenv(featureLiveAccessEnvVar))
+	if err != nil {
+		cleanup()
+		return nil, func() {}, fmt.Errorf("injectFeatureFlagIntoEnvBlock falhou: %w", err)
+	}
+	return patchedEnvBlock, cleanup, nil
+}
+
+// launchCompanion lança delirio-agent.exe --companion na sessão sessionID,
+// usando o token do usuário logado nela (WTSQueryUserToken + DuplicateTokenEx
+// + CreateProcessAsUser — o padrão Session-0-isolation de qualquer serviço
+// que precisa de um processo auxiliar na sessão interativa do usuário).
+// O processo herda o token do próprio usuário (não SYSTEM, sem elevação) e
+// aparece normalmente no Gerenciador de Tarefas.
+//
+// Devolve também o handle do processo (aberto, não fechado aqui) e o handle
+// do Job Object recém-criado pra ele (idem) — o chamador (sessionWatchLoop)
+// é quem decide quando fechar ambos, porque precisa do handle do processo
+// vivo pra checar liveness depois via isCompanionAlive (ver comentário lá:
+// reabrir por PID seria vulnerável a reuso de PID pelo Windows) e do handle
+// do job vivo pra matar o companion via terminateCompanion mais tarde.
+//
+// Não testável em CI — exige contexto SYSTEM real com SeTcbPrivilege e uma
+// sessão desktop real. Verificar manualmente numa VM/PC de teste: logar,
+// confirmar que o serviço lança o companion e que delirio-agent.exe aparece
+// 2x no Gerenciador de Tarefas (serviço + companion), o companion sem
+// privilégio elevado.
+func launchCompanion(sessionID uint32) (companionPID uint32, companionHandle windows.Handle, companionJob windows.Handle, err error) {
 	var userToken windows.Token
 	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
-		return 0, 0, fmt.Errorf("WTSQueryUserToken falhou pra sessão %d: %w", sessionID, err)
+		return 0, 0, 0, fmt.Errorf("WTSQueryUserToken falhou pra sessão %d: %w", sessionID, err)
 	}
 	defer userToken.Close() //nolint:errcheck
 
@@ -249,43 +295,38 @@ func launchCompanion(sessionID uint32, job windows.Handle) (companionPID uint32,
 		userToken, tokenAccessForCreateProcessAsUser, nil,
 		windows.SecurityImpersonation, windows.TokenPrimary, &primaryToken,
 	); err != nil {
-		return 0, 0, fmt.Errorf("DuplicateTokenEx falhou: %w", err)
+		return 0, 0, 0, fmt.Errorf("DuplicateTokenEx falhou: %w", err)
 	}
 	defer primaryToken.Close() //nolint:errcheck
 
-	// Bloco de ambiente do USUÁRIO da sessão (não do SYSTEM que lança o
-	// processo) — sem isso o companion herdaria %APPDATA%/%USERPROFILE% do
-	// contexto errado. Documentado pela Microsoft como o jeito correto de
-	// popular lpEnvironment em CreateProcessAsUser.
-	var envBlock *uint16
-	if err := windows.CreateEnvironmentBlock(&envBlock, primaryToken, false); err != nil {
-		return 0, 0, fmt.Errorf("CreateEnvironmentBlock falhou: %w", err)
-	}
-	defer windows.DestroyEnvironmentBlock(envBlock) //nolint:errcheck
-
-	// FEATURE_LIVE_ACCESS injetada explicitamente com o valor que o SERVIÇO
-	// vê (os.Getenv), não deixada pro bloco de ambiente do usuário — ver
-	// injectFeatureFlagIntoEnvBlock pro porquê (finding da revisão final
-	// cross-cutting: sem isso, a flag podia estar ligada só no processo do
-	// serviço e nunca chegar ao companion, ativando metade da feature sem
-	// erro nenhum).
-	patchedEnvBlock, err := injectFeatureFlagIntoEnvBlock(envBlock, featureLiveAccessEnvVar, os.Getenv(featureLiveAccessEnvVar))
+	patchedEnvBlock, cleanupEnvBlock, err := buildCompanionEnvBlock(primaryToken)
 	if err != nil {
-		return 0, 0, fmt.Errorf("injectFeatureFlagIntoEnvBlock falhou: %w", err)
+		return 0, 0, 0, err
 	}
+	defer cleanupEnvBlock()
 
 	exePath, err := os.Executable()
 	if err != nil {
-		return 0, 0, fmt.Errorf("os.Executable: %w", err)
+		return 0, 0, 0, fmt.Errorf("os.Executable: %w", err)
 	}
 	cmdLine := fmt.Sprintf(`"%s" --companion`, exePath)
 	cmdLineUTF16, err := windows.UTF16PtrFromString(cmdLine)
 	if err != nil {
-		return 0, 0, fmt.Errorf("UTF16PtrFromString(cmdLine): %w", err)
+		return 0, 0, 0, fmt.Errorf("UTF16PtrFromString(cmdLine): %w", err)
 	}
 	desktopUTF16, err := windows.UTF16PtrFromString(`winsta0\default`)
 	if err != nil {
-		return 0, 0, fmt.Errorf("UTF16PtrFromString(desktop): %w", err)
+		return 0, 0, 0, fmt.Errorf("UTF16PtrFromString(desktop): %w", err)
+	}
+
+	// Job novo pra esta geração do companion (ver doc de
+	// createCompanionJobObject pro porquê de não reusar 1 job entre
+	// gerações). Criado antes do CreateProcessAsUser pra podermos atribuir
+	// o processo a ele ainda suspenso, sem nenhuma janela de execução fora
+	// do guarda-chuva de kill-on-close.
+	job, err := createCompanionJobObject()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("createCompanionJobObject: %w", err)
 	}
 
 	si := windows.StartupInfo{Desktop: desktopUTF16}
@@ -301,36 +342,51 @@ func launchCompanion(sessionID uint32, job windows.Handle) (companionPID uint32,
 		primaryToken, nil, cmdLineUTF16, nil, nil, false,
 		createFlags, patchedEnvBlock, nil, &si, &pi,
 	); err != nil {
-		return 0, 0, fmt.Errorf("CreateProcessAsUser falhou: %w", err)
+		_ = windows.CloseHandle(job)
+		return 0, 0, 0, fmt.Errorf("CreateProcessAsUser falhou: %w", err)
 	}
 	defer windows.CloseHandle(pi.Thread) //nolint:errcheck
 
-	if err := assignToJobAndResume(job, pi); err != nil {
-		return 0, 0, err
+	// assignToJobAndResume já fecha job (e o processo, via TerminateProcess)
+	// internamente se qualquer passo falhar — devolve effectiveJob=0 nesse
+	// caso, nada mais pra limpar aqui.
+	effectiveJob, err := assignToJobAndResume(job, pi)
+	if err != nil {
+		return 0, 0, 0, err
 	}
 
-	return pi.ProcessId, pi.Process, nil
+	return pi.ProcessId, pi.Process, effectiveJob, nil
 }
 
 // assignToJobAndResume atribui o processo recém-criado (ainda suspenso) ao
 // Job Object e resume a thread principal. Extraído de launchCompanion só
 // pra manter a complexidade ciclomática dela dentro do limite do projeto
-// (cyclop, max 10) — sem mudança de comportamento.
-func assignToJobAndResume(job windows.Handle, pi windows.ProcessInformation) error {
+// (cyclop, max 10).
+//
+// Devolve effectiveJob=0 (não job) quando AssignProcessToJobObject falha —
+// nesse caso job existe mas está VAZIO (o companion nunca entrou nele), e
+// devolver job mesmo assim faria o chamador achar, erroneamente, que tem um
+// backstop funcionando. Fecha o handle do job inútil aqui mesmo (não é
+// fatal pro companion em si, que segue rodando sem o backstop — só perde a
+// garantia de cleanup automático em caminhos de saída não previstos; por
+// isso loga ERROR, não devolve erro).
+func assignToJobAndResume(job windows.Handle, pi windows.ProcessInformation) (effectiveJob windows.Handle, err error) {
 	if err := windows.AssignProcessToJobObject(job, pi.Process); err != nil {
-		// Não fatal pro companion em si (segue funcionando sem o backstop
-		// do Job Object) — mas loga alto porque perde a garantia de
-		// cleanup automático em caminhos de saída não previstos.
 		logError(fmt.Sprintf("launchCompanion: AssignProcessToJobObject falhou (companion roda sem o backstop de cleanup): %v", err))
+		_ = windows.CloseHandle(job)
+		job = 0
 	}
 	if _, err := windows.ResumeThread(pi.Thread); err != nil {
 		// Suspenso pra sempre seria peor que não ter companion nenhum —
 		// mata e devolve erro, pro watcher tentar de novo com backoff.
 		_ = windows.TerminateProcess(pi.Process, 1)
 		_ = windows.CloseHandle(pi.Process)
-		return fmt.Errorf("ResumeThread falhou: %w", err)
+		if job != 0 {
+			_ = windows.CloseHandle(job)
+		}
+		return 0, fmt.Errorf("ResumeThread falhou: %w", err)
 	}
-	return nil
+	return job, nil
 }
 
 const stillActive = 259 // STILL_ACTIVE — valor de exit code enquanto o processo roda
