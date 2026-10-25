@@ -91,6 +91,36 @@ describe('useLiveSession', () => {
     )
   })
 
+  // Regressão achada em produção (tela preta + janela que não fechava):
+  // LiveSessionWindow chama este hook incondicionalmente desde o 1º
+  // render, com session ainda null (chega depois via IPC) — serverUrl/
+  // sessionId/dashboardToken vinham undefined, e o mount effect tentava
+  // conectar mesmo assim, lançando exceção dentro de buildLiveSessionWsUrl
+  // (`undefined.replace(...)`) que derrubava a árvore React inteira.
+  it('não tenta conectar enquanto serverUrl/sessionId/dashboardToken não chegaram (undefined)', () => {
+    const canvasRef = makeCanvasRef()
+    renderHook(() => useLiveSession({
+      serverUrl: undefined, sessionId: undefined, dashboardToken: undefined, mode: 'shadow', canvasRef,
+    }))
+    expect(FakeWebSocket.instances).toHaveLength(0)
+  })
+
+  it('conecta assim que os parâmetros chegam num re-render (simula a sessão vindo por IPC depois do mount)', () => {
+    const canvasRef = makeCanvasRef()
+    const { rerender } = renderHook(
+      (props) => useLiveSession(props),
+      { initialProps: { serverUrl: undefined, sessionId: undefined, dashboardToken: undefined, mode: 'shadow', canvasRef } }
+    )
+    expect(FakeWebSocket.instances).toHaveLength(0)
+
+    rerender({ serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok', mode: 'shadow', canvasRef })
+
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0].url).toBe(
+      'wss://servidor.example.com/live?sessionId=s1&role=dashboard&token=tok'
+    )
+  })
+
   it('desenha o frame recebido no canvas via createImageBitmap', async () => {
     const canvasRef = makeCanvasRef()
     renderHook(() => useLiveSession({

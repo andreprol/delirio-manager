@@ -84,18 +84,32 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
 
   useEffect(() => {
     mountedRef.current = true
-    connect()
     return () => {
       mountedRef.current = false
       wsRef.current?.close()
     }
-    // Deps vazias de propósito: serverUrl/sessionId/dashboardToken nunca
-    // mudam depois do mount (a janela de sessão recebe esses dados 1x via
-    // IPC, ver LiveSessionWindow) — reconectar a cada render por causa do
-    // callback `connect` mudar de identidade quebraria a lógica de retry
-    // único (hasRetriedRef reiniciaria a cada conexão nova).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Conecta só quando os 3 parâmetros de verdade chegarem — achado em
+  // produção (tela preta + janela travada, sem fechar): LiveSessionWindow
+  // chama este hook incondicionalmente desde o 1º render, com `session`
+  // ainda null (os dados só chegam depois, por IPC — ver onLiveSessionInit)
+  // — serverUrl/sessionId/dashboardToken vinham undefined, e
+  // buildLiveSessionWsUrl (`undefined.replace(...)`) lançava exceção dentro
+  // do efeito, derrubando a árvore React inteira antes mesmo do efeito que
+  // escuta 'live-session-cleanup-and-close' chegar a rodar — por isso a
+  // janela nem desenhava nada nem fechava com o X.
+  //
+  // hasConnectedRef garante só 1 tentativa real de conexão mesmo que o
+  // efeito rode de novo (ex: mode mudando de referência) — reconectar por
+  // causa desse reset quebraria a lógica de retry único (hasRetriedRef).
+  const hasConnectedRef = useRef(false)
+  useEffect(() => {
+    if (hasConnectedRef.current) return
+    if (!serverUrl || !sessionId || !dashboardToken) return
+    hasConnectedRef.current = true
+    connect()
+  }, [serverUrl, sessionId, dashboardToken, connect])
 
   const sendInput = useCallback((msg) => {
     if (modeRef.current !== 'normal') return

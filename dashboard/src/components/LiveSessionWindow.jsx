@@ -39,6 +39,16 @@ export function LiveSessionWindow() {
     return unsubscribe
   }, [])
 
+  // O BrowserWindow nasce com title: 'Delirio Manager — Sessão ao vivo'
+  // (main.js), mas o Electron sobrescreve o título da janela com
+  // document.title assim que a página termina de carregar — como esta
+  // janela carrega o MESMO dist/index.html da janela principal
+  // (<title>Delirio Manager</title>), o título visível virava só "Delirio
+  // Manager", sem distinguir das outras janelas abertas.
+  useEffect(() => {
+    document.title = 'Delirio Manager — Sessão ao vivo'
+  }, [])
+
   // stopRecordingIfActive/endSession leem sessionRef/recordingSecsRef (não
   // session/recordingSecs direto) pra poderem ser estáveis (sem recriar a
   // cada mudança de estado) e ainda assim ler o valor mais recente — usadas
