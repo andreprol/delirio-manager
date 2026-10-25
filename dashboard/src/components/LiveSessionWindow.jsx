@@ -322,7 +322,7 @@ export function LiveSessionWindow() {
         <canvas
           data-testid="live-canvas"
           ref={canvasRef}
-          style={{ maxWidth: '100%', maxHeight: '100%', cursor: session.mode === 'normal' ? 'crosshair' : 'default' }}
+          style={{ maxWidth: '100%', maxHeight: '100%', cursor: 'default' }}
           onMouseDown={handleMouseDown}
           onMouseUp={handleMouseUp}
           onMouseMove={handleMouseMove}
