@@ -133,8 +133,17 @@ function isCurrentSocket(sessionId, role, ws) {
 // sessão inexistente/role inválido e liga cada socket ao relay em memória
 // acima. Nunca reatribui companionWs/dashboardWs direto: sempre pelos setters
 // attach*/detach* (mesmo padrão em toda esta função, incluindo no close).
-function initLiveRelay(server) {
-  const wss = new WebSocketServer({ server, path: '/live' });
+//
+// noServer: true (não mais {server, path}) — achado real em produção: com
+// {server, path}, este WebSocketServer e o de services/websocket.js (/ws)
+// competiam pelo 'upgrade' do mesmo http.Server, e o /ws (registrado
+// primeiro em server.js) sempre abortava com 400 qualquer tentativa de
+// conectar em /live antes deste aqui ter a chance de atender — mesmo
+// direto no backend, sem nem passar pelo nginx. Ver
+// services/upgradeRouter.js: server.js agora chama handleUpgrade
+// manualmente, roteado por pathname.
+function initLiveRelay() {
+  const wss = new WebSocketServer({ noServer: true });
 
   wss.on('connection', (ws, req) => {
     // Primeira linha, antes de qualquer close() de rejeição — mesmo padrão de
