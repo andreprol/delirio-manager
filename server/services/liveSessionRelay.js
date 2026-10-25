@@ -142,6 +142,38 @@ function isCurrentSocket(sessionId, role, ws) {
 // direto no backend, sem nem passar pelo nginx. Ver
 // services/upgradeRouter.js: server.js agora chama handleUpgrade
 // manualmente, roteado por pathname.
+// authenticateAndAttach valida o token do role contra a sessão e anexa o
+// socket (attachCompanionSocket/attachDashboardSocket) se bater — extraído
+// do handler de 'connection' só pra não estourar max-lines-per-function,
+// mesmo resultado/logs de antes.
+function authenticateAndAttach(session, sessionId, role, token, ws) {
+  const expectedToken = role === 'companion' ? session.companionToken : session.dashboardToken;
+  if (!safeTokenEqual(token, expectedToken)) return false;
+
+  if (role === 'companion') attachCompanionSocket(sessionId, ws);
+  else attachDashboardSocket(sessionId, ws);
+
+  logger.info(`[liveSessionRelay] ${role} anexado`, { sessionId, machineId: session.machineId, mode: session.mode });
+  return true;
+}
+
+// wireLiveSocket registra message/close depois que o socket já foi
+// autenticado e anexado — mesma extração de authenticateAndAttach, pelo
+// mesmo motivo (comprimento de função).
+function wireLiveSocket(sessionId, role, ws) {
+  ws.on('message', (data) => {
+    if (!isCurrentSocket(sessionId, role, ws)) return;
+    routeMessage(sessionId, role, data);
+  });
+
+  ws.on('close', (code, reasonBuf) => {
+    if (!isCurrentSocket(sessionId, role, ws)) return;
+    logger.info('[liveSessionRelay] socket desconectado', { sessionId, role, code, reason: reasonBuf?.toString() });
+    if (role === 'companion') detachCompanionSocket(sessionId);
+    if (role === 'dashboard') detachDashboardSocket(sessionId);
+  });
+}
+
 function initLiveRelay() {
   const wss = new WebSocketServer({ noServer: true });
 
@@ -158,41 +190,29 @@ function initLiveRelay() {
 
     const session = getSession(sessionId);
     if (!session) {
+      logger.warn('[liveSessionRelay] conexão recusada: sessão inexistente', { sessionId, role });
       ws.close(4000, 'sessão inexistente');
       return;
     }
 
-    if (role === 'companion') {
-      if (!safeTokenEqual(token, session.companionToken)) {
-        ws.close(4001, 'token inválido');
-        return;
-      }
-      attachCompanionSocket(sessionId, ws);
-    } else if (role === 'dashboard') {
-      // sessionId sozinho NÃO é segredo suficiente pra autorizar o dashboard —
-      // precisa do dashboardToken emitido junto no POST /start (achado 🔴 do
-      // code-reviewer da Task 9: sem isso, qualquer um que soubesse o sessionId
-      // abria a sessão como se fosse o operador autorizado).
-      if (!safeTokenEqual(token, session.dashboardToken)) {
-        ws.close(4001, 'token inválido');
-        return;
-      }
-      attachDashboardSocket(sessionId, ws);
-    } else {
+    // sessionId sozinho NÃO é segredo suficiente pra autorizar o dashboard —
+    // precisa do dashboardToken emitido junto no POST /start (achado 🔴 do
+    // code-reviewer da Task 9: sem isso, qualquer um que soubesse o sessionId
+    // abria a sessão como se fosse o operador autorizado). Mesma checagem de
+    // token pro companion.
+    if (role !== 'companion' && role !== 'dashboard') {
+      logger.warn('[liveSessionRelay] conexão recusada: role inválido', { sessionId, role });
       ws.close(4002, 'role inválido');
       return;
     }
 
-    ws.on('message', (data) => {
-      if (!isCurrentSocket(sessionId, role, ws)) return;
-      routeMessage(sessionId, role, data);
-    });
+    if (!authenticateAndAttach(session, sessionId, role, token, ws)) {
+      logger.warn('[liveSessionRelay] conexão recusada: token inválido', { sessionId, role, machineId: session.machineId });
+      ws.close(4001, 'token inválido');
+      return;
+    }
 
-    ws.on('close', () => {
-      if (!isCurrentSocket(sessionId, role, ws)) return;
-      if (role === 'companion') detachCompanionSocket(sessionId);
-      if (role === 'dashboard') detachDashboardSocket(sessionId);
-    });
+    wireLiveSocket(sessionId, role, ws);
   });
 
   logger.info('[liveSessionRelay] WebSocket server iniciado em /live');
