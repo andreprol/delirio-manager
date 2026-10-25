@@ -17,6 +17,20 @@ type Config struct {
 	IntervalSecs    int    `json:"intervalSecs"`
 	PollSecs        int    `json:"pollSecs"`
 	LastHeartbeatAt string `json:"lastHeartbeatAt"` // RFC3339, empty = first run
+
+	// FeatureLiveAccess liga/desliga Acesso Remoto (Normal/Shadow) NESTE
+	// agente — lido do config.json em vez de env var do processo (era
+	// os.Getenv("FEATURE_LIVE_ACCESS") até este campo existir). Motivo da
+	// troca: env var do serviço Windows não tem mecanismo de rollout pras
+	// 224 máquinas (nenhum instalador/script seta isso), e nem propaga pro
+	// processo companion sozinha (CreateProcessAsUser não herda o ambiente
+	// do serviço) — exigia injectFeatureFlagIntoEnvBlock (removido,
+	// session_windows.go) só pra replicar o valor. config.json já é lido
+	// por ambos os processos (serviço via loadConfig, companion via
+	// loadConfigReadOnly) direto do disco, então os dois sempre concordam
+	// sem nenhuma propagação manual. Default false (zero value) — rollout
+	// é opt-in por máquina, igual o comportamento atual.
+	FeatureLiveAccess bool `json:"featureLiveAccess"`
 }
 
 // loadConfigReadOnly lê e decodifica config.json sem nenhum efeito colateral

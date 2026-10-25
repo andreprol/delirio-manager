@@ -124,6 +124,9 @@ func newAgent() *Agent {
 		// loadConfig já retorna defaultConfig() com UUID estável — NÃO gerar novo UUID.
 		logWarn(fmt.Sprintf("Erro ao carregar config: %v — usando padrao.", err))
 	}
+	// 1x por processo, logo após o load — ver comentário de featureLiveAccessFlag
+	// em commands.go.
+	setFeatureLiveAccessEnabled(cfg.FeatureLiveAccess)
 
 	initLogger("agent.log")
 
