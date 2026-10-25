@@ -158,27 +158,33 @@ function initLiveRelay() {
 
     const session = getSession(sessionId);
     if (!session) {
+      logger.warn('[liveSessionRelay] conexão recusada: sessão inexistente', { sessionId, role });
       ws.close(4000, 'sessão inexistente');
       return;
     }
 
     if (role === 'companion') {
       if (!safeTokenEqual(token, session.companionToken)) {
+        logger.warn('[liveSessionRelay] conexão recusada: token inválido', { sessionId, role, machineId: session.machineId });
         ws.close(4001, 'token inválido');
         return;
       }
       attachCompanionSocket(sessionId, ws);
+      logger.info('[liveSessionRelay] companion anexado', { sessionId, machineId: session.machineId, mode: session.mode });
     } else if (role === 'dashboard') {
       // sessionId sozinho NÃO é segredo suficiente pra autorizar o dashboard —
       // precisa do dashboardToken emitido junto no POST /start (achado 🔴 do
       // code-reviewer da Task 9: sem isso, qualquer um que soubesse o sessionId
       // abria a sessão como se fosse o operador autorizado).
       if (!safeTokenEqual(token, session.dashboardToken)) {
+        logger.warn('[liveSessionRelay] conexão recusada: token inválido', { sessionId, role, machineId: session.machineId });
         ws.close(4001, 'token inválido');
         return;
       }
       attachDashboardSocket(sessionId, ws);
+      logger.info('[liveSessionRelay] dashboard anexado', { sessionId, machineId: session.machineId, mode: session.mode });
     } else {
+      logger.warn('[liveSessionRelay] conexão recusada: role inválido', { sessionId, role });
       ws.close(4002, 'role inválido');
       return;
     }
@@ -188,8 +194,9 @@ function initLiveRelay() {
       routeMessage(sessionId, role, data);
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code, reasonBuf) => {
       if (!isCurrentSocket(sessionId, role, ws)) return;
+      logger.info('[liveSessionRelay] socket desconectado', { sessionId, role, code, reason: reasonBuf?.toString() });
       if (role === 'companion') detachCompanionSocket(sessionId);
       if (role === 'dashboard') detachDashboardSocket(sessionId);
     });
