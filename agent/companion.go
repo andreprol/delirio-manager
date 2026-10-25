@@ -38,6 +38,10 @@ func runCompanion() error {
 	if err != nil {
 		logWarn(fmt.Sprintf("companion: erro ao carregar config: %v — usando padrão.", err))
 	}
+	// 1x por processo, logo após o load — ver comentário de featureLiveAccessFlag
+	// em commands.go. Companion e serviço leem o MESMO config.json do disco,
+	// então sempre concordam sem nenhuma propagação manual entre eles.
+	setFeatureLiveAccessEnabled(cfg.FeatureLiveAccess)
 	if cfg.ServerURL == "" || cfg.Token == "" {
 		// Processo roda sem console (CreateProcessAsUser + CREATE_NO_WINDOW,
 		// task futura) — log.Fatalf em main.go escreveria só no stderr, que

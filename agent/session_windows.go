@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 	"syscall"
 	"unsafe"
 
@@ -119,71 +118,6 @@ const tokenAccessForCreateProcessAsUser = windows.TOKEN_QUERY |
 	windows.TOKEN_ADJUST_DEFAULT |
 	windows.TOKEN_ADJUST_SESSIONID
 
-// parseEnvBlockEntries lê block (formato CreateEnvironmentBlock: strings
-// UTF16 cada uma terminada em \0, bloco inteiro terminado em \0 duplo) e
-// devolve cada entrada como []uint16 CRU, sem decodificar — slice que
-// aponta pra dentro da memória de block, não uma cópia. Compartilhada
-// entre produção (injectFeatureFlagIntoEnvBlock) e teste
-// (session_windows_test.go), pra não ter 2 cópias do mesmo loop de
-// parsing que pudessem divergir silenciosamente.
-func parseEnvBlockEntries(block *uint16) [][]uint16 {
-	var entries [][]uint16
-	start := 0
-	for i := 0; ; i++ {
-		c := *(*uint16)(unsafe.Add(unsafe.Pointer(block), uintptr(i)*2))
-		if c != 0 {
-			continue
-		}
-		if i == start {
-			break // string vazia (dois \0 seguidos) = fim do bloco
-		}
-		entries = append(entries, unsafe.Slice(block, i)[start:i])
-		start = i + 1
-	}
-	return entries
-}
-
-// injectFeatureFlagIntoEnvBlock devolve uma CÓPIA do bloco de ambiente no
-// formato que CreateEnvironmentBlock/CreateProcessAsUser esperam (sequência
-// de strings UTF16 cada uma terminada em \0, bloco inteiro terminado em \0
-// duplo) com key=value adicionado — ou sobrescrito, se key já existisse
-// (comparação case-insensitive, como o Windows trata nomes de variável de
-// ambiente). Existe pra garantir que o companion veja EXATAMENTE o valor
-// de FEATURE_LIVE_ACCESS que o SERVIÇO vê, em vez de depender de onde a
-// flag foi configurada no sistema (HKLM\Environment, visível a todo
-// processo, vs HKCU do usuário da sessão, que é a fonte real do bloco
-// devolvido por CreateEnvironmentBlock) — sem isso, a flag podia estar
-// ligada só no ambiente do serviço e nunca chegar ao companion, deixando
-// metade da feature ativa (sessionWatchLoop lança o companion) e a outra
-// metade inativa (activityReportLoop gated pela mesma flag, mas lida
-// localmente dentro do companion via os.Getenv), sem nenhum erro visível.
-func injectFeatureFlagIntoEnvBlock(block *uint16, key, value string) (*uint16, error) {
-	// Entradas mantidas são copiadas como []uint16 CRU (não decodificadas
-	// via UTF16ToString e reencodadas via UTF16FromString) — um round-trip
-	// de decode/reencode substitui qualquer surrogate UTF-16 desemparelhado
-	// por U+FFFD, corrompendo um valor que já estivesse assim (raro numa
-	// variável de ambiente, mas sem motivo pra arriscar quando copiar os
-	// bytes originais direto é igualmente simples).
-	prefix := strings.ToUpper(key) + "="
-	var buf []uint16
-	for _, entry := range parseEnvBlockEntries(block) {
-		if strings.HasPrefix(strings.ToUpper(windows.UTF16ToString(entry)), prefix) {
-			continue // será substituída pela entrada nova, abaixo
-		}
-		buf = append(buf, entry...)
-		buf = append(buf, 0)
-	}
-
-	newEntry, err := windows.UTF16FromString(key + "=" + value)
-	if err != nil {
-		return nil, fmt.Errorf("UTF16FromString(%q): %w", key+"="+value, err)
-	}
-	buf = append(buf, newEntry...) // já inclui o \0 final
-	buf = append(buf, 0)           // \0 duplo (fim do bloco inteiro)
-
-	return &buf[0], nil
-}
-
 // createCompanionJobObject cria um Job Object sem nome com
 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE — qualquer processo atribuído a ele
 // (via AssignProcessToJobObject em launchCompanion) morre junto quando o
@@ -232,38 +166,6 @@ func createCompanionJobObject() (windows.Handle, error) {
 	return job, nil
 }
 
-// buildCompanionEnvBlock monta o bloco de ambiente do USUÁRIO da sessão
-// (não do SYSTEM que lança o processo — sem isso o companion herdaria
-// %APPDATA%/%USERPROFILE% do contexto errado; documentado pela Microsoft
-// como o jeito correto de popular lpEnvironment em CreateProcessAsUser),
-// com FEATURE_LIVE_ACCESS injetada explicitamente com o valor que o
-// SERVIÇO vê (os.Getenv), não deixada pro bloco de ambiente do usuário —
-// ver injectFeatureFlagIntoEnvBlock pro porquê (finding da revisão final
-// cross-cutting: sem isso, a flag podia estar ligada só no processo do
-// serviço e nunca chegar ao companion, ativando metade da feature sem
-// erro nenhum).
-//
-// Extraído de launchCompanion só pra manter a complexidade ciclomática
-// dela dentro do limite do projeto (cyclop, max 10). O chamador deve
-// chamar cleanup (fecha o bloco original via DestroyEnvironmentBlock)
-// depois de terminar de usar patchedEnvBlock em CreateProcessAsUser —
-// cleanup nunca é nil, mesmo em erro, pra sempre poder ser chamado via
-// defer sem checar antes.
-func buildCompanionEnvBlock(primaryToken windows.Token) (patchedEnvBlock *uint16, cleanup func(), err error) {
-	var envBlock *uint16
-	if err := windows.CreateEnvironmentBlock(&envBlock, primaryToken, false); err != nil {
-		return nil, func() {}, fmt.Errorf("CreateEnvironmentBlock falhou: %w", err)
-	}
-	cleanup = func() { _ = windows.DestroyEnvironmentBlock(envBlock) }
-
-	patchedEnvBlock, err = injectFeatureFlagIntoEnvBlock(envBlock, featureLiveAccessEnvVar, os.Getenv(featureLiveAccessEnvVar))
-	if err != nil {
-		cleanup()
-		return nil, func() {}, fmt.Errorf("injectFeatureFlagIntoEnvBlock falhou: %w", err)
-	}
-	return patchedEnvBlock, cleanup, nil
-}
-
 // launchCompanion lança delirio-agent.exe --companion na sessão sessionID,
 // usando o token do usuário logado nela (WTSQueryUserToken + DuplicateTokenEx
 // + CreateProcessAsUser — o padrão Session-0-isolation de qualquer serviço
@@ -299,11 +201,18 @@ func launchCompanion(sessionID uint32) (companionPID uint32, companionHandle win
 	}
 	defer primaryToken.Close() //nolint:errcheck
 
-	patchedEnvBlock, cleanupEnvBlock, err := buildCompanionEnvBlock(primaryToken)
-	if err != nil {
-		return 0, 0, 0, err
+	// Bloco de ambiente do USUÁRIO da sessão (não do SYSTEM que lança o
+	// processo — sem isso o companion herdaria %APPDATA%/%USERPROFILE% do
+	// contexto errado; documentado pela Microsoft como o jeito correto de
+	// popular lpEnvironment em CreateProcessAsUser). FEATURE_LIVE_ACCESS não
+	// precisa mais ser injetada aqui — o companion lê featureLiveAccess
+	// direto do config.json dele (mesmo arquivo que o serviço usa), não do
+	// ambiente do processo.
+	var envBlock *uint16
+	if err := windows.CreateEnvironmentBlock(&envBlock, primaryToken, false); err != nil {
+		return 0, 0, 0, fmt.Errorf("CreateEnvironmentBlock falhou: %w", err)
 	}
-	defer cleanupEnvBlock()
+	defer windows.DestroyEnvironmentBlock(envBlock) //nolint:errcheck
 
 	exePath, err := os.Executable()
 	if err != nil {
@@ -340,7 +249,7 @@ func launchCompanion(sessionID uint32) (companionPID uint32, companionHandle win
 	const createFlags = windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_NO_WINDOW | windows.CREATE_SUSPENDED
 	if err := windows.CreateProcessAsUser(
 		primaryToken, nil, cmdLineUTF16, nil, nil, false,
-		createFlags, patchedEnvBlock, nil, &si, &pi,
+		createFlags, envBlock, nil, &si, &pi,
 	); err != nil {
 		_ = windows.CloseHandle(job)
 		return 0, 0, 0, fmt.Errorf("CreateProcessAsUser falhou: %w", err)

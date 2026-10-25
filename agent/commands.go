@@ -295,12 +295,22 @@ func handleGetAgentLog(cmd Command) (string, error) {
 
 // ── Sessão ao vivo (start/stop) ───────────────────────────────────────────────
 
-// featureLiveAccessEnvVar é o nome da env var única que gateia toda a
-// feature de acesso remoto — mesma flag lida em agent.go (sessionWatchLoop),
-// companion.go (activityReportLoop) e session_windows.go
-// (injectFeatureFlagIntoEnvBlock). Constante compartilhada pra nunca
-// divergir o literal entre os pontos que checam.
-const featureLiveAccessEnvVar = "FEATURE_LIVE_ACCESS"
+// featureLiveAccessFlag é setado 1x, na inicialização de cada processo, a
+// partir do featureLiveAccess do config.json QUE AQUELE PROCESSO carregou —
+// serviço via a.cfg (agent.go, Run()), companion via loadConfigReadOnly
+// (companion.go, runCompanion()). Os dois processos leem o MESMO
+// config.json do disco, então sempre concordam sem nenhuma propagação
+// manual entre eles — diferente da era env-var (os.Getenv), que exigia
+// injectFeatureFlagIntoEnvBlock (removido, session_windows.go) só pra
+// replicar o valor do serviço pro companion via CreateProcessAsUser.
+var featureLiveAccessFlag bool
+
+// setFeatureLiveAccessEnabled é chamada 1x por processo, logo após o load
+// do config.json — nunca direto por quem só quer LER a flag (use
+// featureLiveAccessEnabled pra isso).
+func setFeatureLiveAccessEnabled(v bool) {
+	featureLiveAccessFlag = v
+}
 
 // featureLiveAccessEnabled confere a mesma flag que gateia sessionWatchLoop
 // (agent.go) e activityReportLoop (companion.go). Os 3 handlers que falam
@@ -313,7 +323,7 @@ const featureLiveAccessEnvVar = "FEATURE_LIVE_ACCESS"
 // comando (handleCommand, agent.go) pelos pipeHandlerDeadline (10s) inteiros
 // de retry fútil, em vez de falhar na hora com um erro claro.
 func featureLiveAccessEnabled() bool {
-	return os.Getenv(featureLiveAccessEnvVar) == "true"
+	return featureLiveAccessFlag
 }
 
 // handleStartLiveSession repassa o pedido de sessão ao vivo pro companion
