@@ -14,17 +14,23 @@ const serviceStatusEmail = require('./services/serviceStatusEmail');
 const rhHealthMonitor    = require('./services/rhHealthMonitor');
 const { sendAlert }      = require('./services/resendAlert');
 const { initLiveRelay }  = require('./services/liveSessionRelay');
+const { createUpgradeRouter } = require('./services/upgradeRouter');
 const activityRetention  = require('./services/activityRetention');
 
 const PORT = process.env.PORT || 3847;
 
 const server = http.createServer(app);
-initWebSocket(server);
+const wsServer = initWebSocket();
 // Sempre montado, mesmo sem FEATURE_LIVE_ACCESS — inofensivo: sem a flag,
 // nenhuma rota consegue criar sessão (registerSession), então toda conexão
 // em /live recebe 4000 (sessão inexistente) na hora, mesmo custo de a rota
 // não existir. Gatear aqui também só adicionaria uma segunda flag redundante.
-initLiveRelay(server);
+const liveWss = initLiveRelay();
+// Roteador único de 'upgrade' pra /ws e /live — ver services/upgradeRouter.js
+// pro porquê de não usar {server, path} em cada WebSocketServer (achado real
+// em produção: o 1º registrado abortava com 400 qualquer upgrade de path
+// diferente do seu, antes do WebSocketServer certo ter a chance de atender).
+server.on('upgrade', createUpgradeRouter({ wsServer, liveWss }));
 
 // Checagem de boot — pega o cenário do incidente de 2026-09-10 no exato momento
 // em que um deploy/restart apaga a env var, em vez de esperar o próximo tick do monitor.

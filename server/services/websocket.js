@@ -4,8 +4,14 @@ const { WebSocketServer } = require('ws');
 
 let wss;
 
-function initWebSocket(server) {
-  wss = new WebSocketServer({ server, path: '/ws' });
+// noServer: true (não mais {server, path}) — ver services/upgradeRouter.js
+// pro porquê: múltiplos WebSocketServer com {server, path} na mesma
+// http.Server competem pelo evento 'upgrade' e o primeiro registrado
+// aborta com 400 qualquer upgrade cujo path não seja o dele, mesmo que
+// outro WebSocketServer devesse atender. server.js chama handleUpgrade
+// manualmente, roteado por pathname.
+function initWebSocket() {
+  wss = new WebSocketServer({ noServer: true });
 
   wss.on('connection', (ws, req) => {
     console.log('[WS] Dashboard conectado:', req.socket.remoteAddress);

@@ -109,19 +109,49 @@ describe('liveSessionRelay', () => {
 describe('initLiveRelay — conexão real', () => {
   const http = require('http');
   const WebSocket = require('ws');
+  const { WebSocketServer } = require('ws');
   const { registerSession, initLiveRelay, unregisterSession, getSession } = require('./liveSessionRelay');
+  const { createUpgradeRouter } = require('./upgradeRouter');
 
   let server;
   let port;
 
   beforeAll((done) => {
     server = http.createServer();
-    initLiveRelay(server);
+    const liveWss = initLiveRelay();
+    // Um 2º WebSocketServer coexistindo no MESMO http.Server, exatamente
+    // como /ws (services/websocket.js) coexiste em produção (server.js) —
+    // é essa coexistência que causava o bug real: com {server, path} em
+    // cada um (API antiga), o 1º registrado abortava com 400 qualquer
+    // upgrade de path diferente do seu, ANTES do WebSocketServer certo ter
+    // a chance de atender — mesmo direto no backend, sem passar pelo
+    // nginx. Este teste SEMPRE testou initLiveRelay isolado (sem nenhum
+    // outro WebSocketServer coexistindo), por isso nunca flagrou o
+    // problema — achado só testando em produção.
+    const otherWss = new WebSocketServer({ noServer: true });
+    server.on('upgrade', createUpgradeRouter({ wsServer: otherWss, liveWss }));
     server.listen(0, () => { port = server.address().port; done(); });
   });
 
   afterAll((done) => { server.close(done); });
   afterEach(() => unregisterSession('s-real'));
+
+  // Regressão achada em produção: com a API antiga ({server, path} em cada
+  // WebSocketServer), esta conexão em /live recebia 400 do próprio /ws
+  // (registrado "primeiro"), nunca chegando a abrir.
+  it('conexão em /live funciona mesmo com outro WebSocketServer (/ws) coexistindo no mesmo http.Server', (done) => {
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'shadow', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
+    const dashboardWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+    );
+    dashboardWs.on('unexpected-response', (req, res) => {
+      done(new Error(`esperava upgrade bem-sucedido, recebeu HTTP ${res.statusCode}`));
+    });
+    dashboardWs.on('error', (err) => done(err));
+    dashboardWs.on('open', () => { dashboardWs.close(); done(); });
+  });
 
   it('companion autenticado consegue conectar e dashboard recebe o frame', (done) => {
     registerSession('s-real', {
