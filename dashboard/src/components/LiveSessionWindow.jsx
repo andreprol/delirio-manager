@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLiveSession } from '../hooks/useLiveSession'
-import { api } from '../api'
+import { api, setServerUrl, setAdminSecret } from '../api'
 
 const MOUSE_BUTTON = { 0: 'left', 2: 'right' }
 
@@ -37,6 +37,21 @@ export function LiveSessionWindow() {
   useEffect(() => {
     const unsubscribe = window.electronAPI?.onLiveSessionInit((data) => setSession(data))
     return unsubscribe
+  }, [])
+
+  // Cada BrowserWindow é um processo/renderer separado, com sua PRÓPRIA
+  // instância do módulo api.js (serverUrl/adminSecret começam vazios aqui,
+  // mesmo que já configurados na janela principal) — achado em produção:
+  // "Encerrar sessão" sempre dava 401 (X-Admin-Secret inválido), mesmo
+  // logo depois de "Shadow"/"Normal" terem funcionado (esses passam pelo
+  // MachineCard, na janela PRINCIPAL, cujo api.js está configurado).
+  // Carrega a mesma config.json que a janela principal usa, pra esta
+  // janela também mandar o header certo em api.live.stop.
+  useEffect(() => {
+    window.electronAPI?.getConfig().then((cfg) => {
+      if (cfg?.serverUrl) setServerUrl(cfg.serverUrl)
+      if (cfg?.adminSecret) setAdminSecret(cfg.adminSecret)
+    }).catch(() => {})
   }, [])
 
   // O BrowserWindow nasce com title: 'Delirio Manager — Sessão ao vivo'

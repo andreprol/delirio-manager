@@ -16,9 +16,11 @@ vi.mock('../hooks/useLiveSession', () => ({
 
 vi.mock('../api', () => ({
   api: { live: { stop: vi.fn().mockResolvedValue({ ok: true }) } },
+  setServerUrl: vi.fn(),
+  setAdminSecret: vi.fn(),
 }))
 
-import { api } from '../api'
+import { api, setServerUrl, setAdminSecret } from '../api'
 
 function fireLiveSessionInit(data) {
   const cb = window.electronAPI.onLiveSessionInit.mock.calls[0][0]
@@ -34,6 +36,7 @@ beforeEach(() => {
     cleanupDone: vi.fn(),
     reportCleanupProgress: vi.fn(),
     convertRecording: vi.fn().mockResolvedValue({ saved: true }),
+    getConfig: vi.fn().mockResolvedValue({ serverUrl: 'https://s.example.com', adminSecret: 'secret-xyz' }),
   }
 })
 
@@ -41,6 +44,22 @@ describe('LiveSessionWindow', () => {
   it('mostra "conectando" até receber os parâmetros da sessão via IPC', () => {
     render(<LiveSessionWindow />)
     expect(screen.getByText(/conectando/i)).toBeInTheDocument()
+  })
+
+  // Regressão achada em produção: esta janela é um BrowserWindow/processo
+  // separado da janela principal, com sua PRÓPRIA instância do módulo
+  // api.js (serverUrl/adminSecret nascem vazios aqui, mesmo configurados
+  // na janela principal) — "Encerrar sessão" sempre dava 401, mesmo logo
+  // depois de Shadow/Normal terem funcionado (esses passam pelo
+  // MachineCard, na janela principal).
+  it('carrega serverUrl/adminSecret do config.json ao montar, mesmo antes da sessão chegar', async () => {
+    await act(async () => {
+      render(<LiveSessionWindow />)
+      await Promise.resolve()
+    })
+    expect(window.electronAPI.getConfig).toHaveBeenCalled()
+    expect(setServerUrl).toHaveBeenCalledWith('https://s.example.com')
+    expect(setAdminSecret).toHaveBeenCalledWith('secret-xyz')
   })
 
   it('depois do init, passa mode/sessionId certos pro useLiveSession', () => {
