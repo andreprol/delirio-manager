@@ -11,6 +11,7 @@
     "start": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "dist": "npm run build:icon && vite build && electron-builder",
     "release": "bash scripts/release.sh",
+    "release:auto": "npm version patch --no-git-tag-version && bash scripts/release.sh",
     "test": "vitest run"
   },
   "dependencies": {

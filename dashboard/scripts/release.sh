@@ -51,19 +51,8 @@ fi
 
 SERVER="https://dt-manager.brazilsouth.cloudapp.azure.com"
 
-# 3. Upload do latest.yml via base64/az
-echo "Enviando latest.yml para a VM..."
-b64=$(base64 -w 0 "$LATEST_YML")
-az vm run-command invoke \
-  --resource-group rg-dt-manager \
-  --name vm-dt-manager \
-  --command-id RunShellScript \
-  --scripts "mkdir -p /opt/dt-manager/public/dashboard-updates && echo '$b64' | base64 -d > /opt/dt-manager/public/dashboard-updates/latest.yml && echo OK_YML" \
-  --output none
-echo "latest.yml enviado"
-echo ""
-
-# 4. Upload do installer via endpoint protegido
+# 3. Upload do installer via endpoint protegido (ANTES do latest.yml de proposito:
+#    se isso falhar, o feed ainda aponta pro installer anterior, que existe)
 echo "Enviando installer..."
 RESPONSE=$(curl -s -X POST \
   "$SERVER/api/update/upload-dashboard" \
@@ -76,6 +65,19 @@ else
   echo "Falha no upload do installer: $RESPONSE"
   exit 1
 fi
+echo ""
+
+# 4. Upload do latest.yml via base64/az (so depois do installer confirmado:
+#    assim o feed nunca aponta pra um installer que nao existe)
+echo "Enviando latest.yml para a VM..."
+b64=$(base64 -w 0 "$LATEST_YML")
+az vm run-command invoke \
+  --resource-group rg-dt-manager \
+  --name vm-dt-manager \
+  --command-id RunShellScript \
+  --scripts "mkdir -p /opt/dt-manager/public/dashboard-updates && echo '$b64' | base64 -d > /opt/dt-manager/public/dashboard-updates/latest.yml && echo OK_YML" \
+  --output none
+echo "latest.yml enviado"
 
 echo ""
 echo "Release v$VERSION concluido!"
