@@ -140,6 +140,7 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
       window.electronAPI?.openLiveSessionWindow({
         sessionId: resp.sessionId,
         machineId: machine.id,
+        machineName: machine.displayName || machine.hostname || machine.id,
         mode: resp.mode,
         dashboardToken: resp.dashboardToken,
         serverUrl: getServerUrl(),

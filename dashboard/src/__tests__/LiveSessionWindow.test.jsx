@@ -27,6 +27,14 @@ function fireLiveSessionInit(data) {
   act(() => { cb(data) })
 }
 
+// A janela só encerra pelo X (não existe mais botão "Encerrar sessão") —
+// main.js manda 'live-session-cleanup-and-close' via IPC quando o operador
+// fecha a janela; os testes simulam isso chamando o callback registrado.
+function fireCleanupAndClose() {
+  const cb = window.electronAPI.onCleanupAndClose.mock.calls[0][0]
+  return cb()
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   lastUseLiveSessionArgs = null
@@ -35,6 +43,7 @@ beforeEach(() => {
     onCleanupAndClose: vi.fn(() => () => {}),
     cleanupDone: vi.fn(),
     reportCleanupProgress: vi.fn(),
+    reportCleanupFailed: vi.fn(),
     convertRecording: vi.fn().mockResolvedValue({ saved: true }),
     getConfig: vi.fn().mockResolvedValue({ serverUrl: 'https://s.example.com', adminSecret: 'secret-xyz' }),
   }
@@ -49,8 +58,8 @@ describe('LiveSessionWindow', () => {
   // Regressão achada em produção: esta janela é um BrowserWindow/processo
   // separado da janela principal, com sua PRÓPRIA instância do módulo
   // api.js (serverUrl/adminSecret nascem vazios aqui, mesmo configurados
-  // na janela principal) — "Encerrar sessão" sempre dava 401, mesmo logo
-  // depois de Shadow/Normal terem funcionado (esses passam pelo
+  // na janela principal) — api.live.stop sempre dava 401 ao encerrar,
+  // mesmo logo depois de Shadow/Normal terem funcionado (esses passam pelo
   // MachineCard, na janela principal).
   it('carrega serverUrl/adminSecret do config.json ao montar, mesmo antes da sessão chegar', async () => {
     await act(async () => {
@@ -67,6 +76,19 @@ describe('LiveSessionWindow', () => {
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     expect(lastUseLiveSessionArgs.sessionId).toBe('s1')
     expect(lastUseLiveSessionArgs.mode).toBe('normal')
+  })
+
+  it('mostra o nome da máquina (não o UUID) no cabeçalho, quando recebido', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', machineName: 'PC-CAIXA-02', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    expect(screen.getByText(/PC-CAIXA-02/)).toBeInTheDocument()
+    expect(screen.queryByText(/m1/)).not.toBeInTheDocument()
+  })
+
+  it('sem machineName (ex: sessão iniciada antes do rollout), cai pro machineId', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    expect(screen.getByText(/m1/)).toBeInTheDocument()
   })
 
   it('mode normal: mousedown no canvas chama sendMouseEvent', () => {
@@ -87,16 +109,6 @@ describe('LiveSessionWindow', () => {
     expect(sendKeyEventMock).not.toHaveBeenCalled()
   })
 
-  it('botão Encerrar sessão chama api.live.stop e depois cleanupDone (fecha a janela)', async () => {
-    render(<LiveSessionWindow />)
-    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
-    await act(async () => {
-      fireEvent.click(screen.getByText('Encerrar sessão'))
-    })
-    expect(api.live.stop).toHaveBeenCalledWith('s1', false)
-    expect(window.electronAPI.cleanupDone).toHaveBeenCalled()
-  })
-
   it('ao receber live-session-cleanup-and-close, para, avisa o servidor e chama cleanupDone', async () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
@@ -108,7 +120,7 @@ describe('LiveSessionWindow', () => {
 
   // Regressão achada na revisão cross-cutting: sem o try/catch em
   // stopRecordingIfActive, uma falha do ffmpeg (convertRecording rejeitado)
-  // travava endSession pra sempre — "Encerrar sessão" com gravação ativa
+  // travava endSession pra sempre — fechar a janela com gravação ativa
   // parecia simplesmente não fazer nada.
   it('se converter a gravação falhar, ainda chama api.live.stop e cleanupDone (não trava o encerramento)', async () => {
     let recorderInstance
@@ -126,9 +138,7 @@ describe('LiveSessionWindow', () => {
     act(() => { fireEvent.click(screen.getByText('⏺ Gravar')) })
     expect(recorderInstance.start).toHaveBeenCalled()
 
-    await act(async () => {
-      fireEvent.click(screen.getByText('Encerrar sessão'))
-    })
+    await act(async () => { await fireCleanupAndClose() })
 
     expect(recorderInstance.stop).toHaveBeenCalled()
     expect(window.electronAPI.convertRecording).toHaveBeenCalled()
@@ -136,22 +146,21 @@ describe('LiveSessionWindow', () => {
     expect(window.electronAPI.cleanupDone).toHaveBeenCalled()
   })
 
-  // Regressão achada na revisão cross-cutting: clicar "Encerrar sessão" e,
-  // antes dessa chamada terminar, o X da janela também disparar o cleanup
-  // (ou vice-versa) chamava api.live.stop 2x pra mesma sessão — os dois
-  // caminhos agora compartilham a mesma promise de endSession.
-  it('botão Encerrar + X da janela quase juntos só chamam api.live.stop 1x', async () => {
+  // Regressão achada na revisão cross-cutting: 2 chamadas de cleanup quase
+  // juntas (ex: o IPC de cleanup disparando de novo antes da 1ª terminar)
+  // chamavam api.live.stop 2x pra mesma sessão — compartilham a mesma
+  // promise de endSession.
+  it('2 chamadas de cleanup quase juntas só chamam api.live.stop 1x', async () => {
     let resolveStop
     api.live.stop.mockImplementation(() => new Promise((resolve) => { resolveStop = resolve }))
 
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
-    const cleanupCb = window.electronAPI.onCleanupAndClose.mock.calls[0][0]
 
-    let cleanupPromise
+    let cleanupPromise1, cleanupPromise2
     await act(async () => {
-      fireEvent.click(screen.getByText('Encerrar sessão')) // dispara endSession, ainda não resolveu
-      cleanupPromise = cleanupCb() // X da janela, enquanto o 1º ainda está em voo
+      cleanupPromise1 = fireCleanupAndClose() // dispara endSession, ainda não resolveu
+      cleanupPromise2 = fireCleanupAndClose() // chamada concorrente, enquanto a 1ª ainda está em voo
       // deixa o microtask chain de endSession (await stopRecordingIfActive)
       // avançar até de fato chamar api.live.stop, pra resolveStop existir.
       await Promise.resolve()
@@ -160,7 +169,8 @@ describe('LiveSessionWindow', () => {
 
     await act(async () => {
       resolveStop({ ok: true })
-      await cleanupPromise
+      await cleanupPromise1
+      await cleanupPromise2
     })
 
     expect(api.live.stop).toHaveBeenCalledTimes(1)
@@ -170,29 +180,33 @@ describe('LiveSessionWindow', () => {
   // Regressão achada na VERIFICAÇÃO do fix anterior (não no fix original):
   // sem resetar endSessionPromiseRef/ending em caso de falha, uma rejeição
   // de api.live.stop (erro de rede) deixava a promise compartilhada
-  // cacheada pra sempre — "Encerrar sessão" ficava travado em
-  // "Encerrando..." permanentemente, sem nenhuma tentativa nova possível.
-  it('falha ao encerrar mostra erro, reabilita o botão, e uma 2ª tentativa funciona', async () => {
+  // cacheada pra sempre — o encerramento ficava travado permanentemente,
+  // sem nenhuma tentativa nova possível.
+  // reportCleanupFailed avisa o main process pra resetar __cleanupStarted —
+  // sem isso, um 2º X da janela não reenviaria 'live-session-cleanup-and-close'
+  // (achado 🔴 na revisão: a única tentativa real ficava a única, a janela
+  // travava até o timeout de 15s fechar sem nunca avisar o servidor).
+  it('falha ao encerrar mostra o erro, não fecha a janela, avisa o main process, e uma 2ª tentativa funciona', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     api.live.stop.mockRejectedValueOnce(new Error('rede indisponível'))
 
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
 
-    await act(async () => {
-      fireEvent.click(screen.getByText('Encerrar sessão'))
-    })
+    await act(async () => { await fireCleanupAndClose() })
 
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Falha ao encerrar sessão ao vivo:', expect.any(Error))
     expect(screen.getByText(/rede indisponível/)).toBeInTheDocument()
-    expect(screen.getByText('Encerrar sessão')).not.toBeDisabled()
+    expect(window.electronAPI.reportCleanupFailed).toHaveBeenCalled()
+    expect(screen.getByText('⏺ Gravar')).not.toBeDisabled()
     expect(window.electronAPI.cleanupDone).not.toHaveBeenCalled()
 
     api.live.stop.mockResolvedValueOnce({ ok: true })
-    await act(async () => {
-      fireEvent.click(screen.getByText('Encerrar sessão'))
-    })
+    await act(async () => { await fireCleanupAndClose() })
 
     expect(api.live.stop).toHaveBeenCalledTimes(2)
     expect(window.electronAPI.cleanupDone).toHaveBeenCalled()
+    consoleErrorSpy.mockRestore()
   })
 
   // Regressão achada na 3ª rodada de verificação (não na 2ª): wasRecording
@@ -217,17 +231,15 @@ describe('LiveSessionWindow', () => {
     act(() => { fireEvent.click(screen.getByText('⏺ Gravar')) })
     expect(recorderInstance.start).toHaveBeenCalled()
 
-    await act(async () => {
-      fireEvent.click(screen.getByText('Encerrar sessão')) // 1ª tentativa, falha
-    })
-    expect(screen.getByText(/rede indisponível/)).toBeInTheDocument()
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await act(async () => { await fireCleanupAndClose() }) // 1ª tentativa, falha
+    expect(consoleErrorSpy).toHaveBeenCalled()
 
     api.live.stop.mockResolvedValueOnce({ ok: true })
-    await act(async () => {
-      fireEvent.click(screen.getByText('Encerrar sessão')) // 2ª tentativa, sucesso
-    })
+    await act(async () => { await fireCleanupAndClose() }) // 2ª tentativa, sucesso
 
     expect(api.live.stop).toHaveBeenNthCalledWith(2, 's1', true)
+    consoleErrorSpy.mockRestore()
   })
 
   // Regressão achada na 4ª rodada de verificação: wasRecordingRef só era
@@ -255,21 +267,19 @@ describe('LiveSessionWindow', () => {
     })
     expect(recorderInstance.stop).toHaveBeenCalled()
 
-    await act(async () => {
-      fireEvent.click(screen.getByText('Encerrar sessão')) // sem gravar de novo
-    })
+    await act(async () => { await fireCleanupAndClose() }) // sem gravar de novo
 
     expect(api.live.stop).toHaveBeenCalledWith('s1', true)
   })
 
   // Regressão achada na 5ª rodada de verificação (🔴 CRÍTICO): parar a
-  // gravação manualmente e clicar "Encerrar sessão" em seguida, ANTES da
-  // conversão (ffmpeg + dialog de salvar) terminar, fazia endSession ver
+  // gravação manualmente e fechar a janela em seguida, ANTES da conversão
+  // (ffmpeg + dialog de salvar) terminar, fazia endSession ver
   // mediaRecorderRef já null (zerado sincronamente pela parada manual) e
   // seguir direto pra api.live.stop/cleanupDone — fechando a janela com a
   // conversão da 1ª chamada ainda rodando contra ela. stopRecordingIfActive
   // agora compartilha a mesma promise entre as 2 chamadas.
-  it('parar manualmente + Encerrar sessão rápido espera a conversão terminar antes de api.live.stop', async () => {
+  it('parar manualmente + fechar a janela rápido espera a conversão terminar antes de api.live.stop', async () => {
     HTMLCanvasElement.prototype.captureStream = vi.fn(() => ({}))
     global.MediaRecorder = vi.fn(function FakeMediaRecorder() {
       this.start = vi.fn()
@@ -285,7 +295,7 @@ describe('LiveSessionWindow', () => {
 
     await act(async () => {
       fireEvent.click(screen.getByText('⏹ Parar gravação')) // dispara a conversão, ainda não resolveu
-      fireEvent.click(screen.getByText('Encerrar sessão')) // quase junto, antes da conversão terminar
+      fireCleanupAndClose() // fecha a janela quase junto, antes da conversão terminar
       await Promise.resolve()
       await Promise.resolve()
       await Promise.resolve()

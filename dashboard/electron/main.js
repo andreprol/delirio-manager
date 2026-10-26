@@ -71,6 +71,26 @@ function createWindow() {
   return win
 }
 
+// 'live-session:open' chega do renderer (MachineCard, janela principal) e
+// viaja direto até dentro de outra BrowserWindow via IPC — sem validar os
+// campos, um objeto com shape arbitrário atravessaria esse boundary sem
+// checagem de tipo/tamanho (achado 🟡 na revisão desta mudança, que passou
+// a incluir machineName, texto livre digitado pelo operador no rename da
+// máquina). Nenhum dos campos é segredo em si, mas normalizar aqui evita
+// que um valor malformado (tipo errado, string gigante) se propague pro
+// renderer da janela de sessão.
+function sanitizeLiveSessionParams(params) {
+  const p = params || {}
+  return {
+    sessionId:      typeof p.sessionId === 'string' ? p.sessionId : '',
+    machineId:      typeof p.machineId === 'string' ? p.machineId : '',
+    machineName:    typeof p.machineName === 'string' ? p.machineName.slice(0, 200) : undefined,
+    mode:           p.mode === 'normal' ? 'normal' : 'shadow',
+    dashboardToken: typeof p.dashboardToken === 'string' ? p.dashboardToken : '',
+    serverUrl:      typeof p.serverUrl === 'string' ? p.serverUrl : '',
+  }
+}
+
 // Janela separada por sessão ao vivo (acesso remoto) — uma por máquina, o
 // operador pode abrir mais de uma ao mesmo tempo. Carrega o MESMO bundle
 // (dist/index.html) que a janela principal; main.jsx decide qual React root
@@ -287,7 +307,7 @@ app.whenReady().then(() => {
 
   // IPC: abre a janela de sessão ao vivo (acesso remoto)
   ipcMain.handle('live-session:open', (_, params) => {
-    createLiveSessionWindow(params)
+    createLiveSessionWindow(sanitizeLiveSessionParams(params))
     return true
   })
 
@@ -308,6 +328,20 @@ app.whenReady().then(() => {
   ipcMain.on('live-session-cleanup-progress', (event) => {
     const senderWin = BrowserWindow.fromWebContents(event.sender)
     if (senderWin && !senderWin.isDestroyed()) armCleanupSafetyTimer(senderWin)
+  })
+
+  // IPC: a janela de sessão avisa que o cleanup FALHOU (ex: api.live.stop
+  // rejeitou por rede) — reseta __cleanupStarted pra o PRÓXIMO X da janela
+  // reenviar 'live-session-cleanup-and-close' e tentar de novo. Sem isso
+  // (achado 🔴 na revisão desta mudança, que removeu o botão "Encerrar
+  // sessão"): __cleanupStarted nunca resetava, então um 2º clique no X só
+  // rearmava o timer de segurança (sempre feito, ver liveWin.on('close')
+  // abaixo) sem nunca reenviar o IPC — a única tentativa real ficava a
+  // única, e a sessão acabava órfã no servidor quando o timeout de 15s
+  // forçava o fechamento sem sucesso.
+  ipcMain.on('live-session-cleanup-failed', (event) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    if (senderWin && !senderWin.isDestroyed()) senderWin.__cleanupStarted = false
   })
 
   // IPC: converte a gravação WebM (MediaRecorder, renderer) pra MP4 via

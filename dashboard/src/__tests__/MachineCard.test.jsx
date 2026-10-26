@@ -312,7 +312,7 @@ describe('MachineCard — acesso remoto', () => {
 
     expect(api.live.start).toHaveBeenCalledWith('mach-test', 'normal')
     expect(window.electronAPI.openLiveSessionWindow).toHaveBeenCalledWith({
-      sessionId: 'sess-1', machineId: 'mach-test', mode: 'normal', dashboardToken: 'tok-xyz', serverUrl: expect.any(String),
+      sessionId: 'sess-1', machineId: 'mach-test', machineName: 'PC-BOH', mode: 'normal', dashboardToken: 'tok-xyz', serverUrl: expect.any(String),
     })
   })
 
