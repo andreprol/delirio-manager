@@ -12,6 +12,7 @@ import { AlohaModule } from './components/AlohaModule'
 import { DRModule } from './components/DRModule'
 import { ReportModule } from './components/ReportModule'
 import { WatchlistModule } from './components/WatchlistModule'
+import { PontoRemotoModule } from './components/PontoRemotoModule'
 import { api, setServerUrl, getServerUrl, setInternalApiKey, setAdminSecret } from './api'
 
 function fmtAge(min) {
@@ -65,6 +66,7 @@ export default function App() {
   const [showDR,         setShowDR]         = useState(false)
   const [showRelatorio,  setShowRelatorio]  = useState(false)
   const [showWatchlist,  setShowWatchlist]  = useState(false)
+  const [showPontoRemoto, setShowPontoRemoto] = useState(false)
   const [biosState,    setBiosState]    = useState(null) // null | 'loading' | 'done' | 'error'
   const [biosSavePath, setBiosSavePath] = useState(null)
   const [newOfflineAlert, setNewOfflineAlert] = useState(null)
@@ -474,6 +476,9 @@ export default function App() {
             <button className="pill-btn" onClick={() => setShowWatchlist(true)} title="Módulo Watchlist — Palavras-chave de acesso remoto">
               🔎 Watch
             </button>
+            <button className="pill-btn" onClick={() => setShowPontoRemoto(true)} title="Módulo Ponto Remoto — Funcionários e espelho de ponto">
+              🕐 Ponto
+            </button>
           </div>
 
           <button
@@ -634,6 +639,7 @@ export default function App() {
       {showDR && <DRModule onClose={() => setShowDR(false)} />}
       {showRelatorio && <ReportModule onClose={() => setShowRelatorio(false)} />}
       {showWatchlist && <WatchlistModule onClose={() => setShowWatchlist(false)} />}
+      {showPontoRemoto && <PontoRemotoModule onClose={() => setShowPontoRemoto(false)} />}
       <UpdateToast />
     </div>
   )

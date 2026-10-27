@@ -177,6 +177,13 @@ fs.mkdirSync(RELATORIO_PHOTOS_DIR, { recursive: true });
 try { fs.chmodSync(RELATORIO_PHOTOS_DIR, 0o777); } catch (_) {}
 app.use('/relatorio-photos', express.static(RELATORIO_PHOTOS_DIR));
 
+if (process.env.FEATURE_PONTO_REMOTO === 'true') {
+  // Página do funcionário (login + bater ponto) — estática, sem build step.
+  // Fora de PUBLIC_DIR de propósito: server/public/ é só artefato de runtime
+  // (.gitignore inteiro), isso aqui é código-fonte e precisa ir no deploy.
+  app.use('/ponto-remoto', express.static(path.join(__dirname, 'ponto-remoto-web')));
+}
+
 app.get('/downloads/dashboard', (req, res) => {
   try {
     const installer = fs.readdirSync(DASHBOARD_UPDATES_DIR).find(f => f.endsWith('.exe'));

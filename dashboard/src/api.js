@@ -185,6 +185,16 @@ export const api = {
     stop:  (sessionId, recorded)    => request('POST', `/api/live/${sessionId}/stop`, { recorded: !!recorded }, { admin: true }),
   },
 
+  // Ponto remoto (REP-P/REP-A) — grupo específico de funcionários, fora do
+  // relógio físico Henry Hexa. Rotas /admin/* exigem X-Admin-Secret.
+  pontoRemoto: {
+    listEmployees: ()                 => request('GET',   '/api/ponto-remoto/admin/employees', null, { admin: true }),
+    createEmployee: (body)            => request('POST',  '/api/ponto-remoto/admin/employees', body, { admin: true }),
+    setEmployeeActive: (id, active)   => request('PATCH', `/api/ponto-remoto/admin/employees/${id}`, { active }, { admin: true }),
+    listEntries: (employeeId)         => request('GET',   `/api/ponto-remoto/admin/entries${employeeId ? `?employeeId=${employeeId}` : ''}`, null, { admin: true }),
+    correctEntry: (id, body)          => request('POST',  `/api/ponto-remoto/admin/entries/${id}/correct`, body, { admin: true }),
+  },
+
   // DR — Bare Metal Recovery
   dr: {
     setup:     (id)          => request('POST', `/api/dr/${id}/setup`),

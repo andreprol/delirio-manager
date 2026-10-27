@@ -181,6 +181,20 @@ describe('POST /clock', () => {
   });
 });
 
+describe('GET /me', () => {
+  it('sem sessão — 401', async () => {
+    const res = await request(makeApp()).get('/api/ponto-remoto/me');
+    expect(res.status).toBe(401);
+  });
+
+  it('com sessão — nome e loja do funcionário autenticado', async () => {
+    const agent = await loginAgent(makeApp(), '20202020202');
+    const res = await agent.get('/api/ponto-remoto/me');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ name: EMPLOYEE.name, store: EMPLOYEE.store });
+  });
+});
+
 describe('GET /my-entries e logout', () => {
   it('my-entries consulta só os registros do funcionário autenticado', async () => {
     db.listRemoteTimeEntriesForEmployee.mockReturnValue([{ id: 1, employee_id: EMPLOYEE.id }]);

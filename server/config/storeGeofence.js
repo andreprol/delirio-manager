@@ -6,6 +6,10 @@
 // tiver entrada aqui, o clock-in dessa loja é aceito sem checagem de geofence
 // (within_geofence fica null, visível pro RH no espelho de ponto).
 //
+// A chave tem que bater exatamente com a grafia usada em STORES
+// (dashboard/src/components/PontoRemotoModule.jsx) — divergência faz o
+// geofence daquela loja nunca casar, silenciosamente.
+//
 // Preencher com lat/lng real de cada loja antes de confiar no bloqueio por
 // geofence em produção:
 //

@@ -88,6 +88,12 @@ router.post('/logout', employeeAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// GET /api/ponto-remoto/me — identifica a sessão atual (pro front-end saber
+// quem está logado sem guardar nome/loja no client entre reloads).
+router.get('/me', employeeAuth, (req, res) => {
+  res.json({ name: req.employee.name, store: req.employee.store });
+});
+
 // ─── Bater ponto ────────────────────────────────────────────────────────────────
 // POST /api/ponto-remoto/clock  { tipo: 'in'|'out', lat?, lng?, accuracy? }
 router.post('/clock', employeeAuth, (req, res) => {

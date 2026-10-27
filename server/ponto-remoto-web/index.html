@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Ponto Remoto — Delírio Tropical</title>
+<style>
+  :root {
+    --bg: #0f0f19; --card: #181c20; --border: #1e1e30;
+    --text: #e5e7eb; --muted: #94a3b8;
+    --blue: #3b82f6; --green: #4ade80; --red: #f87171; --orange: #fb923c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 24px 16px;
+  }
+  .card {
+    width: 100%; max-width: 420px; background: var(--card);
+    border: 1px solid var(--border); border-radius: 12px; padding: 24px;
+  }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+  input {
+    width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: #10131a; color: var(--text); font-size: 16px;
+  }
+  button {
+    border: none; border-radius: 8px; padding: 14px; font-size: 15px; font-weight: 600;
+    cursor: pointer; width: 100%; margin-top: 16px;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-primary { background: var(--blue); color: #fff; }
+  .btn-in  { background: var(--green); color: #052e16; }
+  .btn-out { background: var(--red);   color: #450a0a; }
+  .btn-row { display: flex; gap: 10px; margin-top: 16px; }
+  .btn-row button { margin-top: 0; }
+  .btn-link { background: none; color: var(--muted); font-weight: 400; font-size: 13px; width: auto; padding: 4px; margin: 0; }
+  .error { color: var(--red); font-size: 13px; margin-top: 10px; }
+  .ok     { color: var(--green); font-size: 13px; margin-top: 10px; }
+  .top-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .entries { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }
+  .entries h2 { font-size: 13px; color: var(--muted); margin: 0 0 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .entry { display: flex; justify-content: space-between; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .entry:last-child { border-bottom: none; }
+  .tag { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 6px; }
+  .tag-in  { background: #052e16; color: var(--green); }
+  .tag-out { background: #450a0a; color: var(--red); }
+  .tag-geo-out { background: #431407; color: var(--orange); }
+  .tag-corr { background: #1e293b; color: var(--muted); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="card" id="loginCard">
+  <h1>Ponto Remoto</h1>
+  <p class="sub">Delírio Tropical</p>
+  <label for="cpf">CPF</label>
+  <input id="cpf" inputmode="numeric" autocomplete="username" placeholder="000.000.000-00">
+  <label for="senha">Senha</label>
+  <input id="senha" type="password" autocomplete="current-password">
+  <button class="btn-primary" id="loginBtn">Entrar</button>
+  <div id="loginMsg"></div>
+</div>
+
+<div class="card hidden" id="clockCard">
+  <div class="top-row">
+    <div>
+      <h1 id="employeeName"></h1>
+      <p class="sub" id="employeeStore"></p>
+    </div>
+    <button class="btn-link" id="logoutBtn">Sair</button>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn-in"  id="clockInBtn">🟢 Entrada</button>
+    <button class="btn-out" id="clockOutBtn">🔴 Saída</button>
+  </div>
+  <div id="clockMsg"></div>
+
+  <div class="entries">
+    <h2>Meus últimos registros</h2>
+    <div id="entriesList">Carregando…</div>
+  </div>
+</div>
+
+<script>
+const API = '/api/ponto-remoto';
+
+const loginCard   = document.getElementById('loginCard');
+const clockCard    = document.getElementById('clockCard');
+const cpfInput     = document.getElementById('cpf');
+const senhaInput   = document.getElementById('senha');
+const loginBtn     = document.getElementById('loginBtn');
+const loginMsg     = document.getElementById('loginMsg');
+const logoutBtn    = document.getElementById('logoutBtn');
+const clockInBtn   = document.getElementById('clockInBtn');
+const clockOutBtn  = document.getElementById('clockOutBtn');
+const clockMsg     = document.getElementById('clockMsg');
+const entriesList  = document.getElementById('entriesList');
+
+async function api(method, path, body) {
+  const res = await fetch(API + path, {
+    method,
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
+  return data;
+}
+
+function showLogin() {
+  loginCard.classList.remove('hidden');
+  clockCard.classList.add('hidden');
+}
+
+function showClock(name, store) {
+  document.getElementById('employeeName').textContent  = name;
+  document.getElementById('employeeStore').textContent = store;
+  loginCard.classList.add('hidden');
+  clockCard.classList.remove('hidden');
+  loadEntries();
+}
+
+// Geolocalização é opcional — sem permissão/suporte, bate o ponto sem coordenada
+// (o servidor só aplica geofence quando recebe lat/lng; sem isso fica sem avaliação).
+function getPosition() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({
+        lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy,
+      }),
+      () => resolve(null),
+      { timeout: 8000, maximumAge: 0 }
+    );
+  });
+}
+
+async function clock(tipo) {
+  clockMsg.textContent = '';
+  clockInBtn.disabled = true; clockOutBtn.disabled = true;
+  try {
+    const coords = await getPosition();
+    await api('POST', '/clock', { tipo, ...coords });
+    clockMsg.className = 'ok';
+    clockMsg.textContent = tipo === 'in' ? 'Entrada registrada.' : 'Saída registrada.';
+    loadEntries();
+  } catch (e) {
+    clockMsg.className = 'error';
+    clockMsg.textContent = e.message;
+  } finally {
+    clockInBtn.disabled = false; clockOutBtn.disabled = false;
+  }
+}
+
+function renderEntry(e) {
+  const dt = new Date(e.server_ts).toLocaleString('pt-BR');
+  const tipoTag = e.type === 'in'
+    ? '<span class="tag tag-in">Entrada</span>'
+    : '<span class="tag tag-out">Saída</span>';
+  const geoTag = e.within_geofence === 0 ? '<span class="tag tag-geo-out">Fora da área</span>' : '';
+  const corrTag = e.corrects_id ? '<span class="tag tag-corr">Correção</span>' : '';
+  return `<div class="entry"><span>${dt}</span><span>${tipoTag}${geoTag}${corrTag}</span></div>`;
+}
+
+async function loadEntries() {
+  try {
+    const { entries } = await api('GET', '/my-entries');
+    entriesList.innerHTML = entries.length
+      ? entries.map(renderEntry).join('')
+      : '<div class="entry"><span>Nenhum registro ainda</span></div>';
+  } catch (e) {
+    entriesList.textContent = e.message;
+  }
+}
+
+loginBtn.addEventListener('click', async () => {
+  loginMsg.textContent = '';
+  loginBtn.disabled = true;
+  try {
+    const { name, store } = await api('POST', '/login', { cpf: cpfInput.value, senha: senhaInput.value });
+    senhaInput.value = '';
+    showClock(name, store);
+  } catch (e) {
+    loginMsg.className = 'error';
+    loginMsg.textContent = e.message;
+  } finally {
+    loginBtn.disabled = false;
+  }
+});
+
+senhaInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loginBtn.click(); });
+
+logoutBtn.addEventListener('click', async () => {
+  try { await api('POST', '/logout'); } catch (_) { /* sessão já pode ter expirado */ }
+  showLogin();
+});
+
+clockInBtn.addEventListener('click', () => clock('in'));
+clockOutBtn.addEventListener('click', () => clock('out'));
+
+// Sessão já ativa (cookie de um acesso anterior)?
+api('GET', '/me').then(({ name, store }) => showClock(name, store)).catch(() => showLogin());
+</script>
+</body>
+</html>
