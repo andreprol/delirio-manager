@@ -478,6 +478,44 @@ function migrate(db) {
     // a cada ciclo (bug real: janela fixa de 7 dias reprocessava ~96% repetido).
     `ALTER TABLE machines ADD COLUMN last_win_event_id INTEGER DEFAULT 0`,
     `ALTER TABLE machines ADD COLUMN last_offline_event_id INTEGER DEFAULT 0`,
+    // ── Ponto Remoto (REP-P/REP-A) ────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS remote_employees (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      cpf           TEXT NOT NULL UNIQUE,
+      name          TEXT NOT NULL,
+      store         TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      active        INTEGER NOT NULL DEFAULT 1,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS remote_sessions (
+      token_hash  TEXT PRIMARY KEY,
+      employee_id INTEGER NOT NULL REFERENCES remote_employees(id) ON DELETE CASCADE,
+      created_at  TEXT NOT NULL,
+      expires_at  TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_remote_sessions_employee
+      ON remote_sessions(employee_id)`,
+    // remote_time_entries é append-only por design — ver comentário na seção
+    // de funções abaixo. corrects_id referencia o registro original quando a
+    // linha é uma correção administrativa, nunca uma edição em lugar.
+    `CREATE TABLE IF NOT EXISTS remote_time_entries (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id       INTEGER NOT NULL REFERENCES remote_employees(id) ON DELETE CASCADE,
+      type              TEXT NOT NULL CHECK(type IN ('in','out')),
+      server_ts         TEXT NOT NULL,
+      lat               REAL,
+      lng               REAL,
+      accuracy          REAL,
+      within_geofence   INTEGER,
+      corrects_id       INTEGER REFERENCES remote_time_entries(id),
+      correction_reason TEXT,
+      created_by        TEXT NOT NULL DEFAULT 'employee',
+      created_at        TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_remote_time_entries_employee
+      ON remote_time_entries(employee_id, server_ts)`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (_) { /* coluna já existe */ }
@@ -1937,6 +1975,94 @@ function getServiceStatusBOH() {
   `).all();
 }
 
+// ── Ponto Remoto (REP-P/REP-A) ────────────────────────────────────────────────
+// Funcionários elegíveis batem ponto via celular/web, fora do fluxo dos
+// relógios Henry Hexa físicos (REP-C). remote_time_entries é append-only por
+// design — nenhuma função aqui faz UPDATE/DELETE num registro já criado; uma
+// correção administrativa sempre insere uma nova linha referenciando a
+// original (corrects_id), preservando a trilha de auditoria exigida pela
+// Portaria MTP 671/2021.
+
+function createRemoteEmployee({ cpf, name, store, passwordHash }) {
+  const now = new Date().toISOString();
+  const info = getDb().prepare(`
+    INSERT INTO remote_employees (cpf, name, store, password_hash, active, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, ?, ?)
+  `).run(cpf, name, store, passwordHash, now, now);
+  return getRemoteEmployeeById(info.lastInsertRowid);
+}
+
+function getRemoteEmployeeByCpf(cpf) {
+  return getDb().prepare('SELECT * FROM remote_employees WHERE cpf = ?').get(cpf);
+}
+
+function getRemoteEmployeeById(id) {
+  return getDb().prepare('SELECT * FROM remote_employees WHERE id = ?').get(id);
+}
+
+function listRemoteEmployees() {
+  return getDb().prepare(`
+    SELECT id, cpf, name, store, active, created_at, updated_at FROM remote_employees ORDER BY name
+  `).all();
+}
+
+function setRemoteEmployeeActive(id, active) {
+  getDb().prepare('UPDATE remote_employees SET active = ?, updated_at = ? WHERE id = ?')
+    .run(active ? 1 : 0, new Date().toISOString(), id);
+}
+
+function createRemoteSession({ tokenHash, employeeId, createdAt, expiresAt }) {
+  getDb().prepare(`
+    INSERT INTO remote_sessions (token_hash, employee_id, created_at, expires_at)
+    VALUES (?, ?, ?, ?)
+  `).run(tokenHash, employeeId, createdAt, expiresAt);
+}
+
+function getRemoteSession(tokenHash) {
+  return getDb().prepare('SELECT * FROM remote_sessions WHERE token_hash = ?').get(tokenHash);
+}
+
+function deleteRemoteSession(tokenHash) {
+  getDb().prepare('DELETE FROM remote_sessions WHERE token_hash = ?').run(tokenHash);
+}
+
+function insertRemoteTimeEntry({ employeeId, type, serverTs, lat, lng, accuracy, withinGeofence, correctsId, correctionReason, createdBy }) {
+  const now = new Date().toISOString();
+  const info = getDb().prepare(`
+    INSERT INTO remote_time_entries
+      (employee_id, type, server_ts, lat, lng, accuracy, within_geofence, corrects_id, correction_reason, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    employeeId, type, serverTs,
+    lat ?? null, lng ?? null, accuracy ?? null,
+    withinGeofence === null || withinGeofence === undefined ? null : (withinGeofence ? 1 : 0),
+    correctsId ?? null, correctionReason ?? null,
+    createdBy || 'employee', now
+  );
+  return getRemoteTimeEntryById(info.lastInsertRowid);
+}
+
+function getRemoteTimeEntryById(id) {
+  return getDb().prepare('SELECT * FROM remote_time_entries WHERE id = ?').get(id);
+}
+
+function listRemoteTimeEntriesForEmployee(employeeId, limit = 200) {
+  return getDb().prepare(`
+    SELECT * FROM remote_time_entries WHERE employee_id = ? ORDER BY server_ts DESC LIMIT ?
+  `).all(employeeId, limit);
+}
+
+function listAllRemoteTimeEntries({ employeeId = null, limit = 500 } = {}) {
+  if (employeeId) {
+    return getDb().prepare(`
+      SELECT * FROM remote_time_entries WHERE employee_id = ? ORDER BY server_ts DESC LIMIT ?
+    `).all(employeeId, limit);
+  }
+  return getDb().prepare(`
+    SELECT * FROM remote_time_entries ORDER BY server_ts DESC LIMIT ?
+  `).all(limit);
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -2008,4 +2134,10 @@ module.exports = {
   insertActivityLog, getActivityLog, purgeActivityLog,
   // acesso remoto — live sessions
   createLiveSession, getLiveSession, endLiveSession, setLiveSessionRecorded,
+  // ponto remoto
+  createRemoteEmployee, getRemoteEmployeeByCpf, getRemoteEmployeeById,
+  listRemoteEmployees, setRemoteEmployeeActive,
+  createRemoteSession, getRemoteSession, deleteRemoteSession,
+  insertRemoteTimeEntry, getRemoteTimeEntryById,
+  listRemoteTimeEntriesForEmployee, listAllRemoteTimeEntries,
 };

@@ -24,6 +24,7 @@ const adminRoutes     = require('./routes/admin');
 const watchlistRoutes = require('./routes/watchlist');
 const activityRoutes  = require('./routes/activity');
 const liveRoutes      = require('./routes/live');
+const pontoRemotoRoutes = require('./routes/pontoRemoto');
 
 const logger  = require('./services/logger');
 const VERSION = '1.0.0';
@@ -145,6 +146,13 @@ if (process.env.FEATURE_LIVE_ACCESS === 'true') {
   // Controle administrativo (dashboard) — auth por X-Admin-Secret (adminAuth).
   app.use('/api/watchlist', watchlistRoutes);
   app.use('/api/live',      liveRoutes);
+}
+
+if (process.env.FEATURE_PONTO_REMOTO === 'true') {
+  // Ponto remoto (REP-P/REP-A) — grupo específico de funcionários, fora do
+  // fluxo dos relógios Henry Hexa físicos. Login/clock-in usam sessão própria
+  // de funcionário (employeeAuth); rotas /admin/* usam X-Admin-Secret (adminAuth).
+  app.use('/api/ponto-remoto', pontoRemotoRoutes);
 }
 
 // ── Arquivos estáticos ────────────────────────────────────────────────────────
