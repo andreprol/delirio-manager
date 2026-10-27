@@ -127,21 +127,36 @@ export function PontoRemotoModule({ onClose }) {
       </div>
 
       <div style={{ padding: 24, overflow: 'auto', flex: 1 }}>
+        <div style={{ maxWidth: 920 }}>
         {error && <div className="test-result err" style={{ marginBottom: 12 }}>{error}</div>}
 
         {tab === 'employees' && (
           <>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-              <input className="form-input" placeholder="CPF" value={form.cpf}
-                onChange={(e) => setForm((f) => ({ ...f, cpf: e.target.value }))} />
-              <input className="form-input" placeholder="Nome" value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-              <select className="form-input" value={form.store}
-                onChange={(e) => setForm((f) => ({ ...f, store: e.target.value }))}>
-                {STORES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-              <input className="form-input" type="password" placeholder="Senha inicial" value={form.senha}
-                onChange={(e) => setForm((f) => ({ ...f, senha: e.target.value }))} />
+            <p style={{ color: '#94a3b8', fontSize: 13, marginTop: 0, marginBottom: 16, lineHeight: 1.5 }}>
+              Cadastre aqui quem pode bater ponto pelo celular ou computador, sem depender do relógio
+              físico da loja. A pessoa entra em <code>/ponto-remoto/</code> com o CPF e a senha definidos
+              abaixo. Desativar (checkbox "Ativo") bloqueia novas marcações, mas não apaga o histórico.
+            </p>
+
+            <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <div style={{ width: 160 }}>
+                <input className="form-input" placeholder="CPF" value={form.cpf}
+                  onChange={(e) => setForm((f) => ({ ...f, cpf: e.target.value }))} />
+              </div>
+              <div style={{ width: 200 }}>
+                <input className="form-input" placeholder="Nome" value={form.name}
+                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+              </div>
+              <div style={{ width: 160 }}>
+                <select className="form-input" value={form.store}
+                  onChange={(e) => setForm((f) => ({ ...f, store: e.target.value }))}>
+                  {STORES.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div style={{ width: 160 }}>
+                <input className="form-input" type="password" placeholder="Senha inicial" value={form.senha}
+                  onChange={(e) => setForm((f) => ({ ...f, senha: e.target.value }))} />
+              </div>
               <button className="btn btn-primary" onClick={handleCreate} disabled={creating}>Cadastrar</button>
             </div>
 
@@ -174,14 +189,23 @@ export function PontoRemotoModule({ onClose }) {
 
         {tab === 'entries' && (
           <>
-            <div style={{ marginBottom: 16 }}>
+            <p style={{ color: '#94a3b8', fontSize: 13, marginTop: 0, marginBottom: 16, lineHeight: 1.5 }}>
+              Espelho de ponto é o histórico oficial de todas as marcações (Entrada/Saída) dos
+              funcionários cadastrados na aba Funcionários — é o que vale pra conferência e folha de
+              pagamento. "Corrigir" nunca apaga o registro original: cria uma correção nova ao lado
+              dele, com motivo, mantendo os dois visíveis pra auditoria.
+            </p>
+
+            <div style={{ marginBottom: 16, width: 260 }}>
               <select className="form-input" value={filterEmployeeId} onChange={(e) => setFilterEmployeeId(e.target.value)}>
                 <option value="">Todos os funcionários</option>
                 {employees.map((emp) => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
               </select>
             </div>
 
-            {loadingEntries ? <div>Carregando...</div> : (
+            {loadingEntries ? <div>Carregando...</div> : entries.length === 0 ? (
+              <div style={{ color: '#94a3b8', fontSize: 13 }}>Nenhum registro ainda.</div>
+            ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr>
@@ -205,15 +229,15 @@ export function PontoRemotoModule({ onClose }) {
                       <td style={{ textAlign: 'center' }}>{entry.corrects_id ? `correção de #${entry.corrects_id}` : entry.created_by}</td>
                       <td>
                         {correctingId === entry.id ? (
-                          <div style={{ display: 'flex', gap: 4 }}>
-                            <select className="form-input" value={correction.type}
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                            <select className="form-input" style={{ width: 90, marginBottom: 0 }} value={correction.type}
                               onChange={(e) => setCorrection((c) => ({ ...c, type: e.target.value }))}>
                               <option value="in">Entrada</option>
                               <option value="out">Saída</option>
                             </select>
-                            <input className="form-input" type="datetime-local" value={correction.timestamp}
+                            <input className="form-input" style={{ width: 170, marginBottom: 0 }} type="datetime-local" value={correction.timestamp}
                               onChange={(e) => setCorrection((c) => ({ ...c, timestamp: e.target.value }))} />
-                            <input className="form-input" placeholder="Motivo" value={correction.motivo}
+                            <input className="form-input" style={{ width: 160, marginBottom: 0 }} placeholder="Motivo" value={correction.motivo}
                               onChange={(e) => setCorrection((c) => ({ ...c, motivo: e.target.value }))} />
                             <button className="btn btn-primary" onClick={submitCorrection}>Salvar</button>
                             <button className="btn btn-secondary" onClick={() => setCorrectingId(null)}>Cancelar</button>
@@ -229,6 +253,7 @@ export function PontoRemotoModule({ onClose }) {
             )}
           </>
         )}
+        </div>
       </div>
     </div>
   )
