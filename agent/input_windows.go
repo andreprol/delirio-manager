@@ -115,8 +115,7 @@ type input struct {
 }
 
 // user32 já é declarado em activity_windows.go (mesmo pacote) — reusado
-// aqui pra procSendInput. smCxScreen/smCyScreen/procGetSystemMetrics já
-// existem em screencapture_windows.go — reusados aqui também.
+// aqui pra procSendInput.
 var procSendInput = user32.NewProc("SendInput")
 
 func clampInt32(v, lo, hi int32) int32 {
@@ -125,10 +124,15 @@ func clampInt32(v, lo, hi int32) int32 {
 
 func injectMouseMove(x, y int32) error {
 	// Coordenadas absolutas normalizadas (0-65535) — ver doc MOUSEINPUT.
-	screenW, _, _ := procGetSystemMetrics.Call(smCxScreen)
-	screenH, _, _ := procGetSystemMetrics.Call(smCyScreen)
-	if screenW == 0 || screenH == 0 {
-		return fmt.Errorf("injectMouseMove: GetSystemMetrics retornou tela com dimensão zero")
+	// screenDimensions (gdi_windows.go) é a MESMA fonte que captureScreenJPEG
+	// usa pra capturar o frame — essencial que as duas concordem, já que o
+	// dashboard escala o clique em cima do frame JPEG recebido; uma fonte
+	// diferente aqui (ex: GetSystemMetrics) poderia divergir em máquina com
+	// GPU dupla (achado 29/10/2026, Daniela-Esc) e clicar no lugar errado
+	// mesmo com o vídeo funcionando.
+	screenW, screenH, err := screenDimensions()
+	if err != nil {
+		return fmt.Errorf("injectMouseMove: %w", err)
 	}
 	// x/y vêm do dashboard via WS→servidor→pipe, sem validação em nenhum
 	// ponto do caminho. Clampar ANTES da conta em int64 — fazer a conta em

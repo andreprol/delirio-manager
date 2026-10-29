@@ -26,13 +26,11 @@ const defaultJPEGQuality = 70
 var captureScreenJPEGFn = captureScreenJPEG
 
 // user32 e kernel32 já são declarados em activity_windows.go (mesmo
-// pacote) — reusados aqui pra procGetDC/procReleaseDC/procGetSystemMetrics
-// e procSetLastError.
+// pacote) — reusados aqui pra procSetLastError. procGetDC/procReleaseDC/
+// procGetDeviceCaps ficam em gdi_windows.go (compartilhados com
+// input_windows.go via screenDimensions()).
 var (
 	gdi32                      = syscall.NewLazyDLL("gdi32.dll")
-	procGetDC                  = user32.NewProc("GetDC")
-	procReleaseDC              = user32.NewProc("ReleaseDC")
-	procGetSystemMetrics       = user32.NewProc("GetSystemMetrics")
 	procCreateCompatibleDC     = gdi32.NewProc("CreateCompatibleDC")
 	procCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
 	procSelectObject           = gdi32.NewProc("SelectObject")
@@ -59,8 +57,6 @@ func clearLastError() {
 }
 
 const (
-	smCxScreen   = 0
-	smCyScreen   = 1
 	srcCopy      = 0x00CC0020
 	biRGB        = 0
 	dibRGBColors = 0
@@ -83,11 +79,11 @@ type bitmapInfoHeader struct {
 
 // captureScreenJPEG tira 1 print da tela inteira e devolve como JPEG.
 //
-// Limitação conhecida/aceita pro escopo atual: GetSystemMetrics com
-// SM_CXSCREEN/SM_CYSCREEN captura só o monitor PRIMÁRIO, não a área
-// virtual de múltiplos monitores — aceitável pros PCs físicos de loja,
-// majoritariamente single-monitor. Suporte multi-monitor fica pra uma
-// task futura caso necessário.
+// Limitação conhecida/aceita pro escopo atual: GetDC(0)/GetDeviceCaps (ver
+// screenDimensions em gdi_windows.go) captura só o monitor PRIMÁRIO, não a
+// área virtual de múltiplos monitores — aceitável pros PCs físicos de
+// loja, majoritariamente single-monitor. Suporte multi-monitor fica pra
+// uma task futura caso necessário.
 //
 // Não testável em CI (precisa de desktop real) — verificar manualmente.
 func captureScreenJPEG(quality int) ([]byte, error) {
@@ -105,10 +101,9 @@ func captureScreenJPEG(quality int) ([]byte, error) {
 
 	quality = clampJPEGQuality(quality)
 
-	width, _, _ := procGetSystemMetrics.Call(smCxScreen)
-	height, _, _ := procGetSystemMetrics.Call(smCyScreen)
-	if width == 0 || height == 0 {
-		return nil, fmt.Errorf("GetSystemMetrics retornou tela com dimensão zero")
+	width, height, err := screenDimensions()
+	if err != nil {
+		return nil, fmt.Errorf("screenDimensions: %w", err)
 	}
 
 	hdcScreen, _, lastErr := procGetDC.Call(0)

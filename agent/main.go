@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.6.4" // patch: heartbeat nao sobrescreve mais pollSecs/featureLiveAccess editados externamente
+	Version            = "1.6.5" // patch: captura de tela usa GetDeviceCaps do HDC real (nao GetSystemMetrics) - corrige GetDIBits falhando em maquinas com GPU dupla
 )
 
 func main() {
