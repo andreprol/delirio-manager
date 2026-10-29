@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.6.5" // patch: captura de tela usa GetDeviceCaps do HDC real (nao GetSystemMetrics) - corrige GetDIBits falhando em maquinas com GPU dupla
+	Version            = "1.6.6" // patch: GetDIBits em 2 passos (consulta formato nativo antes de pedir bits) - driver NVIDIA antigo nao converte pra 32bpp
 )
 
 func main() {
