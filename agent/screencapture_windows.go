@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -24,8 +25,9 @@ const defaultJPEGQuality = 70
 // captureScreenJPEGFn permite mock em teste — produção chama captureScreenJPEG de verdade.
 var captureScreenJPEGFn = captureScreenJPEG
 
-// user32 já é declarado em activity_windows.go (mesmo pacote) — reusado aqui
-// pra procGetDC/procReleaseDC/procGetSystemMetrics.
+// user32 e kernel32 já são declarados em activity_windows.go (mesmo
+// pacote) — reusados aqui pra procGetDC/procReleaseDC/procGetSystemMetrics
+// e procSetLastError.
 var (
 	gdi32                      = syscall.NewLazyDLL("gdi32.dll")
 	procGetDC                  = user32.NewProc("GetDC")
@@ -38,7 +40,23 @@ var (
 	procGetDIBits              = gdi32.NewProc("GetDIBits")
 	procDeleteDC               = gdi32.NewProc("DeleteDC")
 	procDeleteObject           = gdi32.NewProc("DeleteObject")
+	procSetLastError           = kernel32.NewProc("SetLastError")
 )
+
+// clearLastError zera o último erro da thread ANTES de uma chamada GDI que
+// pode falhar sem chamar SetLastError internamente (GetDIBits é o caso
+// documentado que motivou isto — achado 29/10/2026: falha real na
+// Daniela-Esc reportada como "GetDIBits falhou: A operação foi concluída
+// com êxito", porque o valor de GetLastError() que sobrou era de uma
+// chamada ANTERIOR bem-sucedida, não da própria GetDIBits). Sem isto, toda
+// mensagem de erro daqui é ambígua entre "a API não setou nada" e "sobrou
+// lixo de outra chamada" — com isto, um erro 0 depois do reset significa
+// garantidamente "a API falhou sem reportar motivo", informação real por si
+// só (aponta pra driver de vídeo/overlay de hardware em vez de bug de
+// parâmetro, que normalmente SETAM um código).
+func clearLastError() {
+	procSetLastError.Call(0) //nolint:errcheck
+}
 
 const (
 	smCxScreen   = 0
@@ -73,6 +91,18 @@ type bitmapInfoHeader struct {
 //
 // Não testável em CI (precisa de desktop real) — verificar manualmente.
 func captureScreenJPEG(quality int) ([]byte, error) {
+	// GetLastError/SetLastError são estado por THREAD do SO, não por
+	// goroutine — sem fixar esta goroutine na M atual, o runtime do Go pode
+	// migrá-la pra outra thread entre um clearLastError() e a chamada GDI
+	// que ele deveria limpar (ex.: no safepoint do make([]byte, ...) logo
+	// antes de GetDIBits), fazendo o reset valer pra thread errada. Sem
+	// isto, os clearLastError() abaixo (achado 29/10/2026, captura falhando
+	// na Daniela-Esc com erro mentiroso "concluída com êxito") voltam a
+	// poder ler lixo de outra goroutine de forma rara e silenciosa — exatamente
+	// a ambiguidade que eles existem pra eliminar.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	quality = clampJPEGQuality(quality)
 
 	width, _, _ := procGetSystemMetrics.Call(smCxScreen)
@@ -109,9 +139,10 @@ func captureScreenJPEG(quality int) ([]byte, error) {
 	defer procDeleteObject.Call(hBitmap)      //nolint:errcheck
 	defer procSelectObject.Call(hdcMem, hOld) //nolint:errcheck
 
+	clearLastError()
 	ret, _, lastErr := procBitBlt.Call(hdcMem, 0, 0, width, height, hdcScreen, 0, 0, srcCopy)
 	if ret == 0 {
-		return nil, fmt.Errorf("BitBlt falhou: %w", lastErr)
+		return nil, fmt.Errorf("BitBlt falhou (tela %dx%d): %w", width, height, lastErr)
 	}
 
 	bi := bitmapInfoHeader{
@@ -123,12 +154,22 @@ func captureScreenJPEG(quality int) ([]byte, error) {
 		Compression: biRGB,
 	}
 	buf := make([]byte, width*height*4)
+	clearLastError()
 	ret, _, lastErr = procGetDIBits.Call(
 		hdcMem, hBitmap, 0, uintptr(height),
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bi)), dibRGBColors,
 	)
 	if ret == 0 {
-		return nil, fmt.Errorf("GetDIBits falhou: %w", lastErr)
+		// Achado 29/10/2026 (Daniela-Esc): GetDIBits pode retornar 0 sem
+		// chamar SetLastError, e sem o clearLastError() acima isso aparecia
+		// como "operação concluída com êxito" — lixo de uma chamada anterior
+		// bem-sucedida, não o motivo real da falha. Com o reset, um erro 0
+		// aqui significa garantidamente que a própria GetDIBits não reportou
+		// motivo (aponta pra driver de vídeo/overlay de hardware em vez de
+		// parâmetro errado, que normalmente SETA um código de erro de
+		// verdade). width/height/bitcount no texto ajudam a próxima
+		// investigação sem precisar reler este arquivo.
+		return nil, fmt.Errorf("GetDIBits falhou (tela %dx%d, %d bpp): %w", width, height, bi.BitCount, lastErr)
 	}
 
 	img := bgraToRGBA(buf, int(width), int(height))
