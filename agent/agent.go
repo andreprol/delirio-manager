@@ -483,8 +483,9 @@ func (a *Agent) sendHeartbeat() {
 
 func (a *Agent) onHeartbeatOK(body io.Reader) {
 	now := time.Now().UTC()
-	a.cfg.LastHeartbeatAt = now.Format(time.RFC3339)
-	_ = saveConfig(a.cfg)
+	nowStr := now.Format(time.RFC3339)
+	a.cfg.LastHeartbeatAt = nowStr
+	_ = saveConfigPreservingDiskEdits(a.cfg, func(fresh *Config) { fresh.LastHeartbeatAt = nowStr })
 
 	a.mu.Lock()
 	prev := a.lastSuccessAt
@@ -623,8 +624,11 @@ func (a *Agent) register() error {
 	if reg.MachineID != "" {
 		a.cfg.MachineID = reg.MachineID
 	}
-
-	_ = saveConfig(a.cfg)
+	token, machineID := a.cfg.Token, a.cfg.MachineID
+	_ = saveConfigPreservingDiskEdits(a.cfg, func(fresh *Config) {
+		fresh.Token = token
+		fresh.MachineID = machineID
+	})
 	logInfo(fmt.Sprintf("Registrado com sucesso. MachineID=%s", a.cfg.MachineID))
 	return nil
 }

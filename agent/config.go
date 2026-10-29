@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 )
 
 // Config contem todas as configuracoes do agente.
@@ -115,6 +116,83 @@ func saveConfig(cfg *Config) error {
 		return err
 	}
 	return os.Rename(tmp, configPath())
+}
+
+// configStore isola o I/O de disco de saveConfigPreservingDiskEdits —
+// permite um fake em memória nos testes pra reproduzir determinística o
+// cenário que causou o incidente de 29/10/2026 (edição externa chegando
+// bem entre a releitura e a gravação), sem depender de I/O real nem de
+// timing de corrida de verdade.
+type configStore interface {
+	LoadReadOnly() (*Config, error)
+	Save(cfg *Config) error
+}
+
+type fileConfigStore struct{}
+
+func (fileConfigStore) LoadReadOnly() (*Config, error) { return loadConfigReadOnly() }
+func (fileConfigStore) Save(cfg *Config) error         { return saveConfig(cfg) }
+
+// configStoreImpl é var (não const) pra ser substituível em teste — mesmo
+// padrão de captureScreenJPEGFn/startLiveSessionFn já usado neste pacote.
+var configStoreImpl configStore = fileConfigStore{}
+
+// diskReadRetries/diskReadRetryDelay cobrem o caso comum de releitura
+// colidir com o os.Rename atômico de OUTRO processo escrevendo o mesmo
+// config.json nesse instante (ex: o PowerShell externo do rollout) — é
+// transiente por natureza, uma pequena espera resolve na enorme maioria
+// das vezes sem precisar desistir e cair pro snapshot em memória.
+const (
+	diskReadRetries    = 2
+	diskReadRetryDelay = 50 * time.Millisecond
+)
+
+func loadFreshConfigWithRetry() (*Config, error) {
+	var lastErr error
+	for attempt := 0; attempt <= diskReadRetries; attempt++ {
+		fresh, err := configStoreImpl.LoadReadOnly()
+		if err == nil {
+			return fresh, nil
+		}
+		lastErr = err
+		if attempt < diskReadRetries {
+			time.Sleep(diskReadRetryDelay)
+		}
+	}
+	return nil, lastErr
+}
+
+// saveConfigPreservingDiskEdits salva só os campos que apply muda, por cima
+// do config.json ATUAL do disco (relido na hora) — não do fallback (cfg,
+// snapshot em memória carregado 1x no boot do processo). Sem isto, toda
+// chamada periódica a saveConfig(a.cfg) (ex: onHeartbeatOK, a cada
+// ~30s) regrava a struct INTEIRA com valores potencialmente obsoletos,
+// apagando qualquer edição externa feita nesse meio tempo — ex:
+// pollSecs/featureLiveAccess via POST /api/machines/:id/run, o mecanismo
+// usado em todo rollout em massa deste projeto (26/10 featureLiveAccess,
+// 29/10 pollSecs). Achado 29/10/2026: rollout de pollSecs reiniciava o
+// serviço certo, mas o heartbeat da instância ANTIGA às vezes regravava
+// pollSecs:10 por cima da escrita externa um instante antes do kill,
+// fazendo a instância NOVA reler o valor já clobado — a mudança parecia
+// nunca ter acontecido, sem nenhum erro reportado em lugar nenhum (achado
+// repetido aqui, agora com log: antes a falha de releitura E de gravação
+// eram descartadas em silêncio igual o bug original que isto conserta).
+//
+// Se a releitura falhar mesmo após retry, cai pro snapshot em memória
+// (fallback) — igual o comportamento de antes desta função existir, só que
+// agora avisado via logWarn em vez de silencioso.
+func saveConfigPreservingDiskEdits(fallback *Config, apply func(fresh *Config)) error {
+	cfg, err := loadFreshConfigWithRetry()
+	if err != nil {
+		logWarn(fmt.Sprintf("saveConfigPreservingDiskEdits: releitura do disco falhou (%v) — usando snapshot em memória, pode sobrescrever edição externa concorrente", err))
+		cfg = fallback
+	}
+	apply(cfg)
+	if err := configStoreImpl.Save(cfg); err != nil {
+		logError(fmt.Sprintf("saveConfigPreservingDiskEdits: gravação falhou: %v", err))
+		return err
+	}
+	return nil
 }
 
 var uuidV4Re = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)

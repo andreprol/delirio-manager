@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.6.3" // patch: diagnostico confiavel de falha em BitBlt/GetDIBits (clearLastError + thread pin)
+	Version            = "1.6.4" // patch: heartbeat nao sobrescreve mais pollSecs/featureLiveAccess editados externamente
 )
 
 func main() {
