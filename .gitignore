@@ -19,6 +19,17 @@ node_modules/
 /acessibilidade-delirio/
 /projeto-ia/
 /claude-code-setup/
+/delirio-caixa/
+/raiox-brasilia/
+/simulado-abdi/
+/simulado-concurso-camara/
+/fonts/
+/.tmp-social-assets/
+
+# Arquivos de estado de ferramenta solto (nao sao projeto, mas nao sao
+# Delirio Manager tambem -- nao deveriam nunca ser commitados)
+agentdb.rvf
+agentdb.rvf.lock
 
 # Build outputs
 dist/

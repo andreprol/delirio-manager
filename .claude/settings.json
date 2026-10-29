@@ -79,6 +79,14 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-single-project-repo.sh\"",
             "statusMessage": "Checando se o commit/push mistura outro projeto no delirio-manager..."
+          },
+          {
+            "type": "agent",
+            "if": "Bash(git commit*)",
+            "prompt": "Está prestes a rodar um git commit dentro do repositório cujo remote origin é andreprol/delirio-manager (sistema de monitoramento de TI + ponto eletrônico para restaurantes Delirio Tropical -- componentes: agent/ em Go, server/ em Node.js, dashboard/ em Electron/React, clock-proxy/, deploy/, infra/, docs/, tasks/, configs de raiz). Esse repositório já recebeu por engano, 3 vezes (14/09, 18/09, 28/10/2026), conteúdo de projetos completamente diferentes que moram na mesma pasta de trabalho (F:\\RichClub) mas nunca deveriam ser commitados aqui -- um hook separado já bloqueia o padrão óbvio (doc novo em docs/superpowers/specs|plans/, pasta de topo nova); sua função é a camada semântica: pegar conteúdo estranho escondido DENTRO de uma pasta já permitida (ex: um arquivo novo direto em docs/, ou um arquivo existente reescrito com assunto completamente diferente).\n\nRode `git diff --cached --stat` pra ver o que está staged. Para qualquer arquivo novo, desconhecido, ou cujo conteúdo pareça não bater com o produto Delirio Manager, leia o conteúdo (Read ou `git diff --cached -- <arquivo>`) e julgue: isso é genuinamente do Delirio Manager (monitoramento de TI / ponto eletrônico / POS de restaurante), ou parece pertencer a outro projeto, negócio, cliente ou assunto pessoal?\n\nTermine sua resposta com EXATAMENTE uma destas linhas de JSON (nada depois dela):\n- Tudo pertence claramente ao Delirio Manager: {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}\n- Achou conteúdo de outro projeto: {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"<arquivo(s) específico(s) e por que parecem de outro projeto>\"}}\n- Não tem certeza mesmo depois de checar: {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"<o que ficou ambíguo>\"}}",
+            "timeout": 90,
+            "onFailure": "block",
+            "statusMessage": "Revisão semântica do commit (delirio-manager)..."
           }
         ]
       },
@@ -89,6 +97,14 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-single-project-repo.sh\"",
             "statusMessage": "Checando se o commit/push mistura outro projeto no delirio-manager..."
+          },
+          {
+            "type": "agent",
+            "if": "PowerShell(git commit*)",
+            "prompt": "Está prestes a rodar um git commit dentro do repositório cujo remote origin é andreprol/delirio-manager (sistema de monitoramento de TI + ponto eletrônico para restaurantes Delirio Tropical -- componentes: agent/ em Go, server/ em Node.js, dashboard/ em Electron/React, clock-proxy/, deploy/, infra/, docs/, tasks/, configs de raiz). Esse repositório já recebeu por engano, 3 vezes (14/09, 18/09, 28/10/2026), conteúdo de projetos completamente diferentes que moram na mesma pasta de trabalho (F:\\RichClub) mas nunca deveriam ser commitados aqui -- um hook separado já bloqueia o padrão óbvio (doc novo em docs/superpowers/specs|plans/, pasta de topo nova); sua função é a camada semântica: pegar conteúdo estranho escondido DENTRO de uma pasta já permitida (ex: um arquivo novo direto em docs/, ou um arquivo existente reescrito com assunto completamente diferente).\n\nRode `git diff --cached --stat` pra ver o que está staged. Para qualquer arquivo novo, desconhecido, ou cujo conteúdo pareça não bater com o produto Delirio Manager, leia o conteúdo (Read ou `git diff --cached -- <arquivo>`) e julgue: isso é genuinamente do Delirio Manager (monitoramento de TI / ponto eletrônico / POS de restaurante), ou parece pertencer a outro projeto, negócio, cliente ou assunto pessoal?\n\nTermine sua resposta com EXATAMENTE uma destas linhas de JSON (nada depois dela):\n- Tudo pertence claramente ao Delirio Manager: {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}\n- Achou conteúdo de outro projeto: {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"<arquivo(s) específico(s) e por que parecem de outro projeto>\"}}\n- Não tem certeza mesmo depois de checar: {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"<o que ficou ambíguo>\"}}",
+            "timeout": 90,
+            "onFailure": "block",
+            "statusMessage": "Revisão semântica do commit (delirio-manager)..."
           }
         ]
       }
