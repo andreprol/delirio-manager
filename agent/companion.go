@@ -192,7 +192,7 @@ func companionPipeLoop(cfg *Config, stopCh <-chan struct{}) {
 func handleCompanionPipeMessage(msg pipeMessage, cfg *Config) pipeMessage {
 	switch msg.Type {
 	case "capture-screenshot":
-		jpegBytes, err := captureScreenJPEGFn(defaultJPEGQuality)
+		jpegBytes, err := captureOneScreenshotJPEG(defaultJPEGQuality)
 		if err != nil {
 			return pipeMessage{RequestID: msg.RequestID, Error: err.Error()}
 		}

@@ -8,6 +8,10 @@ name: Release — Agent (Go)
 #
 # Segredos necessários no repo: nenhum
 # (endpoint /api/update/publish valida MZ magic + tamanho mínimo 1MB)
+#
+# go-version 1.24 (não 1.22): github.com/kirides/go-d3d (captura de tela via
+# DXGI, 29/10/2026) usa structs.HostLayout, package novo do Go 1.24 stdlib —
+# hard requirement, não dá pra evitar enquanto a dependência existir.
 
 on:
   push:
@@ -24,7 +28,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.24'
           cache: true
           cache-dependency-path: agent/go.sum
 

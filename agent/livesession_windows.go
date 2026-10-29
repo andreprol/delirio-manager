@@ -144,6 +144,15 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 	// processo do agent inteiro.
 	safeGo("liveSession-reader-"+sessionID, func() { readLiveSessionInput(conn, mode) })
 
+	// 1 capturer por sessão inteira (não por frame) — DXGI mantém
+	// device/duplication vivos entre frames, só AcquireNextFrame+cópia por
+	// tick, em vez de recriar todo o contexto de captura 10x/s como o GDI
+	// fazia. Close() garantido mesmo se a sessão terminar por stopCh ou por
+	// falha de escrita (return dentro do loop abaixo).
+	capturer, backend := newScreenCapturerFn()
+	defer capturer.Close()
+	logInfo(fmt.Sprintf("companion: sessão %s usando backend de captura %s", sessionID, backend))
+
 	ticker := time.NewTicker(time.Duration(liveSessionFrameIntervalMs()) * time.Millisecond)
 	defer ticker.Stop()
 
@@ -153,7 +162,7 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			if !sendLiveSessionFrame(conn, sessionID, &captureFailures) {
+			if !sendLiveSessionFrame(conn, sessionID, capturer, &captureFailures) {
 				return
 			}
 		}
@@ -204,9 +213,12 @@ type frameWriter interface {
 // sendLiveSessionFrame captura e envia um frame. Retorna false quando o
 // loop de runLiveSessionLoop deve encerrar a sessão (falha de escrita —
 // conexão provavelmente morta); falha de captura é só pulada (true), já
-// que é tipicamente transitória.
-func sendLiveSessionFrame(conn frameWriter, sessionID string, captureFailures *int) bool {
-	frame, err := captureScreenJPEGFn(defaultJPEGQuality)
+// que é tipicamente transitória — inclusive cobre DXGI recriando o
+// duplicator depois de resolução mudar (ver recreateDuplicator em
+// screencapture_dxgi_windows.go): essa falha passa por aqui igual qualquer
+// outra, sem precisar de tratamento especial nesta função.
+func sendLiveSessionFrame(conn frameWriter, sessionID string, capturer screenCapturer, captureFailures *int) bool {
+	frame, err := capturer.CaptureJPEG(defaultJPEGQuality)
 	if err != nil {
 		*captureFailures++
 		// Loga só a 1ª falha consecutiva — evita inundar companion.log a

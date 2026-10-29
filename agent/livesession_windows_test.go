@@ -159,15 +159,24 @@ func TestReadLiveSessionInputNonNormalModeConsumesAllMessages(t *testing.T) {
 	}
 }
 
-func TestSendLiveSessionFrame(t *testing.T) {
-	originalCapture := captureScreenJPEGFn
-	defer func() { captureScreenJPEGFn = originalCapture }()
+// fakeScreenCapturer implementa screenCapturer sem GDI/DXGI real — permite
+// testar sendLiveSessionFrame/runLiveSessionLoop isoladamente, mesmo padrão
+// de fakeFrameWriter/fakeMessageReader neste arquivo.
+type fakeScreenCapturer struct {
+	captureFn func(quality int) ([]byte, error)
+	closed    bool
+}
 
+func (f *fakeScreenCapturer) CaptureJPEG(quality int) ([]byte, error) { return f.captureFn(quality) }
+func (f *fakeScreenCapturer) Bounds() (int, int)                      { return 1920, 1080 }
+func (f *fakeScreenCapturer) Close()                                  { f.closed = true }
+
+func TestSendLiveSessionFrame(t *testing.T) {
 	t.Run("sucesso simples", func(t *testing.T) {
-		captureScreenJPEGFn = func(q int) ([]byte, error) { return []byte("frame"), nil }
+		cap := &fakeScreenCapturer{captureFn: func(q int) ([]byte, error) { return []byte("frame"), nil }}
 		w := &fakeFrameWriter{}
 		failures := 0
-		if !sendLiveSessionFrame(w, "s1", &failures) {
+		if !sendLiveSessionFrame(w, "s1", cap, &failures) {
 			t.Fatal("esperava true no caminho de sucesso")
 		}
 		if w.writes != 1 {
@@ -179,10 +188,10 @@ func TestSendLiveSessionFrame(t *testing.T) {
 	})
 
 	t.Run("falha de captura não derruba a sessão", func(t *testing.T) {
-		captureScreenJPEGFn = func(q int) ([]byte, error) { return nil, fmt.Errorf("falha de captura") }
+		cap := &fakeScreenCapturer{captureFn: func(q int) ([]byte, error) { return nil, fmt.Errorf("falha de captura") }}
 		w := &fakeFrameWriter{}
 		failures := 0
-		if !sendLiveSessionFrame(w, "s1", &failures) {
+		if !sendLiveSessionFrame(w, "s1", cap, &failures) {
 			t.Fatal("falha de captura não deveria encerrar a sessão")
 		}
 		if failures != 1 {
@@ -195,21 +204,21 @@ func TestSendLiveSessionFrame(t *testing.T) {
 
 	t.Run("recupera após falhas consecutivas", func(t *testing.T) {
 		callCount := 0
-		captureScreenJPEGFn = func(q int) ([]byte, error) {
+		cap := &fakeScreenCapturer{captureFn: func(q int) ([]byte, error) {
 			callCount++
 			if callCount <= 2 {
 				return nil, fmt.Errorf("falha transitória")
 			}
 			return []byte("frame"), nil
-		}
+		}}
 		w := &fakeFrameWriter{}
 		failures := 0
-		sendLiveSessionFrame(w, "s1", &failures)
-		sendLiveSessionFrame(w, "s1", &failures)
+		sendLiveSessionFrame(w, "s1", cap, &failures)
+		sendLiveSessionFrame(w, "s1", cap, &failures)
 		if failures != 2 {
 			t.Fatalf("failures = %d, want 2 antes da recuperação", failures)
 		}
-		if !sendLiveSessionFrame(w, "s1", &failures) {
+		if !sendLiveSessionFrame(w, "s1", cap, &failures) {
 			t.Fatal("esperava true na recuperação")
 		}
 		if failures != 0 {
@@ -218,10 +227,10 @@ func TestSendLiveSessionFrame(t *testing.T) {
 	})
 
 	t.Run("falha de escrita encerra a sessão", func(t *testing.T) {
-		captureScreenJPEGFn = func(q int) ([]byte, error) { return []byte("frame"), nil }
+		cap := &fakeScreenCapturer{captureFn: func(q int) ([]byte, error) { return []byte("frame"), nil }}
 		w := &fakeFrameWriter{writeErr: fmt.Errorf("conexão morta")}
 		failures := 0
-		if sendLiveSessionFrame(w, "s1", &failures) {
+		if sendLiveSessionFrame(w, "s1", cap, &failures) {
 			t.Fatal("falha de escrita deveria encerrar a sessão (false)")
 		}
 	})

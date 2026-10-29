@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: go test (Windows / Go 1.22)
+    name: go test (Windows / Go 1.24)
     runs-on: windows-latest
     defaults:
       run:
@@ -17,9 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # go-version 1.24 (não 1.22): github.com/kirides/go-d3d (captura de
+      # tela via DXGI, 29/10/2026) usa structs.HostLayout, package novo do
+      # Go 1.24 stdlib — hard requirement enquanto a dependência existir.
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.24'
           cache: true
           cache-dependency-path: agent/go.sum
 
