@@ -34,8 +34,8 @@ agentdb.rvf.lock
 # Build outputs
 dist/
 dist-electron/
-agent/agent.exe
-agent/delirio-agent.exe
+agent/*.exe
+/*.exe
 
 # Database & sensitive config
 server/data/
