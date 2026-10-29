@@ -69,5 +69,29 @@
       "mcp__Claude_in_Chrome__find",
       "mcp__computer-use__request_access"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-single-project-repo.sh\"",
+            "statusMessage": "Checando se o commit/push mistura outro projeto no delirio-manager..."
+          }
+        ]
+      },
+      {
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-single-project-repo.sh\"",
+            "statusMessage": "Checando se o commit/push mistura outro projeto no delirio-manager..."
+          }
+        ]
+      }
+    ]
   }
 }
