@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.6.1" // patch: FEATURE_LIVE_ACCESS lida do config.json, não env var
+	Version            = "1.6.2" // patch: companion.log cai pro %TEMP% quando Program Files nao e gravavel
 )
 
 func main() {
