@@ -320,7 +320,7 @@ export function LiveSessionWindow() {
             disabled={ending || status !== 'connected'}
             title={status !== 'connected' ? 'Sem conexão com a sessão ao vivo' : undefined}
           >
-            {inputLocked ? '🔓 Liberar input local' : '🔒 Bloquear input local'}
+            {inputLocked ? '🔓 Destravar usuário' : '🔒 Travar usuário'}
           </button>
         )}
         <button className={`btn ${recording ? 'btn-danger' : 'btn-secondary'}`} onClick={toggleRecording} disabled={ending}>

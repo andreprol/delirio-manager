@@ -114,14 +114,14 @@ describe('LiveSessionWindow', () => {
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
 
-    const button = screen.getByText('🔒 Bloquear input local')
+    const button = screen.getByText('🔒 Travar usuário')
     fireEvent.click(button)
     expect(sendInputMock).toHaveBeenCalledWith({ type: 'lock-local-input' })
-    expect(screen.getByText('🔓 Liberar input local')).toBeInTheDocument()
+    expect(screen.getByText('🔓 Destravar usuário')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('🔓 Liberar input local'))
+    fireEvent.click(screen.getByText('🔓 Destravar usuário'))
     expect(sendInputMock).toHaveBeenCalledWith({ type: 'unlock-local-input' })
-    expect(screen.getByText('🔒 Bloquear input local')).toBeInTheDocument()
+    expect(screen.getByText('🔒 Travar usuário')).toBeInTheDocument()
   })
 
   // Achado 🟠 do code-reviewer: sendInput (useLiveSession.js) já é no-op se
@@ -131,7 +131,7 @@ describe('LiveSessionWindow', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
 
-    const button = screen.getByText('🔒 Bloquear input local')
+    const button = screen.getByText('🔒 Travar usuário')
     expect(button).toBeDisabled()
     fireEvent.click(button)
     expect(sendInputMock).not.toHaveBeenCalled()
@@ -140,7 +140,7 @@ describe('LiveSessionWindow', () => {
   it('mode shadow: botão de bloqueio de input não aparece (não há controle remoto pra travar)', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
-    expect(screen.queryByText('🔒 Bloquear input local')).not.toBeInTheDocument()
+    expect(screen.queryByText('🔒 Travar usuário')).not.toBeInTheDocument()
   })
 
   it('ao receber live-session-cleanup-and-close, para, avisa o servidor e chama cleanupDone', async () => {
