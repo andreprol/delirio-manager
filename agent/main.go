@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.7.0" // minor: captura de tela via DXGI Desktop Duplication, com fallback automatico pro GDI classico (substitui as tentativas incrementais de 1.6.3 a 1.6.6)
+	Version            = "1.8.0" // minor: bloqueio de input local (mouse/teclado) no modo Normal via BlockInput, evita concorrencia de cursor com o usuario da loja durante suporte remoto
 )
 
 func main() {
