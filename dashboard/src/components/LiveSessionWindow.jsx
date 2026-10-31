@@ -8,6 +8,7 @@ export function LiveSessionWindow() {
   const [session, setSession] = useState(null) // { sessionId, machineId, mode, dashboardToken, serverUrl }
   const [status, setStatus] = useState('connecting')
   const [recording, setRecording] = useState(false)
+  const [inputLocked, setInputLocked] = useState(false)
   const [recordingSecs, setRecordingSecs] = useState(0)
   const canvasRef = useRef(null)
   const mediaRecorderRef = useRef(null)
@@ -25,7 +26,7 @@ export function LiveSessionWindow() {
   sessionRef.current = session
   recordingSecsRef.current = recordingSecs
 
-  const { sendMouseEvent, sendKeyEvent } = useLiveSession({
+  const { sendInput, sendMouseEvent, sendKeyEvent } = useLiveSession({
     serverUrl: session?.serverUrl,
     sessionId: session?.sessionId,
     dashboardToken: session?.dashboardToken,
@@ -260,6 +261,17 @@ export function LiveSessionWindow() {
     recordingTimerRef.current = setInterval(() => setRecordingSecs((s) => s + 1), 1000)
   }
 
+  // Trava/libera o mouse/teclado FÍSICO do usuário local da loja, via
+  // BlockInput no companion (ver input_windows.go) — evita o usuário da
+  // loja brigar pelo cursor com o operador remoto durante o suporte.
+  // Fire-and-forget (mesmo padrão de sendMouseEvent/sendKeyEvent): sem ack
+  // do companion nesta v1, o estado do botão é otimista.
+  function toggleInputLock() {
+    const next = !inputLocked
+    sendInput({ type: next ? 'lock-local-input' : 'unlock-local-input' })
+    setInputLocked(next)
+  }
+
   function handleMouseDown(e) {
     if (session?.mode !== 'normal') return
     sendMouseEvent('mousedown', e.clientX, e.clientY, MOUSE_BUTTON[e.button] || 'left')
@@ -301,6 +313,16 @@ export function LiveSessionWindow() {
         <div style={{ flex: 1 }} />
         {closeError && <span style={{ color: '#ef4444' }}>Erro ao encerrar: {closeError} — feche a janela de novo pra tentar outra vez.</span>}
         {recordingError && <span style={{ color: '#ef4444' }}>Erro na gravação: {recordingError}</span>}
+        {session.mode === 'normal' && (
+          <button
+            className={`btn ${inputLocked ? 'btn-danger' : 'btn-secondary'}`}
+            onClick={toggleInputLock}
+            disabled={ending || status !== 'connected'}
+            title={status !== 'connected' ? 'Sem conexão com a sessão ao vivo' : undefined}
+          >
+            {inputLocked ? '🔓 Liberar input local' : '🔒 Bloquear input local'}
+          </button>
+        )}
         <button className={`btn ${recording ? 'btn-danger' : 'btn-secondary'}`} onClick={toggleRecording} disabled={ending}>
           {recording ? '⏹ Parar gravação' : '⏺ Gravar'}
         </button>

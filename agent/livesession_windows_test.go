@@ -149,7 +149,7 @@ func TestReadLiveSessionInputNonNormalModeConsumesAllMessages(t *testing.T) {
 		[]byte(`{"type":"mousedown","button":"left"}`),
 		[]byte(`{"type":"mousemove","x":2,"y":2}`),
 	}}
-	readLiveSessionInput(reader, "shadow")
+	readLiveSessionInput(reader, "shadow", "s1")
 
 	if reader.i != len(reader.messages) {
 		t.Errorf("mensagens consumidas = %d, want %d (loop deveria ler todas antes de sair por erro)", reader.i, len(reader.messages))

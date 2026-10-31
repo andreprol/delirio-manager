@@ -3,13 +3,16 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
+	"time"
 	"unsafe"
 )
 
 // inputMessage é o protocolo de input recebido do dashboard via WS
 // (role=dashboard → servidor → aqui, só em sessão mode=normal — o
 // servidor garante isso, ver liveSessionRelay.routeMessage no plano do
-// server). Tipos: "mousemove", "mousedown", "mouseup", "keydown", "keyup".
+// server). Tipos: "mousemove", "mousedown", "mouseup", "keydown", "keyup",
+// "lock-local-input", "unlock-local-input".
 type inputMessage struct {
 	Type    string `json:"type"`
 	X       int32  `json:"x,omitempty"`
@@ -50,7 +53,7 @@ var (
 // Normal/Shadow da feature. O log (ERROR, sinal de bug no servidor ou de
 // alguém testando o protocolo manualmente) acontece 1x por conexão em
 // readLiveSessionInput, não aqui — mode é fixo pra conexão inteira.
-func handleLiveSessionInput(data []byte, mode string) {
+func handleLiveSessionInput(data []byte, mode string, sessionID string) {
 	if mode != liveSessionNormalMode {
 		// Já logado 1x por readLiveSessionInput (mode é fixo pra conexão
 		// inteira, ver comentário lá) — aqui só recusa, sem logar de novo
@@ -63,6 +66,15 @@ func handleLiveSessionInput(data []byte, mode string) {
 		logWarn(fmt.Sprintf("companion: input inválido recebido: %v", err))
 		return
 	}
+	dispatchLiveSessionInput(msg, sessionID)
+}
+
+// dispatchLiveSessionInput é o switch de verdade — extraído de
+// handleLiveSessionInput (que fica só com mode-check + parse) só pra
+// reduzir a complexidade ciclomática de cada função (linter cyclop, max 10
+// por função; 6 cases + validação de JSON numa função só passava do
+// limite).
+func dispatchLiveSessionInput(msg inputMessage, sessionID string) {
 	switch msg.Type {
 	case "mousemove":
 		if err := injectMouseMoveFn(msg.X, msg.Y); err != nil {
@@ -76,9 +88,28 @@ func handleLiveSessionInput(data []byte, mode string) {
 		if err := injectMouseButtonFn(msg.Button, false); err != nil {
 			logWarn(fmt.Sprintf("companion: falha ao injetar mouseup: %v", err))
 		}
+	case "lock-local-input":
+		applyLocalInputLock(sessionID, true)
+	case "unlock-local-input":
+		applyLocalInputLock(sessionID, false)
 	default:
 		logWarn(fmt.Sprintf("companion: tipo de input não suportado ainda: %s", msg.Type))
 	}
+}
+
+// applyLocalInputLock chama setLocalInputLockedFn e loga o resultado —
+// extraído do switch de handleLiveSessionInput só pra reduzir a
+// complexidade ciclomática da função (linter cyclop, max 10 por função).
+func applyLocalInputLock(sessionID string, locked bool) {
+	verbo, acao := "bloquear", "bloqueado"
+	if !locked {
+		verbo, acao = "liberar", "liberado"
+	}
+	if err := setLocalInputLockedFn(sessionID, locked); err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao %s input local (sessão %s): %v", verbo, sessionID, err))
+		return
+	}
+	logInfo(fmt.Sprintf("companion: input local %s (sessão %s)", acao, sessionID))
 }
 
 const (
@@ -179,4 +210,135 @@ func sendInputStruct(in input) error {
 		return fmt.Errorf("SendInput falhou: %w", err)
 	}
 	return nil
+}
+
+// procBlockInput bloqueia (ou libera) TODO input físico de mouse/teclado do
+// usuário local — usado pelo lock-local-input do modo Normal, pra evitar o
+// usuário da loja brigar pelo cursor com o operador remoto. Só funciona
+// chamado pela thread com desktop interativo associado (winsta0\default,
+// ver launchCompanion em session_windows.go) — é por isso que o lock vive
+// aqui, no companion, nunca no serviço (que roda sem desktop interativo e
+// receberia ERROR_ACCESS_DENIED do próprio Windows).
+var procBlockInput = user32.NewProc("BlockInput")
+
+// blockInputFn é a indireção testável de blockInputSyscall — mesmo padrão
+// de injectMouseMoveFn/injectMouseButtonFn neste arquivo.
+var blockInputFn = blockInputSyscall
+
+func blockInputSyscall(block bool) error {
+	var arg uintptr
+	if block {
+		arg = 1
+	}
+	ret, _, err := procBlockInput.Call(arg)
+	if ret == 0 {
+		return fmt.Errorf("BlockInput(%v) falhou: %w", block, err)
+	}
+	return nil
+}
+
+// localInputLockFailsafe é o teto de duração de um lock, independente de
+// unlock explícito ou do fim da sessão — 2ª camada de defesa (a 1ª é
+// releaseLocalInputLockForSession, chamada pelo defer de
+// runLiveSessionLoop no fim da sessão). Cobre o cenário em que o dashboard
+// do operador cai sem avisar — rede, crash do app Electron — mas o
+// companion e a conexão /live continuam saudáveis: sem este teto, o
+// usuário da loja ficaria travado até alguém encerrar a sessão manualmente
+// (o servidor também tenta mandar unlock nesse caso, ver
+// liveSessionRelay.js, mas esta é a rede de segurança se isso falhar). É
+// var, não const, só pra TestLocalInputLockFailsafeAutoReleases poder
+// encurtar.
+var localInputLockFailsafe = 10 * time.Minute
+
+var (
+	localInputLockMu    sync.Mutex
+	localInputLockedBy  string // sessionID dono do lock atual; "" se nenhum
+	localInputLockTimer *time.Timer
+)
+
+// setLocalInputLockedFn é a indireção testável de setLocalInputLocked.
+var setLocalInputLockedFn = setLocalInputLocked
+
+// setLocalInputLocked trava/libera o input físico local a pedido explícito
+// de sessionID (via lock-local-input/unlock-local-input, em
+// handleLiveSessionInput). unlock só tem efeito se vier da MESMA sessão que
+// travou — uma sessão B pedindo unlock nunca libera o lock de uma sessão A
+// ainda ativa. Lock duplicado da mesma sessão é no-op (BlockInput não é
+// documentado como cumulativo no Windows, evitar depender disso).
+//
+// Se uma sessão B pede lock enquanto uma sessão A DIFERENTE ainda é a dona
+// (ex: reconexão rápida criando sessionID novo antes do defer de teardown
+// da sessão antiga ter rodado — 2 sessões Normal sobrepostas pra mesma
+// máquina), a posse é TRANSFERIDA pra B, não recusada: recusar deixaria B
+// sem nunca conseguir destravar depois (seu próprio unlock seria "sessão
+// não-dona", vira no-op, igual ao de uma sessão B comum — travaria o input
+// físico até o failsafe de 10min, pior do que aceitar a transferência).
+// Achado 🟠 do code-reviewer: essa transferência era silenciosa (nenhum
+// log) — agora emite WARN, porque 2 sessões Normal sobrepostas pra mesma
+// máquina é sempre anômalo e vale aparecer em companion.log.
+func setLocalInputLocked(sessionID string, locked bool) error {
+	localInputLockMu.Lock()
+	defer localInputLockMu.Unlock()
+
+	if locked {
+		if localInputLockedBy == sessionID {
+			return nil
+		}
+		if localInputLockedBy != "" {
+			logWarn(fmt.Sprintf("companion: lock de input local transferido da sessão %s pra %s sem unlock explícito — 2 sessões Normal sobrepostas pra esta máquina?", localInputLockedBy, sessionID))
+		}
+		if err := blockInputFn(true); err != nil {
+			return err
+		}
+		localInputLockedBy = sessionID
+		resetLocalInputLockTimerLocked(sessionID)
+		return nil
+	}
+
+	if localInputLockedBy != sessionID {
+		return nil
+	}
+	if err := blockInputFn(false); err != nil {
+		return err
+	}
+	localInputLockedBy = ""
+	stopLocalInputLockTimerLocked()
+	return nil
+}
+
+// releaseLocalInputLockForSession libera o lock SE ele ainda pertencer a
+// sessionID — chamada pelo defer de runLiveSessionLoop (fim de sessão, por
+// qualquer motivo: stop explícito, queda de conexão, falha de escrita de
+// frame) e pelo próprio timer de failsafe. Ao contrário de
+// setLocalInputLocked, nunca propaga erro pro chamador: quem chama aqui é
+// sempre limpeza automática, não um comando explícito do operador — só loga.
+func releaseLocalInputLockForSession(sessionID string) {
+	localInputLockMu.Lock()
+	defer localInputLockMu.Unlock()
+	if localInputLockedBy != sessionID {
+		return
+	}
+	if err := blockInputFn(false); err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao liberar input local (sessão %s): %v", sessionID, err))
+	}
+	localInputLockedBy = ""
+	stopLocalInputLockTimerLocked()
+}
+
+// resetLocalInputLockTimerLocked/stopLocalInputLockTimerLocked exigem
+// localInputLockMu já tomado pelo chamador (sufixo Locked, mesmo padrão de
+// nomenclatura usado no resto do pacote pra funções não-reentrantes).
+func resetLocalInputLockTimerLocked(sessionID string) {
+	stopLocalInputLockTimerLocked()
+	localInputLockTimer = time.AfterFunc(localInputLockFailsafe, func() {
+		logWarn(fmt.Sprintf("companion: lock de input local da sessão %s expirou após %s sem unlock — liberando por segurança", sessionID, localInputLockFailsafe))
+		releaseLocalInputLockForSession(sessionID)
+	})
+}
+
+func stopLocalInputLockTimerLocked() {
+	if localInputLockTimer != nil {
+		localInputLockTimer.Stop()
+		localInputLockTimer = nil
+	}
 }

@@ -134,6 +134,27 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 		logError(fmt.Sprintf("companion: falha ao conectar em %s: %v", redactLiveSessionURL(wsURL), err))
 		return
 	}
+	// readerDone + a ordem dos 3 defers abaixo garantem que, quando esta
+	// função retornar, a goroutine leitora já tenha terminado de VERDADE
+	// antes do lock de input local ser liberado — achado 🟠 do
+	// code-reviewer: sem essa sincronização, defer conn.Close() e defer
+	// releaseLocalInputLockForSession(sessionID) corriam em paralelo com a
+	// goroutine leitora, e uma mensagem "lock-local-input" já em trânsito
+	// podia ser processada (travando de novo) DEPOIS do release rodar —
+	// sem mais ninguém pra liberar de novo, só o failsafe de 10min
+	// (input_windows.go) resolveria. Defers executam em LIFO (registrado
+	// por último roda primeiro), então a ordem de REGISTRO abaixo —
+	// release, wait, close — produz a ordem de EXECUÇÃO que queremos:
+	// 1) conn.Close() (destrava qualquer ReadMessage bloqueado), depois
+	// 2) readerDone.Wait() (espera a goroutine leitora sair do loop de
+	// vez, inclusive terminar de processar qualquer mensagem que já tinha
+	// lido antes do close), só então 3) releaseLocalInputLockForSession —
+	// nenhuma chamada a handleLiveSessionInput desta sessão pode mais
+	// acontecer depois disso.
+	var readerDone sync.WaitGroup
+	readerDone.Add(1)
+	defer releaseLocalInputLockForSession(sessionID)
+	defer readerDone.Wait()
 	defer conn.Close()
 
 	// Normal mode: lê mensagens de input numa goroutine separada e injeta
@@ -142,7 +163,10 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 	// `go` puro) porque handleLiveSessionInput vai processar dado vindo
 	// direto da rede (Task 12/SendInput) — panic ali não pode derrubar o
 	// processo do agent inteiro.
-	safeGo("liveSession-reader-"+sessionID, func() { readLiveSessionInput(conn, mode) })
+	safeGo("liveSession-reader-"+sessionID, func() {
+		defer readerDone.Done()
+		readLiveSessionInput(conn, mode, sessionID)
+	})
 
 	// 1 capturer por sessão inteira (não por frame) — DXGI mantém
 	// device/duplication vivos entre frames, só AcquireNextFrame+cópia por
@@ -184,7 +208,7 @@ type messageReader interface {
 // mode desta sessão, ele for "normal" — não confia só na garantia do
 // servidor (liveSessionRelay.routeMessage) de nunca repassar input numa
 // sessão Shadow.
-func readLiveSessionInput(conn messageReader, mode string) {
+func readLiveSessionInput(conn messageReader, mode string, sessionID string) {
 	if mode != liveSessionNormalMode {
 		// mode é fixo pra vida inteira da conexão — se for != normal, vai
 		// recusar TODA mensagem até a conexão cair. Loga 1x aqui, não a
@@ -197,7 +221,7 @@ func readLiveSessionInput(conn messageReader, mode string) {
 		if err != nil {
 			return
 		}
-		handleLiveSessionInput(data, mode)
+		handleLiveSessionInput(data, mode, sessionID)
 	}
 }
 

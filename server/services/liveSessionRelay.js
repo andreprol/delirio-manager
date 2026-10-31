@@ -17,6 +17,47 @@ const MODE_NORMAL = 'normal';
 
 const sessions = new Map();
 
+// dashboardUnlockGraceMs é o tempo que o relay espera, depois do socket do
+// dashboard cair, antes de mandar unlock-local-input de verdade pro
+// companion — maior que RECONNECT_DELAY_MS (3000ms, useLiveSession.js), pra
+// dar tempo da ÚNICA retentativa automática do dashboard reconectar antes
+// do input ser liberado. Sem essa folga, um blip de rede (Wi-Fi, VPN) que
+// se recupera em 3s já destravava o input físico da loja no meio do
+// suporte, sem o operador saber (achado 🔴 do code-reviewer) — a UI
+// (LiveSessionWindow.jsx) não tinha como saber que o servidor já liberou
+// por conta própria, e continuava mostrando "travado" quando já não estava
+// mais. `let`, não `const`, só pra setDashboardUnlockGraceMsForTests poder
+// encurtar em teste.
+let dashboardUnlockGraceMs = 5000;
+
+function setDashboardUnlockGraceMsForTests(ms) {
+  dashboardUnlockGraceMs = ms;
+}
+
+// cancelPendingUnlock cancela o unlock agendado por scheduleUnlockOnDashboardDisconnect,
+// se houver — chamada quando o dashboard reconecta a tempo (attachDashboardSocket) ou
+// quando a sessão é encerrada de vez (unregisterSession), pra não deixar um
+// timer pendente referenciando uma sessão que já era.
+function cancelPendingUnlock(session) {
+  if (session.pendingUnlockTimer) {
+    clearTimeout(session.pendingUnlockTimer);
+    session.pendingUnlockTimer = null;
+  }
+}
+
+// scheduleUnlockOnDashboardDisconnect agenda o unlock sintético (ver close
+// handler em wireLiveSocket) em vez de mandar na hora — dá a folga de
+// dashboardUnlockGraceMs pro dashboard reconectar e cancelar. routeMessage
+// já filtra por mode==='normal' e por companionWs presente, então chamar
+// isto numa sessão Shadow ou já sem companion é inofensivo (no-op).
+function scheduleUnlockOnDashboardDisconnect(session, sessionId) {
+  cancelPendingUnlock(session);
+  session.pendingUnlockTimer = setTimeout(() => {
+    session.pendingUnlockTimer = null;
+    routeMessage(sessionId, 'dashboard', JSON.stringify({ type: 'unlock-local-input' }));
+  }, dashboardUnlockGraceMs);
+}
+
 function registerSession(sessionId, { machineId, mode, companionToken, dashboardToken }) {
   if (sessions.has(sessionId)) {
     throw new Error(
@@ -33,6 +74,7 @@ function registerSession(sessionId, { machineId, mode, companionToken, dashboard
     machineId, mode, companionToken, dashboardToken,
     companionWs: null,
     dashboardWs: null,
+    pendingUnlockTimer: null,
   });
 }
 
@@ -41,6 +83,8 @@ function getSession(sessionId) {
 }
 
 function unregisterSession(sessionId) {
+  const session = sessions.get(sessionId);
+  if (session) cancelPendingUnlock(session);
   sessions.delete(sessionId);
 }
 
@@ -62,6 +106,7 @@ function attachDashboardSocket(sessionId, ws) {
   const session = sessions.get(sessionId);
   if (!session) return;
   if (session.dashboardWs && session.dashboardWs !== ws) closeStale(session.dashboardWs);
+  cancelPendingUnlock(session);
   session.dashboardWs = ws;
 }
 
@@ -170,7 +215,20 @@ function wireLiveSocket(sessionId, role, ws) {
     if (!isCurrentSocket(sessionId, role, ws)) return;
     logger.info('[liveSessionRelay] socket desconectado', { sessionId, role, code, reason: reasonBuf?.toString() });
     if (role === 'companion') detachCompanionSocket(sessionId);
-    if (role === 'dashboard') detachDashboardSocket(sessionId);
+    if (role === 'dashboard') {
+      detachDashboardSocket(sessionId);
+      // O operador pode cair sem clicar "desbloquear" (rede, crash do app) —
+      // sem isso, o usuário da loja ficaria com mouse/teclado travados até
+      // alguém encerrar a sessão manualmente. Agendado (não na hora, ver
+      // scheduleUnlockOnDashboardDisconnect) pra não destravar no meio de um
+      // blip que a própria retentativa automática do dashboard resolveria
+      // sozinha. routeMessage já é o MESMO allow-list de mode==='normal' que
+      // qualquer input real passa, então isso nunca escapa pra uma sessão
+      // Shadow. O agent trata esta mensagem como no-op se o input já não
+      // estiver travado (ver setLocalInputLocked em input_windows.go).
+      const session = getSession(sessionId);
+      if (session) scheduleUnlockOnDashboardDisconnect(session, sessionId);
+    }
   });
 }
 
@@ -224,4 +282,5 @@ module.exports = {
   attachCompanionSocket, attachDashboardSocket,
   detachCompanionSocket, detachDashboardSocket,
   initLiveRelay,
+  setDashboardUnlockGraceMsForTests,
 };

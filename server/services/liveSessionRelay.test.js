@@ -110,7 +110,7 @@ describe('initLiveRelay — conexão real', () => {
   const http = require('http');
   const WebSocket = require('ws');
   const { WebSocketServer } = require('ws');
-  const { registerSession, initLiveRelay, unregisterSession, getSession } = require('./liveSessionRelay');
+  const { registerSession, initLiveRelay, unregisterSession, getSession, setDashboardUnlockGraceMsForTests } = require('./liveSessionRelay');
   const { createUpgradeRouter } = require('./upgradeRouter');
 
   let server;
@@ -215,5 +215,164 @@ describe('initLiveRelay — conexão real', () => {
       expect(code).toBe(4000);
       done();
     });
+  });
+
+  // Operador pode cair sem clicar "desbloquear" (rede, crash do app) — o
+  // servidor manda unlock-local-input pro companion por conta própria,
+  // depois de uma folga (setDashboardUnlockGraceMsForTests encurta pro
+  // teste não ficar lento), quando o socket do dashboard cai.
+  it('mode normal: dashboard desconectar manda unlock-local-input pro companion, depois da folga', (done) => {
+    setDashboardUnlockGraceMsForTests(20);
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'normal', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
+
+    const companionWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
+    );
+    let dashboardWs;
+
+    companionWs.on('message', (data) => {
+      expect(JSON.parse(data.toString())).toEqual({ type: 'unlock-local-input' });
+      setDashboardUnlockGraceMsForTests(5000);
+      companionWs.close();
+      done();
+    });
+
+    companionWs.on('open', () => {
+      dashboardWs = new WebSocket(
+        `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+      );
+      dashboardWs.on('open', () => dashboardWs.close());
+    });
+  });
+
+  // Achado 🔴 do code-reviewer: sem a folga, um blip de rede que o dashboard
+  // já resolve sozinho (1 retentativa automática, useLiveSession.js) liberava
+  // o input físico da loja no meio do suporte, com a UI do operador nem
+  // sabendo. Reconectar DENTRO da folga cancela o unlock agendado por
+  // completo — nada deve chegar ao companion, nem depois da folga original
+  // ter passado.
+  it('mode normal: dashboard reconectar dentro da folga cancela o unlock agendado', (done) => {
+    setDashboardUnlockGraceMsForTests(50);
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'normal', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
+
+    const companionWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
+    );
+    const onUnexpectedMessage = (data) => {
+      done(new Error(`companion não deveria receber nada, recebeu: ${data.toString()}`));
+    };
+
+    companionWs.on('message', onUnexpectedMessage);
+
+    companionWs.on('open', () => {
+      const dashboardA = new WebSocket(
+        `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+      );
+      dashboardA.on('open', () => {
+        dashboardA.close(); // cai — agenda o unlock pra dentro de 50ms
+
+        // Reconecta ANTES da folga passar (simula a retentativa automática
+        // do dashboard, useLiveSession.js) — deve cancelar o unlock agendado.
+        setTimeout(() => {
+          const dashboardB = new WebSocket(
+            `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+          );
+          dashboardB.on('open', () => {
+            // Espera além da folga original (50ms) pra confirmar que o
+            // unlock agendado de verdade não disparou, não só que ainda não
+            // tinha disparado.
+            setTimeout(() => {
+              companionWs.off('message', onUnexpectedMessage);
+              dashboardB.close();
+              companionWs.close();
+              setDashboardUnlockGraceMsForTests(5000);
+              done();
+            }, 150);
+          });
+        }, 10);
+      });
+    });
+  });
+
+  // Operador fecha a janela (api.live.stop → unregisterSession) rápido
+  // depois de um blip de rede, antes da folga do unlock agendado passar —
+  // não deve sobrar nenhum timer tentando mandar algo pra uma sessão que
+  // já não existe mais (routeMessage(sessionId inexistente) é no-op, mas
+  // cancelPendingUnlock em unregisterSession evita até essa tentativa).
+  it('mode normal: encerrar a sessão (unregister) durante a folga não quebra nem manda nada depois', (done) => {
+    setDashboardUnlockGraceMsForTests(50);
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'normal', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
+
+    const companionWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
+    );
+    const onUnexpectedMessage = (data) => {
+      done(new Error(`companion não deveria receber nada, recebeu: ${data.toString()}`));
+    };
+    companionWs.on('message', onUnexpectedMessage);
+    companionWs.on('error', (err) => done(err));
+
+    companionWs.on('open', () => {
+      const dashboardWs = new WebSocket(
+        `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+      );
+      dashboardWs.on('open', () => {
+        dashboardWs.close(); // agenda o unlock pra dentro de 50ms
+
+        // Encerra a sessão de vez ANTES da folga passar — simula o operador
+        // fechando a janela/api.live.stop logo depois do blip.
+        setTimeout(() => {
+          expect(() => unregisterSession('s-real')).not.toThrow();
+
+          setTimeout(() => {
+            companionWs.off('message', onUnexpectedMessage);
+            companionWs.close();
+            setDashboardUnlockGraceMsForTests(5000);
+            done();
+          }, 150);
+        }, 10);
+      });
+    });
+  });
+
+  // Em mode shadow não existe controle remoto pra travar — o close do
+  // dashboard não deve mandar nada pro companion (routeMessage já bloqueia
+  // isso, este teste confirma que o close handler não contorna o allow-list,
+  // esperando além da folga de verdade, não só que ainda não disparou).
+  it('mode shadow: dashboard desconectar NÃO manda nada pro companion', (done) => {
+    setDashboardUnlockGraceMsForTests(20);
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'shadow', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
+
+    const companionWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
+    );
+    const onUnexpectedMessage = (data) => {
+      done(new Error(`companion não deveria receber nada, recebeu: ${data.toString()}`));
+    };
+    let dashboardWs;
+
+    companionWs.on('message', onUnexpectedMessage);
+
+    companionWs.on('open', () => {
+      dashboardWs = new WebSocket(
+        `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+      );
+      dashboardWs.on('open', () => dashboardWs.close());
+    });
+
+    setTimeout(() => {
+      companionWs.off('message', onUnexpectedMessage);
+      companionWs.close();
+      setDashboardUnlockGraceMsForTests(5000);
+      done();
+    }, 150);
   });
 });
