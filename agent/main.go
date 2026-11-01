@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.8.1" // patch: sessionWatchTick reconecta sessao Disconnected ao console (tscon) quando nao ha sessao Active, resolve acesso remoto falhando em maquinas com sessao presa em Disconnected sem logoff
+	Version            = "1.8.2" // patch: commandLoop nao trava mais pra sempre num comando sem timeout (ex: dr-setup) + DNS resiliente (fallback 8.8.8.8/1.1.1.1 quando DNS local da loja falha pro hostname do servidor)
 )
 
 func main() {

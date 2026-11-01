@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +30,8 @@ const (
 	veeamInstallerDir  = `C:\ProgramData\DelirioAgent`
 	drJobName          = "BMR-DM"
 	drRepoName         = "AzureBlob-DM"
+	// veeamInstallTimeout — ver comentário em installVeeam.
+	veeamInstallTimeout = 4 * time.Minute
 )
 
 // DrCreds holds Azure Blob credentials received in the dr-setup command params.
@@ -49,7 +53,17 @@ type DRStatus struct {
 	VeeamVersion string  `json:"veeam_version,omitempty"`
 }
 
-var drStatusCache *DRStatus
+// drStatusCacheMu protege drStatusCache — achado 🔴 do code-reviewer: antes
+// do fix de runCommandWithDeadline (agent.go), commandLoop garantia só 1
+// handler de comando em voo por vez (goroutine única); depois, um dr-setup
+// "abandonado" por timeout continua rodando de verdade em background, e o
+// operador reagindo ao timeout/504 pode disparar um dr-setup/dr-status/
+// dr-backup-now NOVO — agora 2 goroutines reais lendo/escrevendo esta var
+// global ao mesmo tempo, sem isso.
+var (
+	drStatusCache   *DRStatus
+	drStatusCacheMu sync.Mutex
+)
 
 func runPS(script string) (string, error) {
 	var out, errOut bytes.Buffer
@@ -114,7 +128,16 @@ func installVeeam(serverURL string) error {
 	defer os.Remove(tmpPath)
 
 	logInfo("DR: instalando Veeam Agent (modo silencioso)...")
-	cmd := exec.Command(tmpPath, "/silent", "/norestart", "/acceptEULA", "/acceptLicensePolicies", "/acceptThirdPartyLicenses")
+	// veeamInstallTimeout: achado 🟠 do code-reviewer — sem exec.CommandContext
+	// aqui, um instalador travado (ex: prompt inesperado apesar do /silent,
+	// update pendente do Windows) ficava rodando órfão pra sempre mesmo
+	// depois de runCommandWithDeadline (agent.go) abandonar o comando: aquele
+	// timeout só para de ESPERAR a goroutine, não mata o processo filho real.
+	// 4min é generoso pro instalador silencioso de verdade (normalmente
+	// segundos a ~1min) sem deixar um processo travado vivo indefinidamente.
+	ctx, cancel := context.WithTimeout(context.Background(), veeamInstallTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, tmpPath, "/silent", "/norestart", "/acceptEULA", "/acceptLicensePolicies", "/acceptThirdPartyLicenses")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("instalacao Veeam falhou (exit %w) — output: %s", err, string(out))
 	}
@@ -346,6 +369,8 @@ func readStatusFromLogs(base DRStatus) DRStatus {
 }
 
 func getCachedDRStatus() *DRStatus {
+	drStatusCacheMu.Lock()
+	defer drStatusCacheMu.Unlock()
 	if drStatusCache == nil {
 		s := readStatus()
 		drStatusCache = &s
@@ -354,5 +379,17 @@ func getCachedDRStatus() *DRStatus {
 }
 
 func invalidateDRCache() {
+	drStatusCacheMu.Lock()
+	defer drStatusCacheMu.Unlock()
 	drStatusCache = nil
+}
+
+// setDRStatusCache substitui o cache inteiro sob lock — único jeito de
+// escrever drStatusCache fora de invalidateDRCache (handleDRSetup/
+// handleDRStatus chamavam `drStatusCache = &s` direto antes deste fix,
+// sem nenhuma proteção).
+func setDRStatusCache(s DRStatus) {
+	drStatusCacheMu.Lock()
+	defer drStatusCacheMu.Unlock()
+	drStatusCache = &s
 }

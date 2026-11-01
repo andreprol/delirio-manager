@@ -31,6 +31,11 @@ type Agent struct {
 	// update deduplication — previne goroutines concorrentes de update
 	updating bool
 
+	// drSetupInProgress: guard de reentrância pro comando dr-setup — ver
+	// handleDRSetup (commands.go) pro porquê (installVeeam sem timeout +
+	// runCommandWithDeadline abandonando o comando sem matar o processo real).
+	drSetupInProgress atomic.Bool
+
 	// acesso remoto (FEATURE_LIVE_ACCESS) — estado do companion lançado por
 	// sessionWatchLoop na sessão ativa. companionPID/Handle/Job são
 	// lidos/escritos por 3 goroutines diferentes (sessionWatchTick, stop()
@@ -137,14 +142,34 @@ func newAgent() *Agent {
 
 	initLogger("agent.log")
 
+	// http.DefaultClient (usado por http.Get em dr.go/updater.go/lhm.go,
+	// nenhum deles com transport próprio) ganha o mesmo fallback de DNS.
+	// baseTransport é o http.DefaultTransport ORIGINAL, clonado (nunca
+	// literal &http.Transport{} vazio) — achado 🔴 do code-reviewer: criar
+	// um Transport do zero perde Proxy (ProxyFromEnvironment — HTTP_PROXY/
+	// HTTPS_PROXY), TLSHandshakeTimeout e MaxIdleConns default, quebrando
+	// silenciosamente qualquer loja que dependa de proxy de saída.
+	baseTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		baseTransport = &http.Transport{}
+	}
+	newResilientTransport := func() *http.Transport {
+		t := baseTransport.Clone()
+		t.DialContext = resilientDialContext
+		return t
+	}
+	http.DefaultTransport = newResilientTransport()
+
 	return &Agent{
 		cfg:    cfg,
 		stopCh: make(chan struct{}),
 		client: &http.Client{
-			Timeout: 5 * time.Minute,
+			Timeout:   5 * time.Minute,
+			Transport: newResilientTransport(),
 		},
 		hbClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Transport: newResilientTransport(),
+			Timeout:   10 * time.Second,
 		},
 	}
 }
@@ -598,11 +623,71 @@ func (a *Agent) pollCommands() {
 	}
 }
 
+// commandExecutionDeadline limita quanto tempo UM comando pode travar
+// commandLoop (goroutine única, ticker síncrono — ver commandLoop) antes de
+// ser abandonado e o processamento seguir pro próximo comando/poll. Maior
+// que qualquer timeout interno já existente (run_powershell: 30s; pipe do
+// companion: pipeHandlerDeadline=10s) — nunca interfere neles. Cobre o
+// caminho achado SEM nenhum timeout próprio: handleDRSetup→installVeeam
+// chama exec.Command(...).CombinedOutput() no instalador do Veeam sem
+// context nenhum — se o instalador travar (prompt inesperado, update
+// pendente), commandLoop ficava preso NAQUELE comando pra sempre.
+//
+// Achado em produção (31/10→01/11/2026): "Gerente" (Metropolitano) e
+// "Nutricionista" ficaram dias respondendo heartbeat normal (goroutine
+// separada, sendHeartbeat) mas TODO comando — inclusive start-live-session
+// de outras sessões — dava 504 "timeout aguardando resposta" no servidor,
+// porque a goroutine única de commandLoop nunca mais chamava pollCommands
+// depois de travar num comando anterior. Sem restart manual do serviço,
+// nunca se recuperava sozinho.
+const commandExecutionDeadline = 5 * time.Minute
+
+// runCommandWithDeadline executa fn (tipicamente a.executeCommand) numa
+// goroutine separada e devolve o resultado, OU devolve timedOut=true se fn
+// não retornar dentro de timeout — sem isso, UM handler que trava pra
+// sempre (ver commandExecutionDeadline) trava commandLoop pra sempre com
+// ele, impedindo QUALQUER comando futuro (de qualquer tipo, não só o que
+// travou) de ser processado.
+//
+// Se fn eventualmente retornar depois do timeout, a goroutine fica órfã —
+// fire-and-forget, mesmo risco já aceito em outros lugares deste pacote
+// (ex: SendInput em input_windows.go). Pior caso é 1 goroutine extra viva
+// até o serviço reiniciar — nunca pior que o estado atual (travado pra
+// sempre, sem nenhuma recuperação automática).
+func runCommandWithDeadline(fn func() (string, error), timeout time.Duration) (msg string, err error, timedOut bool) {
+	type result struct {
+		msg string
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				resultCh <- result{err: fmt.Errorf("panic: %v", r)}
+			}
+		}()
+		m, e := fn()
+		resultCh <- result{msg: m, err: e}
+	}()
+
+	select {
+	case res := <-resultCh:
+		return res.msg, res.err, false
+	case <-time.After(timeout):
+		return "", fmt.Errorf("comando não respondeu em %s — abandonado", timeout), true
+	}
+}
+
 func (a *Agent) handleCommand(cmd Command) {
 	logInfo(fmt.Sprintf("Executando comando: type=%s id=%s", cmd.Type, cmd.ID))
 
-	msg, err := a.executeCommand(cmd)
+	msg, err, timedOut := runCommandWithDeadline(func() (string, error) { return a.executeCommand(cmd) }, commandExecutionDeadline)
 	success := err == nil
+
+	if timedOut {
+		logError(fmt.Sprintf("Comando %s (%s) não respondeu em %s — abandonado, commandLoop segue pro próximo",
+			cmd.ID, cmd.Type, commandExecutionDeadline))
+	}
 
 	// %.200s nos dois ramos trunca o que vai pro log (companion.log/Event
 	// Log) — o ACK abaixo leva msg/err inteiros pro servidor. Sem isso, um

@@ -197,6 +197,18 @@ func handleAlohaFindNFCe(cmd Command) (string, error) {
 // ── Disaster Recovery ─────────────────────────────────────────────────────────
 
 func (a *Agent) handleDRSetup(cmd Command) (string, error) {
+	// Guard de reentrância — achado 🔴 do code-reviewer: installVeeam (abaixo)
+	// chama exec.Command sem timeout/context; se travar, runCommandWithDeadline
+	// (agent.go) abandona o comando em 5min mas a goroutine/processo real
+	// continuam rodando. Sem este guard, o operador reagindo ao timeout
+	// disparando um 2º dr-setup faria 2 instalações reais concorrentes
+	// escrevendo no MESMO path fixo do instalador (veeamInstallerDir) —
+	// uma pode apagar o arquivo enquanto a outra ainda o executa.
+	if !a.drSetupInProgress.CompareAndSwap(false, true) {
+		return "", fmt.Errorf("dr-setup: já existe uma instalação em andamento nesta máquina — aguarde terminar")
+	}
+	defer a.drSetupInProgress.Store(false)
+
 	var creds DrCreds
 	if err := json.Unmarshal(cmd.Params, &creds); err != nil {
 		return "", fmt.Errorf("params dr-setup inválidos: %w", err)
@@ -214,9 +226,8 @@ func (a *Agent) handleDRSetup(cmd Command) (string, error) {
 		invalidateDRCache()
 		return "", fmt.Errorf("configureJob: %w", err)
 	}
-	invalidateDRCache()
 	s := readStatus()
-	drStatusCache = &s
+	setDRStatusCache(s)
 	result, _ := json.Marshal(map[string]interface{}{
 		"veeam_version": s.VeeamVersion,
 		"setup_ok":      true,
@@ -235,9 +246,8 @@ func handleDRBackupNow(cmd Command) (string, error) {
 
 func handleDRStatus(cmd Command) (string, error) {
 	logInfo(fmt.Sprintf("DR-STATUS recebido (cmd %s)", cmd.ID))
-	invalidateDRCache()
 	s := readStatus()
-	drStatusCache = &s
+	setDRStatusCache(s)
 	data, err := json.Marshal(s)
 	if err != nil {
 		return "", err

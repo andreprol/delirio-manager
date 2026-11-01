@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -199,6 +200,67 @@ func TestSessionWatchTick_ReconnectsDisconnectedSession(t *testing.T) {
 
 		if calls != 0 {
 			t.Fatalf("reconnectSessionToConsoleFn chamado %d vezes, want 0 (sessão RDP nunca é candidata)", calls)
+		}
+	})
+}
+
+// TestRunCommandWithDeadline é regressão direta pro bug de produção
+// 31/10→01/11/2026 ("Gerente"/"Nutricionista" presas por dias): um handler
+// de comando que trava pra sempre (ex: handleDRSetup→installVeeam sem
+// timeout) não pode travar commandLoop pra sempre com ele.
+func TestRunCommandWithDeadline(t *testing.T) {
+	t.Run("retorna normal quando fn termina dentro do timeout", func(t *testing.T) {
+		msg, err, timedOut := runCommandWithDeadline(func() (string, error) {
+			return "ok", nil
+		}, time.Second)
+		if timedOut {
+			t.Fatal("não deveria ter marcado timeout")
+		}
+		if err != nil || msg != "ok" {
+			t.Fatalf("msg=%q err=%v, want msg=ok err=nil", msg, err)
+		}
+	})
+
+	t.Run("propaga erro de fn quando termina dentro do timeout", func(t *testing.T) {
+		wantErr := errors.New("falhou")
+		_, err, timedOut := runCommandWithDeadline(func() (string, error) {
+			return "", wantErr
+		}, time.Second)
+		if timedOut {
+			t.Fatal("não deveria ter marcado timeout")
+		}
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("err = %v, want %v", err, wantErr)
+		}
+	})
+
+	t.Run("fn que nunca retorna: devolve timedOut=true sem esperar fn", func(t *testing.T) {
+		started := make(chan struct{})
+		msg, err, timedOut := runCommandWithDeadline(func() (string, error) {
+			close(started)
+			select {} // nunca retorna — simula handler travado (ex: instalador sem resposta)
+		}, 20*time.Millisecond)
+		<-started
+		if !timedOut {
+			t.Fatal("esperava timedOut=true")
+		}
+		if err == nil {
+			t.Fatal("esperava erro de timeout")
+		}
+		if msg != "" {
+			t.Fatalf("msg = %q, want vazio", msg)
+		}
+	})
+
+	t.Run("panic dentro de fn não derruba o chamador", func(t *testing.T) {
+		_, err, timedOut := runCommandWithDeadline(func() (string, error) {
+			panic("boom")
+		}, time.Second)
+		if timedOut {
+			t.Fatal("panic recuperado não é timeout")
+		}
+		if err == nil {
+			t.Fatal("esperava erro do panic recuperado")
 		}
 	})
 }

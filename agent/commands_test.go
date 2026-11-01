@@ -233,6 +233,47 @@ func TestExecuteCommand_DrSetup_MissingCreds(t *testing.T) {
 	})
 }
 
+// Regressão do finding 🔴 do code-reviewer (01/11/2026): depois do fix de
+// runCommandWithDeadline (agent.go), commandLoop não serializa mais
+// handlers — um dr-setup "abandonado" por timeout ainda roda de verdade em
+// background. Sem este guard, um 2º dr-setup disparado pelo operador
+// reagindo ao timeout correria concorrente com o 1º, escrevendo no MESMO
+// instalador Veeam no disco.
+func TestHandleDRSetup_ReentrancyGuard(t *testing.T) {
+	a := newTestAgent("https://dt.example.com")
+	a.drSetupInProgress.Store(true) // simula setup já em andamento
+	defer a.drSetupInProgress.Store(false)
+
+	_, err := a.handleDRSetup(Command{
+		ID:     "c-dr-guard",
+		Type:   "dr-setup",
+		Params: mustJSON(t, map[string]string{"azure_account": "x", "sas_token": "y"}),
+	})
+	if err == nil {
+		t.Fatal("esperava erro — dr-setup já em andamento")
+	}
+	if !strings.Contains(err.Error(), "andamento") {
+		t.Errorf("mensagem deve citar 'andamento', obteve: %v", err)
+	}
+}
+
+func TestHandleDRSetup_ReentrancyGuard_ReleasedOnEarlyReturn(t *testing.T) {
+	a := newTestAgent("https://dt.example.com")
+	// Params sem credenciais -> retorna erro de validação ANTES de
+	// installVeeam — guard tem que ser liberado (defer) mesmo nesse caminho.
+	_, err := a.handleDRSetup(Command{
+		ID:     "c-dr-1",
+		Type:   "dr-setup",
+		Params: mustJSON(t, map[string]string{}),
+	})
+	if err == nil {
+		t.Fatal("esperava erro de credenciais ausentes")
+	}
+	if a.drSetupInProgress.Load() {
+		t.Fatal("guard deveria ter sido liberado pelo defer mesmo com erro de validação")
+	}
+}
+
 // ── run_powershell ────────────────────────────────────────────────────────────
 
 func TestExecuteCommand_RunPowershell_MissingScript(t *testing.T) {

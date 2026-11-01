@@ -128,8 +128,20 @@ func redactLiveSessionURL(wsURL string) string {
 // canal já ter sido fechado.
 const liveSessionWriteTimeout = 2 * time.Second
 
+// liveSessionDialer: cópia do websocket.DefaultDialer com NetDialContext
+// resiliente a DNS local quebrado (ver resilient_dns.go) — achado em
+// produção (01/11/2026, KIONE-ESC): "falha ao conectar em wss://...: dial
+// tcp: lookup dt-manager...: no such host" era EXATAMENTE este Dial, com o
+// DNS do roteador da loja não resolvendo o hostname do servidor mesmo com a
+// rede geral da máquina saudável.
+var liveSessionDialer = &websocket.Dialer{
+	Proxy:            websocket.DefaultDialer.Proxy,
+	HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout,
+	NetDialContext:   resilientDialContext,
+}
+
 func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, _, err := liveSessionDialer.Dial(wsURL, nil)
 	if err != nil {
 		logError(fmt.Sprintf("companion: falha ao conectar em %s: %v", redactLiveSessionURL(wsURL), err))
 		return
