@@ -46,6 +46,12 @@ type Agent struct {
 	consecutiveLaunchFailures int
 	nextLaunchAttemptAt       time.Time // zero = sem backoff pendente
 	companionLaunchedAt       time.Time // zero = nenhum companion lançado ainda; ver companionMinHealthyUptime
+	// reconnectFailureCount: só-sessionWatchTick, conta falhas consecutivas
+	// de reconnectSessionToConsoleFn pra throttle de log (ver
+	// tryReconnectDisconnectedSession) — achado 🟡 do code-reviewer:
+	// sem isso, tscon falhando sempre (ex: ERROR_ACCESS_DENIED) logaria
+	// WARN a cada 15s pra sempre, nas 130 máquinas.
+	reconnectFailureCount int
 	// companionJob: um Job Object NOVO por geração de companion (não 1 job
 	// reusado pra vida inteira do serviço — ver doc de createCompanionJobObject
 	// em session_windows.go pro porquê: reusar entre sessões diferentes
@@ -66,9 +72,10 @@ type Agent struct {
 // sessionWatchTick só é testável chamando enumerateSessions/isCompanionAlive/
 // launchCompanion de verdade (syscalls Win32, não disponíveis em CI).
 var (
-	enumerateSessionsFn = enumerateSessions
-	isCompanionAliveFn  = isCompanionAlive
-	launchCompanionFn   = launchCompanion
+	enumerateSessionsFn         = enumerateSessions
+	isCompanionAliveFn          = isCompanionAlive
+	launchCompanionFn           = launchCompanion
+	reconnectSessionToConsoleFn = reconnectSessionToConsole
 )
 
 // HeartbeatPayload e o JSON enviado ao servidor a cada ciclo.
@@ -300,7 +307,8 @@ func (a *Agent) sessionWatchTick() {
 	}
 	activeID, ok := pickActiveSession(sessions)
 	if !ok {
-		return // sem usuário logado agora (tela de login) — nada a fazer
+		a.tryReconnectDisconnectedSession(sessions)
+		return // nada a lançar neste tick — resultado da reconexão só aparece no próximo
 	}
 
 	sessionChanged := activeID != a.companionSession.Load()
@@ -355,6 +363,37 @@ func (a *Agent) sessionWatchTick() {
 		return
 	}
 	a.recordCompanionLaunched(activeID, pid, handle, job)
+}
+
+// reconnectFailureLogThrottle: loga a 1ª falha de reconexão, depois só 1 a
+// cada N tentativas (N*15s ≈ 5min) — tscon falhando persistentemente (ex:
+// ERROR_ACCESS_DENIED) não pode inundar agent.log/Event Log pra sempre.
+const reconnectFailureLogThrottle = 20
+
+// tryReconnectDisconnectedSession tenta reconectar ao console uma sessão
+// Disconnected (ex: economia de energia/tela desligada sem logoff) quando
+// não há sessão Active — sem isso, sessionWatchTick nunca lançaria o
+// companion nela até alguém tocar fisicamente a máquina (achado em produção
+// 31/10/2026: DANIELA-ESC e Bruno presas assim por 11-13h). Sem backoff de
+// TEMPO dedicado (tscon é local e barato, e o próprio pickActiveSession já
+// não encontra nada pra relançar enquanto a sessão continuar Disconnected,
+// então tentar de novo a cada tick de 15s só acelera a convergência) — só
+// throttle de LOG pra falha persistente (ver reconnectFailureLogThrottle).
+func (a *Agent) tryReconnectDisconnectedSession(sessions []sessionInfo) {
+	sessionID, found := pickReconnectableSession(sessions)
+	if !found {
+		return
+	}
+	if err := reconnectSessionToConsoleFn(sessionID); err != nil {
+		a.reconnectFailureCount++
+		if a.reconnectFailureCount == 1 || a.reconnectFailureCount%reconnectFailureLogThrottle == 0 {
+			logWarn(fmt.Sprintf("sessionWatch: sessão %d está Disconnected, tentativa de reconectar ao console falhou (%dª falha consecutiva): %v",
+				sessionID, a.reconnectFailureCount, err))
+		}
+		return
+	}
+	a.reconnectFailureCount = 0
+	logInfo(fmt.Sprintf("sessionWatch: sessão %d estava Disconnected, reconectada ao console — companion deve lançar no próximo tick", sessionID))
 }
 
 // resetBackoffIfCompanionHealthy zera consecutiveLaunchFailures/

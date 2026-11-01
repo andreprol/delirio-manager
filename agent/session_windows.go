@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -20,6 +25,13 @@ const (
 type sessionInfo struct {
 	ID    uint32
 	State wtsSessionState
+	// WinStationName: "" pra sessão que estava no console físico e
+	// desconectou (o Windows libera o nome "Console" quando ninguém está
+	// conectado nela), "RDP-Tcp#N" (ou qualquer outro nome não-vazio) pra
+	// sessão remota (RDP/outra ferramenta) que desconectou sem logoff —
+	// usado por pickReconnectableSession pra nunca confundir as duas (ver
+	// finding 🔴 do code-reviewer, 31/10/2026).
+	WinStationName string
 }
 
 // pickActiveSession escolhe a sessão WTS_ACTIVE (usuário efetivamente
@@ -33,6 +45,62 @@ func pickActiveSession(sessions []sessionInfo) (uint32, bool) {
 		}
 	}
 	return 0, false
+}
+
+// pickReconnectableSession escolhe uma sessão Disconnected (não Active —
+// já coberta por pickActiveSession) que estava no CONSOLE FÍSICO antes de
+// desconectar. Achado em produção 31/10/2026 (DANIELA-ESC e Bruno): sessão
+// do usuário ficou presa em Disconnected por horas (tela/energia desligou
+// sem logoff) e pickActiveSession nunca achava candidato — companion nunca
+// relançava até alguém tocar fisicamente a máquina.
+//
+// Duas restrições deliberadas (findings 🔴/🟠 do code-reviewer, 31/10/2026):
+//  1. Só WinStationName == "" — é assim que a sessão do console aparece
+//     depois de desconectar (o Windows libera o nome "Console"). Uma
+//     sessão RDP abandonada sem logoff MANTÉM seu nome ("RDP-Tcp#N") até
+//     ser fechada — essa condição a exclui sempre, nunca puxando pro
+//     console físico da loja a sessão de outra pessoa (ex: suporte de TI
+//     que saiu do RDP sem logoff).
+//  2. Só wtsStateDisconnected, não wtsStateConnected — Connected pode ser
+//     uma conexão remota em handshake (RDP conectando); só o caso
+//     Disconnected foi validado ao vivo.
+//
+// Sessão 0 (Services, sempre não-interativa) nunca é candidata — reconectar
+// ela ao console não tem usuário nenhum atrás, só ruído.
+func pickReconnectableSession(sessions []sessionInfo) (uint32, bool) {
+	for _, s := range sessions {
+		if s.ID != 0 && s.State == wtsStateDisconnected && s.WinStationName == "" {
+			return s.ID, true
+		}
+	}
+	return 0, false
+}
+
+// reconnectSessionToConsole chama tscon.exe pra reconectar sessionID ao
+// console físico — mesmo comando confirmado manualmente ao vivo em
+// 31/10/2026 (`tscon <id> /dest:console`, via run_powershell, DANIELA-ESC e
+// Bruno: as duas sessões voltaram de Disconnected pra Ativo sem logoff, sem
+// perder nenhum trabalho — é o mesmo efeito de alguém tocar teclado/mouse
+// fisicamente na máquina). Não lança o companion aqui: o chamador
+// (sessionWatchTick) só vê o resultado no PRÓXIMO tick, quando
+// pickActiveSession já encontra a sessão Active de verdade.
+func reconnectSessionToConsole(sessionID uint32) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Caminho absoluto, não deixa o PATH do processo SYSTEM resolver —
+	// achado 🟠 do code-reviewer: um diretório gravável por usuário não-admin
+	// no PATH do sistema (erro de instalação de terceiros) poderia plantar um
+	// "tscon.exe" malicioso que rodaria com privilégio SYSTEM.
+	systemRoot := os.Getenv("SystemRoot")
+	if systemRoot == "" {
+		systemRoot = `C:\Windows`
+	}
+	tsconPath := systemRoot + `\System32\tscon.exe`
+	out, err := exec.CommandContext(ctx, tsconPath, strconv.FormatUint(uint64(sessionID), 10), "/dest:console").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tscon falhou: %w (saida: %s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 //nolint:unused // ligado pela Task 5 (enumerateSessions chama WTSEnumerateSessionsW de verdade)
@@ -87,7 +155,11 @@ func enumerateSessions() ([]sessionInfo, error) {
 	rawSlice := unsafe.Slice(pSessionInfo, count)
 	sessions := make([]sessionInfo, 0, count)
 	for _, raw := range rawSlice {
-		sessions = append(sessions, sessionInfo{ID: raw.SessionID, State: wtsSessionState(raw.State)})
+		sessions = append(sessions, sessionInfo{
+			ID:             raw.SessionID,
+			State:          wtsSessionState(raw.State),
+			WinStationName: windows.UTF16PtrToString(raw.WinStationName),
+		})
 	}
 	return sessions, nil
 }

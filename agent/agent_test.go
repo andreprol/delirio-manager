@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -92,6 +93,114 @@ func TestSessionWatchTick_BackoffEscalatesAcrossQuickDeaths(t *testing.T) {
 	if gotBackoff < want-time.Second || gotBackoff > want+time.Second {
 		t.Errorf("backoff pós-reset ≈ %v, want ≈15s — reset não voltou a escalada ao início", gotBackoff.Round(time.Second))
 	}
+}
+
+// TestSessionWatchTick_ReconnectsDisconnectedSession é regressão direta pro
+// bug de produção de 31/10/2026 (DANIELA-ESC e Bruno): sessão presa em
+// Disconnected por horas, pickActiveSession nunca achava candidato, e o
+// companion nunca relançava até alguém tocar fisicamente a máquina. Agora
+// sessionWatchTick tenta reconectar ao console nesse caso.
+func TestSessionWatchTick_ReconnectsDisconnectedSession(t *testing.T) {
+	origEnum, origReconnect, origLaunch := enumerateSessionsFn, reconnectSessionToConsoleFn, launchCompanionFn
+	defer func() {
+		enumerateSessionsFn, reconnectSessionToConsoleFn, launchCompanionFn = origEnum, origReconnect, origLaunch
+	}()
+
+	t.Run("sessão Disconnected não-zero: tenta reconectar, não lança companion neste tick", func(t *testing.T) {
+		enumerateSessionsFn = func() ([]sessionInfo, error) {
+			return []sessionInfo{{ID: 7, State: wtsStateDisconnected}}, nil
+		}
+		var gotSessionID uint32
+		calls := 0
+		reconnectSessionToConsoleFn = func(sessionID uint32) error {
+			calls++
+			gotSessionID = sessionID
+			return nil
+		}
+		launchCompanionFn = func(uint32) (uint32, windows.Handle, windows.Handle, error) {
+			t.Fatal("launchCompanionFn não deveria ser chamado — sessão ainda não é Active neste tick")
+			return 0, 0, 0, nil
+		}
+
+		a := &Agent{}
+		a.sessionWatchTick()
+
+		if calls != 1 {
+			t.Fatalf("reconnectSessionToConsoleFn chamado %d vezes, want 1", calls)
+		}
+		if gotSessionID != 7 {
+			t.Fatalf("reconnectSessionToConsoleFn chamado com sessão %d, want 7", gotSessionID)
+		}
+	})
+
+	t.Run("só sessão 0 (Services) Disconnected: não tenta reconectar", func(t *testing.T) {
+		enumerateSessionsFn = func() ([]sessionInfo, error) {
+			return []sessionInfo{{ID: 0, State: wtsStateDisconnected}}, nil
+		}
+		calls := 0
+		reconnectSessionToConsoleFn = func(uint32) error { calls++; return nil }
+
+		a := &Agent{}
+		a.sessionWatchTick()
+
+		if calls != 0 {
+			t.Fatalf("reconnectSessionToConsoleFn chamado %d vezes, want 0 (sessão 0 não é candidata)", calls)
+		}
+	})
+
+	t.Run("reconexão falha: só loga, não derruba o tick", func(t *testing.T) {
+		enumerateSessionsFn = func() ([]sessionInfo, error) {
+			return []sessionInfo{{ID: 3, State: wtsStateDisconnected}}, nil
+		}
+		reconnectSessionToConsoleFn = func(uint32) error { return fmt.Errorf("tscon falhou") }
+
+		a := &Agent{}
+		a.sessionWatchTick() // não deve panicar
+	})
+
+	// Finding 🟡 MÉDIO do code-reviewer: falha persistente não pode inundar
+	// o log pra sempre — reconnectFailureCount só conta, o throttle de LOG
+	// em si (1ª + a cada reconnectFailureLogThrottle) não é observável sem
+	// capturar stdout, então aqui travamos o contador, que é o que decide o
+	// throttle.
+	t.Run("falha persistente incrementa reconnectFailureCount, sucesso zera", func(t *testing.T) {
+		enumerateSessionsFn = func() ([]sessionInfo, error) {
+			return []sessionInfo{{ID: 9, State: wtsStateDisconnected}}, nil
+		}
+		reconnectSessionToConsoleFn = func(uint32) error { return fmt.Errorf("tscon falhou") }
+
+		a := &Agent{}
+		for i := 1; i <= 3; i++ {
+			a.sessionWatchTick()
+			if a.reconnectFailureCount != i {
+				t.Fatalf("tick %d: reconnectFailureCount = %d, want %d", i, a.reconnectFailureCount, i)
+			}
+		}
+
+		reconnectSessionToConsoleFn = func(uint32) error { return nil }
+		a.sessionWatchTick()
+		if a.reconnectFailureCount != 0 {
+			t.Fatalf("reconnectFailureCount = %d após sucesso, want 0", a.reconnectFailureCount)
+		}
+	})
+
+	// Regressão do finding 🔴 CRÍTICO, no nível de integração (sessionWatchTick
+	// completo, não só pickReconnectableSession isolada): sessão RDP
+	// abandonada sem logoff nunca é puxada pro console físico da loja.
+	t.Run("sessão RDP Disconnected (WinStationName não-vazio): não tenta reconectar", func(t *testing.T) {
+		enumerateSessionsFn = func() ([]sessionInfo, error) {
+			return []sessionInfo{{ID: 4, State: wtsStateDisconnected, WinStationName: "RDP-Tcp#2"}}, nil
+		}
+		calls := 0
+		reconnectSessionToConsoleFn = func(uint32) error { calls++; return nil }
+
+		a := &Agent{}
+		a.sessionWatchTick()
+
+		if calls != 0 {
+			t.Fatalf("reconnectSessionToConsoleFn chamado %d vezes, want 0 (sessão RDP nunca é candidata)", calls)
+		}
+	})
 }
 
 // TestResetBackoffIfCompanionHealthy confirma que o backoff só reseta

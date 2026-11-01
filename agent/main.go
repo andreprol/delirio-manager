@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.8.0" // minor: bloqueio de input local (mouse/teclado) no modo Normal via BlockInput, evita concorrencia de cursor com o usuario da loja durante suporte remoto
+	Version            = "1.8.1" // patch: sessionWatchTick reconecta sessao Disconnected ao console (tscon) quando nao ha sessao Active, resolve acesso remoto falhando em maquinas com sessao presa em Disconnected sem logoff
 )
 
 func main() {
