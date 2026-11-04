@@ -109,6 +109,97 @@ describe('LiveSessionWindow', () => {
     expect(sendKeyEventMock).not.toHaveBeenCalled()
   })
 
+  // Achado ao vivo 04/11/2026 (ASSBOH): apertar a tecla Windows abre o
+  // Menu Iniciar LOCAL e rouba o foco da janela antes do keyup disparar —
+  // o navegador nunca vê o keyup, a máquina remota fica com a tecla
+  // Windows logicamente travada, e toda tecla seguinte vira atalho (Win+E
+  // abre Explorer etc). Sem uso legítimo pra abrir o Menu Iniciar remoto
+  // num suporte de loja — nunca encaminhar essa tecla.
+  it('mode normal: tecla Windows (keyCode 91/92) NUNCA é encaminhada', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    fireEvent.keyDown(window, { keyCode: 91 })
+    fireEvent.keyUp(window, { keyCode: 91 })
+    fireEvent.keyDown(window, { keyCode: 92 })
+    fireEvent.keyUp(window, { keyCode: 92 })
+
+    expect(sendKeyEventMock).not.toHaveBeenCalled()
+  })
+
+  it('mode normal: tecla normal (ex: "a") ainda é encaminhada normalmente', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    fireEvent.keyDown(window, { keyCode: 65 })
+    fireEvent.keyUp(window, { keyCode: 65 })
+
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 65)
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 65)
+  })
+
+  // Defesa em profundidade pro mesmo problema: QUALQUER tecla cujo keyup
+  // se perca (não só Windows — perder o foco por qualquer motivo) não
+  // pode ficar travada na máquina remota pra sempre. blur/aba escondida
+  // soltam tudo que ainda está marcado como pressionado.
+  it('perder o foco da janela (blur) solta automaticamente teclas que ainda estavam pressionadas', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    fireEvent.keyDown(window, { keyCode: 17 }) // Ctrl pressionado, keyup nunca chega
+    sendKeyEventMock.mockClear()
+
+    fireEvent.blur(window)
+
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 17)
+  })
+
+  it('aba escondida (visibilitychange) também solta teclas pressionadas', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    fireEvent.keyDown(window, { keyCode: 18 }) // Alt pressionado
+    sendKeyEventMock.mockClear()
+
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    fireEvent(document, new Event('visibilitychange'))
+
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 18)
+  })
+
+  // Botão manual (⌨️ Liberar teclas travadas): rede de segurança separada
+  // do rastreamento automático — cobre qualquer tecla travada que o
+  // rastreamento não previu (ex: ficou presa antes desta janela abrir).
+  it('mode normal: botão "Liberar teclas travadas" manda keyup pra Win/Ctrl/Alt/Shift', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+    fireEvent.click(screen.getByText('⌨️ Liberar teclas travadas'))
+
+    ;[91, 92, 17, 162, 163, 18, 164, 165, 16, 160, 161].forEach((code) => {
+      expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', code)
+    })
+  })
+
+  it('desmontar o componente com tecla ainda pressionada também solta ela', () => {
+    const { unmount } = render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    fireEvent.keyDown(window, { keyCode: 16 }) // Shift pressionado, nunca solto
+    sendKeyEventMock.mockClear()
+
+    unmount()
+
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 16)
+  })
+
+  it('mode shadow: botão "Liberar teclas travadas" não aparece', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    expect(screen.queryByText('⌨️ Liberar teclas travadas')).not.toBeInTheDocument()
+  })
+
   it('mode normal: botão de bloqueio aparece e manda lock-local-input/unlock-local-input', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })

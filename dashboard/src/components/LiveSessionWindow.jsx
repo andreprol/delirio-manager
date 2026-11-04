@@ -4,6 +4,24 @@ import { api, setServerUrl, setAdminSecret } from '../api'
 
 const MOUSE_BUTTON = { 0: 'left', 2: 'right' }
 
+// Tecla Windows (VK_LWIN/VK_RWIN) nunca é encaminhada: ela abre o Menu
+// Iniciar LOCAL (do lado do operador) e rouba o foco da janela ANTES do
+// keyup disparar — o navegador/Electron nunca vê o keyup correspondente,
+// a tecla fica "pressionada" pro Windows da loja pra sempre, e toda tecla
+// seguinte vira atalho (Win+E abre Explorer, Win+D minimiza tudo, etc. —
+// "aperta uma tecla e acontece outra coisa na tela"). Achado ao vivo
+// 04/11/2026, ASSBOH travou assim no primeiro teste do fix de teclado.
+// Sem caso de uso real pra abrir o Menu Iniciar remoto num suporte de
+// loja — mais seguro nunca mandar do que torcer pro keyup sempre chegar.
+const BLOCKED_KEYCODES = new Set([91, 92])
+
+// Lista fixa pro botão de emergência "Liberar teclas travadas" — não
+// depende do rastreamento de heldKeysRef (que só sabe o que ESTA janela
+// viu desde que foi aberta); solta por garantia as modificadoras mais
+// perigosas de travar, mesmo que o keydown tenha acontecido antes da
+// sessão atual ou por um caminho que o rastreamento não previu.
+const EMERGENCY_RELEASE_KEYCODES = [91, 92, 17, 162, 163, 18, 164, 165, 16, 160, 161]
+
 export function LiveSessionWindow() {
   const [session, setSession] = useState(null) // { sessionId, machineId, mode, dashboardToken, serverUrl }
   const [status, setStatus] = useState('connecting')
@@ -285,17 +303,66 @@ export function LiveSessionWindow() {
     sendMouseEvent('mousemove', e.clientX, e.clientY)
   }
 
+  // Teclas atualmente "pressionadas" do ponto de vista desta janela — toda
+  // vez que o foco pode ter se perdido (blur, aba escondida, troca de
+  // modo, desmontagem) soltamos tudo que ainda está aqui, por garantia.
+  // Sem isso, qualquer evento que impeça o onKeyUp normal de disparar
+  // (não só a tecla Windows — Alt-Tab, perder foco pro SO por qualquer
+  // motivo) deixa a tecla logicamente travada na máquina remota pra
+  // sempre, sem nenhum jeito de perceber até alguém tentar digitar de
+  // novo e ver "outra coisa" acontecer na tela.
+  const heldKeysRef = useRef(new Set())
+
+  const releaseAllHeldKeys = useCallback(() => {
+    heldKeysRef.current.forEach((code) => sendKeyEvent('keyup', code))
+    heldKeysRef.current.clear()
+  }, [sendKeyEvent])
+
+  // Botão manual de emergência (ver EMERGENCY_RELEASE_KEYCODES) — rede de
+  // segurança separada de releaseAllHeldKeys: cobre o caso em que o keyup
+  // se perdeu ANTES desta janela sequer registrar a tecla como pressionada
+  // (ex: ela foi aberta depois do keydown problemático).
+  function releaseStuckKeys() {
+    EMERGENCY_RELEASE_KEYCODES.forEach((code) => {
+      sendKeyEvent('keyup', code)
+      // Só remove do rastreamento as teclas que de fato soltamos aqui —
+      // um clear() geral apagaria também teclas NÃO-modificadoras que o
+      // operador ainda esteja legitimamente segurando (ex: uma letra em
+      // repeat), fazendo o safety-net automático de blur/visibilitychange
+      // "esquecer" delas e nunca soltá-las depois (achado 🟡 do
+      // code-reviewer, 04/11/2026).
+      heldKeysRef.current.delete(code)
+    })
+  }
+
   useEffect(() => {
     if (session?.mode !== 'normal') return
-    function onKeyDown(e) { sendKeyEvent('keydown', e.keyCode) }
-    function onKeyUp(e) { sendKeyEvent('keyup', e.keyCode) }
+    function onKeyDown(e) {
+      if (BLOCKED_KEYCODES.has(e.keyCode)) return
+      heldKeysRef.current.add(e.keyCode)
+      sendKeyEvent('keydown', e.keyCode)
+    }
+    function onKeyUp(e) {
+      if (BLOCKED_KEYCODES.has(e.keyCode)) return
+      heldKeysRef.current.delete(e.keyCode)
+      sendKeyEvent('keyup', e.keyCode)
+    }
+    function onBlur() { releaseAllHeldKeys() }
+    function onVisibilityChange() {
+      if (document.visibilityState === 'hidden') releaseAllHeldKeys()
+    }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      releaseAllHeldKeys()
     }
-  }, [session?.mode, sendKeyEvent])
+  }, [session?.mode, sendKeyEvent, releaseAllHeldKeys])
 
   if (!session) {
     return <div style={{ color: '#9ca3af', padding: 24, fontFamily: 'monospace' }}>Conectando à sessão...</div>
@@ -321,6 +388,16 @@ export function LiveSessionWindow() {
             title={status !== 'connected' ? 'Sem conexão com a sessão ao vivo' : undefined}
           >
             {inputLocked ? '🔓 Destravar usuário' : '🔒 Travar usuário'}
+          </button>
+        )}
+        {session.mode === 'normal' && (
+          <button
+            className="btn btn-secondary"
+            onClick={releaseStuckKeys}
+            disabled={ending || status !== 'connected'}
+            title="Solta Win/Ctrl/Alt/Shift caso alguma tenha ficado travada (ex: tecla abriu um menu e roubou o foco antes do keyup sair)"
+          >
+            ⌨️ Liberar teclas travadas
           </button>
         )}
         <button className={`btn ${recording ? 'btn-danger' : 'btn-secondary'}`} onClick={toggleRecording} disabled={ending}>
