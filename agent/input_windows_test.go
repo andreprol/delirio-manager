@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func TestParseInputMessage(t *testing.T) {
@@ -136,6 +137,75 @@ func TestHandleLiveSessionInputNormalModeInjects(t *testing.T) {
 		}
 		handleLiveSessionInput([]byte("não é json"), liveSessionNormalMode, "s1")
 	})
+}
+
+// TestHandleLiveSessionInputKeyboard cobre o dispatch de keydown/keyup —
+// mesmo padrão de TestHandleLiveSessionInputNormalModeInjects pra mouse,
+// mas pro caminho de teclado que faltava (companion ignorava com
+// "tipo de input não suportado ainda" até esta correção).
+func TestHandleLiveSessionInputKeyboard(t *testing.T) {
+	original := injectKeyboardFn
+	defer func() { injectKeyboardFn = original }()
+
+	t.Run("keydown chama injectKeyboardFn(keyCode, true)", func(t *testing.T) {
+		var gotCode uint16
+		var gotDown bool
+		called := false
+		injectKeyboardFn = func(keyCode uint16, down bool) error {
+			called, gotCode, gotDown = true, keyCode, down
+			return nil
+		}
+		handleLiveSessionInput([]byte(`{"type":"keydown","keyCode":65}`), liveSessionNormalMode, "s1")
+		if !called || gotCode != 65 || !gotDown {
+			t.Errorf("called=%v keyCode=%d down=%v, want true/65/true", called, gotCode, gotDown)
+		}
+	})
+
+	t.Run("keyup chama injectKeyboardFn(keyCode, false)", func(t *testing.T) {
+		var gotDown bool
+		called := false
+		injectKeyboardFn = func(keyCode uint16, down bool) error {
+			called, gotDown = true, down
+			return nil
+		}
+		handleLiveSessionInput([]byte(`{"type":"keyup","keyCode":65}`), liveSessionNormalMode, "s1")
+		if !called || gotDown {
+			t.Errorf("called=%v down=%v, want true/false", called, gotDown)
+		}
+	})
+
+	t.Run("mode shadow não injeta teclado", func(t *testing.T) {
+		called := false
+		injectKeyboardFn = func(keyCode uint16, down bool) error { called = true; return nil }
+		handleLiveSessionInput([]byte(`{"type":"keydown","keyCode":65}`), "shadow", "s1")
+		if called {
+			t.Error("injectKeyboardFn não deveria ter sido chamada em mode shadow")
+		}
+	})
+}
+
+// TestInjectKeyboardInvalidKeyCode cobre o fail-safe de keyCode=0 (campo
+// omitido/ausente na mensagem JSON, já que KeyCode usa omitempty) — evita
+// mandar SendInput com VK inválido.
+func TestInjectKeyboardInvalidKeyCode(t *testing.T) {
+	if err := injectKeyboard(0, true); err == nil {
+		t.Error("esperava erro pra keyCode 0")
+	}
+}
+
+// TestInputKeybdSizeMatchesInput garante que inputKeybd (usado pra eventos
+// de teclado) tem o MESMO tamanho total de input (usado pra mouse) — os
+// dois espelham a união INPUT do Win32, cujo tamanho é o do maior membro
+// (MOUSEINPUT); SendInput exige esse cbSize mesmo pra um evento KEYBDINPUT,
+// que sozinho ocupa menos bytes. Perder o padding de inputKeybd faria
+// SendInput falhar silenciosamente em runtime (ERROR_INVALID_PARAMETER),
+// nunca detectado em CI (SendInput não é chamado nos outros testes).
+func TestInputKeybdSizeMatchesInput(t *testing.T) {
+	wantSize := unsafe.Sizeof(input{})
+	gotSize := unsafe.Sizeof(inputKeybd{})
+	if gotSize != wantSize {
+		t.Errorf("unsafe.Sizeof(inputKeybd{}) = %d, want %d (igual a input{})", gotSize, wantSize)
+	}
 }
 
 // TestClampInt32 cobre o fix de overflow: sem clamp, x=100000 com

@@ -36,13 +36,14 @@ func parseInputMessage(data []byte) (inputMessage, error) {
 // não injeta.
 const liveSessionNormalMode = "normal"
 
-// injectMouseMoveFn e injectMouseButtonFn apontam pra implementação real —
-// indireção que permite mockar a injeção em teste (handleLiveSessionInput)
-// sem chamar SendInput de verdade, mesmo padrão já usado em
-// captureScreenJPEGFn/startLiveSessionFn no projeto.
+// injectMouseMoveFn, injectMouseButtonFn e injectKeyboardFn apontam pra
+// implementação real — indireção que permite mockar a injeção em teste
+// (handleLiveSessionInput) sem chamar SendInput de verdade, mesmo padrão já
+// usado em captureScreenJPEGFn/startLiveSessionFn no projeto.
 var (
 	injectMouseMoveFn   = injectMouseMove
 	injectMouseButtonFn = injectMouseButton
+	injectKeyboardFn    = injectKeyboard
 )
 
 // handleLiveSessionInput processa 1 mensagem de input recebida pela conexão
@@ -72,28 +73,65 @@ func handleLiveSessionInput(data []byte, mode string, sessionID string) {
 // dispatchLiveSessionInput é o switch de verdade — extraído de
 // handleLiveSessionInput (que fica só com mode-check + parse) só pra
 // reduzir a complexidade ciclomática de cada função (linter cyclop, max 10
-// por função; 6 cases + validação de JSON numa função só passava do
-// limite).
+// por função). Cada case chama uma função que já absorve o "if err" +
+// log (applyMouseMove/applyMouseButton/applyKeyboardInput/
+// applyLocalInputLock) — sem isso, 8 cases + 5 "if err" inline no mesmo
+// corpo passam do limite (confirmado: 14 ao acrescentar keydown/keyup
+// inline, antes da extração).
 func dispatchLiveSessionInput(msg inputMessage, sessionID string) {
 	switch msg.Type {
 	case "mousemove":
-		if err := injectMouseMoveFn(msg.X, msg.Y); err != nil {
-			logWarn(fmt.Sprintf("companion: falha ao injetar mousemove: %v", err))
-		}
+		applyMouseMove(msg)
 	case "mousedown":
-		if err := injectMouseButtonFn(msg.Button, true); err != nil {
-			logWarn(fmt.Sprintf("companion: falha ao injetar mousedown: %v", err))
-		}
+		applyMouseButton(msg, true)
 	case "mouseup":
-		if err := injectMouseButtonFn(msg.Button, false); err != nil {
-			logWarn(fmt.Sprintf("companion: falha ao injetar mouseup: %v", err))
-		}
+		applyMouseButton(msg, false)
+	case "keydown":
+		applyKeyboardInput(msg, true)
+	case "keyup":
+		applyKeyboardInput(msg, false)
 	case "lock-local-input":
 		applyLocalInputLock(sessionID, true)
 	case "unlock-local-input":
 		applyLocalInputLock(sessionID, false)
 	default:
 		logWarn(fmt.Sprintf("companion: tipo de input não suportado ainda: %s", msg.Type))
+	}
+}
+
+// applyMouseMove chama injectMouseMoveFn e loga o resultado — extraído do
+// switch de dispatchLiveSessionInput só pra reduzir a complexidade
+// ciclomática da função (linter cyclop, max 10 por função), mesmo padrão
+// já usado por applyLocalInputLock.
+func applyMouseMove(msg inputMessage) {
+	if err := injectMouseMoveFn(msg.X, msg.Y); err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao injetar mousemove: %v", err))
+	}
+}
+
+// applyMouseButton chama injectMouseButtonFn e loga o resultado — mesmo
+// motivo de applyMouseMove (mousedown quando down=true, mouseup quando
+// down=false).
+func applyMouseButton(msg inputMessage, down bool) {
+	if err := injectMouseButtonFn(msg.Button, down); err != nil {
+		verb := "mouseup"
+		if down {
+			verb = "mousedown"
+		}
+		logWarn(fmt.Sprintf("companion: falha ao injetar %s: %v", verb, err))
+	}
+}
+
+// applyKeyboardInput chama injectKeyboardFn e loga o resultado — mesmo
+// motivo de applyMouseMove (keydown quando down=true, keyup quando
+// down=false).
+func applyKeyboardInput(msg inputMessage, down bool) {
+	if err := injectKeyboardFn(msg.KeyCode, down); err != nil {
+		verb := "keyup"
+		if down {
+			verb = "keydown"
+		}
+		logWarn(fmt.Sprintf("companion: falha ao injetar %s: %v", verb, err))
 	}
 }
 
@@ -205,11 +243,68 @@ func injectMouseButton(button string, down bool) error {
 }
 
 func sendInputStruct(in input) error {
-	ret, _, err := procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
+	return sendInputRaw(unsafe.Pointer(&in), unsafe.Sizeof(in))
+}
+
+func sendInputRaw(ptr unsafe.Pointer, size uintptr) error {
+	ret, _, err := procSendInput.Call(1, uintptr(ptr), size)
 	if ret == 0 {
 		return fmt.Errorf("SendInput falhou: %w", err)
 	}
 	return nil
+}
+
+const (
+	inputKeyboard  = 1      // Win32 INPUT_KEYBOARD
+	keyEventFKeyUp = 0x0002 // Win32 KEYEVENTF_KEYUP — ausente = key down
+)
+
+// keybdInput espelha o struct KEYBDINPUT do Win32.
+type keybdInput struct {
+	WVk         uint16
+	WScan       uint16
+	DwFlags     uint32
+	Time        uint32
+	DwExtraInfo uintptr
+}
+
+// inputKeybd espelha INPUT com o membro Ki ativo. A união real do Win32
+// (MOUSEINPUT/KEYBDINPUT/HARDWAREINPUT) tem o tamanho do MAIOR membro —
+// MOUSEINPUT, 32 bytes (ver mouseInput/input acima) — e o parâmetro cbSize
+// de SendInput exige esse tamanho de união mesmo pra um evento de teclado,
+// cujo KEYBDINPUT sozinho ocupa só 24 bytes. Sem o padding explícito abaixo
+// (8 bytes, fechando em 40 = mesmo unsafe.Sizeof(input{})), cbSize ficaria
+// menor que o esperado e SendInput falharia com ERROR_INVALID_PARAMETER.
+type inputKeybd struct {
+	Type uint32
+	_    uint32
+	Ki   keybdInput
+	_    [8]byte
+}
+
+// injectKeyboard não seta KEYEVENTF_EXTENDEDKEY — achado 🟡 do
+// code-reviewer: VKs "estendidos" no Win32 real (setas, Insert/Delete/
+// Home/End/PgUp/PgDn, Ctrl/Alt direitos, Enter/"/" do numpad) chegam com
+// wVk correto (o navegador já distingue esses casos no keyCode), então a
+// maioria dos apps que só leem WM_KEYDOWN.wParam funciona bem — mas um app
+// ou hook de baixo nível que olha o bit de scan code estendido (lParam
+// bit 24) pode confundir Numpad Enter com Enter normal, ou Ctrl/Alt
+// direito com o esquerdo. Não corrigido agora (precisa mapear a lista de
+// VKs estendidos e testar contra hardware real de loja antes de mexer) —
+// documentado aqui pra não virar "atalho X não funciona" sem explicação.
+func injectKeyboard(keyCode uint16, down bool) error {
+	if keyCode == 0 {
+		return fmt.Errorf("injectKeyboard: keyCode inválido (0)")
+	}
+	var flags uint32
+	if !down {
+		flags = keyEventFKeyUp
+	}
+	in := inputKeybd{
+		Type: inputKeyboard,
+		Ki:   keybdInput{WVk: keyCode, DwFlags: flags},
+	}
+	return sendInputRaw(unsafe.Pointer(&in), unsafe.Sizeof(in))
 }
 
 // procBlockInput bloqueia (ou libera) TODO input físico de mouse/teclado do
