@@ -48,6 +48,11 @@ server/logs/
 *.txt
 !README.md
 
+# Dumps de diagnóstico fleet-wide (deploy/*.ps1 -Action Verify/Diag) --
+# hostnames/contas internas das lojas, saída gerada, não faz sentido
+# versionar num repo público.
+deploy/*.csv
+
 # OS
 .DS_Store
 Thumbs.db
