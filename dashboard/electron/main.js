@@ -115,6 +115,17 @@ function createLiveSessionWindow(params) {
     },
   })
 
+  // setMenu(null) (não só setMenuBarVisibility(false)): Electron cria um menu
+  // PADRÃO automaticamente quando nenhum é definido (Edit > Paste com
+  // acelerador Ctrl+V, entre outros) -- setMenuBarVisibility só esconde a
+  // BARRA visualmente, o acelerador nativo continua ativo e intercepta
+  // Ctrl+V ANTES do keydown chegar no DOM/React desta janela. Achado ao vivo
+  // 05/11/2026: Ctrl+V na sessão Normal nunca disparava nosso onKeyDown
+  // (zero erro no console -- o código simplesmente nunca rodava), caindo no
+  // role 'paste' padrão do Electron em vez da interceptação de
+  // clipboard-paste (LiveSessionWindow.jsx). setMenu(null) remove o menu
+  // inteiro (barra + aceleradores), não só a visibilidade.
+  liveWin.setMenu(null)
   liveWin.setMenuBarVisibility(false)
 
   if (IS_DEV) {
