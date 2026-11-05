@@ -255,12 +255,22 @@ becos sem saída reais:
    do Windows, nunca assumir que copiar de dentro do app Claude Code (chat) grava no clipboard
    real — verificar com `readClipboardText()` no DevTools antes de desconfiar do código.**
 
-**Deploy**: dashboard v1.0.102 (release automático). Agent com a feature só está na **AUXILIAR-ASS**
-(`064565d3-0f88-4dd3-87eb-d81a0ad093a8`, Assembléia) via `deploy/push-agent-to-machines.ps1`
-(sem bump de versão/tag — fora do feed de auto-update, ver seção própria mais abaixo). Binário
-confirmado: `size=7974400 lastWrite=11/05/2026 13:16:47` (`C:\Program Files\DelirioAgent\
-delirio-agent.exe`). **As outras ~129 máquinas da frota continuam com o agent antigo, sem esta
-feature**, até alguém rodar o push nelas (ou até uma tag/release fleet-wide incluir essa versão).
+**Deploy**: dashboard v1.0.102 (release automático). Agent com a feature confirmado funcionando na
+**AUXILIAR-ASS** (`064565d3-0f88-4dd3-87eb-d81a0ad093a8`, Assembléia) via
+`deploy/push-agent-to-machines.ps1` (sem bump de versão/tag — fora do feed de auto-update, ver
+seção própria mais abaixo). Binário: `size=7974400 lastWrite=11/05/2026 13:16:47`
+(`C:\Program Files\DelirioAgent\delirio-agent.exe`).
+
+**Rollout fleet-wide rodado na mesma sessão** (05/11/2026, mesmo exe, `-Filter "."`): 0 ok /
+123 sem-resposta (padrão normal — timeout de 25s não é falha, é "disparado, confirmar no
+dashboard", mesmo comportamento documentado desde 04/11) / **7 erro 500 real** (resposta de erro
+de verdade do servidor, não timeout — provável sobrecarga momentânea com ~130 chamadas
+simultâneas). Confirmados por nome: `TERMBSHOP3`, `TERMPLAZA2`, `TERMRSUL5` (+ outras 4 não
+anotadas na sessão). **Pendente**: 1) confirmar no dashboard quais máquinas realmente pegaram o
+binário novo (testar Ctrl+V numa amostra), 2) re-rodar o push isolado nas 7 que deram erro 500 de
+verdade. Máquinas offline no momento do push (ex: `Gerente-Tijuca`, `SECRETARIA-TIJUCA` v1.5.28,
+`VTT-TIJUCA` v1.7.0) ficaram de fora — só pegam quando reconectarem e alguém rodar o push de novo
+nelas.
 
 ## Bloqueio de Shutdown Local — EM ANDAMENTO, não funciona ainda (05/11/2026)
 
@@ -291,45 +301,112 @@ tudo porque funcionários de estoque/cozinha desligam a CPU ao sair.
    mas **a aplicação não está pegando de verdade** (ver abaixo) — não rodar `-Action Apply` em
    mais nenhuma máquina até entender a causa raiz.
 
-### Estado real confirmado na AUXILIAR-ASS, 05/11/2026 (não é só suspeita, é teste ao vivo)
+### 1ª sessão (05/11/2026, manhã) — `secedit /configure` falhava, causa raiz achada
 
-- `-Action Apply` rodou sem erro aparente, backup salvo em
-  `deploy/shutdown-privilege-backups/AUXILIAR-ASS.txt` (gitignored, `*.txt` no `.gitignore` raiz).
-- Re-exportar a política logo depois (`secedit /export /areas USER_RIGHTS`) mostra
-  `SeShutdownPrivilege` **ausente da lista** (nem com os SIDs antigos, nem com os novos) —
-  resultado `secedit-raw=[]` no `-Action Diag`.
-- `whoami /priv` da conta `ASS AUXILIAR01` (a conta REAL logada, não SYSTEM) continua mostrando
-  `SeShutdownPrivilege` presente, estado `Desativado`.
-- **🔴 `Desativado` NÃO significa bloqueado** — é o estado normal/dormente de qualquer privilégio
-  no Windows até a API que precisa dele (`InitiateSystemShutdownEx`, chamada por `shutdown.exe`)
-  ativar via `AdjustTokenPrivileges` na hora de usar. Se o privilégio não existisse no token, ele
-  nem apareceria na lista do `whoami /priv` — aparecer como "Desativado" prova que a conta AINDA
-  TEM o privilégio.
-- **Prova definitiva**: testado ao vivo (`shutdown /s /t 300` colado via clipboard-paste na
-  sessão Normal) — **o shutdown foi agendado com sucesso** ("Você escolheu sair", countdown de
-  5min visível). Cancelado na hora com `shutdown /a` antes de completar. Ou seja: **o bloqueio
-  não está funcionando nessa máquina**, apesar do `Apply` ter "rodado".
+- `-Action Apply` (versão secedit, antiga) rodou sem erro aparente, mas re-exportar a política
+  logo depois mostrava `SeShutdownPrivilege` **ausente da lista** (nem SIDs antigos nem novos).
+- `whoami /priv` da conta `ASS AUXILIAR01` continuava mostrando `SeShutdownPrivilege` presente,
+  estado `Desativado` — 🔴 **`Desativado` NÃO significa bloqueado**, é o estado normal/dormente de
+  qualquer privilégio que a conta TEM (ver [[feedback_whoami_priv_desativado_nao_e_bloqueio]]).
+- **Causa raiz confirmada** (2ª rodada, com `Diag` melhorado capturando `$LASTEXITCODE` + log real
+  do secedit): `secedit /configure` retornava **exit code 1**, log "não foi feito mapeamento entre
+  os nomes de conta e as identificações de segurança". `/areas USER_RIGHTS` reprocessa e tenta
+  resolver TODOS os SIDs de TODAS as ~30 privileges da seção, não só a linha editada — SIDs de
+  serviço órfãos (`*S-1-5-80-...`, hash de serviço que pode não existir mais na máquina, comum em
+  loja com imagem antiga) em OUTRAS linhas derrubam a operação inteira, mesmo sem relação com
+  `SeShutdownPrivilege`. Não era race, não era `local.sdb` cacheado — era isso.
 
-### Próxima sessão deve
+### Fix aplicado (mesma sessão) — LSA API em vez de `secedit /configure`
 
-1. Investigar por que `secedit /configure /db "$env:windir\security\local.sdb" /cfg <arquivo>
-   /areas USER_RIGHTS /quiet` não está persistindo a mudança — hipóteses não confirmadas:
-   process de exit code nunca é checado (script só faz `| Out-Null`, pode estar falhando
-   silenciosamente); `local.sdb` pode ter conteúdo cacheado de antes conflitando no merge; algum
-   refresh periódico de política local reaplicando o padrão por cima. Capturar
-   `secedit /configure ... | Tee-Object` (sem `/quiet`, sem suprimir saída) e olhar o texto real,
-   e checar `$LASTEXITCODE` depois da chamada — o script atual nunca fez isso.
-2. Rodar `-Action Verify` ou `-Action Diag` na AUXILIAR-ASS antes de mexer em mais nada, pra
-   confirmar o estado atual (pode ter mudado desde 05/11).
-3. Considerar rodar `-Action Rollback` na AUXILIAR-ASS por higiene, mesmo a mudança não tendo
-   feito efeito prático — deixa o ambiente num estado conhecido.
-4. Lembrar: Windows não separa shutdown de restart no mesmo privilégio — bloquear um bloqueia o
-   outro, sem exceção possível (André já confirmou que só shutdown seria ideal, mas aceitou essa
-   limitação técnica antes).
-5. Hook de segurança da plataforma bloqueia qualquer comando disparado pelo Claude Code que leia
-   `.secrets/admin-secret.txt` e chame a API do Delirio Manager (confirmado múltiplas vezes nesta
-   sessão) — todo comando desse tipo precisa ser dado pro André rodar no terminal dele, nunca
-   executado direto por aqui, mesmo com confirmação no chat.
+`deploy/block-shutdown-privilege.ps1` reescrito: `Apply`/`Rollback` agora usam
+`LsaAddAccountRights`/`LsaRemoveAccountRights` via P/Invoke direto (preâmbulo `$lsaPreamble` no
+script) em vez de exportar/editar/reimportar a seção inteira — mexe só no `SeShutdownPrivilege` e
+nos 3 SIDs alvo, sem reprocessar/resolver o resto da seção `USER_RIGHTS`. `Verify`/`Diag`
+continuam lendo via `secedit /export` (isso sempre funcionou certo, só a ESCRITA via `/configure`
+quebrava). Validado:
+1. **Local** (máquina do André, grupo `Guests` S-1-5-32-546, ADD+REMOVE round-trip limpo).
+2. **Remoto na AUXILIAR-ASS** — `Apply` rodou OK, `secedit /export` confirmou estável (2 leituras
+   +2s, exit 0 nas duas) `SeShutdownPrivilege = *S-1-5-18,*S-1-5-19,*S-1-5-20` — política correta
+   e persistente de verdade, sem Admins/Users/PowerUsers.
+
+**Bug secundário achado e corrigido no mesmo fix**: o Apply estava sobrescrevendo
+`deploy/shutdown-privilege-backups/<hostname>.txt` em toda execução — numa 2ª rodada em que a
+política já estava vazia (resquício da falha do secedit), o backup virou o literal `"NAO
+ENCONTRADA"` em vez do valor genuíno de fábrica. Script agora só salva o backup se o arquivo ainda
+não existir. Backup da AUXILIAR-ASS restaurado manualmente pro valor real:
+`SeShutdownPrivilege = *S-1-5-32-544,*S-1-5-32-545,*S-1-5-32-551`.
+
+**Script ainda não commitado** (`deploy/block-shutdown-privilege.ps1` modificado, não staged) —
+próxima sessão deve revisar e commitar antes de rodar em mais máquinas.
+
+### 🔴 PROBLEMA ATUAL — política correta, mas o TOKEN da sessão ainda tem o privilégio
+
+Mesmo com a política confirmada correta e ESTÁVEL (reconfirmada de novo depois de logoff/logon
+completo da conta, via `-Action Diag`), `shutdown /s /t 300` continuou funcionando sem bloqueio
+na AUXILIAR-ASS. Investigação eliminou hipóteses, nesta ordem:
+
+1. **Race/timing do secedit** — descartado, 2 leituras +2s idênticas, exit 0.
+2. **GPO reaplicando a política no logon** — descartado via `gpresult /r`: zero GPO aplicada
+   (nem local), "Objetos de política de grupo aplicados: N/A", última aplicação 27/10/2026 (antes
+   de qualquer mudança nossa).
+3. **Token cacheado da sessão antiga** — descartado: André fez logoff genuíno e logou numa sessão
+   NOVA antes do teste, mesmo assim `whoami /priv` da sessão nova ainda mostra o privilégio.
+
+**Hipóteses restantes, nenhuma confirmada ainda**:
+- (a) LSASS cacheia o mapeamento de privilégios em memória e só releria do banco em certos
+  eventos (ex: reboot completo) — `secedit /configure` (caminho GPO "oficial") pode disparar uma
+  notificação de invalidação que a chamada direta `LsaAddAccountRights`/`LsaRemoveAccountRights`
+  não dispara, ao contrário do que a doc da própria API sugere ("log off/log on" deveria bastar).
+- (b) Token ELEVADO via UAC (prompt "Administrador") de um membro do grupo Administradores recebe
+  privilégios "de admin" na hora da elevação, ignorando customização de User Rights Assignment —
+  se confirmado, é limitação de fábrica do Plano C inteiro (a conta PRECISA ficar no grupo Admin
+  por causa do Aloha/NCR, então qualquer prompt elevado sempre teria o privilégio de volta).
+
+**Teste decisivo definido mas NÃO CONCLUÍDO**: `Restart-Computer -Force` (reboot completo, não só
+logoff) na AUXILIAR-ASS, depois logar de novo e testar `shutdown /s /t 300` no mesmo tipo de
+prompt elevado.
+- Se bloquear → hipótese (a), documentar que reboot completo é necessário (não só logoff/logon).
+- Se não bloquear → hipótese (b), Plano C inteiro precisa reavaliação — provavelmente não dá pra
+  bloquear via privilégio pra contas que também precisam ser Admin; precisa pensar outro mecanismo
+  (ex: interceptar `shutdown.exe` em nível de aplicação, hook, ou política diferente).
+
+**Onde a sessão de 05/11 parou, exatamente** (retomar daqui): máquina reiniciada
+(`Restart-Computer -Force`), demorou **~15-20min pra voltar** (fora do normal — pode ter sido
+Windows Update aplicando durante o restart). Agent voltou `online` (heartbeat), mas o Acesso
+Remoto modo Normal não mostrava imagem — **comportamento esperado, não bug**: ninguém tinha
+logado ainda, tela de login/lock do Windows não tem sessão interativa ativa (sem `explorer.exe`),
+e a captura do modo Normal (GDI/DXGI) só funciona com sessão ativa. André acessou via outra
+ferramenta (tipo AnyDesk, que consegue capturar a tela de login por mecanismo diferente — ver
+pendência de produto abaixo) e estava no campo de senha quando outra pessoa começou a mexer na
+máquina fisicamente/remotamente (operação da loja) e a sessão precisou pausar. **O teste pós-reboot
+NUNCA foi concluído** — ninguém testou `shutdown /s /t 300` depois do boot completo ainda.
+
+**Próxima sessão (hoje à noite, loja fecha ~2h depois das 17h de 05/11) deve, nesta ordem**:
+1. Confirmar que a AUXILIAR-ASS está acessível (loja fechada, deve estar mais tranquilo).
+2. Logar na sessão, abrir prompt elevado (Administrador), testar `shutdown /s /t 300`.
+3. Se bloquear: sucesso confirmado, documentar que reboot é necessário, considerar rollout pra
+   mais máquinas (começar por 1-2 BOH, não fleet-wide ainda).
+4. Se não bloquear: reportar pro André que hipótese (b) é a real, Plano C não resolve pra contas
+   admin — não insistir em mais variações de privilégio sem decisão consciente dele sobre next
+   steps (rebaixar conta / outro mecanismo / aceitar limitação).
+5. Revisar e commitar `deploy/block-shutdown-privilege.ps1` (LSA API) antes de rodar em mais
+   máquinas — ainda não passou por `code-reviewer` nem foi commitado.
+6. Lembrar: Windows não separa shutdown de restart no mesmo privilégio — bloquear um bloqueia o
+   outro, sem exceção possível (André já aceitou essa limitação antes).
+7. Hook de segurança da plataforma bloqueia qualquer comando disparado pelo Claude Code que leia
+   `.secrets/admin-secret.txt` e chame a API do Delirio Manager — todo comando desse tipo precisa
+   ser dado pro André rodar no terminal dele, nunca executado direto por aqui, mesmo com
+   confirmação no chat (hook não vê o chat).
+
+### 🆕 Pendência de produto (achada nesta sessão, não é bug) — Acesso Remoto não mostra tela de login
+
+Modo Normal (GDI/DXGI) só captura o desktop da sessão INTERATIVA ativa — não existe sessão (nem
+`explorer.exe`) na tela de login/lock do Windows, então não tem o que capturar. Outras ferramentas
+de acesso remoto (ex: AnyDesk) conseguem mostrar a tela de login porque usam mecanismo diferente
+(provavelmente mirror driver, ou serviço com "interact with desktop" habilitado, que funciona
+mesmo no Winlogon/secure desktop). Virar feature futura — trabalho grande (driver diferente do
+atual), não é prioridade imediata. Relevante pra qualquer cenário de reboot remoto: sem alguém
+fisicamente na loja ou outra ferramenta, não dá pra logar via Acesso Remoto depois de um reboot.
 
 ## Installed Skills
 
