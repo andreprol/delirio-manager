@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, dialog, clipboard } = require('electron')
 const path = require('path')
 const fs   = require('fs')
 const { spawn } = require('child_process')
@@ -343,6 +343,12 @@ app.whenReady().then(() => {
     const senderWin = BrowserWindow.fromWebContents(event.sender)
     if (senderWin && !senderWin.isDestroyed()) senderWin.__cleanupStarted = false
   })
+
+  // IPC: lê a área de transferência LOCAL do operador (nunca a da máquina
+  // remota) — usado pelo Ctrl+V interceptado em LiveSessionWindow.jsx (modo
+  // Normal) pra mandar o texto via clipboard-paste em vez de deixar o
+  // navegador/Electron colar o clipboard da sessão remota por engano.
+  ipcMain.handle('clipboard:read-text', () => clipboard.readText())
 
   // IPC: converte a gravação WebM (MediaRecorder, renderer) pra MP4 via
   // ffmpeg-static, pergunta onde salvar, grava .mp4 + .json de metadados.

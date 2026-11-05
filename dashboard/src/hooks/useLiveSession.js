@@ -131,5 +131,14 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     sendInput({ type, keyCode })
   }, [sendInput])
 
-  return { sendInput, sendMouseEvent, sendKeyEvent }
+  // sendClipboardPaste manda o texto do clipboard LOCAL do operador pro
+  // companion, que seta o clipboard remoto e já injeta Ctrl+V (ver
+  // agent/input_windows.go injectClipboardPaste) — usado pelo Ctrl+V
+  // interceptado em LiveSessionWindow.jsx, nunca repassa o keydown/keyup cru
+  // de 'V' pro companion (colaria o clipboard REMOTO em vez do local).
+  const sendClipboardPaste = useCallback((text) => {
+    sendInput({ type: 'clipboard-paste', text })
+  }, [sendInput])
+
+  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste }
 }

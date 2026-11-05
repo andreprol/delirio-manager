@@ -15,6 +15,10 @@ const MOUSE_BUTTON = { 0: 'left', 2: 'right' }
 // loja — mais seguro nunca mandar do que torcer pro keyup sempre chegar.
 const BLOCKED_KEYCODES = new Set([91, 92])
 
+// Ctrl (esquerdo) + 'V' — mesmos VKs de EMERGENCY_RELEASE_KEYCODES/onKeyDown.
+const VK_CONTROL = 17
+const VK_V = 86
+
 // Lista fixa pro botão de emergência "Liberar teclas travadas" — não
 // depende do rastreamento de heldKeysRef (que só sabe o que ESTA janela
 // viu desde que foi aberta); solta por garantia as modificadoras mais
@@ -44,7 +48,7 @@ export function LiveSessionWindow() {
   sessionRef.current = session
   recordingSecsRef.current = recordingSecs
 
-  const { sendInput, sendMouseEvent, sendKeyEvent } = useLiveSession({
+  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste } = useLiveSession({
     serverUrl: session?.serverUrl,
     sessionId: session?.sessionId,
     dashboardToken: session?.dashboardToken,
@@ -339,11 +343,48 @@ export function LiveSessionWindow() {
     if (session?.mode !== 'normal') return
     function onKeyDown(e) {
       if (BLOCKED_KEYCODES.has(e.keyCode)) return
+      // Ctrl+V intercetado: nunca encaminha o keydown cru de 'V' — isso
+      // colaria o clipboard da máquina REMOTA (área de transferência que o
+      // Windows da loja já tinha). Em vez disso lê o clipboard LOCAL do
+      // operador (Electron, via IPC) e manda clipboard-paste, que o
+      // companion resolve numa chamada só (seta clipboard remoto + injeta
+      // Ctrl+V).
+      //
+      // 🔴 bug real corrigido (code-reviewer): o `return` tinha que estar
+      // FORA do `!e.repeat` — antes, um evento de auto-repeat (segurar
+      // Ctrl+V, o SO manda keydown repetido) caía no `if` como falso e
+      // SEGUIA pro fluxo normal abaixo, encaminhando o keydown cru de 'V'
+      // pro remoto. Com Ctrl já down lá (reafirmado pelo próprio paste),
+      // isso disparava um Ctrl+V de verdade na máquina remota — colando o
+      // clipboard REMOTO, exatamente o vetor que esta interceptação existe
+      // pra bloquear. Repeat agora só pula o disparo de UM novo paste, mas
+      // continua interceptado/bloqueado (preventDefault + return) sempre.
+      if (e.ctrlKey && e.keyCode === VK_V) {
+        e.preventDefault()
+        if (e.repeat) return
+        window.electronAPI?.readClipboardText().then((text) => {
+          if (!text) return
+          sendClipboardPaste(text)
+          // injectClipboardPaste solta Ctrl no remoto ao final da sequência
+          // sintética — se o operador ainda está segurando Ctrl fisicamente
+          // (comum: Ctrl+V é 2 teclas, Ctrl já desceu antes), reafirma o
+          // keydown pra não dessincronizar o estado local/remoto.
+          if (heldKeysRef.current.has(VK_CONTROL)) sendKeyEvent('keydown', VK_CONTROL)
+        }).catch((err) => {
+          console.error('Falha ao ler clipboard local pra colar na sessão remota:', err)
+        })
+        return
+      }
       heldKeysRef.current.add(e.keyCode)
       sendKeyEvent('keydown', e.keyCode)
     }
     function onKeyUp(e) {
       if (BLOCKED_KEYCODES.has(e.keyCode)) return
+      // Keyup de 'V' sem keydown correspondente registrado (caso Ctrl+V
+      // interceptado acima, que nunca adiciona a heldKeysRef) — não manda
+      // um keyup órfão pro remoto, mesma fonte de verdade já usada pelo
+      // resto deste rastreamento (ver releaseStuckKeys).
+      if (e.keyCode === VK_V && !heldKeysRef.current.has(VK_V)) return
       heldKeysRef.current.delete(e.keyCode)
       sendKeyEvent('keyup', e.keyCode)
     }
@@ -362,7 +403,7 @@ export function LiveSessionWindow() {
       document.removeEventListener('visibilitychange', onVisibilityChange)
       releaseAllHeldKeys()
     }
-  }, [session?.mode, sendKeyEvent, releaseAllHeldKeys])
+  }, [session?.mode, sendKeyEvent, sendClipboardPaste, releaseAllHeldKeys])
 
   if (!session) {
     return <div style={{ color: '#9ca3af', padding: 24, fontFamily: 'monospace' }}>Conectando à sessão...</div>

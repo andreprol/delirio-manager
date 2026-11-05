@@ -5,12 +5,18 @@ import { LiveSessionWindow } from '../components/LiveSessionWindow'
 const sendInputMock = vi.fn()
 const sendMouseEventMock = vi.fn()
 const sendKeyEventMock = vi.fn()
+const sendClipboardPasteMock = vi.fn()
 let lastUseLiveSessionArgs = null
 
 vi.mock('../hooks/useLiveSession', () => ({
   useLiveSession: (args) => {
     lastUseLiveSessionArgs = args
-    return { sendInput: sendInputMock, sendMouseEvent: sendMouseEventMock, sendKeyEvent: sendKeyEventMock }
+    return {
+      sendInput: sendInputMock,
+      sendMouseEvent: sendMouseEventMock,
+      sendKeyEvent: sendKeyEventMock,
+      sendClipboardPaste: sendClipboardPasteMock,
+    }
   },
 }))
 
@@ -46,6 +52,7 @@ beforeEach(() => {
     reportCleanupFailed: vi.fn(),
     convertRecording: vi.fn().mockResolvedValue({ saved: true }),
     getConfig: vi.fn().mockResolvedValue({ serverUrl: 'https://s.example.com', adminSecret: 'secret-xyz' }),
+    readClipboardText: vi.fn().mockResolvedValue('shutdown /s /t 300'),
   }
 })
 
@@ -136,6 +143,94 @@ describe('LiveSessionWindow', () => {
 
     expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 65)
     expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 65)
+  })
+
+  // Ctrl+V é interceptado: nunca encaminha o keydown cru de 'V' (colaria o
+  // clipboard da máquina REMOTA) — lê o clipboard LOCAL via electronAPI e
+  // manda clipboard-paste, que o companion resolve numa chamada só.
+  it('mode normal: Ctrl+V lê o clipboard local e manda sendClipboardPaste, sem encaminhar "V" cru', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    await act(async () => {
+      fireEvent.keyDown(window, { keyCode: 86, ctrlKey: true })
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.readClipboardText).toHaveBeenCalled()
+    expect(sendClipboardPasteMock).toHaveBeenCalledWith('shutdown /s /t 300')
+    expect(sendKeyEventMock).not.toHaveBeenCalledWith('keydown', 86)
+  })
+
+  it('Ctrl+V com clipboard local vazio não manda clipboard-paste', async () => {
+    window.electronAPI.readClipboardText = vi.fn().mockResolvedValue('')
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    await act(async () => {
+      fireEvent.keyDown(window, { keyCode: 86, ctrlKey: true })
+      await Promise.resolve()
+    })
+
+    expect(sendClipboardPasteMock).not.toHaveBeenCalled()
+  })
+
+  // injectClipboardPaste (agent) solta Ctrl no remoto ao final da sequência
+  // sintética — se o operador ainda segura Ctrl fisicamente (Ctrl desceu
+  // antes de V, keydown já foi mandado), reafirma o keydown de Ctrl pro
+  // remoto não ficar dessincronizado do estado local.
+  it('Ctrl ainda pressionado localmente ao colar: reafirma keydown de Ctrl depois do paste', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    fireEvent.keyDown(window, { keyCode: 17 }) // Ctrl desce primeiro
+    sendKeyEventMock.mockClear()
+
+    await act(async () => {
+      fireEvent.keyDown(window, { keyCode: 86, ctrlKey: true })
+      await Promise.resolve()
+    })
+
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 17)
+  })
+
+  // 🔴 bug real achado pelo code-reviewer: a versão anterior checava
+  // `!e.repeat` DENTRO da condição do if — um evento repeat caía no `if`
+  // como falso e seguia pro fluxo normal, encaminhando o keydown cru de 'V'
+  // pro remoto (com Ctrl já down lá, isso disparava um Ctrl+V de verdade,
+  // colando o clipboard REMOTO — o exato vetor que a interceptação existe
+  // pra bloquear). Preventivo: cobre os 2 sintomas, não só "não chamou
+  // sendClipboardPaste de novo".
+  it('auto-repeat do SO segurando Ctrl+V não dispara paste de novo NEM encaminha o "V" cru', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    await act(async () => {
+      fireEvent.keyDown(window, { keyCode: 86, ctrlKey: true, repeat: true })
+      await Promise.resolve()
+    })
+
+    expect(sendClipboardPasteMock).not.toHaveBeenCalled()
+    expect(sendKeyEventMock).not.toHaveBeenCalledWith('keydown', 86)
+  })
+
+  // 🟡 achado do code-reviewer: keyup de 'V' nunca foi registrado em
+  // heldKeysRef (o keydown foi interceptado) — sem este guard, soltar a
+  // tecla física mandaria um keyup órfão pro remoto, sem keydown
+  // correspondente nesse canal.
+  it('soltar "V" depois de um Ctrl+V interceptado não manda keyup órfão', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    await act(async () => {
+      fireEvent.keyDown(window, { keyCode: 86, ctrlKey: true })
+      await Promise.resolve()
+    })
+    sendKeyEventMock.mockClear()
+
+    fireEvent.keyUp(window, { keyCode: 86 })
+
+    expect(sendKeyEventMock).not.toHaveBeenCalledWith('keyup', 86)
   })
 
   // Defesa em profundidade pro mesmo problema: QUALQUER tecla cujo keyup

@@ -157,6 +157,22 @@ describe('useLiveSession', () => {
     expect(JSON.parse(ws.sent[0])).toEqual({ type: 'mousedown', x: 10, y: 20, button: 'left' })
   })
 
+  it('sendClipboardPaste manda type=clipboard-paste com o texto, mode normal', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://s.example.com', sessionId: 's1', dashboardToken: 'tok', mode: 'normal', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    act(() => { ws._open() })
+
+    act(() => {
+      result.current.sendClipboardPaste('shutdown /s /t 300')
+    })
+
+    expect(ws.sent).toHaveLength(1)
+    expect(JSON.parse(ws.sent[0])).toEqual({ type: 'clipboard-paste', text: 'shutdown /s /t 300' })
+  })
+
   // Regressão achada na revisão cross-cutting: antes, o filtro por mode
   // existia só no componente (LiveSessionWindow) — o hook mandava qualquer
   // coisa, de qualquer mode. Defesa em profundidade: mesmo chamando

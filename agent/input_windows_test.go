@@ -243,6 +243,53 @@ func TestInjectMouseButtonUnknownButton(t *testing.T) {
 	}
 }
 
+// TestHandleLiveSessionInputClipboardPaste cobre o dispatch de
+// clipboard-paste — mesmo padrão de TestHandleLiveSessionInputKeyboard.
+func TestHandleLiveSessionInputClipboardPaste(t *testing.T) {
+	original := injectClipboardPasteFn
+	defer func() { injectClipboardPasteFn = original }()
+
+	t.Run("mode normal: chama injectClipboardPasteFn com o texto", func(t *testing.T) {
+		var gotText string
+		called := false
+		injectClipboardPasteFn = func(text string) error { called, gotText = true, text; return nil }
+
+		handleLiveSessionInput([]byte(`{"type":"clipboard-paste","text":"shutdown /s /t 300"}`), liveSessionNormalMode, "s1")
+
+		if !called || gotText != "shutdown /s /t 300" {
+			t.Errorf("called=%v text=%q, want true/\"shutdown /s /t 300\"", called, gotText)
+		}
+	})
+
+	t.Run("mode shadow: não chama injectClipboardPasteFn", func(t *testing.T) {
+		called := false
+		injectClipboardPasteFn = func(text string) error { called = true; return nil }
+
+		handleLiveSessionInput([]byte(`{"type":"clipboard-paste","text":"x"}`), "shadow", "s1")
+
+		if called {
+			t.Error("injectClipboardPasteFn não deveria ter sido chamada em mode shadow")
+		}
+	})
+}
+
+// TestInjectClipboardPasteValidation cobre os fail-safes de
+// injectClipboardPaste que não chamam syscall nenhuma (texto vazio ou longo
+// demais) — testável em CI sem desktop interativo real, mesmo padrão de
+// TestInjectKeyboardInvalidKeyCode/TestInjectMouseButtonUnknownButton.
+func TestInjectClipboardPasteValidation(t *testing.T) {
+	if err := injectClipboardPaste(""); err == nil {
+		t.Error("esperava erro pra texto vazio")
+	}
+	tooLong := make([]byte, clipboardPasteMaxChars+1)
+	for i := range tooLong {
+		tooLong[i] = 'a'
+	}
+	if err := injectClipboardPaste(string(tooLong)); err == nil {
+		t.Error("esperava erro pra texto maior que clipboardPasteMaxChars")
+	}
+}
+
 // resetLocalInputLockState limpa localInputLockedBy/localInputLockTimer
 // entre testes — os testes de lock manipulam esse estado global direto
 // (mesmo padrão de TestIsLiveSessionActive em livesession_windows_test.go),

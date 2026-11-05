@@ -68,4 +68,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   reportCleanupProgress: () => ipcRenderer.send('live-session-cleanup-progress'),
   reportCleanupFailed: () => ipcRenderer.send('live-session-cleanup-failed'),
   convertRecording: (arrayBuffer, metadata) => ipcRenderer.invoke('convert-recording', arrayBuffer, metadata),
+
+  // Clipboard local (operador) — pra colar texto na sessão ao vivo (modo
+  // Normal), ver dashboard/src/components/LiveSessionWindow.jsx
+  readClipboardText: () => ipcRenderer.invoke('clipboard:read-text'),
 })

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 )
 
@@ -12,13 +13,14 @@ import (
 // (role=dashboard → servidor → aqui, só em sessão mode=normal — o
 // servidor garante isso, ver liveSessionRelay.routeMessage no plano do
 // server). Tipos: "mousemove", "mousedown", "mouseup", "keydown", "keyup",
-// "lock-local-input", "unlock-local-input".
+// "lock-local-input", "unlock-local-input", "clipboard-paste".
 type inputMessage struct {
 	Type    string `json:"type"`
 	X       int32  `json:"x,omitempty"`
 	Y       int32  `json:"y,omitempty"`
 	Button  string `json:"button,omitempty"`  // "left" | "right"
 	KeyCode uint16 `json:"keyCode,omitempty"` // virtual-key code
+	Text    string `json:"text,omitempty"`    // clipboard-paste: texto a colar
 }
 
 func parseInputMessage(data []byte) (inputMessage, error) {
@@ -41,9 +43,10 @@ const liveSessionNormalMode = "normal"
 // (handleLiveSessionInput) sem chamar SendInput de verdade, mesmo padrão já
 // usado em captureScreenJPEGFn/startLiveSessionFn no projeto.
 var (
-	injectMouseMoveFn   = injectMouseMove
-	injectMouseButtonFn = injectMouseButton
-	injectKeyboardFn    = injectKeyboard
+	injectMouseMoveFn      = injectMouseMove
+	injectMouseButtonFn    = injectMouseButton
+	injectKeyboardFn       = injectKeyboard
+	injectClipboardPasteFn = injectClipboardPaste
 )
 
 // handleLiveSessionInput processa 1 mensagem de input recebida pela conexão
@@ -94,6 +97,8 @@ func dispatchLiveSessionInput(msg inputMessage, sessionID string) {
 		applyLocalInputLock(sessionID, true)
 	case "unlock-local-input":
 		applyLocalInputLock(sessionID, false)
+	case "clipboard-paste":
+		applyClipboardPaste(msg)
 	default:
 		logWarn(fmt.Sprintf("companion: tipo de input não suportado ainda: %s", msg.Type))
 	}
@@ -132,6 +137,15 @@ func applyKeyboardInput(msg inputMessage, down bool) {
 			verb = "keydown"
 		}
 		logWarn(fmt.Sprintf("companion: falha ao injetar %s: %v", verb, err))
+	}
+}
+
+// applyClipboardPaste chama injectClipboardPasteFn e loga o resultado —
+// mesmo motivo de applyMouseMove/applyKeyboardInput (extração pra não
+// estourar a complexidade ciclomática de dispatchLiveSessionInput).
+func applyClipboardPaste(msg inputMessage) {
+	if err := injectClipboardPasteFn(msg.Text); err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao colar via clipboard: %v", err))
 	}
 }
 
@@ -328,6 +342,148 @@ func blockInputSyscall(block bool) error {
 	ret, _, err := procBlockInput.Call(arg)
 	if ret == 0 {
 		return fmt.Errorf("BlockInput(%v) falhou: %w", block, err)
+	}
+	return nil
+}
+
+// clipboardPasteMaxChars limita o tamanho do texto colado — nada no caminho
+// dashboard→servidor→companion valida tamanho antes daqui (mesma cautela de
+// clampInt32 pra x/y em injectMouseMove). 32K chars é generoso pra comando/
+// texto de suporte, sem permitir payload gigante inflar a memória global
+// alocada abaixo.
+const clipboardPasteMaxChars = 32 * 1024
+
+const (
+	cfUnicodeText = 13     // CF_UNICODETEXT
+	gmemMoveable  = 0x0002 // GMEM_MOVEABLE
+	vkControl     = 0x11   // VK_CONTROL
+	vkV           = 0x56   // 'V'
+)
+
+// user32/kernel32 já declarados em activity_windows.go (mesmo pacote) —
+// reusados aqui pros procs de clipboard.
+var (
+	procOpenClipboard    = user32.NewProc("OpenClipboard")
+	procCloseClipboard   = user32.NewProc("CloseClipboard")
+	procEmptyClipboard   = user32.NewProc("EmptyClipboard")
+	procSetClipboardData = user32.NewProc("SetClipboardData")
+	procGlobalAlloc      = kernel32.NewProc("GlobalAlloc")
+	procGlobalLock       = kernel32.NewProc("GlobalLock")
+	procGlobalUnlock     = kernel32.NewProc("GlobalUnlock")
+	procGlobalFree       = kernel32.NewProc("GlobalFree")
+)
+
+// openClipboardRetries/openClipboardRetryDelay cobrem contenção transitória
+// do clipboard — comum no Windows (outro processo com OpenClipboard aberto
+// no instante exato), achado 🟡 do code-reviewer: sem retry, a 1ª falha
+// desistia na hora sem dar nenhuma segunda chance.
+const (
+	openClipboardRetries   = 5
+	openClipboardRetryDelay = 20 * time.Millisecond
+)
+
+// injectClipboardPaste grava `text` na área de transferência da sessão
+// interativa e simula Ctrl+V, numa chamada só — o operador aperta Ctrl+V UMA
+// vez no SEU teclado (dashboard intercepta, lê o clipboard LOCAL dele via
+// Electron, manda o texto aqui) em vez de duas (uma pra setar o clipboard
+// remoto, outra pra colar de verdade).
+func injectClipboardPaste(text string) error {
+	if text == "" {
+		return fmt.Errorf("injectClipboardPaste: texto vazio")
+	}
+	if len(text) > clipboardPasteMaxChars {
+		return fmt.Errorf("injectClipboardPaste: texto excede %d chars (%d)", clipboardPasteMaxChars, len(text))
+	}
+	if err := setClipboardText(text); err != nil {
+		return fmt.Errorf("injectClipboardPaste: %w", err)
+	}
+	return sendPasteKeystroke()
+}
+
+// setClipboardText só funciona chamada pela thread com desktop interativo
+// associado (winsta0\default) — mesmo motivo de procBlockInput logo acima,
+// por isso vive no companion, nunca no serviço. UTF-16 com terminador nulo,
+// formato que CF_UNICODETEXT exige.
+func setClipboardText(text string) error {
+	if err := openClipboardWithRetry(); err != nil {
+		return err
+	}
+	defer procCloseClipboard.Call() //nolint:errcheck
+
+	if ret, _, err := procEmptyClipboard.Call(); ret == 0 {
+		return fmt.Errorf("EmptyClipboard falhou: %w", err)
+	}
+
+	utf16Text := utf16.Encode([]rune(text))
+	utf16Text = append(utf16Text, 0) // terminador nulo exigido por CF_UNICODETEXT
+	byteSize := uintptr(len(utf16Text)) * 2
+
+	hMem, _, err := procGlobalAlloc.Call(gmemMoveable, byteSize)
+	if hMem == 0 {
+		return fmt.Errorf("GlobalAlloc falhou: %w", err)
+	}
+	ptr, _, err := procGlobalLock.Call(hMem)
+	if ptr == 0 {
+		// hMem já foi alocado com sucesso e SetClipboardData nunca vai rodar
+		// pra assumir a posse — sem este GlobalFree, cada tentativa que falha
+		// aqui vaza até clipboardPasteMaxChars*2 bytes de memória HGLOBAL (🟠
+		// achado real do code-reviewer, não hipotético).
+		procGlobalFree.Call(hMem) //nolint:errcheck // best-effort: já estamos no caminho de erro, nada a fazer se o free também falhar
+		return fmt.Errorf("GlobalLock falhou: %w", err)
+	}
+	// go vet (unsafeptr) só reconhece como seguro um uintptr→unsafe.Pointer
+	// vindo de syscall.Syscall/Syscall6 cru — LazyProc.Call (usado aqui, igual
+	// ao resto do arquivo) devolve uintptr "normal", então o linter não
+	// consegue provar a conversão sozinho. Seguro de verdade porque ptr
+	// aponta pra memória HGLOBAL do Windows (GlobalAlloc/GlobalLock), nunca
+	// memória gerenciada pelo GC do Go — não há risco de mover/coletar entre
+	// a chamada e o uso, usado na mesma linha/bloco, sem guardar em struct.
+	dst := unsafe.Slice((*uint16)(unsafe.Pointer(ptr)), len(utf16Text)) //nolint:govet
+	copy(dst, utf16Text)
+	procGlobalUnlock.Call(hMem) //nolint:errcheck // best-effort: GlobalUnlock "falhar" aqui (handle já destravado) não muda o fluxo
+
+	// SetClipboardData assume dono do hMem SE TER SUCESSO (contrato Win32) —
+	// em falha o chamador continua dono e tem que liberar, senão vaza (mesmo
+	// achado 🟠 do GlobalLock acima, aqui no outro branch de erro).
+	if ret, _, err := procSetClipboardData.Call(cfUnicodeText, hMem); ret == 0 {
+		procGlobalFree.Call(hMem) //nolint:errcheck // best-effort, já no caminho de erro
+		return fmt.Errorf("SetClipboardData falhou: %w", err)
+	}
+	return nil
+}
+
+// openClipboardWithRetry tenta abrir o clipboard algumas vezes antes de
+// desistir — contenção transitória (outro processo com o clipboard aberto
+// no instante exato) é comum no Windows, não deveria falhar a colagem inteira
+// na 1ª tentativa.
+func openClipboardWithRetry() error {
+	var lastErr error
+	for i := 0; i < openClipboardRetries; i++ {
+		ret, _, err := procOpenClipboard.Call(0)
+		if ret != 0 {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(openClipboardRetryDelay)
+	}
+	return fmt.Errorf("OpenClipboard falhou após %d tentativas: %w", openClipboardRetries, lastErr)
+}
+
+// sendPasteKeystroke reusa injectKeyboard (já usado pro teclado normal da
+// sessão) pra simular Ctrl+V — ordem down/down/up/up, mesmo padrão de
+// qualquer atalho com modificador.
+func sendPasteKeystroke() error {
+	if err := injectKeyboard(vkControl, true); err != nil {
+		return fmt.Errorf("sendPasteKeystroke: ctrl down: %w", err)
+	}
+	if err := injectKeyboard(vkV, true); err != nil {
+		return fmt.Errorf("sendPasteKeystroke: v down: %w", err)
+	}
+	if err := injectKeyboard(vkV, false); err != nil {
+		return fmt.Errorf("sendPasteKeystroke: v up: %w", err)
+	}
+	if err := injectKeyboard(vkControl, false); err != nil {
+		return fmt.Errorf("sendPasteKeystroke: ctrl up: %w", err)
 	}
 	return nil
 }
