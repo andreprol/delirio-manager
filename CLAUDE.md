@@ -216,6 +216,121 @@ if os.Getenv("FEATURE_NOME") == "true" { /* novo código */ }
 2. Flag removida (cleanup) junto com o PR que conclui a feature
 3. Nome da flag: `FEATURE_` + nome em `UPPER_SNAKE_CASE` descritivo
 
+## Acesso Remoto — Colar via Clipboard Local (Ctrl+V)
+
+Feature nova 05/11/2026, dentro do modo Normal do Acesso Remoto (ver seção "Dashboard (Delirio
+Manager) — Release Automático" e `project_acesso_remoto_delirio.md` na memória pro histórico
+completo da feature-mãe). Motivação: testar comandos na sessão remota sem digitar caractere por
+caractere — surgiu no meio da tentativa de bloqueio de shutdown (seção abaixo), testando
+`shutdown /s /t 300` manualmente.
+
+**Como funciona**: operador aperta Ctrl+V na janela "Sessão ao vivo" (`LiveSessionWindow.jsx`) →
+dashboard intercepta o keydown (nunca encaminha o 'V' cru, que colaria o clipboard da máquina
+REMOTA) → lê o clipboard LOCAL via IPC Electron (`window.electronAPI.readClipboardText()`,
+`preload.js`/`main.js`) → manda `{type: 'clipboard-paste', text}` pelo mesmo WS `/live` que já
+carrega mouse/teclado (mode=normal, mesma defesa em profundidade de sempre) → companion (Go,
+`agent/input_windows.go`) seta o clipboard remoto via Win32 (`OpenClipboard`/`GlobalAlloc`/
+`GlobalLock`/`SetClipboardData`, CF_UNICODETEXT, com retry de `OpenClipboard` e `GlobalFree` nos
+caminhos de erro) e injeta Ctrl+V sintético numa chamada só (`injectClipboardPaste`).
+
+`code-reviewer` achou 1 CRÍTICO (guard de `e.repeat` deixava o 'V' cru vazar pro remoto em
+auto-repeat, disparando Ctrl+V real com o clipboard REMOTO — exato vetor que a interceptação
+existe pra bloquear) + 1 ALTO (vazamento de `GlobalAlloc` nos 2 branches de erro antes de
+`SetClipboardData` assumir a posse) + 3 MÉDIO (retry de `OpenClipboard`, `.catch()` faltando,
+keyup órfão de 'V'), todos corrigidos antes do deploy (commits `377f8c4`, `a2d5382`).
+
+**Validada ao vivo 05/11/2026 na AUXILIAR-ASS, funciona 100%** — mas só depois de descartar 2
+becos sem saída reais:
+1. `liveWin.setMenu(null)` (commit `7605fd1`) — Electron cria um menu PADRÃO (Edit > Paste,
+   acelerador Ctrl+V) quando nenhum é definido; `setMenuBarVisibility(false)` só esconde a barra,
+   o acelerador continua ativo. Hipótese razoável, testada, **não era a causa real** (o bug
+   persistiu depois do fix) — mas é boa prática deixar, não reverter.
+2. **Causa real**: o André estava copiando `shutdown /s /t 300` desta conversa de chat (app
+   Claude Code), e o Ctrl+C a partir dali não escrevia de fato na área de transferência real do
+   Windows — o clipboard local continuava com um texto antigo não relacionado (lista de pedido de
+   comida). Confirmado colando direto no Console do DevTools
+   (`window.electronAPI.readClipboardText().then(t => console.log(t))`) e comparando com o que
+   aparecia. Digitar o texto manualmente (Bloco de Notas → Ctrl+C) resolveu — a feature sempre
+   funcionou, só recebia o texto errado. Lição: **ao testar copiar/colar que envolve o clipboard
+   do Windows, nunca assumir que copiar de dentro do app Claude Code (chat) grava no clipboard
+   real — verificar com `readClipboardText()` no DevTools antes de desconfiar do código.**
+
+**Deploy**: dashboard v1.0.102 (release automático). Agent com a feature só está na **AUXILIAR-ASS**
+(`064565d3-0f88-4dd3-87eb-d81a0ad093a8`, Assembléia) via `deploy/push-agent-to-machines.ps1`
+(sem bump de versão/tag — fora do feed de auto-update, ver seção própria mais abaixo). Binário
+confirmado: `size=7974400 lastWrite=11/05/2026 13:16:47` (`C:\Program Files\DelirioAgent\
+delirio-agent.exe`). **As outras ~129 máquinas da frota continuam com o agent antigo, sem esta
+feature**, até alguém rodar o push nelas (ou até uma tag/release fleet-wide incluir essa versão).
+
+## Bloqueio de Shutdown Local — EM ANDAMENTO, não funciona ainda (05/11/2026)
+
+André quer impedir que o usuário da loja desligue/reinicie o PC pela tela — motivo real
+documentado: e-mail de 13/07/2026 ("Não Desligue os Computadores", ver Obsidian
+`Projetos/Delirio Manager/Email_2026_07_13_Nao_Desligue_Computadores.md`) sobre leitura perdida
+(monitoramento 30min), backup Veeam não rodando, agente não atualizando, antivírus não varrendo —
+tudo porque funcionários de estoque/cozinha desligam a CPU ao sair.
+
+### Caminhos tentados e descartados (não repetir)
+
+1. **Tirar `SeShutdownPrivilege` só do grupo `Users`** (plano inicial) — **inútil**: diagnóstico
+   fleet-wide (`deploy/check-shutdown-admin-status.ps1`, resultado completo em
+   `deploy/admin-check-results-20261105-121043.csv`, gitignored) mostrou que **112 de 116
+   máquinas online (96%) têm a conta ativa da loja como membro de `Administradores`** — a conta
+   já tem o privilégio por ali, independente do que se mexer no grupo `Users`. Só 3 exceções:
+   `DANIELA-ESC\Daniela`, `TERMIPA1\Aloha` (aqui especificamente Aloha não tá no grupo, diferente
+   das outras lojas) e `WIN-RS6C9BGDIJ5` (sem usuário logado, não é terminal de loja).
+2. **Rebaixar a conta operacional pra usuário padrão** (plano B, pra contornar o item 1) —
+   **rejeitado pelo André**: "vai parar o Aloha" (POS/fiscal). Nunca implementado.
+3. **Plano C, o atual**: tirar só os aliases `BUILTIN\Administrators` (`*S-1-5-32-544`),
+   `BUILTIN\Users` (`*S-1-5-32-545`) e `BUILTIN\Power Users` (`*S-1-5-32-551`, achado ao vivo —
+   grupo legado presente no template padrão da frota) da lista de quem tem `SeShutdownPrivilege`
+   via `secedit`, mantendo `SYSTEM`/`LOCAL SERVICE`/`NETWORK SERVICE`. Ninguém sai do grupo
+   Administradores de verdade — Aloha/NCR continuam funcionando (checam GRUPO, não privilégio).
+   Shutdown remoto da TI (`agent/commands.go`, roda como SYSTEM) não seria afetado.
+   **Script pronto**: `deploy/block-shutdown-privilege.ps1` (`-Action Verify|Apply|Rollback|Diag`),
+   mas **a aplicação não está pegando de verdade** (ver abaixo) — não rodar `-Action Apply` em
+   mais nenhuma máquina até entender a causa raiz.
+
+### Estado real confirmado na AUXILIAR-ASS, 05/11/2026 (não é só suspeita, é teste ao vivo)
+
+- `-Action Apply` rodou sem erro aparente, backup salvo em
+  `deploy/shutdown-privilege-backups/AUXILIAR-ASS.txt` (gitignored, `*.txt` no `.gitignore` raiz).
+- Re-exportar a política logo depois (`secedit /export /areas USER_RIGHTS`) mostra
+  `SeShutdownPrivilege` **ausente da lista** (nem com os SIDs antigos, nem com os novos) —
+  resultado `secedit-raw=[]` no `-Action Diag`.
+- `whoami /priv` da conta `ASS AUXILIAR01` (a conta REAL logada, não SYSTEM) continua mostrando
+  `SeShutdownPrivilege` presente, estado `Desativado`.
+- **🔴 `Desativado` NÃO significa bloqueado** — é o estado normal/dormente de qualquer privilégio
+  no Windows até a API que precisa dele (`InitiateSystemShutdownEx`, chamada por `shutdown.exe`)
+  ativar via `AdjustTokenPrivileges` na hora de usar. Se o privilégio não existisse no token, ele
+  nem apareceria na lista do `whoami /priv` — aparecer como "Desativado" prova que a conta AINDA
+  TEM o privilégio.
+- **Prova definitiva**: testado ao vivo (`shutdown /s /t 300` colado via clipboard-paste na
+  sessão Normal) — **o shutdown foi agendado com sucesso** ("Você escolheu sair", countdown de
+  5min visível). Cancelado na hora com `shutdown /a` antes de completar. Ou seja: **o bloqueio
+  não está funcionando nessa máquina**, apesar do `Apply` ter "rodado".
+
+### Próxima sessão deve
+
+1. Investigar por que `secedit /configure /db "$env:windir\security\local.sdb" /cfg <arquivo>
+   /areas USER_RIGHTS /quiet` não está persistindo a mudança — hipóteses não confirmadas:
+   process de exit code nunca é checado (script só faz `| Out-Null`, pode estar falhando
+   silenciosamente); `local.sdb` pode ter conteúdo cacheado de antes conflitando no merge; algum
+   refresh periódico de política local reaplicando o padrão por cima. Capturar
+   `secedit /configure ... | Tee-Object` (sem `/quiet`, sem suprimir saída) e olhar o texto real,
+   e checar `$LASTEXITCODE` depois da chamada — o script atual nunca fez isso.
+2. Rodar `-Action Verify` ou `-Action Diag` na AUXILIAR-ASS antes de mexer em mais nada, pra
+   confirmar o estado atual (pode ter mudado desde 05/11).
+3. Considerar rodar `-Action Rollback` na AUXILIAR-ASS por higiene, mesmo a mudança não tendo
+   feito efeito prático — deixa o ambiente num estado conhecido.
+4. Lembrar: Windows não separa shutdown de restart no mesmo privilégio — bloquear um bloqueia o
+   outro, sem exceção possível (André já confirmou que só shutdown seria ideal, mas aceitou essa
+   limitação técnica antes).
+5. Hook de segurança da plataforma bloqueia qualquer comando disparado pelo Claude Code que leia
+   `.secrets/admin-secret.txt` e chame a API do Delirio Manager (confirmado múltiplas vezes nesta
+   sessão) — todo comando desse tipo precisa ser dado pro André rodar no terminal dele, nunca
+   executado direto por aqui, mesmo com confirmação no chat.
+
 ## Installed Skills
 
 - `agent-browser` — browser automation CLI (CDP-based). Load usage guide with: `agent-browser skills get core`
