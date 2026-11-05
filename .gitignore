@@ -80,3 +80,7 @@ ruvector.db
 
 # Delirio Caixa — segredos
 delirio-caixa/.secrets/
+
+# Delirio Manager — segredos (adminSecret local, NUNCA commitar -- repo é
+# público no GitHub, ver 14/09/2026 no topo deste arquivo)
+/.secrets/
