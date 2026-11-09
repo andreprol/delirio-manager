@@ -261,14 +261,23 @@ function ResultRow({ record, machineId }) {
         settled = true
         unsub()
         setDownloading(false)
-        if (state !== 'completed') alert('Erro ao gerar DANFE')
+        if (state !== 'completed') alert(`Erro ao gerar DANFE (status: ${state})`)
       })
-      window.electronAPI.downloadFile(`${getServerUrl()}/api/aloha/nfce/${record.chave}/danfe?machineId=${machineId}`)
+      try {
+        await window.electronAPI.downloadFile(`${getServerUrl()}/api/aloha/nfce/${record.chave}/danfe?machineId=${machineId}`)
+      } catch (e) {
+        settled = true
+        unsub()
+        setDownloading(false)
+        alert('Erro ao iniciar download: ' + e.message)
+        return
+      }
       setTimeout(() => {
         if (settled) return
         settled = true
         unsub()
         setDownloading(false)
+        alert('Download não respondeu em 20s — confira a pasta Downloads, pode ter salvo mesmo assim.')
       }, 20000)
       return
     }

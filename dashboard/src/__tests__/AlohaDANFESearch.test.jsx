@@ -86,7 +86,7 @@ describe('AlohaDANFESearch — download de PDF no Electron', () => {
     fireEvent.click(screen.getByTitle('Baixar DANFE em PDF'))
     doneCallback({ state: 'interrupted', filename: 'DANFE-166179.pdf' })
 
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Erro ao gerar DANFE'))
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Erro ao gerar DANFE (status: interrupted)'))
     alertSpy.mockRestore()
   })
 
@@ -102,6 +102,21 @@ describe('AlohaDANFESearch — download de PDF no Electron', () => {
     doneCallback({ state: 'completed', filename: 'relatorio-bios-2026-01-01.pdf' })
 
     expect(screen.getByTitle('Baixar DANFE em PDF')).toBeDisabled()
+  })
+
+  it('alerta quando a chamada a downloadFile rejeita (erro no main process)', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    window.electronAPI = {
+      downloadFile:   vi.fn().mockRejectedValue(new Error('falha simulada')),
+      onDownloadDone: vi.fn(() => () => {}),
+    }
+
+    await renderAndSearch()
+    fireEvent.click(screen.getByTitle('Baixar DANFE em PDF'))
+
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Erro ao iniciar download: falha simulada'))
+    expect(screen.getByTitle('Baixar DANFE em PDF')).not.toBeDisabled()
+    alertSpy.mockRestore()
   })
 
   it('sem window.electronAPI (navegador puro), usa o fallback fetch+blob', async () => {
