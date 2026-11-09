@@ -160,6 +160,13 @@ describe('GET /api/status/integrations', () => {
     expect(typeof res.body.msGraph.configured).toBe('boolean');
     expect(JSON.stringify(res.body)).not.toMatch(/clientSecret|refreshToken/i);
   });
+
+  it('inclui whatsapp.configured como booleano, sem vazar o token', async () => {
+    const res = await request(app).get('/api/status/integrations').expect(200);
+    expect(res.body.whatsapp).toHaveProperty('configured');
+    expect(typeof res.body.whatsapp.configured).toBe('boolean');
+    expect(JSON.stringify(res.body)).not.toMatch(/accessToken/i);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

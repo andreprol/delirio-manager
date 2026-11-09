@@ -3,8 +3,9 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
-const { generateDanfePdf } = require('../services/danfe');
-const { sendDanfeEmail }   = require('../services/nfce-mailer');
+const { generateDanfePdf }  = require('../services/danfe');
+const { sendDanfeEmail }    = require('../services/nfce-mailer');
+const { sendDanfeWhatsapp, normalizePhone } = require('../services/nfce-whatsapp');
 
 // POST /api/aloha/:machineId/history/trigger
 // Envia aloha-list-nfce-months para o agente; o ACK handler enfileira os dias.
@@ -124,6 +125,30 @@ router.post('/nfce/:chave/email', async (req, res) => {
   } catch (err) {
     console.error('[Email] Erro ao enviar DANFE:', err.message);
     res.status(500).json({ error: err.message || 'Erro ao enviar email' });
+  }
+});
+
+// POST /api/aloha/nfce/:chave/whatsapp
+// Body: { machineId, toPhone, customerName? } — sempre disparo manual (botão no dashboard).
+router.post('/nfce/:chave/whatsapp', async (req, res) => {
+  const { machineId, toPhone, customerName } = req.body;
+  if (!machineId || !toPhone) {
+    return res.status(400).json({ error: 'machineId e toPhone obrigatorios' });
+  }
+  if (!normalizePhone(toPhone)) {
+    return res.status(400).json({ error: 'Número de telefone inválido' });
+  }
+
+  const record = db.getNFCeByChave(machineId, req.params.chave);
+  if (!record) return res.status(404).json({ error: 'NF-Ce nao encontrada' });
+
+  try {
+    const pdf = await generateDanfePdf(record.danfe);
+    await sendDanfeWhatsapp({ danfe: record.danfe, pdfBuffer: pdf, toPhone, customerName });
+    res.json({ ok: true, message: `DANFE enviada via WhatsApp para ${toPhone}` });
+  } catch (err) {
+    console.error('[WhatsApp] Erro ao enviar DANFE:', err.message);
+    res.status(500).json({ error: err.message || 'Erro ao enviar WhatsApp' });
   }
 });
 

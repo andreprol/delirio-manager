@@ -124,6 +124,8 @@ export const api = {
     },
     sendEmail: (machineId, chave, toEmail, extraCCs = []) =>
       request('POST', `/api/aloha/nfce/${chave}/email`, { machineId, toEmail, extraCCs }),
+    sendWhatsapp: (machineId, chave, toPhone, customerName = '') =>
+      request('POST', `/api/aloha/nfce/${chave}/whatsapp`, { machineId, toPhone, customerName }),
   },
 
   // Health

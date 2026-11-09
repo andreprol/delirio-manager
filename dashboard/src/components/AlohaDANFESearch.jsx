@@ -237,10 +237,99 @@ function EmailModal({ record, machineId, onClose }) {
   )
 }
 
+// ── WhatsApp modal ──────────────────────────────────────────────────────────────
+// Sempre disparo manual — pedido esporádico do cliente no balcão/atendimento,
+// nunca automático (diferente do auto-envio por e-mail).
+
+function WhatsappModal({ record, machineId, onClose }) {
+  const [toPhone,      setToPhone]      = useState('')
+  const [customerName, setCustomerName] = useState('')
+  const [sending,      setSending]      = useState(false)
+  const [sent,         setSent]         = useState(false)
+  const [error,        setError]        = useState(null)
+
+  async function handleSend() {
+    if (!toPhone.trim()) return
+    setSending(true)
+    setError(null)
+    try {
+      await api.nfce.sendWhatsapp(machineId, record.chave, toPhone.trim(), customerName.trim())
+      setSent(true)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const s = {
+    overlay: {
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+      zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    },
+    modal: {
+      background: 'var(--card-bg, #1e2530)', border: '1px solid var(--border)',
+      borderRadius: '10px', padding: '24px', width: '420px', maxWidth: '90vw',
+    },
+    label: { fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px', display: 'block' },
+    input: {
+      width: '100%', padding: '8px 10px', background: 'var(--bg, #0f1117)',
+      border: '1px solid var(--border)', borderRadius: '6px', color: 'inherit',
+      fontSize: '13px', boxSizing: 'border-box',
+    },
+  }
+
+  return (
+    <div style={s.overlay} onClick={onClose}>
+      <div style={s.modal} onClick={e => e.stopPropagation()}>
+        <h3 style={{ margin: '0 0 4px', fontSize: '15px' }}>Enviar DANFE por WhatsApp</h3>
+        <p style={{ margin: '0 0 16px', fontSize: '12px', color: 'var(--text-muted)' }}>
+          NF-e Nº {record.n_nf} · {fmtMoeda(record.v_nf)} · {fmtDate(record.dh_emi)}
+        </p>
+
+        {sent ? (
+          <div style={{ textAlign: 'center', padding: '16px 0' }}>
+            <div style={{ fontSize: '28px' }}>✅</div>
+            <p style={{ margin: '8px 0 0', fontWeight: 600 }}>DANFE enviada para {toPhone}</p>
+            <button className="btn btn-secondary" style={{ marginTop: '16px' }} onClick={onClose}>Fechar</button>
+          </div>
+        ) : (
+          <>
+            <div style={{ marginBottom: '14px' }}>
+              <label style={s.label}>WhatsApp do cliente *</label>
+              <input
+                type="tel" style={s.input} placeholder="(21) 99999-9999"
+                value={toPhone} onChange={e => setToPhone(e.target.value)} autoFocus
+              />
+            </div>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={s.label}>Nome do cliente (opcional)</label>
+              <input
+                type="text" style={s.input} placeholder="Nome usado na mensagem"
+                value={customerName} onChange={e => setCustomerName(e.target.value)}
+              />
+            </div>
+            {error && (
+              <div style={{ color: 'var(--red)', fontSize: '12px', marginBottom: '12px' }}>⚠ {error}</div>
+            )}
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={onClose} disabled={sending}>Cancelar</button>
+              <button className="btn btn-primary" onClick={handleSend} disabled={sending || !toPhone.trim()}>
+                {sending ? 'Enviando…' : 'Enviar DANFE'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Result row ────────────────────────────────────────────────────────────────
 
 function ResultRow({ record, machineId }) {
-  const [emailOpen,   setEmailOpen]   = useState(false)
+  const [emailOpen,    setEmailOpen]    = useState(false)
+  const [whatsappOpen, setWhatsappOpen] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [savedPath,   setSavedPath]   = useState(null) // Electron: caminho do PDF salvo, pra avisar e permitir abrir a pasta
 
@@ -314,7 +403,7 @@ function ResultRow({ record, machineId }) {
   const s = {
     row: {
       display: 'grid',
-      gridTemplateColumns: '80px 140px 90px 1fr 120px',
+      gridTemplateColumns: '80px 140px 90px 1fr 180px',
       alignItems: 'center', gap: '8px', padding: '8px 12px',
       borderBottom: '1px solid var(--border)', fontSize: '12px',
     },
@@ -340,10 +429,17 @@ function ResultRow({ record, machineId }) {
             onClick={() => setEmailOpen(true)} title="Enviar DANFE por email">
             ✉ Email
           </button>
+          <button className="btn btn-secondary" style={{ fontSize: '10px', padding: '3px 8px' }}
+            onClick={() => setWhatsappOpen(true)} title="Enviar DANFE por WhatsApp">
+            💬 WhatsApp
+          </button>
         </div>
       </div>
       {emailOpen && (
         <EmailModal record={record} machineId={machineId} onClose={() => setEmailOpen(false)} />
+      )}
+      {whatsappOpen && (
+        <WhatsappModal record={record} machineId={machineId} onClose={() => setWhatsappOpen(false)} />
       )}
     </>
   )

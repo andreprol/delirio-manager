@@ -22,5 +22,11 @@
   "autoWake": {
     "enabled": false
   },
+  "whatsapp": {
+    "accessToken": "",
+    "phoneNumberId": "",
+    "templateName": "envio_danfe",
+    "templateLang": "pt_BR"
+  },
   "adminSecret": "TROCAR-POR-SECRET-FORTE-AQUI"
 }

@@ -95,9 +95,11 @@ app.get('/health', (req, res) => {
 app.get('/api/status/integrations', (req, res) => {
   const { getIntegrationsStatus } = require('./db');
   const { isMsGraphConfigured } = require('./services/nfce-mailer');
+  const { isWhatsappConfigured } = require('./services/nfce-whatsapp');
   const status = getIntegrationsStatus();
   status.zamak.syncing = zamakService.isSyncing();
-  status.msGraph = { configured: isMsGraphConfigured() };
+  status.msGraph  = { configured: isMsGraphConfigured() };
+  status.whatsapp = { configured: isWhatsappConfigured() };
   res.json(status);
 });
 
