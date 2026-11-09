@@ -7,13 +7,15 @@
  * módulo depois do jest.resetModules(), então o teste cobre o SQL de verdade.
  */
 
-let db, postProcessNfceMonths, postProcessNfceIndex;
+let db, postProcessNfceMonths, postProcessNfceIndex, maybeAutoSendDanfe;
 
 beforeEach(() => {
   jest.resetModules();
   process.env.DB_PATH = ':memory:';
+  jest.doMock('../services/nfceAutoEmail', () => ({ maybeAutoSendDanfe: jest.fn() }));
   db = require('../db');
   ({ postProcessNfceMonths, postProcessNfceIndex } = require('./agent'));
+  ({ maybeAutoSendDanfe } = require('../services/nfceAutoEmail'));
   db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
 });
 
@@ -107,5 +109,25 @@ describe('postProcessNfceIndex — marca dia como processado', () => {
   it('mensagem malformada não lança exceção e não marca nada', () => {
     expect(() => postProcessNfceIndex('m1', 'não é json')).not.toThrow();
     expect(db.getIndexedDayKeysSet('m1').size).toBe(0);
+  });
+});
+
+describe('postProcessNfceIndex — aciona o auto-envio de e-mail', () => {
+  it('chama maybeAutoSendDanfe pra cada registro indexado', () => {
+    const r1 = { chave: 'abc', n_nf: 1, dh_emi: '2026-06-05T10:00:00', v_nf: 50, danfe: { dest: { email: 'a@teste.com' } } };
+    const r2 = { chave: 'def', n_nf: 2, dh_emi: '2026-06-05T11:00:00', v_nf: 30, danfe: {} };
+    const message = JSON.stringify({ month: '2026-06', day: '05', records: [r1, r2], skipped: 0, error_count: 0 });
+
+    postProcessNfceIndex('m1', message);
+
+    expect(maybeAutoSendDanfe).toHaveBeenCalledTimes(2);
+    expect(maybeAutoSendDanfe).toHaveBeenCalledWith('m1', expect.objectContaining({ chave: 'abc' }));
+    expect(maybeAutoSendDanfe).toHaveBeenCalledWith('m1', expect.objectContaining({ chave: 'def' }));
+  });
+
+  it('dia sem nenhum registro — não chama o auto-envio', () => {
+    const message = JSON.stringify({ month: '2026-06', day: '05', records: [], skipped: 0, error_count: 0 });
+    postProcessNfceIndex('m1', message);
+    expect(maybeAutoSendDanfe).not.toHaveBeenCalled();
   });
 });

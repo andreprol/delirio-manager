@@ -9,6 +9,7 @@ const { broadcast } = require('../services/websocket');
 const { readVersionInfo } = require('./update');
 const { clearOfflineCooldown } = require('../services/alertEngine');
 const ncrMonitor = require('../services/ncrMonitor');
+const { maybeAutoSendDanfe } = require('../services/nfceAutoEmail');
 
 // Rate limit de registro: máximo 10 por IP a cada 30 min
 // Mitiga token theft via POST /api/register (endpoint sem auth).
@@ -345,6 +346,11 @@ function postProcessNfceIndex(machineId, message) {
     if (Array.isArray(result.records) && result.records.length > 0) {
       db.upsertNFCeRecords(machineId, result.records);
       console.log(`[NFCe] ${machineId} day=${result.day}: ${result.records.length} registros indexados`);
+      // Fire-and-forget — não trava a indexação nem o ACK por causa de envio
+      // de e-mail (rede). Falha de envio fica logada, nunca lançada pra cima.
+      for (const r of result.records) {
+        maybeAutoSendDanfe(machineId, r);
+      }
     }
     // Marca o dia como processado mesmo sem registros (loja fechada, feriado) —
     // é o que permite pular esse dia em reindexações futuras.

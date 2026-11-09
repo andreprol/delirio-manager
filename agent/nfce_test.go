@@ -37,6 +37,7 @@ const sampleNFCeXML = `<?xml version="1.0" encoding="UTF-8"?>
       <dest>
         <CPF>12345678900</CPF>
         <xNome>Consumidor Teste</xNome>
+        <email>cliente@teste.com</email>
       </dest>
       <det nItem="1">
         <prod>
@@ -128,6 +129,49 @@ func TestParseNFCeFile_ExtraiDemaisCampos(t *testing.T) {
 	}
 	if len(rec.Danfe.Products) != 1 || rec.Danfe.Products[0].XProd != "Produto Teste" {
 		t.Errorf("Products incorretos: %+v", rec.Danfe.Products)
+	}
+}
+
+// ── e-mail do cliente (feature auto-envio, 09/11/2026) ─────────────────────
+
+func TestParseNFCeFile_ExtraiEmailDoDestinatario(t *testing.T) {
+	path := writeTempXML(t, sampleNFCeXML)
+	rec, err := parseNFCeFile(path, "03")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if rec.Danfe.Dest == nil {
+		t.Fatal("Dest veio nil, esperava preenchido")
+	}
+	if rec.Danfe.Dest.Email != "cliente@teste.com" {
+		t.Errorf("Dest.Email = %q, want %q", rec.Danfe.Dest.Email, "cliente@teste.com")
+	}
+}
+
+func TestParseNFCeFile_SemEmailNoDest_NaoQuebra(t *testing.T) {
+	xmlSemEmail := `<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+  <NFe xmlns="http://www.portalfiscal.inf.br/nfe">
+    <infNFe Id="NFe1">
+      <ide><nNF>1</nNF><cSer>1</cSer><dhEmi>2026-01-01T10:00:00-03:00</dhEmi></ide>
+      <emit><CNPJ>1</CNPJ><xNome>X</xNome></emit>
+      <dest><CPF>12345678900</CPF><xNome>Consumidor Teste</xNome></dest>
+      <total><ICMSTot><vNF>10.00</vNF></ICMSTot></total>
+    </infNFe>
+  </NFe>
+  <protNFe><infProt><chNFe>chave-teste</chNFe></infProt></protNFe>
+</nfeProc>`
+
+	path := writeTempXML(t, xmlSemEmail)
+	rec, err := parseNFCeFile(path, "01")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if rec.Danfe.Dest == nil {
+		t.Fatal("Dest veio nil — CPF/xNome deveriam ter populado mesmo sem email")
+	}
+	if rec.Danfe.Dest.Email != "" {
+		t.Errorf("Dest.Email = %q, esperava vazio", rec.Danfe.Dest.Email)
 	}
 }
 

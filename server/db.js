@@ -198,6 +198,16 @@ function migrate(db) {
       PRIMARY KEY (machine_id, day_key)
     );
 
+    CREATE TABLE IF NOT EXISTS nfce_auto_email_log (
+      chave         TEXT PRIMARY KEY,
+      machine_id    TEXT NOT NULL,
+      email_to      TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'pending',
+      error         TEXT,
+      created_at    TEXT NOT NULL,
+      sent_at       TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS dr_backups (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       machine_id   TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
@@ -536,7 +546,7 @@ function migrate(db) {
 const _MACHINE_CHILD_TABLES = [
   'metrics', 'commands', 'events', 'machine_metrics_hourly',
   'machine_offline_events', 'reading_miss_events', 'win_events',
-  'nfce_index', 'nfce_indexed_days', 'dr_backups', 'service_status', 'activity_log', 'live_sessions',
+  'nfce_index', 'nfce_indexed_days', 'nfce_auto_email_log', 'dr_backups', 'service_status', 'activity_log', 'live_sessions',
 ];
 
 function registerMachine({ machineId, hostname, agentVersion }) {
@@ -1281,6 +1291,34 @@ function getIndexedDayKeysSet(machineId) {
 function todayDayKey() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+// ── NF-Ce auto-envio por e-mail ─────────────────────────────────────────────
+// Reivindicação atômica por chave (única nacionalmente) — evita enviar a
+// mesma DANFE 2x mesmo se duas passadas de indexação processarem a mesma nota
+// em paralelo ou em execuções diferentes.
+
+// Retorna true se esta chamada "ganhou" a reivindicação (pode prosseguir pro
+// envio); false se já foi reivindicada antes (enviada, falhou ou em curso).
+function claimAutoEmail(chave, machineId, emailTo) {
+  const info = getDb().prepare(`
+    INSERT INTO nfce_auto_email_log (chave, machine_id, email_to, status, created_at)
+    VALUES (?, ?, ?, 'pending', ?)
+    ON CONFLICT(chave) DO NOTHING
+  `).run(chave, machineId, emailTo, new Date().toISOString());
+  return info.changes === 1;
+}
+
+function markAutoEmailSent(chave) {
+  getDb().prepare(
+    `UPDATE nfce_auto_email_log SET status='sent', sent_at=? WHERE chave=?`
+  ).run(new Date().toISOString(), chave);
+}
+
+function markAutoEmailFailed(chave, error) {
+  getDb().prepare(
+    `UPDATE nfce_auto_email_log SET status='failed', error=? WHERE chave=?`
+  ).run(String(error || '').slice(0, 500), chave);
 }
 
 // ── Ref1 Registry ─────────────────────────────────────────────────────────────
@@ -2132,6 +2170,7 @@ module.exports = {
   // nfce index
   getCommandById, upsertNFCeRecords, searchNFCe, getNFCeByChave, getNFCeIndexStatus,
   markNFCeDayIndexed, getIndexedDayKeysSet, todayDayKey,
+  claimAutoEmail, markAutoEmailSent, markAutoEmailFailed,
   // ref1 registry
   registerRef1, getMaxRef1,
   // dr backups

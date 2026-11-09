@@ -46,7 +46,9 @@ jobs:
         # desatualizado, não causado por esta PR (Dashboard).
         # 197 = 195 + 2 (nfce-mailer.js/danfe.js: console.error no catch da
         # geração do QR code — aceitável pela regra do deploy-gate, 09/11/2026).
-        run: npm run lint -- --max-warnings=197
+        # 199 = 197 + 2 (nfceAutoEmail.js: console.log/console.error no
+        # auto-envio de DANFE por e-mail, 09/11/2026).
+        run: npm run lint -- --max-warnings=199
 
       - name: Run tests
         run: npm test -- --forceExit

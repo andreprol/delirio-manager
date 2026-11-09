@@ -217,17 +217,19 @@ function _scheduleWalCheckpoint() {
   }, 24 * 60 * 60 * 1000); // 24h
 }
 
-// ── NF-Ce indexer — dispara diariamente às 23:00 para servidores BOH ─────────
-let _nfceLastIndexDay = null;
+// ── NF-Ce indexer — a cada 15min para servidores BOH ─────────────────────────
+// Era 1x/dia às 23:00; passou a rodar a cada 15min (09/11/2026) pra feature
+// de auto-envio de DANFE por e-mail (encomendas) detectar notas novas rápido.
+// Barato de verdade: indexação é incremental (nfce_indexed_days), dias
+// passados são sempre pulados — só "hoje" é reprocessado a cada rodada.
+const NFCE_INDEX_INTERVAL_MS = 15 * 60 * 1000;
 setInterval(() => {
-  const now  = new Date();
-  const hhmm = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-  const today = now.toISOString().slice(0, 10);
-  if (hhmm === '23:00' && _nfceLastIndexDay !== today) {
-    _nfceLastIndexDay = today;
-    _triggerNFCeIndexing(now).catch(e => logger.error('[NFCe] Erro no scheduler', { error: e.message }));
-  }
-}, 60000);
+  _triggerNFCeIndexing(new Date()).catch(e => logger.error('[NFCe] Erro no scheduler', { error: e.message }));
+}, NFCE_INDEX_INTERVAL_MS);
+// Primeira rodada 2min após boot — não espera 15min pra primeira indexação do dia.
+setTimeout(() => {
+  _triggerNFCeIndexing(new Date()).catch(e => logger.error('[NFCe] Erro no scheduler', { error: e.message }));
+}, 2 * 60 * 1000);
 
 async function _triggerNFCeIndexing(now) {
   const { getAllMachines, createCommand, getIndexedDayKeysSet, todayDayKey } = require('./db');

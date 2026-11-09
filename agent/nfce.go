@@ -64,6 +64,7 @@ type nfceXMLDest struct {
 	CPF   string `xml:"CPF"`
 	CNPJ  string `xml:"CNPJ"`
 	XNome string `xml:"xNome"`
+	Email string `xml:"email"`
 }
 
 type nfceXMLDet struct {
@@ -136,6 +137,7 @@ type NFCeDestPayload struct {
 	CPF   string `json:"cpf,omitempty"`
 	CNPJ  string `json:"cnpj,omitempty"`
 	XNome string `json:"xNome,omitempty"`
+	Email string `json:"email,omitempty"`
 }
 
 // NFCeProdPayload is a single product line.
@@ -352,11 +354,12 @@ func parseNFCeFile(xmlPath, dayFolder string) (NFCeRecord, error) {
 		},
 	}
 
-	if inf.Dest.CPF != "" || inf.Dest.CNPJ != "" || inf.Dest.XNome != "" {
+	if inf.Dest.CPF != "" || inf.Dest.CNPJ != "" || inf.Dest.XNome != "" || inf.Dest.Email != "" {
 		danfe.Dest = &NFCeDestPayload{
 			CPF:   inf.Dest.CPF,
 			CNPJ:  inf.Dest.CNPJ,
 			XNome: inf.Dest.XNome,
+			Email: inf.Dest.Email,
 		}
 	}
 
