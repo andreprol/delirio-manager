@@ -245,13 +245,39 @@ function ResultRow({ record, machineId }) {
 
   const products = (record.products_text || '').split(' | ').filter(Boolean).slice(0, 3)
 
+  // Electron: webContents.downloadURL (window.electronAPI.downloadFile) é o
+  // caminho confiável — passa pelo will-download do main process e salva
+  // direto na pasta Downloads (mesmo padrão do relatório BIOS em App.jsx).
+  // Clicar num <a href="blob:..."> (padrão web puro, usado antes) não
+  // disparava nada de visível dentro do BrowserWindow do dashboard.
   async function downloadPDF() {
     setDownloading(true)
+    const filename = `DANFE-${record.n_nf}.pdf`
+
+    if (window.electronAPI?.downloadFile) {
+      let settled = false
+      const unsub = window.electronAPI.onDownloadDone(({ state, filename: fname }) => {
+        if (fname !== filename || settled) return
+        settled = true
+        unsub()
+        setDownloading(false)
+        if (state !== 'completed') alert('Erro ao gerar DANFE')
+      })
+      window.electronAPI.downloadFile(`${getServerUrl()}/api/aloha/nfce/${record.chave}/danfe?machineId=${machineId}`)
+      setTimeout(() => {
+        if (settled) return
+        settled = true
+        unsub()
+        setDownloading(false)
+      }, 20000)
+      return
+    }
+
     try {
       const blob = await api.nfce.downloadDanfe(machineId, record.chave, record.n_nf)
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
-      a.href = url; a.download = `DANFE-${record.n_nf}.pdf`; a.click()
+      a.href = url; a.download = filename; a.click()
       URL.revokeObjectURL(url)
     } catch (e) {
       alert('Erro ao gerar DANFE: ' + e.message)
