@@ -1,6 +1,7 @@
 'use strict';
 
 const PDFDocument = require('pdfkit');
+const QRCode      = require('qrcode');
 
 const PAG_TYPES = {
   '01': 'Dinheiro',
@@ -148,7 +149,7 @@ function drawPayments(doc, danfe, tL, tW, L, W, y) {
   return y;
 }
 
-function drawNoteInfo(doc, danfe, L, W, y) {
+function drawNoteInfo(doc, danfe, L, W, y, qrBuffer) {
   doc.fontSize(8).font('Helvetica-Bold').fillColor('#000')
      .text('Informações gerais da Nota', L, y);
   y += 11; dashedLine(doc, y, L, W); y += 5;
@@ -161,15 +162,22 @@ function drawNoteInfo(doc, danfe, L, W, y) {
 
   doc.fontSize(8).font('Helvetica-Bold').fillColor('#000').text('Chave de acesso', L, y);
   y += 11; dashedLine(doc, y, L, W); y += 5;
+
+  // QR code à direita, texto da chave à esquerda ocupando o espaço restante.
+  const qrSize   = 70;
+  const textW    = qrBuffer ? W - qrSize - 10 : W;
+  const blockTop = y;
+  if (qrBuffer) doc.image(qrBuffer, L + W - qrSize, blockTop, { width: qrSize, height: qrSize });
+
   const urlConsulta = danfe.urlChave || 'http://www.fazenda.rj.gov.br/nfce/consulta';
   doc.fontSize(7).font('Helvetica').fillColor('#555')
-     .text(`Consulte pela Chave de Acesso em ${urlConsulta}`, L, y);
+     .text(`Consulte pela Chave de Acesso em ${urlConsulta}`, L, y, { width: textW });
   y += 11;
-  doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#000').text('Chave de acesso:', L, y);
+  doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#000').text('Chave de acesso:', L, y, { width: textW });
   y += 11;
-  doc.fontSize(7.5).font('Helvetica').fillColor('#000').text(fmtChave(danfe.chave), L, y);
+  doc.fontSize(7.5).font('Helvetica').fillColor('#000').text(fmtChave(danfe.chave), L, y, { width: textW });
   y += 14;
-  return y;
+  return qrBuffer ? Math.max(y, blockTop + qrSize + 6) : y;
 }
 
 function drawConsumer(doc, danfe, L, W, y) {
@@ -186,12 +194,27 @@ function drawConsumer(doc, danfe, L, W, y) {
   doc.fontSize(7.5).font('Helvetica').fillColor('#000').text(consStr, L, y);
 }
 
+// danfe.qrCode é a URL de consulta do SEFAZ (texto) — precisa virar imagem de
+// QR code antes de entrar no PDF via doc.image(); retorna null se não houver
+// qrCode ou se a geração falhar (DANFE ainda sai, só sem o QR).
+async function buildQrBuffer(qrCode) {
+  if (!qrCode) return null;
+  try {
+    return await QRCode.toBuffer(qrCode, { width: 200, margin: 1 });
+  } catch (e) {
+    console.error('[DANFE] Falha ao gerar QR code para o PDF:', e.message);
+    return null;
+  }
+}
+
 /**
  * Generates a DANFE NFC-e PDF buffer — layout baseado na consulta SEFAZ RJ.
  * @param {object} danfe — NFCeDanfe payload from nfce_index.danfe_json
  * @returns {Promise<Buffer>}
  */
-function generateDanfePdf(danfe) {
+async function generateDanfePdf(danfe) {
+  const qrBuffer = await buildQrBuffer(danfe.qrCode);
+
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: 'A4',
@@ -211,7 +234,7 @@ function generateDanfePdf(danfe) {
     y                         = drawProducts(doc, products, L, W, BLUE, y);
     const { y: y2, tot, tL, tW } = drawTotals(doc, danfe, L, W, y);
     const y3                  = drawPayments(doc, danfe, tL, tW, L, W, y2);
-    const y4                  = drawNoteInfo(doc, danfe, L, W, y3);
+    const y4                  = drawNoteInfo(doc, danfe, L, W, y3, qrBuffer);
     drawConsumer(doc, danfe, L, W, y4);
     doc.end();
   });

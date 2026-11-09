@@ -1,7 +1,8 @@
 'use strict';
 
-const path = require('path');
-const fs   = require('fs');
+const path   = require('path');
+const fs     = require('fs');
+const QRCode = require('qrcode');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
 const FIXED_CC    = ['bruno@delirio.com.br', 'suporteti@delirio.com.br'];
@@ -95,15 +96,25 @@ function buildEmitHeader(emit) {
   <p style="margin:0 0 12px;color:#555;font-size:13px">CNPJ: ${e.cnpj || ''}</p>`;
 }
 
-function buildQrHtml(qrCode) {
+// danfe.qrCode é a URL de consulta do SEFAZ (texto), não uma imagem — precisa
+// ser codificada num QR code de verdade antes de virar <img>. src="<url>" nunca
+// renderizava nada (a URL não retorna bytes de imagem).
+async function buildQrHtml(qrCode) {
   if (!qrCode) return '';
+  let dataUrl;
+  try {
+    dataUrl = await QRCode.toDataURL(qrCode, { width: 260, margin: 1 });
+  } catch (e) {
+    console.error('[DANFE] Falha ao gerar QR code:', e.message);
+    return '';
+  }
   return `<div style="text-align:center;margin:12px 0">
-         <img src="${qrCode}" width="130" height="130" alt="QR Code NFC-e" />
+         <img src="${dataUrl}" width="130" height="130" alt="QR Code NFC-e" />
          <p style="font-size:11px;color:#666">Aponte a câmera para consultar no SEFAZ</p>
        </div>`;
 }
 
-function buildHtml(danfe) {
+async function buildHtml(danfe) {
   const rows = (danfe.products || []).map(p => `
     <tr>
       <td style="padding:4px 8px;border-bottom:1px solid #eee">${p.nItem}</td>
@@ -117,7 +128,7 @@ function buildHtml(danfe) {
     `<tr><td>${PAG_LABELS[p.tPag] || `Cód ${p.tPag}`}</td><td style="text-align:right">${fmtMoeda(p.vPag)}</td></tr>`
   ).join('');
 
-  const qrHtml      = buildQrHtml(danfe.qrCode);
+  const qrHtml      = await buildQrHtml(danfe.qrCode);
   const emitHeader  = buildEmitHeader(danfe.emit);
   const vNF         = (danfe.totals || {}).vNF || danfe.vNF;
 
@@ -190,15 +201,16 @@ function buildHtml(danfe) {
  *   "msGraph": { "tenantId": "...", "clientId": "...", "clientSecret": "...", "refreshToken": "..." }
  */
 async function sendDanfeEmail({ danfe, pdfBuffer, toEmail, extraCCs = [] }) {
-  const token  = await getAccessToken();
-  const store  = (danfe.emit?.xFant || danfe.emit?.xNome || '').slice(0, 30);
-  const ccList = [...FIXED_CC, ...extraCCs.filter(e => e && e !== toEmail)];
+  const token   = await getAccessToken();
+  const store   = (danfe.emit?.xFant || danfe.emit?.xNome || '').slice(0, 30);
+  const ccList  = [...FIXED_CC, ...extraCCs.filter(e => e && e !== toEmail)];
+  const htmlBody = await buildHtml(danfe);
 
   const message = {
     subject: `DANFE NFC-e Nº ${danfe.nNF} — ${store}`,
     body: {
       contentType: 'HTML',
-      content:     buildHtml(danfe),
+      content:     htmlBody,
     },
     toRecipients: [{ emailAddress: { address: toEmail } }],
     ccRecipients: ccList.map(addr => ({ emailAddress: { address: addr } })),
@@ -258,4 +270,4 @@ function isMsGraphConfigured() {
   return !!validateGraphConfig(loadGraphConfig());
 }
 
-module.exports = { sendDanfeEmail, sendSimpleEmail, isMsGraphConfigured };
+module.exports = { sendDanfeEmail, sendSimpleEmail, isMsGraphConfigured, buildHtml };

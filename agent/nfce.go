@@ -19,18 +19,22 @@ type nfceXMLRoot struct {
 	ProtNFe nfceXMLProt `xml:"protNFe"`
 }
 
+// infNFeSupl é irmão de infNFe (ambos filhos direto de NFe) no schema NFe/NFCe
+// v4.00 da SEFAZ — nunca filho de infNFe. Bug real (09/11/2026): estava aninhado
+// dentro de nfceXMLInfNFe, então encoding/xml nunca encontrava o elemento e
+// QrCode/UrlChave sempre vinham vazios, em toda NF-Ce já indexada desde sempre.
 type nfceXMLNFe struct {
-	InfNFe nfceXMLInfNFe `xml:"infNFe"`
+	InfNFe     nfceXMLInfNFe `xml:"infNFe"`
+	InfNFeSupl nfceXMLSupl   `xml:"infNFeSupl"`
 }
 
 type nfceXMLInfNFe struct {
-	Ide        nfceXMLIde   `xml:"ide"`
-	Emit       nfceXMLEmit  `xml:"emit"`
-	Dest       nfceXMLDest  `xml:"dest"`
-	Det        []nfceXMLDet `xml:"det"`
-	Total      nfceXMLTotal `xml:"total"`
-	Pag        nfceXMLPag   `xml:"pag"`
-	InfNFeSupl nfceXMLSupl  `xml:"infNFeSupl"`
+	Ide   nfceXMLIde   `xml:"ide"`
+	Emit  nfceXMLEmit  `xml:"emit"`
+	Dest  nfceXMLDest  `xml:"dest"`
+	Det   []nfceXMLDet `xml:"det"`
+	Total nfceXMLTotal `xml:"total"`
+	Pag   nfceXMLPag   `xml:"pag"`
 }
 
 type nfceXMLIde struct {
@@ -324,8 +328,8 @@ func parseNFCeFile(xmlPath, dayFolder string) (NFCeRecord, error) {
 		Series:   inf.Ide.CSer,
 		DhEmi:    inf.Ide.DhEmi,
 		VNF:      inf.Total.ICMSTot.VNF,
-		QrCode:   inf.InfNFeSupl.QrCode,
-		UrlChave: inf.InfNFeSupl.UrlChave,
+		QrCode:   root.NFe.InfNFeSupl.QrCode,
+		UrlChave: root.NFe.InfNFeSupl.UrlChave,
 		Emit: NFCeEmitPayload{
 			CNPJ:    inf.Emit.CNPJ,
 			XNome:   inf.Emit.XNome,
