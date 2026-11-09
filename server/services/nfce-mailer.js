@@ -250,4 +250,12 @@ async function sendSimpleEmail(to, subject, bodyHtml) {
   }
 }
 
-module.exports = { sendDanfeEmail, sendSimpleEmail };
+// Reporta só se a configuração está completa — nunca o valor dos campos.
+// !! força boolean de verdade: validateGraphConfig() retorna o próprio operando
+// falso do && encadeado (undefined, não false), o que faria JSON.stringify
+// descartar a chave "configured" do corpo da resposta.
+function isMsGraphConfigured() {
+  return !!validateGraphConfig(loadGraphConfig());
+}
+
+module.exports = { sendDanfeEmail, sendSimpleEmail, isMsGraphConfigured };

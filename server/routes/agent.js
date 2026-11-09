@@ -346,6 +346,11 @@ function postProcessNfceIndex(machineId, message) {
       db.upsertNFCeRecords(machineId, result.records);
       console.log(`[NFCe] ${machineId} day=${result.day}: ${result.records.length} registros indexados`);
     }
+    // Marca o dia como processado mesmo sem registros (loja fechada, feriado) —
+    // é o que permite pular esse dia em reindexações futuras.
+    if (result.month && result.day) {
+      db.markNFCeDayIndexed(machineId, `${result.month}-${result.day}`, result.records?.length || 0);
+    }
   } catch (e) {
     console.error('[NFCe] Falha ao indexar registros:', e.message);
   }
@@ -400,16 +405,21 @@ function postProcessNfceMonths(machineId, message) {
     if (months.length === 0) {
       console.warn(`[NFCe] ${machineId}: aloha-list-nfce-months retornou 0 meses — pasta XML vazia ou caminho ausente em C:\\Bootdrv\\AlohaFiscal\\ServerData\\XML`);
     }
-    let total = 0;
+    const indexedDays = db.getIndexedDayKeysSet(machineId);
+    const todayKey    = db.todayDayKey();
+
+    let total = 0, skipped = 0;
     for (const { month: mm, year: yy, days } of months) {
       const yearStr = yy || String(new Date().getFullYear());
       const monthKey = `${yearStr}-${mm}`;
       for (const day of (days || [])) {
+        const dayKey = `${monthKey}-${day}`;
+        if (indexedDays.has(dayKey) && dayKey !== todayKey) { skipped++; continue; }
         db.createCommand(machineId, 'aloha-index-nfce-day', { month: monthKey, day });
         total++;
       }
     }
-    console.log(`[NFCe] ${machineId} histórico: ${months.length} meses, ${total} comandos enfileirados`);
+    console.log(`[NFCe] ${machineId} histórico: ${months.length} meses, ${total} comandos enfileirados, ${skipped} dias já indexados pulados`);
   } catch (e) {
     console.error('[NFCe] Falha ao processar lista de meses:', e.message);
   }
@@ -493,4 +503,6 @@ router.post('/machines/:id/service-status', agentAuthNoLimit, (req, res) => {
 });
 
 module.exports = router;
-module.exports.validateHeartbeat = validateHeartbeat;
+module.exports.validateHeartbeat    = validateHeartbeat;
+module.exports.postProcessNfceMonths = postProcessNfceMonths;
+module.exports.postProcessNfceIndex  = postProcessNfceIndex;

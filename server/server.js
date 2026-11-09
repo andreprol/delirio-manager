@@ -230,22 +230,51 @@ setInterval(() => {
 }, 60000);
 
 async function _triggerNFCeIndexing(now) {
-  const { getAllMachines, createCommand } = require('./db');
+  const { getAllMachines, createCommand, getIndexedDayKeysSet, todayDayKey } = require('./db');
   const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const today = now.getDate();
+  const todayKey = todayDayKey();
 
   const boh = getAllMachines().filter(m =>
     m.hostname?.toUpperCase().endsWith('BOH') && m.status === 'online'
   );
   if (!boh.length) return;
 
-  logger.info('NFCe indexação noturna', { boh: boh.length, month, diasAte: String(today).padStart(2, '0') });
+  let totalSent = 0, totalSkipped = 0;
   for (const machine of boh) {
+    const indexedDays = getIndexedDayKeysSet(machine.id);
     for (let d = 1; d <= today; d++) {
-      createCommand(machine.id, 'aloha-index-nfce-day', { month, day: String(d).padStart(2, '0') });
+      const day    = String(d).padStart(2, '0');
+      const dayKey = `${month}-${day}`;
+      if (indexedDays.has(dayKey) && dayKey !== todayKey) { totalSkipped++; continue; }
+      createCommand(machine.id, 'aloha-index-nfce-day', { month, day });
+      totalSent++;
     }
   }
+  logger.info('NFCe indexação noturna', { boh: boh.length, month, enviados: totalSent, puladosJaIndexados: totalSkipped });
 }
+
+// ── Aloha scan — mantém o card "verificado" do dashboard sempre fresco ───────
+// Sem isso o scan só rodava 1x (ao expandir a loja pela 1a vez no dashboard) e
+// nunca mais se atualizava sozinho — card ficava com dado de meses atrás.
+function _scheduleAlohaScanRefresh() {
+  const { getAllMachines, createCommand } = require('./db');
+  const INTERVAL_MS = 4 * 60 * 60 * 1000; // 4h — scan é leve (só lista pastas, não abre XML)
+
+  function _refresh() {
+    const boh = getAllMachines().filter(m =>
+      m.hostname?.toUpperCase().endsWith('BOH') && m.status === 'online'
+    );
+    for (const machine of boh) {
+      createCommand(machine.id, 'aloha-scan', {});
+    }
+    if (boh.length) logger.info('[AlohaScan] Refresh automático disparado', { lojas: boh.length });
+  }
+
+  setTimeout(_refresh, 5 * 60 * 1000); // 5 min após boot — aguarda agentes reconectarem
+  setInterval(_refresh, INTERVAL_MS);
+}
+_scheduleAlohaScanRefresh();
 
 // ── Shutdown gracioso ─────────────────────────────────────────────────────────
 process.on('SIGTERM', () => {

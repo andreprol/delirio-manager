@@ -151,6 +151,18 @@ describe('GET /health', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/status/integrations
+// ─────────────────────────────────────────────────────────────────────────────
+describe('GET /api/status/integrations', () => {
+  it('inclui msGraph.configured como booleano, sem vazar segredo', async () => {
+    const res = await request(app).get('/api/status/integrations').expect(200);
+    expect(res.body.msGraph).toHaveProperty('configured');
+    expect(typeof res.body.msGraph.configured).toBe('boolean');
+    expect(JSON.stringify(res.body)).not.toMatch(/clientSecret|refreshToken/i);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/register
 // ─────────────────────────────────────────────────────────────────────────────
 describe('POST /api/register', () => {

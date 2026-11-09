@@ -94,8 +94,10 @@ app.get('/health', (req, res) => {
 // ── Status integrações ────────────────────────────────────────────────────────
 app.get('/api/status/integrations', (req, res) => {
   const { getIntegrationsStatus } = require('./db');
+  const { isMsGraphConfigured } = require('./services/nfce-mailer');
   const status = getIntegrationsStatus();
   status.zamak.syncing = zamakService.isSyncing();
+  status.msGraph = { configured: isMsGraphConfigured() };
   res.json(status);
 });
 

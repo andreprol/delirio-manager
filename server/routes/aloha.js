@@ -17,7 +17,8 @@ router.post('/:machineId/history/trigger', (req, res) => {
 });
 
 // POST /api/aloha/:machineId/index/trigger
-// Enfileira comandos aloha-index-nfce-day para todos os dias do mês corrente.
+// Enfileira comandos aloha-index-nfce-day para os dias do mês corrente ainda
+// não indexados (o dia de hoje é sempre reenfileirado — a loja pode estar vendendo).
 router.post('/:machineId/index/trigger', (req, res) => {
   const machine = db.getMachineById(req.params.machineId);
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
@@ -26,14 +27,20 @@ router.post('/:machineId/index/trigger', (req, res) => {
   const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const today = now.getDate();
 
+  const indexedDays = db.getIndexedDayKeysSet(machine.id);
+  const todayKey    = db.todayDayKey();
+
   const commandIds = [];
+  let skipped = 0;
   for (let d = 1; d <= today; d++) {
-    const day = String(d).padStart(2, '0');
-    const id  = db.createCommand(machine.id, 'aloha-index-nfce-day', { month, day });
+    const day    = String(d).padStart(2, '0');
+    const dayKey = `${month}-${day}`;
+    if (indexedDays.has(dayKey) && dayKey !== todayKey) { skipped++; continue; }
+    const id = db.createCommand(machine.id, 'aloha-index-nfce-day', { month, day });
     commandIds.push(id);
   }
 
-  res.json({ ok: true, month, days: today, commandIds });
+  res.json({ ok: true, month, days: commandIds.length, skipped, commandIds });
 });
 
 // GET /api/aloha/:machineId/index/status

@@ -190,6 +190,14 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_nfce_dh_emi
       ON nfce_index(machine_id, dh_emi);
 
+    CREATE TABLE IF NOT EXISTS nfce_indexed_days (
+      machine_id    TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+      day_key       TEXT NOT NULL,
+      record_count  INTEGER NOT NULL DEFAULT 0,
+      indexed_at    TEXT NOT NULL,
+      PRIMARY KEY (machine_id, day_key)
+    );
+
     CREATE TABLE IF NOT EXISTS dr_backups (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       machine_id   TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
@@ -528,7 +536,7 @@ function migrate(db) {
 const _MACHINE_CHILD_TABLES = [
   'metrics', 'commands', 'events', 'machine_metrics_hourly',
   'machine_offline_events', 'reading_miss_events', 'win_events',
-  'nfce_index', 'dr_backups', 'service_status', 'activity_log', 'live_sessions',
+  'nfce_index', 'nfce_indexed_days', 'dr_backups', 'service_status', 'activity_log', 'live_sessions',
 ];
 
 function registerMachine({ machineId, hostname, agentVersion }) {
@@ -1243,6 +1251,36 @@ function getNFCeIndexStatus(machineId) {
     sessionStartedAt,
     listMonths: listCmd || null,
   };
+}
+
+// ── NF-Ce indexação incremental ─────────────────────────────────────────────
+// Rastreia quais dias já foram indexados por máquina, pra "Indexar mês atual" /
+// "Indexar histórico completo" / scheduler noturno pularem dias já processados
+// em vez de reenfileirar tudo a cada clique/execução.
+
+function markNFCeDayIndexed(machineId, dayKey, recordCount) {
+  getDb().prepare(`
+    INSERT INTO nfce_indexed_days (machine_id, day_key, record_count, indexed_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(machine_id, day_key) DO UPDATE SET
+      record_count = excluded.record_count,
+      indexed_at   = excluded.indexed_at
+  `).run(machineId, dayKey, recordCount || 0, new Date().toISOString());
+}
+
+// Retorna o Set de day_keys ("YYYY-MM-DD") já indexados para a máquina.
+function getIndexedDayKeysSet(machineId) {
+  const rows = getDb().prepare(
+    'SELECT day_key FROM nfce_indexed_days WHERE machine_id = ?'
+  ).all(machineId);
+  return new Set(rows.map(r => r.day_key));
+}
+
+// Chave "YYYY-MM-DD" de hoje (hora local do servidor) — o dia corrente nunca
+// é pulado na indexação incremental porque a loja pode ainda estar vendendo.
+function todayDayKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
 // ── Ref1 Registry ─────────────────────────────────────────────────────────────
@@ -2093,6 +2131,7 @@ module.exports = {
   logClockOperation, getClockOperationLog,
   // nfce index
   getCommandById, upsertNFCeRecords, searchNFCe, getNFCeByChave, getNFCeIndexStatus,
+  markNFCeDayIndexed, getIndexedDayKeysSet, todayDayKey,
   // ref1 registry
   registerRef1, getMaxRef1,
   // dr backups
