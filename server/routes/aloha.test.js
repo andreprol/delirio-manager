@@ -8,23 +8,22 @@
 const express = require('express');
 const request = require('supertest');
 
+let app, db;
+
 beforeEach(() => {
   jest.resetModules();
   process.env.DB_PATH = ':memory:';
+  db = require('../db');
+  const router = require('./aloha');
+  app = express();
+  app.use(express.json());
+  app.use('/api/aloha', router);
+  db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
 });
 
 afterEach(() => {
   delete process.env.DB_PATH;
 });
-
-function buildApp() {
-  const db     = require('../db');
-  const router = require('./aloha');
-  const app = express();
-  app.use(express.json());
-  app.use('/api/aloha', router);
-  return { app, db };
-}
 
 function todayMonthKey() {
   const now = new Date();
@@ -33,15 +32,11 @@ function todayMonthKey() {
 
 describe('POST /api/aloha/:machineId/index/trigger', () => {
   it('404 quando a máquina não existe', async () => {
-    const { app } = buildApp();
     const res = await request(app).post('/api/aloha/inexistente/index/trigger').send({});
     expect(res.status).toBe(404);
   });
 
   it('primeira chamada enfileira todos os dias do mês até hoje, sem pular nenhum', async () => {
-    const { app, db } = buildApp();
-    db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
-
     const res = await request(app).post('/api/aloha/m1/index/trigger').send({});
 
     const today = new Date().getDate();
@@ -53,9 +48,6 @@ describe('POST /api/aloha/:machineId/index/trigger', () => {
   });
 
   it('segunda chamada pula dias já indexados — só reenfileira hoje', async () => {
-    const { app, db } = buildApp();
-    db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
-
     const month = todayMonthKey();
     const today = new Date().getDate();
     // Marca todos os dias 1..today como já indexados (simula execução anterior completa).
@@ -73,8 +65,6 @@ describe('POST /api/aloha/:machineId/index/trigger', () => {
   });
 
   it('dias indexados de uma loja não afetam o trigger de outra', async () => {
-    const { app, db } = buildApp();
-    db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
     db.registerMachine({ machineId: 'm2', hostname: 'LOJA2BOH', agentVersion: '1.0' });
 
     const month = todayMonthKey();

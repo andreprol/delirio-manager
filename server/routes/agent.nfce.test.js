@@ -7,16 +7,21 @@
  * módulo depois do jest.resetModules(), então o teste cobre o SQL de verdade.
  */
 
+let db, postProcessNfceMonths, postProcessNfceIndex;
+
 beforeEach(() => {
   jest.resetModules();
   process.env.DB_PATH = ':memory:';
+  db = require('../db');
+  ({ postProcessNfceMonths, postProcessNfceIndex } = require('./agent'));
+  db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
 });
 
 afterEach(() => {
   delete process.env.DB_PATH;
 });
 
-function pendingCommandDays(db, machineId) {
+function pendingCommandDays(machineId) {
   return db.getDb()
     .prepare(`SELECT json_extract(params, '$.day') as day FROM commands
                WHERE machine_id = ? AND type = 'aloha-index-nfce-day' ORDER BY day`)
@@ -26,23 +31,15 @@ function pendingCommandDays(db, machineId) {
 
 describe('postProcessNfceMonths — indexação incremental de histórico', () => {
   it('primeira execução enfileira todos os dias retornados pelo agente', () => {
-    const db = require('../db');
-    const { postProcessNfceMonths } = require('./agent');
-    db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
-
     const message = JSON.stringify({
       months: [{ year: '2026', month: '06', days: ['01', '02', '03'] }],
     });
     postProcessNfceMonths('m1', message);
 
-    expect(pendingCommandDays(db, 'm1')).toEqual(['01', '02', '03']);
+    expect(pendingCommandDays('m1')).toEqual(['01', '02', '03']);
   });
 
   it('segunda execução pula dias já indexados (exceto hoje)', () => {
-    const db = require('../db');
-    const { postProcessNfceMonths } = require('./agent');
-    db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
-
     const todayKey = db.todayDayKey(); // "YYYY-MM-DD"
     const [todayYear, todayMonth, todayDay] = todayKey.split('-');
 
@@ -55,14 +52,10 @@ describe('postProcessNfceMonths — indexação incremental de histórico', () =
     postProcessNfceMonths('m1', message);
 
     // Só o dia de hoje foi reenfileirado — "01" foi pulado.
-    expect(pendingCommandDays(db, 'm1')).toEqual([todayDay]);
+    expect(pendingCommandDays('m1')).toEqual([todayDay]);
   });
 
   it('dia de hoje é sempre reenfileirado mesmo já marcado como indexado', () => {
-    const db = require('../db');
-    const { postProcessNfceMonths } = require('./agent');
-    db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
-
     const todayKey = db.todayDayKey();
     const [todayYear, todayMonth, todayDay] = todayKey.split('-');
     db.markNFCeDayIndexed('m1', todayKey, 3); // loja já vendeu algo hoje antes
@@ -72,36 +65,27 @@ describe('postProcessNfceMonths — indexação incremental de histórico', () =
     });
     postProcessNfceMonths('m1', message);
 
-    expect(pendingCommandDays(db, 'm1')).toEqual([todayDay]);
+    expect(pendingCommandDays('m1')).toEqual([todayDay]);
   });
 
-  it('não indexados de lojas diferentes não se misturam', () => {
-    const db = require('../db');
-    const { postProcessNfceMonths } = require('./agent');
-    db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
+  it('dias indexados de uma loja não se misturam com outra', () => {
     db.registerMachine({ machineId: 'm2', hostname: 'LOJA2BOH', agentVersion: '1.0' });
-
     db.markNFCeDayIndexed('m1', '2026-06-01', 2);
 
     const message = JSON.stringify({ months: [{ year: '2026', month: '06', days: ['01'] }] });
     postProcessNfceMonths('m2', message);
 
     // m2 não tinha nada indexado — dia 01 deve ser enfileirado normalmente.
-    expect(pendingCommandDays(db, 'm2')).toEqual(['01']);
+    expect(pendingCommandDays('m2')).toEqual(['01']);
   });
 
   it('mensagem malformada não lança exceção', () => {
-    const { postProcessNfceMonths } = require('./agent');
     expect(() => postProcessNfceMonths('m1', 'não é json')).not.toThrow();
   });
 });
 
 describe('postProcessNfceIndex — marca dia como processado', () => {
   it('grava os registros e marca o dia como indexado', () => {
-    const db = require('../db');
-    const { postProcessNfceIndex } = require('./agent');
-    db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
-
     const message = JSON.stringify({
       month: '2026-06', day: '05',
       records: [{ chave: 'abc', n_nf: 1, dh_emi: '2026-06-05T10:00:00', v_nf: 50, danfe: {} }],
@@ -114,10 +98,6 @@ describe('postProcessNfceIndex — marca dia como processado', () => {
   });
 
   it('dia sem nenhuma NF-Ce (loja fechada) ainda fica marcado como indexado', () => {
-    const db = require('../db');
-    const { postProcessNfceIndex } = require('./agent');
-    db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
-
     const message = JSON.stringify({ month: '2026-06', day: '05', records: [], skipped: 0, error_count: 0 });
     postProcessNfceIndex('m1', message);
 
@@ -125,10 +105,6 @@ describe('postProcessNfceIndex — marca dia como processado', () => {
   });
 
   it('mensagem malformada não lança exceção e não marca nada', () => {
-    const db = require('../db');
-    const { postProcessNfceIndex } = require('./agent');
-    db.registerMachine({ machineId: 'm1', hostname: 'LOJA1BOH', agentVersion: '1.0' });
-
     expect(() => postProcessNfceIndex('m1', 'não é json')).not.toThrow();
     expect(db.getIndexedDayKeysSet('m1').size).toBe(0);
   });
