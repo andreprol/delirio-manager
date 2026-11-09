@@ -60,7 +60,7 @@ describe('AlohaDANFESearch — download de PDF no Electron', () => {
     expect(api.nfce.downloadDanfe).not.toHaveBeenCalled()
   })
 
-  it('reabilita o botão quando download-done chega com state completed', async () => {
+  it('mostra "✓ Salvo" com o caminho quando download-done chega com state completed', async () => {
     let doneCallback
     window.electronAPI = {
       downloadFile: vi.fn(),
@@ -69,9 +69,32 @@ describe('AlohaDANFESearch — download de PDF no Electron', () => {
 
     await renderAndSearch()
     fireEvent.click(screen.getByTitle('Baixar DANFE em PDF'))
-    doneCallback({ state: 'completed', filename: 'DANFE-166179.pdf' })
+    doneCallback({ state: 'completed', filename: 'DANFE-166179.pdf', savePath: 'C:\\Downloads\\DANFE-166179.pdf' })
 
-    await waitFor(() => expect(screen.getByTitle('Baixar DANFE em PDF')).not.toBeDisabled())
+    const savedBtn = await screen.findByText('✓ Salvo')
+    expect(savedBtn).not.toBeDisabled()
+    expect(savedBtn.title).toContain('C:\\Downloads\\DANFE-166179.pdf')
+  })
+
+  it('clicar em "✓ Salvo" abre a pasta em vez de baixar de novo', async () => {
+    let doneCallback
+    const showInFolder = vi.fn()
+    window.electronAPI = {
+      downloadFile: vi.fn(),
+      onDownloadDone: vi.fn((cb) => { doneCallback = cb; return () => {} }),
+      showInFolder,
+    }
+
+    await renderAndSearch()
+    fireEvent.click(screen.getByTitle('Baixar DANFE em PDF'))
+    doneCallback({ state: 'completed', filename: 'DANFE-166179.pdf', savePath: 'C:\\Downloads\\DANFE-166179.pdf' })
+    const savedBtn = await screen.findByText('✓ Salvo')
+
+    window.electronAPI.downloadFile.mockClear()
+    fireEvent.click(savedBtn)
+
+    expect(showInFolder).toHaveBeenCalledWith('C:\\Downloads\\DANFE-166179.pdf')
+    expect(window.electronAPI.downloadFile).not.toHaveBeenCalled()
   })
 
   it('mostra alerta quando download-done chega com erro', async () => {

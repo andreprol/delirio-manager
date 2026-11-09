@@ -242,26 +242,34 @@ function EmailModal({ record, machineId, onClose }) {
 function ResultRow({ record, machineId }) {
   const [emailOpen,   setEmailOpen]   = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const [savedPath,   setSavedPath]   = useState(null) // Electron: caminho do PDF salvo, pra avisar e permitir abrir a pasta
 
   const products = (record.products_text || '').split(' | ').filter(Boolean).slice(0, 3)
 
-  // Electron: webContents.downloadURL (window.electronAPI.downloadFile) é o
-  // caminho confiável — passa pelo will-download do main process e salva
-  // direto na pasta Downloads (mesmo padrão do relatório BIOS em App.jsx).
-  // Clicar num <a href="blob:..."> (padrão web puro, usado antes) não
-  // disparava nada de visível dentro do BrowserWindow do dashboard.
+  // Electron: webContents.downloadURL (window.electronAPI.downloadFile) salva
+  // direto na pasta Downloads, SEM dialog (mesmo padrão do relatório BIOS em
+  // App.jsx) — por design, não existe popup nativo de "download concluído".
+  // Sem avisar isso na própria UI, o usuário não tem como saber que funcionou
+  // nem onde o arquivo foi parar (achado ao vivo 09/11/2026, André achou que
+  // tava quebrado até conferir a pasta Downloads manualmente).
   async function downloadPDF() {
     setDownloading(true)
+    setSavedPath(null)
     const filename = `DANFE-${record.n_nf}.pdf`
 
     if (window.electronAPI?.downloadFile) {
       let settled = false
-      const unsub = window.electronAPI.onDownloadDone(({ state, filename: fname }) => {
+      const unsub = window.electronAPI.onDownloadDone(({ state, filename: fname, savePath }) => {
         if (fname !== filename || settled) return
         settled = true
         unsub()
         setDownloading(false)
-        if (state !== 'completed') alert(`Erro ao gerar DANFE (status: ${state})`)
+        if (state === 'completed') {
+          setSavedPath(savePath || true)
+          setTimeout(() => setSavedPath(null), 8000)
+        } else {
+          alert(`Erro ao gerar DANFE (status: ${state})`)
+        }
       })
       try {
         await window.electronAPI.downloadFile(`${getServerUrl()}/api/aloha/nfce/${record.chave}/danfe?machineId=${machineId}`)
@@ -295,6 +303,14 @@ function ResultRow({ record, machineId }) {
     }
   }
 
+  function pdfButtonClick() {
+    if (savedPath && typeof savedPath === 'string' && window.electronAPI?.showInFolder) {
+      window.electronAPI.showInFolder(savedPath)
+    } else {
+      downloadPDF()
+    }
+  }
+
   const s = {
     row: {
       display: 'grid',
@@ -316,8 +332,9 @@ function ResultRow({ record, machineId }) {
         </span>
         <div style={s.actions}>
           <button className="btn btn-secondary" style={{ fontSize: '10px', padding: '3px 8px' }}
-            onClick={downloadPDF} disabled={downloading} title="Baixar DANFE em PDF">
-            {downloading ? '⏳' : '⬇ PDF'}
+            onClick={pdfButtonClick} disabled={downloading}
+            title={savedPath ? `Salvo${typeof savedPath === 'string' ? ' em: ' + savedPath : ''} — clique pra abrir a pasta` : 'Baixar DANFE em PDF'}>
+            {downloading ? '⏳' : savedPath ? '✓ Salvo' : '⬇ PDF'}
           </button>
           <button className="btn btn-secondary" style={{ fontSize: '10px', padding: '3px 8px' }}
             onClick={() => setEmailOpen(true)} title="Enviar DANFE por email">
