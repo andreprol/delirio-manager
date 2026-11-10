@@ -48,7 +48,15 @@ if [ -z "$TOPLEVEL" ]; then
   exit 0
 fi
 
-ALLOWLIST=".claude .github .husky .gitignore CHANGELOG.md CLAUDE.md README.md agent clock-proxy dashboard deploy docs infra package.json package-lock.json server skills-lock.json tasks verify.sh"
+# Núcleo real do Delirio Manager + projetos-irmãos que moram de propósito
+# dentro desta mesma pasta de trabalho (ver .gitignore, seção "Projetos
+# separados" -- cada um tem repo próprio, NUNCA deveria ir pro
+# delirio-manager, mas arquivo dentro de uma dessas pastas-irmãs não é
+# contaminação, é o padrão esperado). Manter esta lista em sincronia com
+# .gitignore -- achado 10/11/2026: uriverse3d estava fora daqui e isso por
+# pouco não bloqueou um commit legítimo (worktree dedicado, nunca pushado
+# pro origin do Delirio Manager).
+ALLOWLIST=".claude .github .husky .gitignore CHANGELOG.md CLAUDE.md README.md agent clock-proxy dashboard deploy docs infra package.json package-lock.json server skills-lock.json tasks verify.sh uriverse3d uriverse3d-deploy music-channel-pipeline projeto-raquel linkedin-outreach youtube-rhetoric-pipeline cv-tailor homefood-michael-review acessibilidade-delirio projeto-ia claude-code-setup delirio-caixa raiox-brasilia simulado-abdi simulado-concurso-camara fonts .tmp-social-assets"
 
 is_allowed() {
   case "$1" in
