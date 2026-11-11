@@ -158,6 +158,24 @@ describe('LiveSessionWindow', () => {
     expect(sendKeyEventMock).not.toHaveBeenCalled()
   })
 
+  it('mode normal: segurar tecla Windows durante mudanca de contagem ainda manda o keyup (nao trava a tecla remota)', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    // count=1: keydown e forwardado e registrado em heldKeysRef
+    act(() => { window.electronAPI.__fireNormalWindowVisibility({ visibleNormalCount: 1 }) })
+    fireEvent.keyDown(window, { keyCode: 91 })
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 91)
+
+    // outra janela Normal abre enquanto a tecla ainda esta fisicamente pressionada
+    act(() => { window.electronAPI.__fireNormalWindowVisibility({ visibleNormalCount: 2 }) })
+
+    // soltar a tecla agora -- o keyup TEM que ser mandado mesmo com count=2,
+    // porque o keydown correspondente ja foi mandado (fonte da verdade: heldKeysRef)
+    fireEvent.keyUp(window, { keyCode: 91 })
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 91)
+  })
+
   it('mode normal: tecla normal (ex: "a") continua encaminhada mesmo com 2+ janelas Normal visiveis', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })

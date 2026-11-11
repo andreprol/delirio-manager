@@ -375,7 +375,7 @@ export function LiveSessionWindow() {
       sendKeyEvent('keydown', e.keyCode)
     }
     function onKeyUp(e) {
-      if ((e.keyCode === VK_LWIN || e.keyCode === VK_RWIN) && visibleNormalCountRef.current !== 1) {
+      if ((e.keyCode === VK_LWIN || e.keyCode === VK_RWIN) && !heldKeysRef.current.has(e.keyCode)) {
         return
       }
       // Keyup de 'V' sem keydown correspondente registrado (caso Ctrl+V
