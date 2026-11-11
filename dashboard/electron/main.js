@@ -361,16 +361,29 @@ app.whenReady().then(() => {
   // navegador/Electron colar o clipboard da sessão remota por engano.
   ipcMain.handle('clipboard:read-text', () => clipboard.readText())
 
-  // Allowlist de paths liberados pra file:read — só os que de fato saíram do
-  // seletor nativo (file:pick) nesta sessão do app. Sem isso, qualquer
-  // código rodando no renderer (dependência npm comprometida, XSS futuro,
-  // devtools) poderia chamar window.electronAPI.readLocalFile com QUALQUER
-  // caminho do disco — inclusive .secrets/admin-secret.txt, que o próprio
-  // CLAUDE.md do projeto documenta guardar em F:\RichClub (achado 🔴
-  // CRÍTICO na revisão desta mudança). file:pick é a única forma de
-  // adicionar um path aqui — nunca aceitar um path arbitrário vindo do
-  // renderer.
-  const pickedFilePaths = new Set()
+  // file:read não usa mais allowlist-de-origem (só path que passou pelo
+  // dialog de file:pick) — achado pela revisão: isso quebraria o
+  // arrastar-e-soltar (Task 10, plano em
+  // docs/superpowers/plans/2026-11-11-file-transfer.md, ainda não
+  // implementada aqui), que nunca passa pelo dialog — o .path de um File
+  // arrastado do Explorer é definido pelo próprio Chromium a partir do
+  // payload REAL de drag-and-drop do SO, e um script no renderer não
+  // consegue forjar esse valor pra uma string arbitrária. Então não há
+  // diferença de confiança real entre "veio do dialog" e "veio do drop":
+  // os 2 são gesto genuíno do operador no SO. Defesa em profundidade em
+  // vez da allowlist: nunca ler de dentro dos próprios diretórios internos
+  // do app (instalação/recursos) — isso bloqueia o cenário real que a
+  // allowlist também tentava cobrir (renderer comprometido lendo
+  // .secrets/admin-secret.txt ou outro arquivo interno do app, achado 🔴
+  // CRÍTICO na revisão anterior), sem quebrar nenhum dos 2 jeitos
+  // legítimos de escolher um arquivo.
+  function isInsideSensitiveAppDir(resolvedPath) {
+    const sensitiveDirs = [app.getAppPath(), process.resourcesPath, __dirname]
+      .map((d) => path.resolve(d))
+    return sensitiveDirs.some(
+      (dir) => resolvedPath === dir || resolvedPath.startsWith(dir + path.sep)
+    )
+  }
 
   // IPC: abre o seletor de arquivo nativo do Windows — usado pela feature de
   // transferência de arquivo (arrastar/escolher arquivo local pra enviar pra
@@ -379,7 +392,6 @@ app.whenReady().then(() => {
   ipcMain.handle('file:pick', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openFile'] })
     if (result.canceled || result.filePaths.length === 0) return null
-    pickedFilePaths.add(result.filePaths[0])
     return result.filePaths[0]
   })
 
@@ -387,21 +399,30 @@ app.whenReady().then(() => {
   // processo principal (que também serve todas as outras janelas do
   // Dashboard) — sem isso, um arquivo gigante travaria/estouraria memória
   // pro app inteiro, não só a janela de sessão ao vivo (achado 🟠 ALTO na
-  // revisão). 500MB cobre o caso de uso real (instalador.exe) com folga.
-  const MAX_FILE_READ_BYTES = 500 * 1024 * 1024
+  // revisão). 2GB — reconciliado com o limite já documentado no lado
+  // servidor (blobSas.js MAX_FILE_BYTES); a parede de 500MB anterior
+  // bloqueava em silêncio, sem explicação nenhuma pro operador, qualquer
+  // arquivo válido entre 500MB e 2GB (achado na revisão).
+  const MAX_FILE_READ_BYTES = 2 * 1024 * 1024 * 1024
 
-  // IPC: lê o conteúdo do arquivo local escolhido em file:pick, pra upload
-  // pro Blob (Task 9, ainda não implementada aqui) — adicionado já, barato
-  // de fazer junto por mexer no mesmo bloco de ipcMain.handle. Só aceita um
-  // path que já passou por file:pick (ver pickedFilePaths acima).
+  // IPC: lê o conteúdo do arquivo local escolhido em file:pick OU
+  // arrastado via drag-and-drop (Task 10), pra upload pro Blob (Task 9,
+  // ainda não implementada aqui). Qualquer caminho absoluto é aceito — a
+  // defesa real é isInsideSensitiveAppDir acima, não a origem do path.
   ipcMain.handle('file:read', async (_event, filePath) => {
-    if (typeof filePath !== 'string' || !pickedFilePaths.has(filePath)) return null
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
+      throw new Error('Caminho de arquivo inválido')
+    }
+    const resolvedPath = path.resolve(filePath)
+    if (isInsideSensitiveAppDir(resolvedPath)) {
+      throw new Error('Leitura recusada: caminho dentro dos diretórios internos do app')
+    }
     const fs = require('fs/promises')
-    const stat = await fs.stat(filePath)
+    const stat = await fs.stat(resolvedPath)
     if (stat.size > MAX_FILE_READ_BYTES) {
       throw new Error(`Arquivo muito grande (${Math.round(stat.size / 1024 / 1024)}MB, limite ${MAX_FILE_READ_BYTES / 1024 / 1024}MB)`)
     }
-    const buf = await fs.readFile(filePath)
+    const buf = await fs.readFile(resolvedPath)
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
   })
 
