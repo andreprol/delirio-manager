@@ -169,6 +169,17 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 	defer readerDone.Wait()
 	defer conn.Close()
 
+	// writer embrulha conn num safeConn (wsconn_windows.go) — a partir da
+	// transferência de arquivo, DUAS goroutines escrevem na mesma conexão:
+	// esta função (frames de vídeo, no loop do ticker abaixo) e a goroutine
+	// de download disparada por applyFileTransfer (progresso/done/erro),
+	// via readLiveSessionInput → handleLiveSessionInput →
+	// dispatchLiveSessionInput. gorilla/websocket não permite 2 escritores
+	// concorrentes na mesma conexão — daí o wrapper, usado nos dois pontos
+	// abaixo (sendLiveSessionFrame e readLiveSessionInput) em vez do conn
+	// crú.
+	writer := newSafeConn(conn)
+
 	// Normal mode: lê mensagens de input numa goroutine separada e injeta
 	// via SendInput. Shadow: o servidor nunca repassa input pra cá, mas o
 	// companion não assume isso — só processa se algo chegar. safeGo (não
@@ -177,7 +188,7 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 	// processo do agent inteiro.
 	safeGo("liveSession-reader-"+sessionID, func() {
 		defer readerDone.Done()
-		readLiveSessionInput(conn, mode, sessionID)
+		readLiveSessionInput(conn, mode, sessionID, writer)
 	})
 
 	// 1 capturer por sessão inteira (não por frame) — DXGI mantém
@@ -198,7 +209,7 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			if !sendLiveSessionFrame(conn, sessionID, capturer, &captureFailures) {
+			if !sendLiveSessionFrame(writer, sessionID, capturer, &captureFailures) {
 				return
 			}
 		}
@@ -219,8 +230,11 @@ type messageReader interface {
 // o companion só injeta input se, pelo seu próprio conhecimento local do
 // mode desta sessão, ele for "normal" — não confia só na garantia do
 // servidor (liveSessionRelay.routeMessage) de nunca repassar input numa
-// sessão Shadow.
-func readLiveSessionInput(conn messageReader, mode string, sessionID string) {
+// sessão Shadow. w é a mesma conexão (embrulhada em safeConn por
+// runLiveSessionLoop) repassada até handleLiveSessionInput/
+// dispatchLiveSessionInput só pra alimentar applyFileTransferFn — o case
+// "file-transfer" precisa escrever progresso de volta na conexão.
+func readLiveSessionInput(conn messageReader, mode string, sessionID string, w frameWriter) {
 	if mode != liveSessionNormalMode {
 		// mode é fixo pra vida inteira da conexão — se for != normal, vai
 		// recusar TODA mensagem até a conexão cair. Loga 1x aqui, não a
@@ -233,7 +247,7 @@ func readLiveSessionInput(conn messageReader, mode string, sessionID string) {
 		if err != nil {
 			return
 		}
-		handleLiveSessionInput(data, mode, sessionID)
+		handleLiveSessionInput(data, mode, sessionID, w)
 	}
 }
 

@@ -54,8 +54,8 @@ func TestHandleLiveSessionInputIgnoresNonNormalMode(t *testing.T) {
 			injectMouseMoveFn = func(x, y int32) error { moveCalled = true; return nil }
 			injectMouseButtonFn = func(button string, down bool) error { buttonCalled = true; return nil }
 
-			handleLiveSessionInput([]byte(`{"type":"mousemove","x":1,"y":2}`), mode, "s1")
-			handleLiveSessionInput([]byte(`{"type":"mousedown","button":"left"}`), mode, "s1")
+			handleLiveSessionInput([]byte(`{"type":"mousemove","x":1,"y":2}`), mode, "s1", nil)
+			handleLiveSessionInput([]byte(`{"type":"mousedown","button":"left"}`), mode, "s1", nil)
 
 			if moveCalled {
 				t.Errorf("mode=%q: injectMouseMoveFn não deveria ter sido chamada", mode)
@@ -87,7 +87,7 @@ func TestHandleLiveSessionInputNormalModeInjects(t *testing.T) {
 			return nil
 		}
 
-		handleLiveSessionInput([]byte(`{"type":"mousemove","x":10,"y":20}`), liveSessionNormalMode, "s1")
+		handleLiveSessionInput([]byte(`{"type":"mousemove","x":10,"y":20}`), liveSessionNormalMode, "s1", nil)
 
 		if !called {
 			t.Fatal("esperava injectMouseMoveFn chamada em mode normal")
@@ -111,12 +111,12 @@ func TestHandleLiveSessionInputNormalModeInjects(t *testing.T) {
 			return nil
 		}
 
-		handleLiveSessionInput([]byte(`{"type":"mousedown","button":"left"}`), liveSessionNormalMode, "s1")
+		handleLiveSessionInput([]byte(`{"type":"mousedown","button":"left"}`), liveSessionNormalMode, "s1", nil)
 		if gotButton != "left" || !gotDown {
 			t.Errorf("mousedown: button=%q down=%v, want left/true", gotButton, gotDown)
 		}
 
-		handleLiveSessionInput([]byte(`{"type":"mouseup","button":"right"}`), liveSessionNormalMode, "s1")
+		handleLiveSessionInput([]byte(`{"type":"mouseup","button":"right"}`), liveSessionNormalMode, "s1", nil)
 		if gotButton != "right" || gotDown {
 			t.Errorf("mouseup: button=%q down=%v, want right/false", gotButton, gotDown)
 		}
@@ -135,7 +135,7 @@ func TestHandleLiveSessionInputNormalModeInjects(t *testing.T) {
 			t.Fatal("não deveria chamar injectMouseButtonFn pra JSON inválido")
 			return nil
 		}
-		handleLiveSessionInput([]byte("não é json"), liveSessionNormalMode, "s1")
+		handleLiveSessionInput([]byte("não é json"), liveSessionNormalMode, "s1", nil)
 	})
 }
 
@@ -155,7 +155,7 @@ func TestHandleLiveSessionInputKeyboard(t *testing.T) {
 			called, gotCode, gotDown = true, keyCode, down
 			return nil
 		}
-		handleLiveSessionInput([]byte(`{"type":"keydown","keyCode":65}`), liveSessionNormalMode, "s1")
+		handleLiveSessionInput([]byte(`{"type":"keydown","keyCode":65}`), liveSessionNormalMode, "s1", nil)
 		if !called || gotCode != 65 || !gotDown {
 			t.Errorf("called=%v keyCode=%d down=%v, want true/65/true", called, gotCode, gotDown)
 		}
@@ -168,7 +168,7 @@ func TestHandleLiveSessionInputKeyboard(t *testing.T) {
 			called, gotDown = true, down
 			return nil
 		}
-		handleLiveSessionInput([]byte(`{"type":"keyup","keyCode":65}`), liveSessionNormalMode, "s1")
+		handleLiveSessionInput([]byte(`{"type":"keyup","keyCode":65}`), liveSessionNormalMode, "s1", nil)
 		if !called || gotDown {
 			t.Errorf("called=%v down=%v, want true/false", called, gotDown)
 		}
@@ -177,11 +177,39 @@ func TestHandleLiveSessionInputKeyboard(t *testing.T) {
 	t.Run("mode shadow não injeta teclado", func(t *testing.T) {
 		called := false
 		injectKeyboardFn = func(keyCode uint16, down bool) error { called = true; return nil }
-		handleLiveSessionInput([]byte(`{"type":"keydown","keyCode":65}`), "shadow", "s1")
+		handleLiveSessionInput([]byte(`{"type":"keydown","keyCode":65}`), "shadow", "s1", nil)
 		if called {
 			t.Error("injectKeyboardFn não deveria ter sido chamada em mode shadow")
 		}
 	})
+}
+
+// TestDispatchLiveSessionInputFileTransfer cobre o novo case
+// "file-transfer" do dispatch: delega pra applyFileTransferFn (indireção
+// mockável, mesmo padrão de injectMouseMoveFn etc.) repassando msg,
+// sessionID e w sem alteração.
+func TestDispatchLiveSessionInputFileTransfer(t *testing.T) {
+	original := applyFileTransferFn
+	defer func() { applyFileTransferFn = original }()
+
+	var gotMsg inputMessage
+	var gotSession string
+	called := false
+	applyFileTransferFn = func(msg inputMessage, sessionID string, w frameWriter) {
+		called = true
+		gotMsg = msg
+		gotSession = sessionID
+	}
+
+	msg := inputMessage{Type: "file-transfer", DownloadURL: "https://x/y?sas", FileName: "a.txt", DestDir: `C:\Users\Loja\Desktop`}
+	dispatchLiveSessionInput(msg, "session-1", nil)
+
+	if !called {
+		t.Fatal("esperava applyFileTransferFn chamado")
+	}
+	if gotMsg.FileName != "a.txt" || gotSession != "session-1" {
+		t.Errorf("msg/sessionID incorretos: %+v / %s", gotMsg, gotSession)
+	}
 }
 
 // TestInjectKeyboardInvalidKeyCode cobre o fail-safe de keyCode=0 (campo
@@ -254,7 +282,7 @@ func TestHandleLiveSessionInputClipboardPaste(t *testing.T) {
 		called := false
 		injectClipboardPasteFn = func(text string) error { called, gotText = true, text; return nil }
 
-		handleLiveSessionInput([]byte(`{"type":"clipboard-paste","text":"shutdown /s /t 300"}`), liveSessionNormalMode, "s1")
+		handleLiveSessionInput([]byte(`{"type":"clipboard-paste","text":"shutdown /s /t 300"}`), liveSessionNormalMode, "s1", nil)
 
 		if !called || gotText != "shutdown /s /t 300" {
 			t.Errorf("called=%v text=%q, want true/\"shutdown /s /t 300\"", called, gotText)
@@ -265,7 +293,7 @@ func TestHandleLiveSessionInputClipboardPaste(t *testing.T) {
 		called := false
 		injectClipboardPasteFn = func(text string) error { called = true; return nil }
 
-		handleLiveSessionInput([]byte(`{"type":"clipboard-paste","text":"x"}`), "shadow", "s1")
+		handleLiveSessionInput([]byte(`{"type":"clipboard-paste","text":"x"}`), "shadow", "s1", nil)
 
 		if called {
 			t.Error("injectClipboardPasteFn não deveria ter sido chamada em mode shadow")
@@ -319,7 +347,7 @@ func TestHandleLiveSessionInputLockLocalInput(t *testing.T) {
 			called, gotSessionID, gotLocked = true, sessionID, locked
 			return nil
 		}
-		handleLiveSessionInput([]byte(`{"type":"lock-local-input"}`), liveSessionNormalMode, "s-abc")
+		handleLiveSessionInput([]byte(`{"type":"lock-local-input"}`), liveSessionNormalMode, "s-abc", nil)
 		if !called || gotSessionID != "s-abc" || !gotLocked {
 			t.Errorf("called=%v sessionID=%q locked=%v, want true/s-abc/true", called, gotSessionID, gotLocked)
 		}
@@ -332,7 +360,7 @@ func TestHandleLiveSessionInputLockLocalInput(t *testing.T) {
 			called, gotLocked = true, locked
 			return nil
 		}
-		handleLiveSessionInput([]byte(`{"type":"unlock-local-input"}`), liveSessionNormalMode, "s-abc")
+		handleLiveSessionInput([]byte(`{"type":"unlock-local-input"}`), liveSessionNormalMode, "s-abc", nil)
 		if !called || gotLocked {
 			t.Errorf("called=%v locked=%v, want true/false", called, gotLocked)
 		}
@@ -341,8 +369,8 @@ func TestHandleLiveSessionInputLockLocalInput(t *testing.T) {
 	t.Run("mode shadow: nem lock nem unlock chamam setLocalInputLockedFn", func(t *testing.T) {
 		called := false
 		setLocalInputLockedFn = func(sessionID string, locked bool) error { called = true; return nil }
-		handleLiveSessionInput([]byte(`{"type":"lock-local-input"}`), "shadow", "s-abc")
-		handleLiveSessionInput([]byte(`{"type":"unlock-local-input"}`), "shadow", "s-abc")
+		handleLiveSessionInput([]byte(`{"type":"lock-local-input"}`), "shadow", "s-abc", nil)
+		handleLiveSessionInput([]byte(`{"type":"unlock-local-input"}`), "shadow", "s-abc", nil)
 		if called {
 			t.Error("setLocalInputLockedFn não deveria ter sido chamada em mode shadow")
 		}

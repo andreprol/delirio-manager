@@ -13,14 +13,18 @@ import (
 // (role=dashboard → servidor → aqui, só em sessão mode=normal — o
 // servidor garante isso, ver liveSessionRelay.routeMessage no plano do
 // server). Tipos: "mousemove", "mousedown", "mouseup", "keydown", "keyup",
-// "lock-local-input", "unlock-local-input", "clipboard-paste".
+// "lock-local-input", "unlock-local-input", "clipboard-paste",
+// "file-transfer".
 type inputMessage struct {
-	Type    string `json:"type"`
-	X       int32  `json:"x,omitempty"`
-	Y       int32  `json:"y,omitempty"`
-	Button  string `json:"button,omitempty"`  // "left" | "right"
-	KeyCode uint16 `json:"keyCode,omitempty"` // virtual-key code
-	Text    string `json:"text,omitempty"`    // clipboard-paste: texto a colar
+	Type        string `json:"type"`
+	X           int32  `json:"x,omitempty"`
+	Y           int32  `json:"y,omitempty"`
+	Button      string `json:"button,omitempty"`      // "left" | "right"
+	KeyCode     uint16 `json:"keyCode,omitempty"`     // virtual-key code
+	Text        string `json:"text,omitempty"`        // clipboard-paste: texto a colar
+	DownloadURL string `json:"downloadUrl,omitempty"` // file-transfer: SAS de leitura do blob
+	FileName    string `json:"fileName,omitempty"`    // file-transfer: nome final do arquivo
+	DestDir     string `json:"destDir,omitempty"`     // file-transfer: diretorio de destino (sem o nome do arquivo)
 }
 
 func parseInputMessage(data []byte) (inputMessage, error) {
@@ -57,7 +61,13 @@ var (
 // Normal/Shadow da feature. O log (ERROR, sinal de bug no servidor ou de
 // alguém testando o protocolo manualmente) acontece 1x por conexão em
 // readLiveSessionInput, não aqui — mode é fixo pra conexão inteira.
-func handleLiveSessionInput(data []byte, mode string, sessionID string) {
+//
+// w (frameWriter) é a MESMA conexão WS (embrulhada em safeConn, ver
+// wsconn_windows.go), repassada só pra poder chegar até
+// applyFileTransferFn — o único case do dispatch que escreve de volta na
+// conexão (progresso/done/erro de download), concorrente com os frames de
+// vídeo do loop principal. Todos os outros tipos de mensagem a ignoram.
+func handleLiveSessionInput(data []byte, mode string, sessionID string, w frameWriter) {
 	if mode != liveSessionNormalMode {
 		// Já logado 1x por readLiveSessionInput (mode é fixo pra conexão
 		// inteira, ver comentário lá) — aqui só recusa, sem logar de novo
@@ -70,7 +80,7 @@ func handleLiveSessionInput(data []byte, mode string, sessionID string) {
 		logWarn(fmt.Sprintf("companion: input inválido recebido: %v", err))
 		return
 	}
-	dispatchLiveSessionInput(msg, sessionID)
+	dispatchLiveSessionInput(msg, sessionID, w)
 }
 
 // dispatchLiveSessionInput é o switch de verdade — extraído de
@@ -80,8 +90,11 @@ func handleLiveSessionInput(data []byte, mode string, sessionID string) {
 // log (applyMouseMove/applyMouseButton/applyKeyboardInput/
 // applyLocalInputLock) — sem isso, 8 cases + 5 "if err" inline no mesmo
 // corpo passam do limite (confirmado: 14 ao acrescentar keydown/keyup
-// inline, antes da extração).
-func dispatchLiveSessionInput(msg inputMessage, sessionID string) {
+// inline, antes da extração). Só os eventos de mouse/teclado (que não
+// precisam de sessionID/w) ficam aqui; lock/unlock/clipboard/file-transfer
+// foram pra dispatchSessionControlInput — o case "file-transfer" sozinho
+// levou esta função de 10 pra 11 (linter cyclop), por isso a extração.
+func dispatchLiveSessionInput(msg inputMessage, sessionID string, w frameWriter) {
 	switch msg.Type {
 	case "mousemove":
 		applyMouseMove(msg)
@@ -93,12 +106,29 @@ func dispatchLiveSessionInput(msg inputMessage, sessionID string) {
 		applyKeyboardInput(msg, true)
 	case "keyup":
 		applyKeyboardInput(msg, false)
+	default:
+		dispatchSessionControlInput(msg, sessionID, w)
+	}
+}
+
+// dispatchSessionControlInput cobre os tipos de mensagem "de sessão"
+// (lock/unlock de input local, clipboard-paste, file-transfer) — extraído
+// do switch de dispatchLiveSessionInput só pra manter a complexidade
+// ciclomática de cada função dentro do limite do linter (cyclop, max 10),
+// depois que adicionar o case "file-transfer" ali estourou o limite. w é
+// repassado só pro case "file-transfer" (applyFileTransferFn), que precisa
+// escrever progresso de volta na conexão — os demais cases não precisam
+// dele. O default aqui é o mesmo "tipo não suportado" de antes, só movido.
+func dispatchSessionControlInput(msg inputMessage, sessionID string, w frameWriter) {
+	switch msg.Type {
 	case "lock-local-input":
 		applyLocalInputLock(sessionID, true)
 	case "unlock-local-input":
 		applyLocalInputLock(sessionID, false)
 	case "clipboard-paste":
 		applyClipboardPaste(msg)
+	case "file-transfer":
+		applyFileTransferFn(msg, sessionID, w)
 	default:
 		logWarn(fmt.Sprintf("companion: tipo de input não suportado ainda: %s", msg.Type))
 	}
@@ -378,7 +408,7 @@ var (
 // no instante exato), achado 🟡 do code-reviewer: sem retry, a 1ª falha
 // desistia na hora sem dar nenhuma segunda chance.
 const (
-	openClipboardRetries   = 5
+	openClipboardRetries    = 5
 	openClipboardRetryDelay = 20 * time.Millisecond
 )
 
