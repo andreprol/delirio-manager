@@ -100,7 +100,11 @@ func downloadFileWithProgress(downloadURL, destDir, fileName string, onProgress 
 		return fmt.Errorf("fechar arquivo temporario: %w", err)
 	}
 
-	finalPath := filepath.Join(destDir, fileName)
+	// filepath.Base defende contra um fileName com ".." ou caminho absoluto
+	// escapando destDir via filepath.Join — nao e vetor de privilegio novo
+	// (o mesmo operador ja controla teclado/mouse/shell na maquina remota),
+	// mas custa 1 linha e elimina a pergunta.
+	finalPath := filepath.Join(destDir, filepath.Base(fileName))
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		return fmt.Errorf("mover pra destino final %q: %w", finalPath, err)
 	}
