@@ -149,8 +149,17 @@ export function LiveSessionWindow() {
     if (session?.mode !== 'normal') return
     const file = e.dataTransfer.files?.[0]
     if (!file) return
-    const localPath = await window.electronAPI.getPathForFile(file)
-    sendLocalFileToRemote(localPath, file.name)
+    // getPathForFile tem seu próprio try/catch (não o try/catch de
+    // sendLocalFileToRemote, que só começa DEPOIS desta linha) — sem isso,
+    // uma rejeição aqui vira unhandled rejection silenciosa, mesma classe
+    // de bug já corrigida antes neste arquivo (stopRecordingIfActive,
+    // onCleanupAndClose).
+    try {
+      const localPath = await window.electronAPI.getPathForFile(file)
+      sendLocalFileToRemote(localPath, file.name)
+    } catch (err) {
+      setFileTransferProgress('error: ' + (err?.message || 'falha ao resolver o arquivo arrastado'))
+    }
   }, [session, sendLocalFileToRemote])
 
   const handleDragOver = useCallback((e) => { e.preventDefault() }, [])
