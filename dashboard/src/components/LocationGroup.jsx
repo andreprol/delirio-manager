@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { MachineCard } from './MachineCard'
 
-export function LocationGroup({ name, machines, onCommand, onWol, onMoveToGroup, onDeleteMachine, onRenameMachine, onRename, onDelete, groupsList, isEmpty }) {
+export function LocationGroup({ name, machines, onCommand, onWol, onMoveToGroup, onDeleteMachine, onRenameMachine, onRename, onDelete, groupsList, isEmpty, latestAgentVersion }) {
   const [collapsed,  setCollapsed]  = useState(false)
   const [editing,    setEditing]    = useState(false)
   const [newName,    setNewName]    = useState(name)
@@ -125,6 +125,7 @@ export function LocationGroup({ name, machines, onCommand, onWol, onMoveToGroup,
                     onDeleteMachine={onDeleteMachine}
                     onRenameMachine={onRenameMachine}
                     groupsList={groupsList}
+                    latestAgentVersion={latestAgentVersion}
                   />
                 ))
               }

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { EventsTab } from './EventsTab'
 import { InsightsTab } from './InsightsTab'
 import { api, getServerUrl } from '../api'
+import { getVersionBadgeStatus } from '../versionCompare'
 
 const STATUS_COLOR = { online: '#22c55e', offline: '#ef4444', unknown: '#6b7280' }
 const STATUS_LABEL = { online: 'Online', offline: 'Offline', unknown: 'Desconhecido' }
@@ -23,7 +24,7 @@ const DR_BADGE = {
   error:      { color: '#ef4444', label: 'DR ✗',  title: 'Erro no backup — verificar logs' },
 }
 
-export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDeleteMachine, onRenameMachine, groupsList = [] }) {
+export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDeleteMachine, onRenameMachine, groupsList = [], latestAgentVersion = null }) {
   const [expanded,    setExpanded]    = useState(false)
   const [confirmCmd,  setConfirmCmd]  = useState(null)
   const [confirmText, setConfirmText] = useState('')
@@ -232,6 +233,28 @@ export function MachineCard({ machine, onCommand, onWol, onMoveToGroup, onDelete
             }}
           >{DR_BADGE[machine.dr_setup].label}</span>
         )}
+        {(() => {
+          const badge = getVersionBadgeStatus(machine.agentVersion, latestAgentVersion)
+          if (!badge) return null
+          return (
+            <span
+              className="mc-version-badge"
+              title={badge.tooltip}
+              style={{
+                fontSize: '10px',
+                padding: '1px 5px',
+                borderRadius: '4px',
+                background: badge.color + '22',
+                color: badge.color,
+                border: `1px solid ${badge.color}44`,
+                cursor: 'default',
+                marginLeft: '4px',
+              }}
+            >
+              v{machine.agentVersion}
+            </span>
+          )
+        })()}
         <span className="mc-status" style={{ color }}>{STATUS_LABEL[status]}</span>
       </div>
 

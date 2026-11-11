@@ -259,11 +259,41 @@ describe('MachineCard — métricas (tab expandida)', () => {
     expect(screen.getByText('AA:BB:CC:DD:EE:FF')).toBeInTheDocument()
   })
 
-  it('exibe versão do agente', () => {
+  it('exibe versão do agente no badge compacto (sempre visível) e no painel expandido', () => {
     const { container } = render(<MachineCard machine={makeMachine({ agentVersion: '1.5.18' })}
       onCommand={noop} onWol={noop} onMoveToGroup={noop} onDeleteMachine={noop} />)
-    expandCard(container)
+    // Badge compacto já aparece antes de expandir o card.
     expect(screen.getByText('v1.5.18')).toBeInTheDocument()
+    expandCard(container)
+    // Painel expandido repete a versão (linha "Agente") — agora 2 ocorrências.
+    expect(screen.getAllByText('v1.5.18')).toHaveLength(2)
+  })
+
+  it('badge de versão fica verde (em dia) quando igual à mais recente da frota', () => {
+    render(<MachineCard machine={makeMachine({ agentVersion: '1.9.1' })} latestAgentVersion="1.9.1"
+      onCommand={noop} onWol={noop} onMoveToGroup={noop} onDeleteMachine={noop} />)
+    const badge = screen.getByText('v1.9.1')
+    expect(badge).toHaveAttribute('title', expect.stringContaining('em dia com a frota'))
+  })
+
+  it('badge de versão fica amarelo (desatualizado) quando menor que a mais recente da frota', () => {
+    render(<MachineCard machine={makeMachine({ agentVersion: '1.9.0' })} latestAgentVersion="1.9.1"
+      onCommand={noop} onWol={noop} onMoveToGroup={noop} onDeleteMachine={noop} />)
+    const badge = screen.getByText('v1.9.0')
+    expect(badge).toHaveAttribute('title', expect.stringContaining('desatualizado'))
+  })
+
+  it('badge de versão fica neutro (desconhecido) quando não há latestAgentVersion — não finge "em dia"', () => {
+    render(<MachineCard machine={makeMachine({ agentVersion: '1.9.0' })}
+      onCommand={noop} onWol={noop} onMoveToGroup={noop} onDeleteMachine={noop} />)
+    const badge = screen.getByText('v1.9.0')
+    expect(badge).toHaveAttribute('title', expect.stringContaining('versão da frota ainda desconhecida'))
+  })
+
+  it('não exibe badge quando agentVersion é mal-formado (não numérico)', () => {
+    render(<MachineCard machine={makeMachine({ agentVersion: '1.9.1-rc1' })} latestAgentVersion="1.9.1"
+      onCommand={noop} onWol={noop} onMoveToGroup={noop} onDeleteMachine={noop} />)
+    expect(screen.queryByText('v1.9.1-rc1')).not.toBeInTheDocument()
   })
 
   it('exibe barras de CPU, RAM e Disco', () => {

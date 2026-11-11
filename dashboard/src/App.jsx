@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useLayoutEffect } from 'react'
+import { useState, useEffect, useRef, useLayoutEffect, useMemo } from 'react'
 import pkg from '../package.json'
 import { useMachines } from './hooks/useMachines'
+import { getLatestVersion } from './versionCompare'
 import { LocationGroup } from './components/LocationGroup'
 import { SplitView } from './components/SplitView'
 import { UpdatePanel } from './components/UpdatePanel'
@@ -304,6 +305,18 @@ export default function App() {
     }
   }
 
+  // Versao de agente mais recente vista entre as maquinas ONLINE (achado do
+  // code-reviewer: uma unica maquina offline com valor estranho/cacheado --
+  // "lixo de update orfao" ja visto no projeto -- nao pode virar baseline da
+  // frota inteira e pintar o resto de desatualizado por engano) -- usada
+  // pelo card de cada maquina pra indicar visualmente quem esta
+  // desatualizado (pedido do Andre, 11/11/2026: acompanhar rollout de
+  // release do agente pela frota).
+  const latestAgentVersion = useMemo(
+    () => getLatestVersion(machines.filter(m => m.status === 'online').map(m => m.agentVersion)),
+    [machines]
+  )
+
   // Filtra maquinas por busca e status
   // Inclui grupos vazios (sem maquinas) para permitir preparar antes do piloto
   const filteredGroups = Object.entries(groupMap)
@@ -570,6 +583,7 @@ export default function App() {
                 onDelete={() => deleteGroup(loc)}
                 groupsList={groupsList}
                 isEmpty={macs.length === 0}
+                latestAgentVersion={latestAgentVersion}
               />
             ))
           )}
