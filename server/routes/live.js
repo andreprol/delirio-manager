@@ -15,6 +15,7 @@ const crypto    = require('crypto');
 const db        = require('../db');
 const relay     = require('../services/liveSessionRelay');
 const { adminAuth } = require('../middleware/adminAuth');
+const { generateFileTransferUrls, MAX_FILE_BYTES } = require('../services/blobSas');
 
 // POST /api/live/:machineId/start  { mode: 'normal'|'shadow' }
 router.post('/:machineId/start', adminAuth, (req, res) => {
@@ -40,6 +41,31 @@ router.post('/:machineId/start', adminAuth, (req, res) => {
 
   // só o dashboardToken volta na resposta — companionToken nunca aparece aqui
   res.json({ ok: true, sessionId, mode, dashboardToken });
+});
+
+// POST /api/live/:sessionId/file/upload-url  { fileName, fileSize }
+// Gera SAS de upload (escrita) + download (leitura) pro MESMO blob, pra
+// transferencia de arquivo operador->maquina remota. Bytes nunca passam
+// por este servidor. Tamanho validado AQUI (antes de chamar o servico)
+// pra distinguir 400 (entrada invalida do cliente) de 500 (problema de
+// config do servidor) sem precisar inspecionar a mensagem de erro —
+// qualquer erro que blobSas ainda lançar depois dessa validação (ex:
+// blobStorage ausente do config.json) é problema do SERVIDOR, não do
+// cliente.
+router.post('/:sessionId/file/upload-url', adminAuth, (req, res) => {
+  const { fileName, fileSize } = req.body || {};
+  if (!fileName || typeof fileSize !== 'number') {
+    return res.status(400).json({ error: 'fileName e fileSize (number) sao obrigatorios' });
+  }
+  if (fileSize > MAX_FILE_BYTES) {
+    return res.status(400).json({ error: `Arquivo acima do limite de 2GB (recebido: ${fileSize} bytes)` });
+  }
+  try {
+    const result = generateFileTransferUrls({ fileName, fileSize });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/live/:sessionId/stop  { recorded?: boolean }

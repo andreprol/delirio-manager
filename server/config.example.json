@@ -1,4 +1,9 @@
 {
+  "blobStorage": {
+    "accountName": "dtmanagerdr",
+    "accountKey": "TROCAR-POR-ACCOUNT-KEY-REAL-AQUI",
+    "container": "live-transfer"
+  },
   "alerts": {
     "email": {
       "enabled": false,

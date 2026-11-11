@@ -78,6 +78,14 @@ jest.mock('./services/ncrMonitor', () => ({
   sendNcrResultEmail: jest.fn(),
 }));
 
+// blobSas carrega @azure/storage-blob de verdade (ESM em dependência transitiva
+// — https-proxy-agent — que o Jest não transforma); mockado aqui como os outros
+// serviços pra app.test.js não precisar da lib real só pra subir o app.
+jest.mock('./services/blobSas', () => ({
+  generateFileTransferUrls: jest.fn(),
+  MAX_FILE_BYTES: 2 * 1024 * 1024 * 1024,
+}));
+
 // CLOCK_PROXY_* precisam estar definidas ANTES do require('./app') abaixo — rh.js lê
 // process.env uma única vez, no load do módulo.
 process.env.CLOCK_PROXY_TOKEN = 'test-clock-proxy-token';

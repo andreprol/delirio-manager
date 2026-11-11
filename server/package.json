@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.100.1",
+    "@azure/storage-blob": "^12.34.0",
     "better-sqlite3": "^11.0.0",
     "docx": "^9.7.1",
     "express": "^4.19.2",
