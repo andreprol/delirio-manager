@@ -185,6 +185,8 @@ export const api = {
   live: {
     start: (machineId, mode)        => request('POST', `/api/live/${machineId}/start`, { mode }, { admin: true }),
     stop:  (sessionId, recorded)    => request('POST', `/api/live/${sessionId}/stop`, { recorded: !!recorded }, { admin: true }),
+    getFileUploadUrl: (sessionId, fileName, fileSize) =>
+      request('POST', `/api/live/${sessionId}/file/upload-url`, { fileName, fileSize }, { admin: true }),
   },
 
   // Ponto remoto (REP-P/REP-A) — grupo específico de funcionários, fora do

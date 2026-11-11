@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog, clipboard } = require('elect
 const path = require('path')
 const fs   = require('fs')
 const { spawn } = require('child_process')
+const { isInsideSensitiveDir } = require('./sensitiveDirGuard')
 const { countVisibleNormalWindows } = require('./liveSessionRegistry')
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
@@ -289,8 +290,10 @@ app.whenReady().then(() => {
   // IPC: abrir pasta no Windows Explorer — allowlist de roots permitidos
   ipcMain.handle('shell:openPath', (_, folderPath) => {
     if (typeof folderPath !== 'string') return
-    // Bloqueia UNC paths explícitos (\\server\share ou //server/share)
-    if (folderPath.startsWith('\\\\') || folderPath.startsWith('//')) return
+    // Bloqueia UNC paths explícitos (\\server\share ou //server/share) —
+    // regex em vez de startsWith pega barra misturada também (ver
+    // file:read, mesmo achado de code review aplicado aqui por consistência)
+    if (/^[\\/]{2}/.test(folderPath)) return
 
     const resolved = path.resolve(folderPath)
 
@@ -408,6 +411,94 @@ app.whenReady().then(() => {
   // Normal) pra mandar o texto via clipboard-paste em vez de deixar o
   // navegador/Electron colar o clipboard da sessão remota por engano.
   ipcMain.handle('clipboard:read-text', () => clipboard.readText())
+
+  // file:read não usa mais allowlist-de-origem (só path que passou pelo
+  // dialog de file:pick) — achado pela revisão: isso quebraria o
+  // arrastar-e-soltar (Task 10, plano em
+  // docs/superpowers/plans/2026-11-11-file-transfer.md, ainda não
+  // implementada aqui), que nunca passa pelo dialog — o .path de um File
+  // arrastado do Explorer é definido pelo próprio Chromium a partir do
+  // payload REAL de drag-and-drop do SO, e um script no renderer não
+  // consegue forjar esse valor pra uma string arbitrária. Então não há
+  // diferença de confiança real entre "veio do dialog" e "veio do drop":
+  // os 2 são gesto genuíno do operador no SO. Defesa em profundidade em
+  // vez da allowlist: nunca ler de dentro dos próprios diretórios internos
+  // do app (instalação/recursos) — isso bloqueia o cenário real que a
+  // allowlist também tentava cobrir (renderer comprometido lendo
+  // .secrets/admin-secret.txt ou outro arquivo interno do app, achado 🔴
+  // CRÍTICO na revisão anterior), sem quebrar nenhum dos 2 jeitos
+  // legítimos de escolher um arquivo.
+  //
+  // Lista de diretórios sensíveis inclui app.getPath('userData') — é lá que
+  // mora o CONFIG_PATH deste próprio arquivo (adminSecret em produção, ver
+  // CLAUDE.md "Onde fica o ADMIN_SECRET") — faltava antes (🔴 CRÍTICO achado
+  // em code review, confirmado por execução direta: um renderer comprometido
+  // conseguia ler o config.json do Dashboard via file:read, bypassando
+  // completamente essa checagem). A comparação case-insensitive (NTFS não
+  // diferencia maiúscula/minúscula) fica em sensitiveDirGuard.js, extraído
+  // pra módulo próprio testável sem mockar Electron (mesmo padrão de
+  // liveSessionRegistry.js/countVisibleNormalWindows).
+  function isInsideSensitiveAppDir(resolvedPath) {
+    const sensitiveDirs = [
+      app.getAppPath(),
+      process.resourcesPath,
+      __dirname,
+      app.getPath('userData'),
+    ]
+    return isInsideSensitiveDir(resolvedPath, sensitiveDirs)
+  }
+
+  // IPC: abre o seletor de arquivo nativo do Windows — usado pela feature de
+  // transferência de arquivo (arrastar/escolher arquivo local pra enviar pra
+  // máquina remota via Blob, ver useLiveSession.sendFileTransfer). Retorna
+  // null se o operador cancelar o dialog.
+  ipcMain.handle('file:pick', async () => {
+    const result = await dialog.showOpenDialog({ properties: ['openFile'] })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  // Limite de tamanho antes de carregar o arquivo inteiro em memória no
+  // processo principal (que também serve todas as outras janelas do
+  // Dashboard) — sem isso, um arquivo gigante travaria/estouraria memória
+  // pro app inteiro, não só a janela de sessão ao vivo (achado 🟠 ALTO na
+  // revisão). 2GB — reconciliado com o limite já documentado no lado
+  // servidor (blobSas.js MAX_FILE_BYTES); a parede de 500MB anterior
+  // bloqueava em silêncio, sem explicação nenhuma pro operador, qualquer
+  // arquivo válido entre 500MB e 2GB (achado na revisão).
+  const MAX_FILE_READ_BYTES = 2 * 1024 * 1024 * 1024
+
+  // IPC: lê o conteúdo do arquivo local escolhido em file:pick OU
+  // arrastado via drag-and-drop (Task 10), pra upload pro Blob (Task 9,
+  // ainda não implementada aqui). Qualquer caminho absoluto é aceito — a
+  // defesa real é isInsideSensitiveAppDir acima, não a origem do path.
+  ipcMain.handle('file:read', async (_event, filePath) => {
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
+      throw new Error('Caminho de arquivo inválido')
+    }
+    // path.isAbsolute considera UNC path (\\server\share\x) absoluto também —
+    // bloqueia explícito, pra não disparar handshake SMB de saída
+    // (vazamento de credencial NTLM) a partir de um path que um renderer
+    // comprometido poderia fornecer. Regex (não startsWith('\\\\')/('//'))
+    // pega barra misturada tipo '\/server/share/x' ou '/\\server/share/x'
+    // também — path.resolve normaliza qualquer uma dessas pra UNC de
+    // verdade, e um startsWith só-barra-dupla-do-mesmo-tipo não via isso
+    // (achado real de code review, bypass confirmado por execução direta).
+    if (/^[\\/]{2}/.test(filePath)) {
+      throw new Error('Caminho de rede (UNC) não é permitido')
+    }
+    const resolvedPath = path.resolve(filePath)
+    if (isInsideSensitiveAppDir(resolvedPath)) {
+      throw new Error('Leitura recusada: caminho dentro dos diretórios internos do app')
+    }
+    const fs = require('fs/promises')
+    const stat = await fs.stat(resolvedPath)
+    if (stat.size > MAX_FILE_READ_BYTES) {
+      throw new Error(`Arquivo muito grande (${Math.round(stat.size / 1024 / 1024)}MB, limite ${MAX_FILE_READ_BYTES / 1024 / 1024}MB)`)
+    }
+    const buf = await fs.readFile(resolvedPath)
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+  })
 
   // IPC: converte a gravação WebM (MediaRecorder, renderer) pra MP4 via
   // ffmpeg-static, pergunta onde salvar, grava .mp4 + .json de metadados.

@@ -6,6 +6,7 @@ const sendInputMock = vi.fn()
 const sendMouseEventMock = vi.fn()
 const sendKeyEventMock = vi.fn()
 const sendClipboardPasteMock = vi.fn()
+const sendFileTransferMock = vi.fn()
 let lastUseLiveSessionArgs = null
 
 vi.mock('../hooks/useLiveSession', () => ({
@@ -16,12 +17,18 @@ vi.mock('../hooks/useLiveSession', () => ({
       sendMouseEvent: sendMouseEventMock,
       sendKeyEvent: sendKeyEventMock,
       sendClipboardPaste: sendClipboardPasteMock,
+      sendFileTransfer: sendFileTransferMock,
     }
   },
 }))
 
 vi.mock('../api', () => ({
-  api: { live: { stop: vi.fn().mockResolvedValue({ ok: true }) } },
+  api: {
+    live: {
+      stop: vi.fn().mockResolvedValue({ ok: true }),
+      getFileUploadUrl: vi.fn().mockResolvedValue({ uploadUrl: 'https://blob/x?sas-up', downloadUrl: 'https://blob/x?sas-down' }),
+    },
+  },
   setServerUrl: vi.fn(),
   setAdminSecret: vi.fn(),
 }))
@@ -53,6 +60,9 @@ beforeEach(() => {
     convertRecording: vi.fn().mockResolvedValue({ saved: true }),
     getConfig: vi.fn().mockResolvedValue({ serverUrl: 'https://s.example.com', adminSecret: 'secret-xyz' }),
     readClipboardText: vi.fn().mockResolvedValue('shutdown /s /t 300'),
+    pickFile: vi.fn().mockResolvedValue(null),
+    readLocalFile: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
+    getPathForFile: vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe'),
     onNormalWindowVisibilityChange: vi.fn((cb) => {
       window.electronAPI.__fireNormalWindowVisibility = (data) => cb(data)
       return () => {}
@@ -403,6 +413,96 @@ describe('LiveSessionWindow', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     expect(screen.queryByText('🔒 Travar usuário')).not.toBeInTheDocument()
+  })
+
+  it('mode normal: botao Enviar arquivo pede upload-url, sobe pro blob e manda sendFileTransfer', async () => {
+    window.electronAPI.pickFile = vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\instalador.exe')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(8))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true }) // PUT pro blob
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Enviar arquivo/i))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(api.live.getFileUploadUrl).toHaveBeenCalledWith('s1', 'instalador.exe', 8)
+    expect(global.fetch).toHaveBeenCalledWith('https://blob/x?sas-up', expect.objectContaining({ method: 'PUT' }))
+    expect(sendFileTransferMock).toHaveBeenCalledWith('https://blob/x?sas-down', 'instalador.exe', expect.any(String))
+  })
+
+  it('mode shadow: botao Enviar arquivo nao aparece', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    expect(screen.queryByText(/Enviar arquivo/i)).not.toBeInTheDocument()
+  })
+
+  it('mode normal: soltar arquivo na janela usa webUtils.getPathForFile e chama sendLocalFileToRemote', async () => {
+    window.electronAPI.getPathForFile = vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(4))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true })
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+    const dropZone = screen.getByTestId('live-session-dropzone')
+    const file = new File(['conteudo'], 'driver.exe', { type: 'application/octet-stream' })
+
+    await act(async () => {
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.getPathForFile).toHaveBeenCalledWith(file)
+    expect(window.electronAPI.pickFile).not.toHaveBeenCalled() // drop nao usa o dialog
+    expect(window.electronAPI.readLocalFile).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\driver.exe')
+  })
+
+  // Achado pelo code-reviewer: sem isso, um drop com a sessao desconectada
+  // subia o arquivo pro Blob, chamava sendFileTransfer (que vira no-op
+  // silencioso no WS fechado) e nunca recebia file-transfer-done/-error --
+  // isTransferring ficava travado em true pra sempre, sem nenhum jeito de
+  // tentar de novo exceto fechando a janela inteira.
+  it('mode normal, sessao desconectada: soltar arquivo nao sobe pro blob nem trava isTransferring', async () => {
+    window.electronAPI.getPathForFile = vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(4))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true })
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    // nunca chama onStatusChange('connected') -- status fica 'connecting'
+
+    const dropZone = screen.getByTestId('live-session-dropzone')
+    const file = new File(['conteudo'], 'driver.exe', { type: 'application/octet-stream' })
+
+    await act(async () => {
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.readLocalFile).not.toHaveBeenCalled()
+    expect(global.fetch).not.toHaveBeenCalled()
+    expect(sendFileTransferMock).not.toHaveBeenCalled()
+    expect(screen.getByText(/sem conexão/i)).toBeInTheDocument()
+
+    // confirma que nao travou: uma 2a tentativa, agora conectada, funciona
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await act(async () => {
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(window.electronAPI.readLocalFile).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\driver.exe')
   })
 
   it('ao receber live-session-cleanup-and-close, para, avisa o servidor e chama cleanupDone', async () => {

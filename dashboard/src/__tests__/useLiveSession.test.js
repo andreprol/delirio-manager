@@ -227,4 +227,56 @@ describe('useLiveSession', () => {
     act(() => { vi.advanceTimersByTime(5000) })
     expect(FakeWebSocket.instances).toHaveLength(2) // não tentou de novo
   })
+
+  it('mensagem de texto file-transfer-progress chama onFileTransferStatus em vez de drawFrame', () => {
+    const canvasRef = makeCanvasRef()
+    const onFileTransferStatus = vi.fn()
+    renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef, onFileTransferStatus,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    ws._message(JSON.stringify({ type: 'file-transfer-progress', bytesReceived: 50, bytesTotal: 100 }))
+
+    expect(onFileTransferStatus).toHaveBeenCalledWith({ type: 'file-transfer-progress', bytesReceived: 50, bytesTotal: 100 })
+  })
+
+  it('sendFileTransfer manda type file-transfer com downloadUrl/fileName/destDir', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => {
+      result.current.sendFileTransfer('https://blob/x?sas', 'instalador.exe', 'C:\\Users\\Loja\\Desktop')
+    })
+
+    expect(ws.sent).toContain(JSON.stringify({
+      type: 'file-transfer', downloadUrl: 'https://blob/x?sas', fileName: 'instalador.exe', destDir: 'C:\\Users\\Loja\\Desktop',
+    }))
+  })
+
+  // Mesma defesa em profundidade que já cobre sendInput/sendMouseEvent/
+  // sendKeyEvent (mode shadow não manda nada mesmo com WS aberto) —
+  // sendFileTransfer reusa sendInput, então deveria herdar o guard
+  // automaticamente, mas essa classe de bug (guard de modo vazando) já
+  // gerou 1 CRÍTICO real nesta base (Ctrl+V clipboard, commit 377f8c4).
+  it('sendFileTransfer não manda nada em mode shadow', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'shadow', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    act(() => { ws._open() })
+
+    act(() => {
+      result.current.sendFileTransfer('https://blob/x?sas', 'instalador.exe', 'C:\\Users\\Loja\\Desktop')
+    })
+
+    expect(ws.sent).toHaveLength(0)
+  })
 })

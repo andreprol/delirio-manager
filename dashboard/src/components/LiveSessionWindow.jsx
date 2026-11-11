@@ -41,14 +41,131 @@ export function LiveSessionWindow() {
   sessionRef.current = session
   recordingSecsRef.current = recordingSecs
 
-  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste } = useLiveSession({
+  const [fileDestDir, setFileDestDir] = useState('')
+  const [fileTransferProgress, setFileTransferProgress] = useState(null) // {bytesReceived, bytesTotal} | 'error: ...' | 'done' | null
+  // Guarda se já existe uma transferência em andamento — tanto o upload pro
+  // Blob (síncrono do ponto de vista desta função) quanto o download real na
+  // máquina remota (assíncrono, só termina quando handleFileTransferStatus
+  // recebe file-transfer-done/-error pelo WS). transferringRef é checado
+  // sincronamente (não a state, que só atualiza no próximo render) pra
+  // bloquear de verdade um 2º clique/drop disparado antes do primeiro
+  // terminar — sem isso, 2 transferências concorrentes compartilhariam o
+  // mesmo fileTransferProgress/handleFileTransferStatus e cada WS msg
+  // (progress/done/error) sobrescreveria o estado da outra, além de
+  // disparar 2 uploads + 2 comandos file-transfer sem necessidade
+  // (achado 🟠 do code-reviewer).
+  const transferringRef = useRef(false)
+  const [isTransferring, setIsTransferring] = useState(false)
+
+  const handleFileTransferStatus = useCallback((msg) => {
+    if (msg.type === 'file-transfer-progress') {
+      setFileTransferProgress({ bytesReceived: msg.bytesReceived, bytesTotal: msg.bytesTotal })
+    } else if (msg.type === 'file-transfer-done') {
+      setFileTransferProgress('done')
+      transferringRef.current = false
+      setIsTransferring(false)
+    } else if (msg.type === 'file-transfer-error') {
+      setFileTransferProgress('error: ' + msg.message)
+      transferringRef.current = false
+      setIsTransferring(false)
+    }
+  }, [])
+
+  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer } = useLiveSession({
     serverUrl: session?.serverUrl,
     sessionId: session?.sessionId,
     dashboardToken: session?.dashboardToken,
     mode: session?.mode,
     canvasRef,
     onStatusChange: setStatus,
+    onFileTransferStatus: handleFileTransferStatus,
   })
+
+  const defaultDestDir = `C:\\Users\\${session?.remoteUser || 'Loja'}\\Desktop`
+
+  // sendLocalFileToRemote é o caminho ÚNICO pra transferência de arquivo —
+  // tanto o botão "Enviar arquivo" (handlePickFile) quanto o drop na janela
+  // (handleDrop) terminam aqui, pra não duplicar a lógica de upload+comando.
+  const sendLocalFileToRemote = useCallback(async (localPath, fileNameHint) => {
+    // Ignora silenciosamente um 2º clique/drop enquanto a transferência
+    // anterior ainda não terminou (upload pro Blob OU download remoto) —
+    // ver comentário em transferringRef acima.
+    if (transferringRef.current) return
+    // Sem conexão ativa (status !== 'connected'): sendFileTransfer (via
+    // sendInput) faria no-op silencioso no WS fechado, e nenhum
+    // file-transfer-done/-error nunca chegaria pra destravar isTransferring
+    // — ficaria preso "transferindo" pra sempre. O botão já fica desabilitado
+    // nesse estado, mas um arrastar-e-soltar não passa por esse disabled,
+    // então a checagem tem que estar aqui, não só na UI do botão.
+    if (status !== 'connected') {
+      setFileTransferProgress('error: sem conexão com a sessão ao vivo')
+      return
+    }
+    transferringRef.current = true
+    setIsTransferring(true)
+    const fileName = fileNameHint || localPath.split(/[\\/]/).pop()
+    setFileTransferProgress({ bytesReceived: 0, bytesTotal: 0 })
+    try {
+      const fileBuffer = await window.electronAPI.readLocalFile(localPath)
+      const { uploadUrl, downloadUrl } = await api.live.getFileUploadUrl(session.sessionId, fileName, fileBuffer.byteLength)
+      const putRes = await fetch(uploadUrl, { method: 'PUT', headers: { 'x-ms-blob-type': 'BlockBlob' }, body: fileBuffer })
+      if (!putRes.ok) {
+        setFileTransferProgress('error: falha ao subir pro Blob')
+        transferringRef.current = false
+        setIsTransferring(false)
+        return
+      }
+      sendFileTransfer(downloadUrl, fileName, fileDestDir || defaultDestDir)
+      // transferringRef/isTransferring continuam true daqui até
+      // handleFileTransferStatus receber file-transfer-done/-error — o
+      // upload pro Blob terminou aqui, mas o download na máquina remota
+      // ainda está em andamento nesse ponto.
+    } catch (err) {
+      // err?.message, não err.message: uma rejeição sem Error de verdade
+      // (ex: IPC rejeitando com algo não padronizado) lançaria TypeError
+      // aqui dentro, sem handler, travando isTransferring=true pra sempre —
+      // mesmo padrão de bug já corrigido em stopRecordingIfActive/
+      // onCleanupAndClose neste mesmo arquivo (achado 🟠 do code-reviewer).
+      setFileTransferProgress('error: ' + (err?.message || 'falha ao enviar arquivo'))
+      transferringRef.current = false
+      setIsTransferring(false)
+    }
+  }, [session, fileDestDir, defaultDestDir, sendFileTransfer, status])
+
+  const handlePickFile = useCallback(async () => {
+    const localPath = await window.electronAPI.pickFile()
+    if (!localPath) return
+    sendLocalFileToRemote(localPath)
+  }, [sendLocalFileToRemote])
+
+  // handleDrop só repassa pra sendLocalFileToRemote (mesma lógica do
+  // botão) — o guard de mode aqui é a ÚNICA barreira contra um drop em
+  // Shadow virar comando: o onDrop/onDragOver no JSX abaixo está no
+  // elemento raiz sempre renderizado, sem condicional por mode, então é
+  // este `if` dentro da função que decide, não o wrapper.
+  //
+  // file.path no objeto File arrastado foi REMOVIDO a partir do Electron
+  // 32 (breaking change oficial) — webUtils.getPathForFile (exposto via
+  // preload.js) é a ponte suportada pra pegar o caminho local real.
+  const handleDrop = useCallback(async (e) => {
+    e.preventDefault()
+    if (session?.mode !== 'normal') return
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    // getPathForFile tem seu próprio try/catch (não o try/catch de
+    // sendLocalFileToRemote, que só começa DEPOIS desta linha) — sem isso,
+    // uma rejeição aqui vira unhandled rejection silenciosa, mesma classe
+    // de bug já corrigida antes neste arquivo (stopRecordingIfActive,
+    // onCleanupAndClose).
+    try {
+      const localPath = await window.electronAPI.getPathForFile(file)
+      sendLocalFileToRemote(localPath, file.name)
+    } catch (err) {
+      setFileTransferProgress('error: ' + (err?.message || 'falha ao resolver o arquivo arrastado'))
+    }
+  }, [session, sendLocalFileToRemote])
+
+  const handleDragOver = useCallback((e) => { e.preventDefault() }, [])
 
   useEffect(() => {
     const unsubscribe = window.electronAPI?.onLiveSessionInit((data) => setSession(data))
@@ -408,7 +525,12 @@ export function LiveSessionWindow() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0f1117', color: '#e5e7eb', fontFamily: 'monospace' }}>
+    <div
+      data-testid="live-session-dropzone"
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0f1117', color: '#e5e7eb', fontFamily: 'monospace' }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 16px', borderBottom: '1px solid #1e1e30' }}>
         <span>{session.mode === 'normal' ? '🖥 Normal' : '✍️ Shadow'} — {session.machineName || session.machineId}</span>
         <span style={{ color: status === 'connected' ? '#22c55e' : status === 'error' ? '#ef4444' : '#f59e0b' }}>
@@ -442,6 +564,36 @@ export function LiveSessionWindow() {
         <button className={`btn ${recording ? 'btn-danger' : 'btn-secondary'}`} onClick={toggleRecording} disabled={ending}>
           {recording ? '⏹ Parar gravação' : '⏺ Gravar'}
         </button>
+        {session?.mode === 'normal' && (
+          <div className="file-transfer-controls" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="text"
+              value={fileDestDir}
+              onChange={(e) => setFileDestDir(e.target.value)}
+              placeholder={defaultDestDir}
+              style={{ width: 220 }}
+            />
+            <button
+              className="btn btn-secondary"
+              onClick={handlePickFile}
+              disabled={ending || isTransferring || status !== 'connected'}
+              title={
+                isTransferring ? 'Já existe uma transferência em andamento'
+                  : status !== 'connected' ? 'Sem conexão com a sessão ao vivo'
+                  : undefined
+              }
+            >
+              Enviar arquivo
+            </button>
+            {fileTransferProgress && typeof fileTransferProgress === 'object' && (
+              <progress value={fileTransferProgress.bytesReceived} max={fileTransferProgress.bytesTotal || 1} />
+            )}
+            {fileTransferProgress === 'done' && <span style={{ color: '#22c55e' }}>Arquivo enviado ✓</span>}
+            {typeof fileTransferProgress === 'string' && fileTransferProgress.startsWith('error') && (
+              <span style={{ color: '#ef4444' }}>{fileTransferProgress}</span>
+            )}
+          </div>
+        )}
       </div>
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto' }}>
         <canvas
