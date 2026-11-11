@@ -108,13 +108,17 @@ function sanitizeLiveSessionParams(params) {
 // exatamente 1 janela Normal está visível ao mesmo tempo.
 const liveSessionWindows = new Set()
 
-function broadcastNormalWindowVisibility() {
+function computeVisibleNormalCount() {
   const snapshot = [...liveSessionWindows].map((w) => ({
     mode: w.__liveSessionMode,
     minimized: w.isDestroyed() ? false : w.isMinimized(),
     destroyed: w.isDestroyed(),
   }))
-  const visibleNormalCount = countVisibleNormalWindows(snapshot)
+  return countVisibleNormalWindows(snapshot)
+}
+
+function broadcastNormalWindowVisibility() {
+  const visibleNormalCount = computeVisibleNormalCount()
   for (const w of liveSessionWindows) {
     if (!w.isDestroyed()) {
       w.webContents.send('live-session:normal-window-visibility', { visibleNormalCount })
@@ -356,6 +360,15 @@ app.whenReady().then(() => {
     createLiveSessionWindow(sanitizeLiveSessionParams(params))
     return true
   })
+
+  // IPC: contagem ATUAL de janelas Normal visíveis, puxada pelo renderer no
+  // mount — o push (broadcastNormalWindowVisibility) sozinho não garante que
+  // o listener já está montado a tempo de receber o primeiro envio logo
+  // após did-finish-load (mesma classe de race já resolvida aqui pra update
+  // via updater:get-pending, acima).
+  ipcMain.handle('live-session:get-normal-window-visibility', () => ({
+    visibleNormalCount: computeVisibleNormalCount(),
+  }))
 
   // IPC: a janela de sessão confirmou que já limpou (parou gravação, avisou
   // o servidor) — agora pode fechar de verdade.
