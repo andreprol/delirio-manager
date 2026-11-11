@@ -426,6 +426,13 @@ app.whenReady().then(() => {
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
       throw new Error('Caminho de arquivo inválido')
     }
+    // path.isAbsolute considera UNC path (\\server\share\x) absoluto também —
+    // bloqueia explícito, mesmo padrão já usado em shell:openPath, pra não
+    // disparar handshake SMB de saída (vazamento de credencial NTLM) a
+    // partir de um path que um renderer comprometido poderia fornecer.
+    if (filePath.startsWith('\\\\') || filePath.startsWith('//')) {
+      throw new Error('Caminho de rede (UNC) não é permitido')
+    }
     const resolvedPath = path.resolve(filePath)
     if (isInsideSensitiveAppDir(resolvedPath)) {
       throw new Error('Leitura recusada: caminho dentro dos diretórios internos do app')

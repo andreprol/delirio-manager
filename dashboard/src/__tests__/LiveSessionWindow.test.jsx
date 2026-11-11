@@ -346,6 +346,7 @@ describe('LiveSessionWindow', () => {
 
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
 
     await act(async () => {
       fireEvent.click(screen.getByText(/Enviar arquivo/i))
@@ -371,6 +372,7 @@ describe('LiveSessionWindow', () => {
 
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
 
     const dropZone = screen.getByTestId('live-session-dropzone')
     const file = new File(['conteudo'], 'driver.exe', { type: 'application/octet-stream' })
@@ -384,6 +386,46 @@ describe('LiveSessionWindow', () => {
 
     expect(window.electronAPI.getPathForFile).toHaveBeenCalledWith(file)
     expect(window.electronAPI.pickFile).not.toHaveBeenCalled() // drop nao usa o dialog
+    expect(window.electronAPI.readLocalFile).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\driver.exe')
+  })
+
+  // Achado pelo code-reviewer: sem isso, um drop com a sessao desconectada
+  // subia o arquivo pro Blob, chamava sendFileTransfer (que vira no-op
+  // silencioso no WS fechado) e nunca recebia file-transfer-done/-error --
+  // isTransferring ficava travado em true pra sempre, sem nenhum jeito de
+  // tentar de novo exceto fechando a janela inteira.
+  it('mode normal, sessao desconectada: soltar arquivo nao sobe pro blob nem trava isTransferring', async () => {
+    window.electronAPI.getPathForFile = vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(4))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true })
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    // nunca chama onStatusChange('connected') -- status fica 'connecting'
+
+    const dropZone = screen.getByTestId('live-session-dropzone')
+    const file = new File(['conteudo'], 'driver.exe', { type: 'application/octet-stream' })
+
+    await act(async () => {
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.readLocalFile).not.toHaveBeenCalled()
+    expect(global.fetch).not.toHaveBeenCalled()
+    expect(sendFileTransferMock).not.toHaveBeenCalled()
+    expect(screen.getByText(/sem conexão/i)).toBeInTheDocument()
+
+    // confirma que nao travou: uma 2a tentativa, agora conectada, funciona
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await act(async () => {
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
     expect(window.electronAPI.readLocalFile).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\driver.exe')
   })
 

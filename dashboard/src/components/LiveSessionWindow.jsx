@@ -98,6 +98,16 @@ export function LiveSessionWindow() {
     // anterior ainda não terminou (upload pro Blob OU download remoto) —
     // ver comentário em transferringRef acima.
     if (transferringRef.current) return
+    // Sem conexão ativa (status !== 'connected'): sendFileTransfer (via
+    // sendInput) faria no-op silencioso no WS fechado, e nenhum
+    // file-transfer-done/-error nunca chegaria pra destravar isTransferring
+    // — ficaria preso "transferindo" pra sempre. O botão já fica desabilitado
+    // nesse estado, mas um arrastar-e-soltar não passa por esse disabled,
+    // então a checagem tem que estar aqui, não só na UI do botão.
+    if (status !== 'connected') {
+      setFileTransferProgress('error: sem conexão com a sessão ao vivo')
+      return
+    }
     transferringRef.current = true
     setIsTransferring(true)
     const fileName = fileNameHint || localPath.split(/[\\/]/).pop()
@@ -127,7 +137,7 @@ export function LiveSessionWindow() {
       transferringRef.current = false
       setIsTransferring(false)
     }
-  }, [session, fileDestDir, defaultDestDir, sendFileTransfer])
+  }, [session, fileDestDir, defaultDestDir, sendFileTransfer, status])
 
   const handlePickFile = useCallback(async () => {
     const localPath = await window.electronAPI.pickFile()
@@ -568,8 +578,12 @@ export function LiveSessionWindow() {
             <button
               className="btn btn-secondary"
               onClick={handlePickFile}
-              disabled={ending || isTransferring}
-              title={isTransferring ? 'Já existe uma transferência em andamento' : undefined}
+              disabled={ending || isTransferring || status !== 'connected'}
+              title={
+                isTransferring ? 'Já existe uma transferência em andamento'
+                  : status !== 'connected' ? 'Sem conexão com a sessão ao vivo'
+                  : undefined
+              }
             >
               Enviar arquivo
             </button>
