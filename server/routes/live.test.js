@@ -101,9 +101,17 @@ describe('POST /api/live/:machineId/start', () => {
   });
 });
 
-describe('POST /api/live/:sessionId/file/upload-url', () => {
-  it('401 sem X-Admin-Secret', async () => {
+// Dividido em 2 describes IRMÃOS no nível superior (em vez de 1 describe
+// com todos os `it`s, ou aninhar 2 dentro de 1 — aninhar não ajuda, o
+// ESLint conta o SPAN de linhas da função mais externa inteira) só pra
+// ficar abaixo do limite de linhas por função do ESLint — nenhuma mudança
+// de comportamento dos testes em si, `beforeEach` repetido em cada um.
+describe('POST /api/live/:sessionId/file/upload-url — autenticação e validação', () => {
+  beforeEach(() => {
     process.env.ADMIN_SECRET = 'segredo-123';
+  });
+
+  it('401 sem X-Admin-Secret', async () => {
     const app = makeApp();
     const res = await request(app)
       .post('/api/live/s1/file/upload-url')
@@ -112,7 +120,6 @@ describe('POST /api/live/:sessionId/file/upload-url', () => {
   });
 
   it('400 sem fileName ou fileSize', async () => {
-    process.env.ADMIN_SECRET = 'segredo-123';
     const app = makeApp();
     const res = await request(app)
       .post('/api/live/s1/file/upload-url')
@@ -121,8 +128,26 @@ describe('POST /api/live/:sessionId/file/upload-url', () => {
     expect(res.status).toBe(400);
   });
 
-  it('200 com uploadUrl/downloadUrl quando tudo ok', async () => {
+  it('400 quando o arquivo passa do limite (validado ANTES de chamar blobSas)', async () => {
+    const blobSas = require('../services/blobSas');
+    blobSas.generateFileTransferUrls.mockClear();
+    const app = makeApp();
+    const res = await request(app)
+      .post('/api/live/s1/file/upload-url')
+      .set('x-admin-secret', 'segredo-123')
+      .send({ fileName: 'enorme.iso', fileSize: 999999999999 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/2GB/);
+    expect(blobSas.generateFileTransferUrls).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/live/:sessionId/file/upload-url — resposta do serviço', () => {
+  beforeEach(() => {
     process.env.ADMIN_SECRET = 'segredo-123';
+  });
+
+  it('200 com uploadUrl/downloadUrl quando tudo ok', async () => {
     const blobSas = require('../services/blobSas');
     blobSas.generateFileTransferUrls.mockReturnValue({
       uploadUrl: 'https://acc.blob.core.windows.net/live-transfer/x?sas',
@@ -139,22 +164,7 @@ describe('POST /api/live/:sessionId/file/upload-url', () => {
     expect(res.body.downloadUrl).toContain('live-transfer');
   });
 
-  it('400 quando o arquivo passa do limite (validado ANTES de chamar blobSas)', async () => {
-    process.env.ADMIN_SECRET = 'segredo-123';
-    const blobSas = require('../services/blobSas');
-    blobSas.generateFileTransferUrls.mockClear();
-    const app = makeApp();
-    const res = await request(app)
-      .post('/api/live/s1/file/upload-url')
-      .set('x-admin-secret', 'segredo-123')
-      .send({ fileName: 'enorme.iso', fileSize: 999999999999 });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/2GB/);
-    expect(blobSas.generateFileTransferUrls).not.toHaveBeenCalled();
-  });
-
   it('500 quando blobSas lança erro inesperado (ex: config ausente)', async () => {
-    process.env.ADMIN_SECRET = 'segredo-123';
     const blobSas = require('../services/blobSas');
     blobSas.generateFileTransferUrls.mockImplementation(() => {
       throw new Error('blobStorage não configurado em config.json (accountName/accountKey)');

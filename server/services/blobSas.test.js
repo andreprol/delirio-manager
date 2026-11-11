@@ -18,7 +18,12 @@ function mockConfig(cfg) {
   fs.readFileSync.mockReturnValue(JSON.stringify(cfg));
 }
 
-describe('blobSas.generateFileTransferUrls', () => {
+// Dividido em 2 describes IRMÃOS no nível superior (em vez de 1 describe
+// com todos os `it`s, ou 1 describe aninhando 2 outros — aninhar não ajuda,
+// o ESLint conta o SPAN de linhas da função mais externa inteira) só pra
+// ficar abaixo do limite de linhas por função do ESLint — nenhuma mudança
+// de comportamento dos testes em si, `beforeEach` repetido em cada um.
+describe('blobSas.generateFileTransferUrls — validação de entrada', () => {
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
@@ -37,6 +42,13 @@ describe('blobSas.generateFileTransferUrls', () => {
     const TWO_GB_PLUS_1 = 2 * 1024 * 1024 * 1024 + 1;
     expect(() => generateFileTransferUrls({ fileName: 'a.txt', fileSize: TWO_GB_PLUS_1 }))
       .toThrow(/2GB/);
+  });
+});
+
+describe('blobSas.generateFileTransferUrls — geração de URLs e nome do blob', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    jest.clearAllMocks();
   });
 
   it('retorna uploadUrl e downloadUrl pro mesmo blob, dentro do limite', () => {
