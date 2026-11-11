@@ -110,7 +110,12 @@ export function LiveSessionWindow() {
       const { uploadUrl, downloadUrl } = await api.live.getFileUploadUrl(session.sessionId, fileName, fileBuffer.byteLength)
       const putRes = await fetch(uploadUrl, { method: 'PUT', headers: { 'x-ms-blob-type': 'BlockBlob' }, body: fileBuffer })
       if (!putRes.ok) {
-        setFileTransferProgress('error: falha ao subir pro Blob')
+        // Diagnostico temporario (11/11/2026): mensagem generica nao dava pra
+        // saber POR QUE o Azure recusou (CORS? SAS expirada/invalida? 403?) --
+        // inclui status + corpo da resposta (Azure devolve XML com
+        // <Code>/<Message> explicando o motivo real).
+        const bodyText = await putRes.text().catch(() => '(sem corpo)')
+        setFileTransferProgress(`error: falha ao subir pro Blob (HTTP ${putRes.status}): ${bodyText.slice(0, 300)}`)
         transferringRef.current = false
         setIsTransferring(false)
         return
