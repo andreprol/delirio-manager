@@ -33,7 +33,7 @@ const RECONNECT_DELAY_MS = 3000
 // isso sendInput também recusa (defesa em profundidade, mesmo princípio do
 // relay no servidor — liveSessionRelay.routeMessage nunca repassa input em
 // Shadow mesmo que o dashboard mande por engano/bug).
-export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange }) {
+export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange, onFileTransferStatus }) {
   const wsRef = useRef(null)
   const hasRetriedRef = useRef(false)
   const frameSizeRef = useRef({ width: 0, height: 0 })
@@ -68,7 +68,21 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     wsRef.current = ws
 
     ws.onopen = () => notifyStatus('connected')
-    ws.onmessage = (e) => { drawFrame(e.data) }
+    ws.onmessage = (e) => {
+      // Mensagens de texto são status de transferência de arquivo (JSON) —
+      // o companion manda file-transfer-progress/-done/-error pelo mesmo WS
+      // que já carrega os frames binários (JPEG) de vídeo. Frames de vídeo
+      // nunca são string, então esse branch não adiciona overhead ao
+      // caminho binário (drawFrame).
+      if (typeof e.data === 'string') {
+        try {
+          const msg = JSON.parse(e.data)
+          if (msg.type?.startsWith('file-transfer-')) onFileTransferStatus?.(msg)
+        } catch { /* mensagem de texto nao-JSON, ignora */ }
+        return
+      }
+      drawFrame(e.data)
+    }
     ws.onclose = () => {
       if (!mountedRef.current) return
       notifyStatus('disconnected')
@@ -80,7 +94,7 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
       }
     }
     ws.onerror = () => { ws.close() }
-  }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus])
+  }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus, onFileTransferStatus])
 
   useEffect(() => {
     mountedRef.current = true
@@ -140,5 +154,12 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     sendInput({ type: 'clipboard-paste', text })
   }, [sendInput])
 
-  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste }
+  // sendFileTransfer manda o comando leve pro companion baixar o arquivo
+  // do Blob (downloadUrl ja e a SAS de leitura, gerada pelo servidor) —
+  // ver agent/filetransfer_windows.go (branch separada, ja mergeada/revisada).
+  const sendFileTransfer = useCallback((downloadUrl, fileName, destDir) => {
+    sendInput({ type: 'file-transfer', downloadUrl, fileName, destDir })
+  }, [sendInput])
+
+  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer }
 }

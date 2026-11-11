@@ -361,6 +361,50 @@ app.whenReady().then(() => {
   // navegador/Electron colar o clipboard da sessão remota por engano.
   ipcMain.handle('clipboard:read-text', () => clipboard.readText())
 
+  // Allowlist de paths liberados pra file:read — só os que de fato saíram do
+  // seletor nativo (file:pick) nesta sessão do app. Sem isso, qualquer
+  // código rodando no renderer (dependência npm comprometida, XSS futuro,
+  // devtools) poderia chamar window.electronAPI.readLocalFile com QUALQUER
+  // caminho do disco — inclusive .secrets/admin-secret.txt, que o próprio
+  // CLAUDE.md do projeto documenta guardar em F:\RichClub (achado 🔴
+  // CRÍTICO na revisão desta mudança). file:pick é a única forma de
+  // adicionar um path aqui — nunca aceitar um path arbitrário vindo do
+  // renderer.
+  const pickedFilePaths = new Set()
+
+  // IPC: abre o seletor de arquivo nativo do Windows — usado pela feature de
+  // transferência de arquivo (arrastar/escolher arquivo local pra enviar pra
+  // máquina remota via Blob, ver useLiveSession.sendFileTransfer). Retorna
+  // null se o operador cancelar o dialog.
+  ipcMain.handle('file:pick', async () => {
+    const result = await dialog.showOpenDialog({ properties: ['openFile'] })
+    if (result.canceled || result.filePaths.length === 0) return null
+    pickedFilePaths.add(result.filePaths[0])
+    return result.filePaths[0]
+  })
+
+  // Limite de tamanho antes de carregar o arquivo inteiro em memória no
+  // processo principal (que também serve todas as outras janelas do
+  // Dashboard) — sem isso, um arquivo gigante travaria/estouraria memória
+  // pro app inteiro, não só a janela de sessão ao vivo (achado 🟠 ALTO na
+  // revisão). 500MB cobre o caso de uso real (instalador.exe) com folga.
+  const MAX_FILE_READ_BYTES = 500 * 1024 * 1024
+
+  // IPC: lê o conteúdo do arquivo local escolhido em file:pick, pra upload
+  // pro Blob (Task 9, ainda não implementada aqui) — adicionado já, barato
+  // de fazer junto por mexer no mesmo bloco de ipcMain.handle. Só aceita um
+  // path que já passou por file:pick (ver pickedFilePaths acima).
+  ipcMain.handle('file:read', async (_event, filePath) => {
+    if (typeof filePath !== 'string' || !pickedFilePaths.has(filePath)) return null
+    const fs = require('fs/promises')
+    const stat = await fs.stat(filePath)
+    if (stat.size > MAX_FILE_READ_BYTES) {
+      throw new Error(`Arquivo muito grande (${Math.round(stat.size / 1024 / 1024)}MB, limite ${MAX_FILE_READ_BYTES / 1024 / 1024}MB)`)
+    }
+    const buf = await fs.readFile(filePath)
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+  })
+
   // IPC: converte a gravação WebM (MediaRecorder, renderer) pra MP4 via
   // ffmpeg-static, pergunta onde salvar, grava .mp4 + .json de metadados.
   ipcMain.handle('convert-recording', async (event, arrayBuffer, metadata) => {
