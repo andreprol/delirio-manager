@@ -24,22 +24,55 @@ segurança que cobrem QUALQUER tecla, não só Win:
    automaticamente em `blur`, `visibilitychange`, troca de modo ou desmontagem.
 2. Botão manual "⌨️ Liberar teclas travadas" — manda `keyup` fixo pra Win/Ctrl/Alt/Shift.
 
-### Decisão
+### Decisão (revisada 11/11/2026, regras de André sobre QUANDO encaminhar)
 
-Remover o filtro que descarta 91/92 antes de mandar pro WS. As duas redes de segurança já
-existentes passam a cobrir a tecla Windows também (antes, elas existiam mas a tecla nunca chegava
-a ser enviada). Nenhuma mudança em agent nem servidor — o `SendInput`/`KEYBDINPUT` de
-`input_windows.go` já trata keyCode 91/92 como qualquer outra tecla desde o fix de 04/11 (só o
-dashboard filtrava antes de mandar).
+Remover o filtro que descarta 91/92 — mas a tecla Windows (só ela, nenhuma outra) ganha uma regra
+de encaminhamento própria, mais restrita que as demais teclas, por causa de 3 regras explícitas do
+André:
+
+1. Nenhuma destas funcionalidades roda em modo Shadow — já garantido de graça pelo allow-list de
+   `routeMessage` (`liveSessionRelay.js`), que nunca repassa dashboard→companion fora de
+   `mode==='normal'`. Nenhuma mudança necessária aqui.
+2. Máquina logada em modo Normal com a janela da sessão **aberta na tela** (não minimizada): tecla
+   Windows do teclado físico do operador funciona nela. Janela **minimizada**: tecla Windows afeta
+   só a máquina LOCAL do operador. **Já garantido pelo próprio SO/Electron** — uma janela minimizada
+   nunca tem foco de teclado, então seu `keydown` handler simplesmente nunca recebe o evento (vai
+   pra o que estiver em foco de verdade). Nenhum código novo precisa disso especificamente.
+3. **Múltiplas máquinas logadas em modo Normal ao mesmo tempo**: tecla Windows só funciona na janela
+   que estiver aberta na tela NAQUELE momento; se mais de uma janela de sessão Normal estiver aberta
+   (visível, não minimizada) ao mesmo tempo, a tecla Windows **não funciona em nenhuma** — mesmo na
+   que tiver o foco. Isto **não é garantido pelo SO** (o SO entrega o evento normalmente pra janela
+   focada, mesmo com outras janelas visíveis) — precisa de coordenação nova entre janelas, só pra
+   esta tecla.
+
+Mouse e as demais teclas **não mudam** — continuam sendo encaminhados normalmente independente de
+quantas janelas de sessão estão abertas (regra 3 é exclusiva da tecla Windows: "Isso tudo só para a
+tecla do windows", André, 11/11/2026).
+
+### Arquitetura da regra 3 (coordenação entre janelas)
+
+O processo principal do Electron (`main.js`) já cria uma `BrowserWindow` por sessão ao vivo
+(`createLiveSessionWindow`), mas não existe hoje nenhum registro central das janelas abertas. Passa
+a existir: um `Set` de janelas de sessão ao vivo, cada uma guardando seu próprio `mode`. A cada
+evento relevante (nova janela com `did-finish-load`, `minimize`, `restore`, `closed`) o processo
+principal recalcula quantas janelas em modo Normal estão **visíveis (não minimizadas) agora** e
+manda esse número, via IPC, pra TODAS as janelas de sessão ao vivo abertas (`live-session:normal-
+window-visibility`). Cada janela guarda esse número localmente; no handler de teclado, especificamente
+pro keyCode 91/92, só encaminha se esse número for exatamente 1 — senão, ignora (nem encaminha, nem
+registra em `heldKeysRef`, igual ao comportamento de antes pra tecla bloqueada).
 
 ### Escopo
 
-- Arquivo tocado: `dashboard/src/components/LiveSessionWindow.jsx` (remove a condição de
-  descarte).
-- Sem endpoint novo, sem mudança de protocolo, sem mudança em agent/servidor.
-- Risco residual aceito: tecla Windows pode abrir o Menu Iniciar da máquina remota (comportamento
-  esperado agora, não bug) — o operador sabe disso e usa a rede de segurança (blur automático +
-  botão manual) se precisar.
+- `dashboard/electron/main.js`: registro de janelas de sessão ao vivo + cálculo/broadcast da
+  contagem de janelas Normal visíveis.
+- `dashboard/electron/preload.js`: `onNormalWindowVisibilityChange` (mesmo padrão de
+  `onLiveSessionInit`/`onCleanupAndClose`).
+- `dashboard/src/components/LiveSessionWindow.jsx`: remove o filtro antigo (`BLOCKED_KEYCODES`),
+  adiciona o novo filtro específico de 91/92 baseado na contagem recebida por IPC.
+- Sem endpoint novo, sem mudança de protocolo com agent/servidor — tudo dentro do Electron.
+- Risco residual aceito: tecla Windows pode abrir o Menu Iniciar da máquina remota quando permitida
+  pelas 3 regras acima (comportamento esperado, não bug) — o operador ainda conta com a rede de
+  segurança (blur automático + botão manual) se precisar.
 
 ## Feature 2 — Transferência de arquivo (operador → máquina remota)
 
