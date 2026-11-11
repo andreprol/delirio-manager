@@ -36,7 +36,11 @@ function loadBlobStorageConfig() {
 // sanitizeFileName evita path traversal/caracteres invalidos de blob name —
 // mantem so o nome final, sem diretorios.
 function sanitizeFileName(fileName) {
-  return path.basename(fileName).replace(/[^\w.\-áàâãéêíóôõúüçÁÀÂÃÉÊÍÓÔÕÚÜÇ ]/g, '_');
+  const base = path.basename(fileName).replace(/[^\w.\-áàâãéêíóôõúüçÁÀÂÃÉÊÍÓÔÕÚÜÇ ]/g, '_');
+  // Azure Blob Storage rejeita/torna inacessivel blob terminado em ponto ou
+  // espaco — so o caractere FINAL importa, pontos no meio (instalador.exe)
+  // seguem normais.
+  return base.replace(/[\s.]+$/, '');
 }
 
 // generateFileTransferUrls({fileName, fileSize}) -> {uploadUrl, downloadUrl, blobName}

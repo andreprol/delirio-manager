@@ -52,4 +52,11 @@ describe('blobSas.generateFileTransferUrls', () => {
     const downloadPath = new URL(result.downloadUrl).pathname;
     expect(uploadPath).toBe(downloadPath);
   });
+
+  it('remove ponto(s) finais do nome do arquivo — Azure rejeita blob terminado em ponto', () => {
+    mockConfig({ blobStorage: { accountName: 'acc', accountKey: 'key', container: 'live-transfer' } });
+    const { generateFileTransferUrls } = require('./blobSas');
+    const result = generateFileTransferUrls({ fileName: 'backup..', fileSize: 1024 });
+    expect(result.blobName.endsWith('.')).toBe(false);
+  });
 });
