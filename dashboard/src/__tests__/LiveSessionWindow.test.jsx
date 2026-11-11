@@ -53,6 +53,11 @@ beforeEach(() => {
     convertRecording: vi.fn().mockResolvedValue({ saved: true }),
     getConfig: vi.fn().mockResolvedValue({ serverUrl: 'https://s.example.com', adminSecret: 'secret-xyz' }),
     readClipboardText: vi.fn().mockResolvedValue('shutdown /s /t 300'),
+    onNormalWindowVisibilityChange: vi.fn((cb) => {
+      window.electronAPI.__fireNormalWindowVisibility = (data) => cb(data)
+      return () => {}
+    }),
+    getNormalWindowVisibility: vi.fn().mockResolvedValue({ visibleNormalCount: 0 }),
   }
 })
 
@@ -116,15 +121,34 @@ describe('LiveSessionWindow', () => {
     expect(sendKeyEventMock).not.toHaveBeenCalled()
   })
 
-  // Achado ao vivo 04/11/2026 (ASSBOH): apertar a tecla Windows abre o
-  // Menu Iniciar LOCAL e rouba o foco da janela antes do keyup disparar —
-  // o navegador nunca vê o keyup, a máquina remota fica com a tecla
-  // Windows logicamente travada, e toda tecla seguinte vira atalho (Win+E
-  // abre Explorer etc). Sem uso legítimo pra abrir o Menu Iniciar remoto
-  // num suporte de loja — nunca encaminhar essa tecla.
-  it('mode normal: tecla Windows (keyCode 91/92) NUNCA é encaminhada', () => {
+  // 04/11/2026: tecla Windows era bloqueada de propósito (abria o Menu
+  // Iniciar LOCAL e roubava o foco antes do keyup, travando a tecla
+  // "pressionada" na máquina remota). 11/11/2026: André especificou 3
+  // regras mais finas — (1) nunca em Shadow (já garantido pelo relay,
+  // sem mudança aqui), (2) janela minimizada só afeta a máquina local (já
+  // garantido pelo SO — janela sem foco não recebe keydown), (3) 2+
+  // janelas Normal visíveis ao mesmo tempo = Windows não funciona em
+  // NENHUMA, mesmo na que tem foco. Só a tecla Windows tem essa 3ª
+  // restrição extra (mouse e demais teclas continuam normais
+  // independente de quantas janelas estão abertas).
+  it('mode normal: tecla Windows encaminhada quando so 1 janela Normal esta visivel', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { window.electronAPI.__fireNormalWindowVisibility({ visibleNormalCount: 1 }) })
+
+    fireEvent.keyDown(window, { keyCode: 91 })
+    fireEvent.keyUp(window, { keyCode: 91 })
+
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 91)
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 91)
+  })
+
+  it('mode normal: tecla Windows NAO encaminhada quando 2+ janelas Normal estao visiveis', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { window.electronAPI.__fireNormalWindowVisibility({ visibleNormalCount: 2 }) })
 
     fireEvent.keyDown(window, { keyCode: 91 })
     fireEvent.keyUp(window, { keyCode: 91 })
@@ -132,6 +156,58 @@ describe('LiveSessionWindow', () => {
     fireEvent.keyUp(window, { keyCode: 92 })
 
     expect(sendKeyEventMock).not.toHaveBeenCalled()
+  })
+
+  it('mode normal: segurar tecla Windows durante mudanca de contagem ainda manda o keyup (nao trava a tecla remota)', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    // count=1: keydown e forwardado e registrado em heldKeysRef
+    act(() => { window.electronAPI.__fireNormalWindowVisibility({ visibleNormalCount: 1 }) })
+    fireEvent.keyDown(window, { keyCode: 91 })
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 91)
+
+    // outra janela Normal abre enquanto a tecla ainda esta fisicamente pressionada
+    act(() => { window.electronAPI.__fireNormalWindowVisibility({ visibleNormalCount: 2 }) })
+
+    // soltar a tecla agora -- o keyup TEM que ser mandado mesmo com count=2,
+    // porque o keydown correspondente ja foi mandado (fonte da verdade: heldKeysRef)
+    fireEvent.keyUp(window, { keyCode: 91 })
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 91)
+  })
+
+  it('mode normal: tecla normal (ex: "a") continua encaminhada mesmo com 2+ janelas Normal visiveis', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { window.electronAPI.__fireNormalWindowVisibility({ visibleNormalCount: 2 }) })
+
+    fireEvent.keyDown(window, { keyCode: 65 })
+    fireEvent.keyUp(window, { keyCode: 65 })
+
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 65)
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 65)
+  })
+
+  it('mode normal: tecla Windows NAO encaminhada antes de qualquer dado de visibilidade chegar (default seguro)', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    // nem __fireNormalWindowVisibility foi chamado, nem o pull (mockResolvedValue 0) teve tempo de resolver
+    fireEvent.keyDown(window, { keyCode: 91 })
+
+    expect(sendKeyEventMock).not.toHaveBeenCalled()
+  })
+
+  it('mode normal: tecla Windows funciona so com o pull resolvido, sem nenhum push', async () => {
+    window.electronAPI.getNormalWindowVisibility = vi.fn().mockResolvedValue({ visibleNormalCount: 1 })
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    fireEvent.keyDown(window, { keyCode: 91 })
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 91)
   })
 
   it('mode normal: tecla normal (ex: "a") ainda é encaminhada normalmente', () => {

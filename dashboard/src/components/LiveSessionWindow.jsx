@@ -1,19 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLiveSession } from '../hooks/useLiveSession'
+import { useNormalWindowVisibility } from '../hooks/useNormalWindowVisibility'
 import { api, setServerUrl, setAdminSecret } from '../api'
 
 const MOUSE_BUTTON = { 0: 'left', 2: 'right' }
 
-// Tecla Windows (VK_LWIN/VK_RWIN) nunca é encaminhada: ela abre o Menu
-// Iniciar LOCAL (do lado do operador) e rouba o foco da janela ANTES do
-// keyup disparar — o navegador/Electron nunca vê o keyup correspondente,
-// a tecla fica "pressionada" pro Windows da loja pra sempre, e toda tecla
-// seguinte vira atalho (Win+E abre Explorer, Win+D minimiza tudo, etc. —
-// "aperta uma tecla e acontece outra coisa na tela"). Achado ao vivo
-// 04/11/2026, ASSBOH travou assim no primeiro teste do fix de teclado.
-// Sem caso de uso real pra abrir o Menu Iniciar remoto num suporte de
-// loja — mais seguro nunca mandar do que torcer pro keyup sempre chegar.
-const BLOCKED_KEYCODES = new Set([91, 92])
+const VK_LWIN = 91
+const VK_RWIN = 92
 
 // Ctrl (esquerdo) + 'V' — mesmos VKs de EMERGENCY_RELEASE_KEYCODES/onKeyDown.
 const VK_CONTROL = 17
@@ -316,6 +309,7 @@ export function LiveSessionWindow() {
   // sempre, sem nenhum jeito de perceber até alguém tentar digitar de
   // novo e ver "outra coisa" acontecer na tela.
   const heldKeysRef = useRef(new Set())
+  const visibleNormalCountRef = useNormalWindowVisibility()
 
   const releaseAllHeldKeys = useCallback(() => {
     heldKeysRef.current.forEach((code) => sendKeyEvent('keyup', code))
@@ -342,7 +336,9 @@ export function LiveSessionWindow() {
   useEffect(() => {
     if (session?.mode !== 'normal') return
     function onKeyDown(e) {
-      if (BLOCKED_KEYCODES.has(e.keyCode)) return
+      if ((e.keyCode === VK_LWIN || e.keyCode === VK_RWIN) && visibleNormalCountRef.current !== 1) {
+        return
+      }
       // Ctrl+V intercetado: nunca encaminha o keydown cru de 'V' — isso
       // colaria o clipboard da máquina REMOTA (área de transferência que o
       // Windows da loja já tinha). Em vez disso lê o clipboard LOCAL do
@@ -379,7 +375,9 @@ export function LiveSessionWindow() {
       sendKeyEvent('keydown', e.keyCode)
     }
     function onKeyUp(e) {
-      if (BLOCKED_KEYCODES.has(e.keyCode)) return
+      if ((e.keyCode === VK_LWIN || e.keyCode === VK_RWIN) && !heldKeysRef.current.has(e.keyCode)) {
+        return
+      }
       // Keyup de 'V' sem keydown correspondente registrado (caso Ctrl+V
       // interceptado acima, que nunca adiciona a heldKeysRef) — não manda
       // um keyup órfão pro remoto, mesma fonte de verdade já usada pelo
