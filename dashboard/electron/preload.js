@@ -1,6 +1,6 @@
 'use strict'
 
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getConfig:  ()    => ipcRenderer.invoke('config:get'),
@@ -78,4 +78,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // dashboard/src/hooks/useLiveSession.js (sendFileTransfer).
   pickFile: () => ipcRenderer.invoke('file:pick'),
   readLocalFile: (path) => ipcRenderer.invoke('file:read', path),
+
+  // Drag-and-drop de arquivo (janela → sessão ao vivo): o objeto File do
+  // drop não expõe mais `.path` a partir do Electron 32 (removido, ver
+  // breaking changes oficiais) — webUtils.getPathForFile é a ponte
+  // suportada pra obter o caminho local real a partir do File arrastado.
+  getPathForFile: (file) => webUtils.getPathForFile(file),
 })

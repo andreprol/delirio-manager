@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { LiveSessionWindow } from '../components/LiveSessionWindow'
 
@@ -62,6 +62,7 @@ beforeEach(() => {
     readClipboardText: vi.fn().mockResolvedValue('shutdown /s /t 300'),
     pickFile: vi.fn().mockResolvedValue(null),
     readLocalFile: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
+    getPathForFile: vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe'),
   }
 })
 
@@ -363,17 +364,27 @@ describe('LiveSessionWindow', () => {
     expect(screen.queryByText(/Enviar arquivo/i)).not.toBeInTheDocument()
   })
 
-  it('mode normal: soltar arquivo na janela chama sendLocalFileToRemote com o path do arquivo', async () => {
+  it('mode normal: soltar arquivo na janela usa webUtils.getPathForFile e chama sendLocalFileToRemote', async () => {
+    window.electronAPI.getPathForFile = vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(4))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true })
+
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
 
     const dropZone = screen.getByTestId('live-session-dropzone')
     const file = new File(['conteudo'], 'driver.exe', { type: 'application/octet-stream' })
-    Object.defineProperty(file, 'path', { value: 'C:\\Users\\Andre\\Downloads\\driver.exe' })
 
-    fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+    await act(async () => {
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
 
-    await waitFor(() => expect(window.electronAPI.pickFile).not.toHaveBeenCalled()) // drop nao usa o dialog
+    expect(window.electronAPI.getPathForFile).toHaveBeenCalledWith(file)
+    expect(window.electronAPI.pickFile).not.toHaveBeenCalled() // drop nao usa o dialog
+    expect(window.electronAPI.readLocalFile).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\driver.exe')
   })
 
   it('ao receber live-session-cleanup-and-close, para, avisa o servidor e chama cleanupDone', async () => {

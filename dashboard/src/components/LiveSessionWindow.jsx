@@ -136,15 +136,21 @@ export function LiveSessionWindow() {
   }, [sendLocalFileToRemote])
 
   // handleDrop só repassa pra sendLocalFileToRemote (mesma lógica do
-  // botão) — guard de mode aqui é defesa em profundidade: o wrapper já só
-  // registra onDrop quando mode === 'normal' (ver JSX abaixo), mas um
-  // drop que chegue por engano em Shadow não pode virar comando.
-  const handleDrop = useCallback((e) => {
+  // botão) — o guard de mode aqui é a ÚNICA barreira contra um drop em
+  // Shadow virar comando: o onDrop/onDragOver no JSX abaixo está no
+  // elemento raiz sempre renderizado, sem condicional por mode, então é
+  // este `if` dentro da função que decide, não o wrapper.
+  //
+  // file.path no objeto File arrastado foi REMOVIDO a partir do Electron
+  // 32 (breaking change oficial) — webUtils.getPathForFile (exposto via
+  // preload.js) é a ponte suportada pra pegar o caminho local real.
+  const handleDrop = useCallback(async (e) => {
     e.preventDefault()
     if (session?.mode !== 'normal') return
     const file = e.dataTransfer.files?.[0]
     if (!file) return
-    sendLocalFileToRemote(file.path, file.name)
+    const localPath = await window.electronAPI.getPathForFile(file)
+    sendLocalFileToRemote(localPath, file.name)
   }, [session, sendLocalFileToRemote])
 
   const handleDragOver = useCallback((e) => { e.preventDefault() }, [])
