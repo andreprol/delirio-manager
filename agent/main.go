@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.9.0" // minor: transferencia de arquivo (file-transfer) via WS /live -- safeConn serializa escrita entre video e progresso de download, downloadFileWithProgress baixa do Azure Blob e escreve atomicamente no destino
+	Version            = "1.9.1" // patch: fix BlockInput("Travar usuario") travando input local pra sempre -- worker dedicado com runtime.LockOSThread garante que lock/unlock rodem sempre na mesma OS thread (API Win32 amarra o bloqueio a thread chamadora, nao ao processo); corrige incidente real da ASSBOH em 11/11/2026
 )
 
 func main() {
