@@ -251,8 +251,10 @@ app.whenReady().then(() => {
   // IPC: abrir pasta no Windows Explorer — allowlist de roots permitidos
   ipcMain.handle('shell:openPath', (_, folderPath) => {
     if (typeof folderPath !== 'string') return
-    // Bloqueia UNC paths explícitos (\\server\share ou //server/share)
-    if (folderPath.startsWith('\\\\') || folderPath.startsWith('//')) return
+    // Bloqueia UNC paths explícitos (\\server\share ou //server/share) —
+    // regex em vez de startsWith pega barra misturada também (ver
+    // file:read, mesmo achado de code review aplicado aqui por consistência)
+    if (/^[\\/]{2}/.test(folderPath)) return
 
     const resolved = path.resolve(folderPath)
 
@@ -427,10 +429,14 @@ app.whenReady().then(() => {
       throw new Error('Caminho de arquivo inválido')
     }
     // path.isAbsolute considera UNC path (\\server\share\x) absoluto também —
-    // bloqueia explícito, mesmo padrão já usado em shell:openPath, pra não
-    // disparar handshake SMB de saída (vazamento de credencial NTLM) a
-    // partir de um path que um renderer comprometido poderia fornecer.
-    if (filePath.startsWith('\\\\') || filePath.startsWith('//')) {
+    // bloqueia explícito, pra não disparar handshake SMB de saída
+    // (vazamento de credencial NTLM) a partir de um path que um renderer
+    // comprometido poderia fornecer. Regex (não startsWith('\\\\')/('//'))
+    // pega barra misturada tipo '\/server/share/x' ou '/\\server/share/x'
+    // também — path.resolve normaliza qualquer uma dessas pra UNC de
+    // verdade, e um startsWith só-barra-dupla-do-mesmo-tipo não via isso
+    // (achado real de code review, bypass confirmado por execução direta).
+    if (/^[\\/]{2}/.test(filePath)) {
       throw new Error('Caminho de rede (UNC) não é permitido')
     }
     const resolvedPath = path.resolve(filePath)
