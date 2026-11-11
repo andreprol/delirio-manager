@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 	"unicode/utf16"
@@ -364,7 +366,132 @@ var procBlockInput = user32.NewProc("BlockInput")
 // de injectMouseMoveFn/injectMouseButtonFn neste arquivo.
 var blockInputFn = blockInputSyscall
 
+// blockInputRequests serializa toda chamada real a BlockInput através de
+// blockInputWorker (startBlockInputWorker), rodando sempre na MESMA OS
+// thread travada — ver comentário de startBlockInputWorker pro porquê.
+// Canal sem buffer: cada send bloqueia até o worker atender, não precisa de
+// WaitGroup/mutex extra pra saber quando a resposta chegou (result já cobre).
+var blockInputRequests = make(chan blockInputRequest)
+
+type blockInputRequest struct {
+	block  bool
+	result chan<- error
+}
+
+// blockInputWorkerStarted evita iniciar o worker 2x se runCompanion rodar
+// mais de uma vez no mesmo processo (não acontece hoje, mas é barato
+// garantir — 2 workers concorrentes voltaria a ter o mesmo bug de thread
+// errada que isto existe pra resolver).
+var blockInputWorkerStarted sync.Once
+
+// startBlockInputWorker inicia a goroutine dedicada, travada numa única OS
+// thread pelo resto da vida do processo companion, que executa toda chamada
+// real a BlockInput — chamar 1x em runCompanion, antes de qualquer sessão
+// poder pedir lock-local-input.
+//
+// Motivo: a API Win32 BlockInput amarra o bloqueio à THREAD chamadora, não
+// ao processo — só a MESMA thread que chamou BlockInput(true) consegue
+// chamar BlockInput(false) com sucesso depois. Sem travar a goroutine numa
+// OS thread fixa (runtime.LockOSThread), o scheduler do Go é livre pra
+// migrar a goroutine de dispatch de mensagens pra outra thread do SO entre
+// uma chamada e outra (lock e unlock acontecem em momentos bem separados,
+// disparados por mensagens/timers diferentes) — e BlockInput(false) chamado
+// da thread errada falha SEM setar um erro novo via SetLastError, então
+// GetLastError() devolve o valor residual de uma syscall anterior bem-
+// sucedida nessa thread (por coincidência ERROR_SUCCESS=0), virando a
+// mensagem enganosa "operação concluída com êxito" MESMO FALHANDO de
+// verdade — exatamente o que companion.log mostrou no incidente real da
+// ASSBOH em 11/11/2026 (3 tentativas de unlock seguidas, todas com esse
+// erro, input local da loja travado até reinício manual do serviço: nem o
+// unlock explícito nem o failsafe de 10min — releaseLocalInputLockForSession,
+// chamado por goroutines diferentes — conseguiam destravar). Mesmo padrão
+// já usado neste arquivo pra D3D11/DXGI, ver newDXGIScreenCapturer em
+// screencapture_dxgi_windows.go.
+func startBlockInputWorker() {
+	blockInputWorkerStarted.Do(func() {
+		go func() {
+			runtime.LockOSThread() // nunca UnlockOSThread: goroutine dedicada pro processo inteiro
+
+			for req := range blockInputRequests {
+				req.result <- blockInputSyscallDirectFn(req.block)
+			}
+		}()
+	})
+}
+
+// blockInputWorkerTimeout limita quanto tempo blockInputSyscall espera pelo
+// worker (send do pedido + recebimento da resposta) — achado 🟠 do
+// code-reviewer: sem isto, um worker que nunca iniciou (startBlockInputWorker
+// não rodou — ex.: futuro refactor de runCompanion remove/reordena a
+// chamada) travaria o send no canal sem buffer PARA SEMPRE, silenciosamente
+// (sem log, sem erro). Pior ainda, setLocalInputLocked/
+// releaseLocalInputLockForSession chamam blockInputFn COM localInputLockMu
+// travado — esse hang congelaria o subsistema de lock de input local
+// inteiro pra qualquer sessão, não só a que disparou o problema (incluindo
+// o próprio failsafe timer, que também precisa do mutex). O timeout limita
+// o pior caso e ainda assim reporta um erro explícito, em vez de travar mudo.
+// var, não const — mesmo motivo de localInputLockFailsafe: testes encurtam
+// pra não ficar lentos (ver TestBlockInputConcurrentCallsDontCorruptStateWhenWorkerBusy).
+var blockInputWorkerTimeout = 5 * time.Second
+
+// errBlockInputNotSent e errBlockInputNoResponse distinguem (via errors.Is)
+// os dois jeitos de blockInputSyscall estourar o timeout — achado 🔴 CRÍTICO
+// do code-reviewer, 3ª rodada: os 2 `select` abaixo cobrem situações bem
+// diferentes, e confundi-las (sentinel único) reabre o mesmo bug que este
+// fix existe pra resolver.
+//
+//   - errBlockInputNotSent (1º select): o pedido NUNCA saiu do canal — o
+//     worker está ocupado com OUTRO pedido (syscall real lenta/presa) e nunca
+//     chegou a ver este aqui. Nada foi disparado em nome desta chamada —
+//     trata-se como qualquer erro síncrono comum (setLocalInputLocked NÃO
+//     aplica tratamento pessimista pra este sentinel).
+//   - errBlockInputNoResponse (2º select): o pedido FOI entregue ao worker,
+//     que pode estar executando a syscall real NESTE EXATO MOMENTO e
+//     completá-la depois do caller já ter desistido — único caso em que
+//     "pode ter tido sucesso tardio" é uma hipótese real, e onde o
+//     tratamento pessimista (registrar posse/armar failsafe mesmo com erro)
+//     é necessário.
+//
+// Achado real: tratar os dois igual permite que uma 2ª chamada concorrente
+// que nunca chegou a ser entregue (errBlockInputNotSent, ex.: um unlock do
+// failsafe disparado enquanto o worker ainda processa um lock anterior
+// lento) limpe/desarme o estado pessimista que protegia a 1ª chamada
+// (ainda em voo, errBlockInputNoResponse) — exatamente o cenário que o
+// tratamento pessimista existe pra cobrir.
+var (
+	errBlockInputNotSent    = errors.New("blockInput: worker não recebeu o pedido a tempo")
+	errBlockInputNoResponse = errors.New("blockInput: worker recebeu o pedido mas não respondeu a tempo")
+)
+
+// blockInputSyscall é a implementação real de blockInputFn — encaminha pro
+// worker de OS thread fixa (startBlockInputWorker) em vez de chamar
+// procBlockInput direto nesta goroutine, que pode não ser sempre a mesma
+// entre um lock e o unlock correspondente.
 func blockInputSyscall(block bool) error {
+	result := make(chan error, 1)
+	select {
+	case blockInputRequests <- blockInputRequest{block: block, result: result}:
+	case <-time.After(blockInputWorkerTimeout):
+		return fmt.Errorf("blockInputSyscall: %w em %s (worker ocupado com outro pedido, ou startBlockInputWorker não rodou?)", errBlockInputNotSent, blockInputWorkerTimeout)
+	}
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(blockInputWorkerTimeout):
+		return fmt.Errorf("blockInputSyscall: %w em %s", errBlockInputNoResponse, blockInputWorkerTimeout)
+	}
+}
+
+// blockInputSyscallDirectFn é a indireção testável de blockInputSyscallDirect
+// — permite a um teste trocar só o passo final (a syscall Win32 de verdade)
+// e ainda assim exercitar o worker/canal reais, pra provar que o worker
+// serializa tudo numa única OS thread (ver TestBlockInputWorkerSameOSThread).
+var blockInputSyscallDirectFn = blockInputSyscallDirect
+
+// blockInputSyscallDirect faz a chamada Win32 de verdade — só deve rodar
+// dentro da goroutine do worker (startBlockInputWorker), nunca chamada
+// direto por outro código (por isso não exportada/usada fora deste arquivo).
+func blockInputSyscallDirect(block bool) error {
 	var arg uintptr
 	if block {
 		arg = 1
@@ -540,6 +667,38 @@ var (
 // setLocalInputLockedFn é a indireção testável de setLocalInputLocked.
 var setLocalInputLockedFn = setLocalInputLocked
 
+// applyBlockInputTimeoutPolicyLocked ajusta o estado interno de lock quando
+// blockInputFn falha com errBlockInputNoResponse especificamente (nunca pra
+// erro síncrono real da syscall, nem pra errBlockInputNotSent — ver
+// comentário dos dois sentinels em blockInputSyscall) — centraliza a lógica
+// pessimista que antes estava duplicada (e levemente divergente) entre o
+// branch de lock e o de unlock de setLocalInputLocked (achado 🟡 do
+// code-reviewer, 3ª rodada). Exige localInputLockMu já travado pelo
+// chamador (sufixo Locked).
+//
+// Motivo: errBlockInputNoResponse significa que o worker RECEBEU o pedido e
+// pode estar executando a syscall real neste exato momento, completando-a
+// depois do caller já ter desistido — só aí "pode ter tido sucesso tardio"
+// é uma hipótese real. Pra lock, isso significa registrar a posse e armar o
+// failsafe mesmo retornando erro pro chamador, senão o input ficaria
+// travado no Windows sem dono nem rede de segurança (mesmo sintoma do
+// incidente ASSBOH, por outra via). Pra unlock, significa tratar como
+// destravado (mesma política incondicional de releaseLocalInputLockForSession),
+// senão o estado interno ficaria "travado" pra sempre exigindo um 2º unlock
+// que pode nunca vir.
+func applyBlockInputTimeoutPolicyLocked(err error, sessionID string, acquiring bool) {
+	if !errors.Is(err, errBlockInputNoResponse) {
+		return
+	}
+	if acquiring {
+		localInputLockedBy = sessionID
+		resetLocalInputLockTimerLocked(sessionID)
+		return
+	}
+	localInputLockedBy = ""
+	stopLocalInputLockTimerLocked()
+}
+
 // setLocalInputLocked trava/libera o input físico local a pedido explícito
 // de sessionID (via lock-local-input/unlock-local-input, em
 // handleLiveSessionInput). unlock só tem efeito se vier da MESMA sessão que
@@ -569,6 +728,7 @@ func setLocalInputLocked(sessionID string, locked bool) error {
 			logWarn(fmt.Sprintf("companion: lock de input local transferido da sessão %s pra %s sem unlock explícito — 2 sessões Normal sobrepostas pra esta máquina?", localInputLockedBy, sessionID))
 		}
 		if err := blockInputFn(true); err != nil {
+			applyBlockInputTimeoutPolicyLocked(err, sessionID, true)
 			return err
 		}
 		localInputLockedBy = sessionID
@@ -580,6 +740,7 @@ func setLocalInputLocked(sessionID string, locked bool) error {
 		return nil
 	}
 	if err := blockInputFn(false); err != nil {
+		applyBlockInputTimeoutPolicyLocked(err, sessionID, false)
 		return err
 	}
 	localInputLockedBy = ""
@@ -601,6 +762,21 @@ func releaseLocalInputLockForSession(sessionID string) {
 	}
 	if err := blockInputFn(false); err != nil {
 		logWarn(fmt.Sprintf("companion: falha ao liberar input local (sessão %s): %v", sessionID, err))
+		if errors.Is(err, errBlockInputNotSent) {
+			// Achado 🟠 do code-reviewer, 4ª rodada: nada foi disparado pra
+			// esta chamada (worker ocupado com outro pedido) — diferente de
+			// qualquer outro erro, incluindo errBlockInputNoResponse (onde a
+			// syscall real pode estar em voo e completar depois: aí tratar
+			// como destravado, igual ao resto desta função, é a política
+			// certa — mesmo raciocínio de applyBlockInputTimeoutPolicyLocked).
+			// Aqui o BlockInput físico provavelmente CONTINUA travado de
+			// verdade (nunca tentamos de fato destravar) — limpar
+			// localInputLockedBy e parar o failsafe fingiria que destravou e
+			// tiraria a única rede de segurança que resta. Rearma o failsafe
+			// pra tentar de novo mais tarde, sem mexer em localInputLockedBy.
+			resetLocalInputLockTimerLocked(sessionID)
+			return
+		}
 	}
 	localInputLockedBy = ""
 	stopLocalInputLockTimerLocked()

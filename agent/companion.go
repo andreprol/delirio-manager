@@ -54,6 +54,13 @@ func runCompanion() error {
 
 	logInfo("Companion iniciado.")
 
+	// Trava já de cara, antes de qualquer sessão poder pedir lock-local-input
+	// ("Travar usuário") — ver comentário de startBlockInputWorker em
+	// input_windows.go pro bug real que isto corrige (BlockInput(false)
+	// falhando sempre que chamado de uma OS thread diferente da que chamou
+	// BlockInput(true)).
+	startBlockInputWorker()
+
 	// stopCh ainda não é observado por este select — nenhuma task implementou
 	// shutdown gracioso via pipe ainda. Até lá, o processo encerra de 3
 	// formas: (1) morto externamente pelo serviço via terminateCompanion

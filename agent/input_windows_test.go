@@ -7,10 +7,15 @@ package main
 // outros testes silenciosamente.
 
 import (
+	"errors"
 	"fmt"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestParseInputMessage(t *testing.T) {
@@ -493,6 +498,101 @@ func TestSetLocalInputLockedBlockInputFails(t *testing.T) {
 	}
 }
 
+// TestSetLocalInputLockedNoResponseIsPessimistic cobre o 2º achado 🟠 da 2ª
+// rodada de code-review: um erro errBlockInputNoResponse (pedido ENTREGUE ao
+// worker, mas sem resposta a tempo) NÃO prova que a syscall BlockInput
+// falhou — só que o worker não respondeu a tempo (ver blockInputSyscall).
+// Diferente de TestSetLocalInputLockedBlockInputFails (erro síncrono real,
+// onde não registrar posse está correto), aqui o lock precisa registrar
+// posse + armar o failsafe mesmo retornando erro pro chamador — senão um
+// BlockInput(true) que teve sucesso tardio (só lento) deixaria o input
+// travado no Windows sem dono nem rede de segurança, o mesmo sintoma do
+// incidente ASSBOH por outra via. Espelha a mesma lógica pro unlock: esse
+// erro aí deve limpar o estado (como releaseLocalInputLockForSession já faz
+// incondicionalmente), não exigir um 2º unlock que pode nunca vir.
+func TestSetLocalInputLockedNoResponseIsPessimistic(t *testing.T) {
+	resetLocalInputLockState(t)
+	original := blockInputFn
+	defer func() { blockInputFn = original; resetLocalInputLockState(t) }()
+
+	noResponseErr := fmt.Errorf("blockInputSyscall: %w em 5s", errBlockInputNoResponse)
+
+	blockInputFn = func(block bool) error { return noResponseErr }
+	if err := setLocalInputLocked("a", true); err == nil {
+		t.Fatal("esperava erro (sem resposta) propagado pro chamador")
+	}
+	if localInputLockedBy != "a" {
+		t.Errorf("localInputLockedBy = %q após errBlockInputNoResponse no lock, want a (pessimista: registra posse mesmo com erro)", localInputLockedBy)
+	}
+	if localInputLockTimer == nil {
+		t.Error("failsafe não armado após errBlockInputNoResponse no lock — input ficaria travado sem rede de segurança se o BlockInput(true) real tiver tido sucesso tardio")
+	}
+
+	if err := setLocalInputLocked("a", false); err == nil {
+		t.Fatal("esperava erro (sem resposta) propagado pro chamador no unlock")
+	}
+	if localInputLockedBy != "" {
+		t.Errorf("localInputLockedBy = %q após errBlockInputNoResponse no unlock, want vazio (pessimista: trata como destravado mesmo com erro)", localInputLockedBy)
+	}
+	if localInputLockTimer != nil {
+		t.Error("failsafe ainda armado após errBlockInputNoResponse no unlock, want parado")
+	}
+}
+
+// TestSetLocalInputLockedNotSentIsNotPessimistic cobre o 🔴 CRÍTICO da 3ª
+// rodada de code-review: errBlockInputNotSent (pedido NUNCA chegou a ser
+// entregue ao worker — nada foi disparado em nome desta chamada) é
+// diferente de errBlockInputNoResponse e NÃO deve receber o tratamento
+// pessimista — não há syscall em voo nenhuma que possa "ter sucesso tardio"
+// pra esta chamada especificamente. Sem esta distinção, uma chamada que
+// nunca chegou a sair do canal (ex.: unlock do failsafe disparado enquanto
+// o worker ainda processa um lock anterior lento) poderia limpar/desarmar
+// o estado pessimista que protege essa OUTRA chamada ainda em voo — ver
+// TestBlockInputConcurrentCallsDontCorruptStateWhenWorkerBusy pro cenário
+// de concorrência real que expôs isto.
+func TestSetLocalInputLockedNotSentIsNotPessimistic(t *testing.T) {
+	resetLocalInputLockState(t)
+	original := blockInputFn
+	defer func() { blockInputFn = original; resetLocalInputLockState(t) }()
+
+	notSentErr := fmt.Errorf("blockInputSyscall: %w em 5s (worker ocupado)", errBlockInputNotSent)
+	blockInputFn = func(block bool) error { return notSentErr }
+
+	if err := setLocalInputLocked("a", true); err == nil {
+		t.Fatal("esperava erro propagado")
+	}
+	if localInputLockedBy != "" {
+		t.Errorf("localInputLockedBy = %q após errBlockInputNotSent no lock, want vazio (nada foi disparado de verdade, não é pessimista)", localInputLockedBy)
+	}
+	if localInputLockTimer != nil {
+		t.Error("failsafe não deveria estar armado após errBlockInputNotSent no lock")
+	}
+}
+
+// TestSetLocalInputLockedGenericErrorIsNotPessimistic confirma que a
+// distinção acima é mesmo por tipo de erro (errors.Is errBlockInputNoResponse),
+// não por "qualquer erro": um erro comum, com texto parecido mas sem o wrap
+// de nenhum dos dois sentinels, continua seguindo a regra antiga (não
+// registra posse no lock, não limpa no unlock) — TestSetLocalInputLockedBlockInputFails
+// já cobre isso com um erro genérico; este teste fecha a lacuna específica
+// de "erro com texto parecido mas sem sentinel nenhum" não ser confundido
+// com nenhum dos dois casos de timeout.
+func TestSetLocalInputLockedGenericErrorIsNotPessimistic(t *testing.T) {
+	resetLocalInputLockState(t)
+	original := blockInputFn
+	defer func() { blockInputFn = original; resetLocalInputLockState(t) }()
+
+	lookalike := fmt.Errorf("blockInputSyscall: worker recebeu o pedido mas não respondeu em 5s (sem sentinel nenhum)")
+	blockInputFn = func(block bool) error { return lookalike }
+
+	if err := setLocalInputLocked("a", true); err == nil {
+		t.Fatal("esperava erro propagado")
+	}
+	if localInputLockedBy != "" {
+		t.Errorf("localInputLockedBy = %q, want vazio (erro sem sentinel não deve ser tratado como pessimista)", localInputLockedBy)
+	}
+}
+
 // TestReleaseLocalInputLockForSession cobre a função usada pelo defer de
 // runLiveSessionLoop e pelo timer de failsafe — só libera se a sessão
 // ainda for a dona do lock; nunca propaga erro.
@@ -538,7 +638,9 @@ func TestReleaseLocalInputLockForSession(t *testing.T) {
 // deliberada com setLocalInputLocked: aqui (caminho de limpeza automática —
 // fim de sessão, failsafe) o estado é limpo mesmo se a syscall falhar, só
 // loga. Insistir no estado "ainda travado" não ajudaria — ninguém vai
-// chamar isto de novo pra esta sessão (ela já terminou).
+// chamar isto de novo pra esta sessão (ela já terminou). EXCETO
+// errBlockInputNotSent, onde insistir ajuda sim — ver
+// TestReleaseLocalInputLockForSessionNotSentRearmsFailsafe logo abaixo.
 func TestReleaseLocalInputLockForSessionBlockInputFails(t *testing.T) {
 	resetLocalInputLockState(t)
 	originalFn := blockInputFn
@@ -554,6 +656,40 @@ func TestReleaseLocalInputLockForSessionBlockInputFails(t *testing.T) {
 
 	if localInputLockedBy != "" {
 		t.Errorf("localInputLockedBy = %q após release com blockInputFn falhando, want vazio (limpa mesmo em erro)", localInputLockedBy)
+	}
+}
+
+// TestReleaseLocalInputLockForSessionNotSentRearmsFailsafe cobre o achado 🟠
+// do code-reviewer, 4ª rodada: releaseLocalInputLockForSession (chamada pelo
+// failsafe e pelo fim de sessão) tratava QUALQUER erro de blockInputFn,
+// inclusive errBlockInputNotSent, como "destravou com sucesso" — limpando
+// localInputLockedBy e parando o failsafe incondicionalmente. Mas
+// errBlockInputNotSent significa que nada foi disparado pra esta chamada
+// (worker ocupado com outro pedido) — o BlockInput físico provavelmente
+// CONTINUA travado de verdade, nunca tentamos destravar. Diferente de
+// TestReleaseLocalInputLockForSessionBlockInputFails (erro síncrono real ou
+// errBlockInputNoResponse, onde limpar é a política certa): aqui limpar
+// fingiria que destravou e tiraria a única rede de segurança que resta —
+// o fix rearma o failsafe em vez de limpar, pra tentar de novo mais tarde.
+func TestReleaseLocalInputLockForSessionNotSentRearmsFailsafe(t *testing.T) {
+	resetLocalInputLockState(t)
+	originalFn := blockInputFn
+	defer func() { blockInputFn = originalFn; resetLocalInputLockState(t) }()
+
+	blockInputFn = func(block bool) error { return nil }
+	if err := setLocalInputLocked("a", true); err != nil {
+		t.Fatalf("setup: lock falhou: %v", err)
+	}
+
+	notSentErr := fmt.Errorf("blockInputSyscall: %w em 5s (worker ocupado)", errBlockInputNotSent)
+	blockInputFn = func(block bool) error { return notSentErr }
+	releaseLocalInputLockForSession("a")
+
+	if localInputLockedBy != "a" {
+		t.Errorf("localInputLockedBy = %q após release com errBlockInputNotSent, want ainda a (BlockInput físico provavelmente ainda travado, não fingir que destravou)", localInputLockedBy)
+	}
+	if localInputLockTimer == nil {
+		t.Error("failsafe não rearmado após errBlockInputNotSent — sem isso, nunca mais tenta destravar de novo")
 	}
 }
 
@@ -600,4 +736,178 @@ func TestLocalInputLockFailsafeAutoReleases(t *testing.T) {
 	if len(calls) != 2 || calls[0] != true || calls[1] != false {
 		t.Errorf("blockInputFn chamadas = %v, want [true false]", calls)
 	}
+}
+
+// TestBlockInputWorkerSameOSThread prova a correção real do incidente da
+// ASSBOH em 11/11/2026 (companion.log: 3 tentativas seguidas de
+// "BlockInput(false) falhou: operação concluída com êxito", input local
+// travado até reinício manual do serviço). A causa era BlockInput(true) e
+// BlockInput(false) rodando em OS threads diferentes — API Win32 amarra o
+// bloqueio à thread chamadora, não ao processo. Aqui, substituímos só o
+// passo final (blockInputSyscallDirectFn) por uma função que registra
+// windows.GetCurrentThreadId(), sem tocar a syscall real — e exercitamos o
+// worker/canal de verdade (blockInputSyscall, startBlockInputWorker),
+// provando que toda chamada cai sempre na mesma OS thread.
+//
+// Achado 🟡 do code-reviewer: com poucas chamadas e pouca contenção, o
+// scheduler do Go pode por coincidência manter a goroutine do worker na
+// mesma OS thread mesmo SEM runtime.LockOSThread() — o teste passaria "por
+// sorte" mesmo que uma edição futura removesse a trava de thread por
+// engano. Mitigado aqui com: (1) GOMAXPROCS forçado pra pelo menos 4 (dá ao
+// scheduler Ms de sobra pra migrar a goroutine, se nada a impedir), (2)
+// muitas goroutines concorrentes de verdade ocupando essas Ms com trabalho
+// de CPU durante o teste (pressão real de agendamento, não só 2 chamadas
+// sequenciais), (3) muitas idas e vindas lock/unlock, cada uma disparada de
+// uma goroutine nova (igual ao cenário real: dispatch de mensagem e timer
+// de failsafe são goroutines diferentes a cada vez).
+func TestBlockInputWorkerSameOSThread(t *testing.T) {
+	originalDirect := blockInputSyscallDirectFn
+	defer func() { blockInputSyscallDirectFn = originalDirect }()
+
+	originalGOMAXPROCS := runtime.GOMAXPROCS(0)
+	if originalGOMAXPROCS < 4 {
+		runtime.GOMAXPROCS(4)
+	}
+	defer runtime.GOMAXPROCS(originalGOMAXPROCS)
+
+	type call struct {
+		block    bool
+		threadID uint32
+	}
+	const rounds = 30
+	callsCh := make(chan call, rounds*2)
+	blockInputSyscallDirectFn = func(block bool) error {
+		callsCh <- call{block: block, threadID: windows.GetCurrentThreadId()}
+		return nil
+	}
+
+	startBlockInputWorker()
+
+	// Pressão real de agendamento: várias goroutines CPU-bound concorrentes,
+	// rodando enquanto os lock/unlock acontecem, pra incentivar o scheduler a
+	// espalhar goroutines entre Ms — sem isto, numa máquina ociosa o
+	// scheduler pode não ter motivo nenhum pra migrar a goroutine do worker,
+	// mesmo sem LockOSThread.
+	stopBusy := make(chan struct{})
+	var busyWG sync.WaitGroup
+	for i := 0; i < runtime.GOMAXPROCS(0)*2; i++ {
+		busyWG.Add(1)
+		go func() {
+			defer busyWG.Done()
+			x := 0
+			for {
+				select {
+				case <-stopBusy:
+					return
+				default:
+					x++ // trabalho de CPU puro, sem syscalls/bloqueio
+				}
+			}
+		}()
+	}
+
+	// Cada lock e cada unlock sai de uma goroutine NOVA — mesmo cenário do
+	// bug real (dispatch de mensagem vs. timer de failsafe, nunca a mesma
+	// goroutine do caller anterior) — mas um round de cada vez (espera a
+	// goroutine terminar antes de abrir a próxima), senão true/false de
+	// rounds diferentes se embaralham sem ordem definida no canal.
+	for i := 0; i < rounds; i++ {
+		lockDone := make(chan struct{})
+		go func() {
+			defer close(lockDone)
+			if err := blockInputSyscall(true); err != nil {
+				t.Errorf("lock inesperadamente falhou: %v", err)
+			}
+		}()
+		<-lockDone
+
+		unlockDone := make(chan struct{})
+		go func() {
+			defer close(unlockDone)
+			if err := blockInputSyscall(false); err != nil {
+				t.Errorf("unlock inesperadamente falhou: %v", err)
+			}
+		}()
+		<-unlockDone
+	}
+	close(stopBusy)
+	busyWG.Wait()
+
+	close(callsCh)
+	var firstThreadID uint32
+	n := 0
+	for c := range callsCh {
+		n++
+		if c.threadID == 0 {
+			t.Fatalf("threadID zerado na chamada #%d (block=%v)", n, c.block)
+		}
+		if firstThreadID == 0 {
+			firstThreadID = c.threadID
+			continue
+		}
+		if c.threadID != firstThreadID {
+			t.Fatalf("chamada #%d (block=%v) rodou na thread %d, want %d (mesma de todas as outras) — regressão do bug ASSBOH 11/11", n, c.block, c.threadID, firstThreadID)
+		}
+	}
+	if n != rounds*2 {
+		t.Fatalf("recebi %d chamadas, want %d (rounds*2)", n, rounds*2)
+	}
+}
+
+// TestBlockInputConcurrentCallsDontCorruptStateWhenWorkerBusy cobre o 🔴
+// CRÍTICO da 3ª rodada de code-review, reproduzindo o cenário real (não
+// mockado) que distingue os dois sentinels: uma chamada #1 cuja syscall
+// real fica presa/lenta no worker (simulada aqui via blockInputSyscallDirectFn
+// bloqueante) — igual a um BlockInput real demorando — e uma chamada #2
+// concorrente que chega ENQUANTO o worker ainda está ocupado com a #1.
+//
+// A #2 nunca sai do canal (o worker só processa um pedido de cada vez) —
+// deve estourar o 1º select de blockInputSyscall (errBlockInputNotSent), já
+// que nada foi disparado em nome dela. A #1, cuja syscall real está em
+// voo, deve estourar o 2º select (errBlockInputNoResponse) quando o caller
+// desiste. Sem a distinção dos dois sentinels (ver achado 🔴), as duas
+// receberiam o mesmo erro e setLocalInputLocked aplicaria a mesma lógica
+// pessimista nas duas — permitindo que a #2 (nada em voo) desarme o estado
+// que protege a #1 (sucesso tardio real possível).
+func TestBlockInputConcurrentCallsDontCorruptStateWhenWorkerBusy(t *testing.T) {
+	originalDirect := blockInputSyscallDirectFn
+	originalTimeout := blockInputWorkerTimeout
+	defer func() {
+		blockInputSyscallDirectFn = originalDirect
+		blockInputWorkerTimeout = originalTimeout
+	}()
+
+	blockInputWorkerTimeout = 50 * time.Millisecond
+
+	releaseFirstCall := make(chan struct{})
+	firstCallStarted := make(chan struct{})
+	blockInputSyscallDirectFn = func(block bool) error {
+		close(firstCallStarted)
+		<-releaseFirstCall // só libera depois que o teste já observou o comportamento da #2
+		return nil
+	}
+
+	startBlockInputWorker()
+
+	firstCallErrCh := make(chan error, 1)
+	go func() { firstCallErrCh <- blockInputSyscall(true) }()
+	<-firstCallStarted // garante que a #1 já está DENTRO da syscall real (worker ocupado) antes de disparar a #2
+
+	err2 := blockInputSyscall(false)
+	if !errors.Is(err2, errBlockInputNotSent) {
+		t.Errorf("chamada #2 (worker ocupado com a #1) = %v, want errBlockInputNotSent", err2)
+	}
+	if errors.Is(err2, errBlockInputNoResponse) {
+		t.Error("chamada #2 não deveria ser errBlockInputNoResponse — nunca foi entregue ao worker, nada em voo")
+	}
+
+	err1 := <-firstCallErrCh
+	if !errors.Is(err1, errBlockInputNoResponse) {
+		t.Errorf("chamada #1 (syscall real presa no worker) = %v, want errBlockInputNoResponse", err1)
+	}
+	if errors.Is(err1, errBlockInputNotSent) {
+		t.Error("chamada #1 não deveria ser errBlockInputNotSent — ela FOI entregue ao worker")
+	}
+
+	close(releaseFirstCall)
 }
