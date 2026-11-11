@@ -59,4 +59,25 @@ describe('blobSas.generateFileTransferUrls', () => {
     const result = generateFileTransferUrls({ fileName: 'backup..', fileSize: 1024 });
     expect(result.blobName.endsWith('.')).toBe(false);
   });
+
+  it('usa permissao cw (create+write) pro upload e r (read-only) pro download, mesmo blob/janela', () => {
+    mockConfig({ blobStorage: { accountName: 'acc', accountKey: 'key', container: 'live-transfer' } });
+    const { generateFileTransferUrls } = require('./blobSas');
+    const { generateBlobSASQueryParameters } = require('@azure/storage-blob');
+
+    generateFileTransferUrls({ fileName: 'instalador.exe', fileSize: 1024 });
+
+    expect(generateBlobSASQueryParameters).toHaveBeenCalledTimes(2);
+    const [uploadCallArgs] = generateBlobSASQueryParameters.mock.calls[0];
+    const [downloadCallArgs] = generateBlobSASQueryParameters.mock.calls[1];
+
+    expect(uploadCallArgs.permissions).toBe('cw');
+    expect(downloadCallArgs.permissions).toBe('r');
+
+    // mesmo blob/container/janela de tempo pras duas chamadas -- só a permissao muda
+    expect(uploadCallArgs.containerName).toBe(downloadCallArgs.containerName);
+    expect(uploadCallArgs.blobName).toBe(downloadCallArgs.blobName);
+    expect(uploadCallArgs.startsOn).toEqual(downloadCallArgs.startsOn);
+    expect(uploadCallArgs.expiresOn).toEqual(downloadCallArgs.expiresOn);
+  });
 });
