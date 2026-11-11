@@ -64,6 +64,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('live-session-cleanup-and-close', handler)
     return () => ipcRenderer.removeListener('live-session-cleanup-and-close', handler)
   },
+  onNormalWindowVisibilityChange: (cb) => {
+    const handler = (_, data) => cb(data)
+    ipcRenderer.on('live-session:normal-window-visibility', handler)
+    return () => ipcRenderer.removeListener('live-session:normal-window-visibility', handler)
+  },
+  getNormalWindowVisibility: () => ipcRenderer.invoke('live-session:get-normal-window-visibility'),
   cleanupDone: () => ipcRenderer.send('live-session-cleanup-done'),
   reportCleanupProgress: () => ipcRenderer.send('live-session-cleanup-progress'),
   reportCleanupFailed: () => ipcRenderer.send('live-session-cleanup-failed'),

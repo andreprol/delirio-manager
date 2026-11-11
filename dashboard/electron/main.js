@@ -5,6 +5,7 @@ const path = require('path')
 const fs   = require('fs')
 const { spawn } = require('child_process')
 const { isInsideSensitiveDir } = require('./sensitiveDirGuard')
+const { countVisibleNormalWindows } = require('./liveSessionRegistry')
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 const IS_DEV      = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -100,6 +101,32 @@ function sanitizeLiveSessionParams(params) {
 // dashboardToken) viajam só por IPC, depois da janela terminar de carregar
 // — nunca em URL/hash (ver spec 2026-10-24: evita token em histórico de
 // navegação ou devtools).
+// liveSessionWindows: todas as janelas de sessão ao vivo abertas (Normal ou
+// Shadow). Cada BrowserWindow ganha __liveSessionMode pra countVisibleNormalWindows
+// saber quais contam. broadcastNormalWindowVisibility recalcula e manda pra
+// TODAS (inclusive a que acabou de mudar) sempre que algo relevante muda —
+// regra 3 de André (11/11/2026): tecla Windows só funciona quando
+// exatamente 1 janela Normal está visível ao mesmo tempo.
+const liveSessionWindows = new Set()
+
+function computeVisibleNormalCount() {
+  const snapshot = [...liveSessionWindows].map((w) => ({
+    mode: w.__liveSessionMode,
+    minimized: w.isDestroyed() ? false : w.isMinimized(),
+    destroyed: w.isDestroyed(),
+  }))
+  return countVisibleNormalWindows(snapshot)
+}
+
+function broadcastNormalWindowVisibility() {
+  const visibleNormalCount = computeVisibleNormalCount()
+  for (const w of liveSessionWindows) {
+    if (!w.isDestroyed()) {
+      w.webContents.send('live-session:normal-window-visibility', { visibleNormalCount })
+    }
+  }
+}
+
 function createLiveSessionWindow(params) {
   const liveWin = new BrowserWindow({
     width: 1280,
@@ -115,6 +142,12 @@ function createLiveSessionWindow(params) {
       additionalArguments: ['--live-session'],
     },
   })
+
+  liveWin.__liveSessionMode = params.mode
+  liveSessionWindows.add(liveWin)
+  liveWin.on('minimize', broadcastNormalWindowVisibility)
+  liveWin.on('restore', broadcastNormalWindowVisibility)
+  liveWin.on('show', broadcastNormalWindowVisibility)
 
   // setMenu(null) (não só setMenuBarVisibility(false)): Electron cria um menu
   // PADRÃO automaticamente quando nenhum é definido (Edit > Paste com
@@ -137,6 +170,7 @@ function createLiveSessionWindow(params) {
 
   liveWin.webContents.once('did-finish-load', () => {
     liveWin.webContents.send('live-session-init', params)
+    broadcastNormalWindowVisibility()
   })
 
   // Fechar a janela (X) é equivalente a "Encerrar sessão" (decisão da spec
@@ -157,6 +191,11 @@ function createLiveSessionWindow(params) {
       liveWin.webContents.send('live-session-cleanup-and-close')
     }
     armCleanupSafetyTimer(liveWin)
+  })
+
+  liveWin.on('closed', () => {
+    liveSessionWindows.delete(liveWin)
+    broadcastNormalWindowVisibility()
   })
 
   liveWin.webContents.setWindowOpenHandler(({ url }) => {
@@ -324,6 +363,15 @@ app.whenReady().then(() => {
     createLiveSessionWindow(sanitizeLiveSessionParams(params))
     return true
   })
+
+  // IPC: contagem ATUAL de janelas Normal visíveis, puxada pelo renderer no
+  // mount — o push (broadcastNormalWindowVisibility) sozinho não garante que
+  // o listener já está montado a tempo de receber o primeiro envio logo
+  // após did-finish-load (mesma classe de race já resolvida aqui pra update
+  // via updater:get-pending, acima).
+  ipcMain.handle('live-session:get-normal-window-visibility', () => ({
+    visibleNormalCount: computeVisibleNormalCount(),
+  }))
 
   // IPC: a janela de sessão confirmou que já limpou (parou gravação, avisou
   // o servidor) — agora pode fechar de verdade.
