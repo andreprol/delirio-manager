@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { LiveSessionWindow } from '../components/LiveSessionWindow'
 
@@ -6,6 +6,7 @@ const sendInputMock = vi.fn()
 const sendMouseEventMock = vi.fn()
 const sendKeyEventMock = vi.fn()
 const sendClipboardPasteMock = vi.fn()
+const sendFileTransferMock = vi.fn()
 let lastUseLiveSessionArgs = null
 
 vi.mock('../hooks/useLiveSession', () => ({
@@ -16,12 +17,18 @@ vi.mock('../hooks/useLiveSession', () => ({
       sendMouseEvent: sendMouseEventMock,
       sendKeyEvent: sendKeyEventMock,
       sendClipboardPaste: sendClipboardPasteMock,
+      sendFileTransfer: sendFileTransferMock,
     }
   },
 }))
 
 vi.mock('../api', () => ({
-  api: { live: { stop: vi.fn().mockResolvedValue({ ok: true }) } },
+  api: {
+    live: {
+      stop: vi.fn().mockResolvedValue({ ok: true }),
+      getFileUploadUrl: vi.fn().mockResolvedValue({ uploadUrl: 'https://blob/x?sas-up', downloadUrl: 'https://blob/x?sas-down' }),
+    },
+  },
   setServerUrl: vi.fn(),
   setAdminSecret: vi.fn(),
 }))
@@ -53,6 +60,8 @@ beforeEach(() => {
     convertRecording: vi.fn().mockResolvedValue({ saved: true }),
     getConfig: vi.fn().mockResolvedValue({ serverUrl: 'https://s.example.com', adminSecret: 'secret-xyz' }),
     readClipboardText: vi.fn().mockResolvedValue('shutdown /s /t 300'),
+    pickFile: vi.fn().mockResolvedValue(null),
+    readLocalFile: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
   }
 })
 
@@ -327,6 +336,44 @@ describe('LiveSessionWindow', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     expect(screen.queryByText('🔒 Travar usuário')).not.toBeInTheDocument()
+  })
+
+  it('mode normal: botao Enviar arquivo pede upload-url, sobe pro blob e manda sendFileTransfer', async () => {
+    window.electronAPI.pickFile = vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\instalador.exe')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(8))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true }) // PUT pro blob
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Enviar arquivo/i))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(api.live.getFileUploadUrl).toHaveBeenCalledWith('s1', 'instalador.exe', 8)
+    expect(global.fetch).toHaveBeenCalledWith('https://blob/x?sas-up', expect.objectContaining({ method: 'PUT' }))
+    expect(sendFileTransferMock).toHaveBeenCalledWith('https://blob/x?sas-down', 'instalador.exe', expect.any(String))
+  })
+
+  it('mode shadow: botao Enviar arquivo nao aparece', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    expect(screen.queryByText(/Enviar arquivo/i)).not.toBeInTheDocument()
+  })
+
+  it('mode normal: soltar arquivo na janela chama sendLocalFileToRemote com o path do arquivo', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    const dropZone = screen.getByTestId('live-session-dropzone')
+    const file = new File(['conteudo'], 'driver.exe', { type: 'application/octet-stream' })
+    Object.defineProperty(file, 'path', { value: 'C:\\Users\\Andre\\Downloads\\driver.exe' })
+
+    fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+
+    await waitFor(() => expect(window.electronAPI.pickFile).not.toHaveBeenCalled()) // drop nao usa o dialog
   })
 
   it('ao receber live-session-cleanup-and-close, para, avisa o servidor e chama cleanupDone', async () => {
