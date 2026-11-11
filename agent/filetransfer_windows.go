@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -59,6 +61,27 @@ func (p *progressWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// sanitizeDownloadErr remove a downloadURL (SAS do Azure Blob, credencial na
+// query string) de dentro do erro de rede antes de propagar. NAO BASTA so
+// parar de interpolar downloadURL na nossa propria mensagem (fmt.Errorf):
+// confirmado ao vivo que o proprio net/http ja embute a URL completa -- com
+// query string e tudo -- dentro do *url.Error que http.Get devolve em
+// QUALQUER falha de transporte (dial/DNS/timeout/connection refused), e
+// Error() desse tipo imprime essa URL independente do %w usado por fora
+// (`Get "http://host/path?sig=SEGREDO": dial tcp ...`). Mesma classe de
+// risco que redactLiveSessionURL resolve pra outra URL neste mesmo arquivo
+// (companionToken) -- aqui a URL mora dentro do tipo de erro do stdlib, nao
+// numa string nossa, entao desembrulhamos o *url.Error e devolvemos so o
+// erro de rede interno (ex: "dial tcp 127.0.0.1:1: connectex: ..."), que
+// continua util pra diagnostico sem carregar a credencial.
+func sanitizeDownloadErr(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err
+	}
+	return err
+}
+
 // downloadFileWithProgress baixa downloadURL pra destDir/fileName — mesmo
 // padrao de downloadBinary (updater.go): escreve num temp no MESMO
 // diretorio final (garante que o rename seja atomico, sem cruzar volume)
@@ -70,7 +93,7 @@ func downloadFileWithProgress(downloadURL, destDir, fileName string, onProgress 
 
 	resp, err := http.Get(downloadURL) // #nosec — URL vem do servidor confiavel, SAS de leitura
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", downloadURL, err)
+		return fmt.Errorf("download do arquivo falhou: %w", sanitizeDownloadErr(err))
 	}
 	defer resp.Body.Close()
 

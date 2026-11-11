@@ -60,6 +60,27 @@ func TestDownloadFileWithProgressHttpError(t *testing.T) {
 	}
 }
 
+func TestDownloadFileWithProgressNetworkErrorDoesNotLeakUrl(t *testing.T) {
+	// URL com um "SAS token" fake na query string, que a falha de conexao
+	// (host invalido/porta fechada) NUNCA deveria vazar na mensagem de erro —
+	// achado real do code review: o erro antigo interpolava a URL inteira
+	// (e, mais sutil ainda: o PROPRIO net/http tambem embute a URL completa
+	// dentro do *url.Error que http.Get devolve em falha de transporte,
+	// independente do %w usado por fora — so trocar o fmt.Errorf nao bastava).
+	downloadURL := "http://127.0.0.1:1/arquivo?sv=2021&se=2026-01-01&sig=SEGREDO-FAKE-NAO-PODE-VAZAR"
+
+	err := downloadFileWithProgress(downloadURL, t.TempDir(), "a.txt", func(int64, int64) {})
+	if err == nil {
+		t.Fatal("esperava erro de conexao (porta 1 nao deve ter nada escutando)")
+	}
+	if strings.Contains(err.Error(), "SEGREDO-FAKE-NAO-PODE-VAZAR") {
+		t.Fatalf("mensagem de erro vazou o SAS token da URL: %v", err)
+	}
+	if strings.Contains(err.Error(), "?") {
+		t.Fatalf("mensagem de erro contem a query string da URL (pode conter credencial): %v", err)
+	}
+}
+
 func TestDownloadFileWithProgressDestinoSemPermissao(t *testing.T) {
 	tmp := t.TempDir()
 	blockedPath := filepath.Join(tmp, "nao-e-diretorio")
