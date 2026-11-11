@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog, clipboard } = require('elect
 const path = require('path')
 const fs   = require('fs')
 const { spawn } = require('child_process')
+const { isInsideSensitiveDir } = require('./sensitiveDirGuard')
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 const IS_DEV      = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -377,12 +378,24 @@ app.whenReady().then(() => {
   // .secrets/admin-secret.txt ou outro arquivo interno do app, achado 🔴
   // CRÍTICO na revisão anterior), sem quebrar nenhum dos 2 jeitos
   // legítimos de escolher um arquivo.
+  //
+  // Lista de diretórios sensíveis inclui app.getPath('userData') — é lá que
+  // mora o CONFIG_PATH deste próprio arquivo (adminSecret em produção, ver
+  // CLAUDE.md "Onde fica o ADMIN_SECRET") — faltava antes (🔴 CRÍTICO achado
+  // em code review, confirmado por execução direta: um renderer comprometido
+  // conseguia ler o config.json do Dashboard via file:read, bypassando
+  // completamente essa checagem). A comparação case-insensitive (NTFS não
+  // diferencia maiúscula/minúscula) fica em sensitiveDirGuard.js, extraído
+  // pra módulo próprio testável sem mockar Electron (mesmo padrão de
+  // liveSessionRegistry.js/countVisibleNormalWindows).
   function isInsideSensitiveAppDir(resolvedPath) {
-    const sensitiveDirs = [app.getAppPath(), process.resourcesPath, __dirname]
-      .map((d) => path.resolve(d))
-    return sensitiveDirs.some(
-      (dir) => resolvedPath === dir || resolvedPath.startsWith(dir + path.sep)
-    )
+    const sensitiveDirs = [
+      app.getAppPath(),
+      process.resourcesPath,
+      __dirname,
+      app.getPath('userData'),
+    ]
+    return isInsideSensitiveDir(resolvedPath, sensitiveDirs)
   }
 
   // IPC: abre o seletor de arquivo nativo do Windows — usado pela feature de
