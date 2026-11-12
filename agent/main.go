@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.9.1" // patch: fix BlockInput("Travar usuario") travando input local pra sempre -- worker dedicado com runtime.LockOSThread garante que lock/unlock rodem sempre na mesma OS thread (API Win32 amarra o bloqueio a thread chamadora, nao ao processo); corrige incidente real da ASSBOH em 11/11/2026
+	Version            = "1.9.2" // patch: fix race em safeConn (WriteMessage+SetWriteDeadline atomico via WriteMessageWithDeadline) travando sessao de acesso remoto na transferencia de arquivo; adiciona session-info (usuario remoto real) pro dashboard popular destino do arquivo
 )
 
 func main() {
