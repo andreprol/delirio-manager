@@ -59,6 +59,34 @@ describe('liveSessionRelay', () => {
     expect(getSession('s1')).toBeUndefined();
   });
 
+  // Achado do code-reviewer: sem fechar os sockets aqui, um POST /stop
+  // disparado de outro lugar nunca avisava o dashboard (nem o companion)
+  // que a sessão acabou -- a janela do Acesso Remoto ficava "Conectado" pra
+  // sempre com o último frame congelado. useLiveSession.js (dashboard) trata
+  // o código 4004 como terminal, não tenta reconectar.
+  it('unregisterSession fecha dashboardWs e companionWs com o código 4004 (sessão encerrada)', () => {
+    registerSession('s1', { machineId: 'm1', mode: 'normal', companionToken: 'tok-abc', dashboardToken: 'dash-abc' });
+    const session = getSession('s1');
+    session.dashboardWs = fakeSocket();
+    session.companionWs = fakeSocket();
+    const dashboardClose = (session.dashboardWs.close = jest.fn());
+    const companionClose = (session.companionWs.close = jest.fn());
+
+    unregisterSession('s1');
+
+    expect(dashboardClose).toHaveBeenCalledWith(4004, expect.any(String));
+    expect(companionClose).toHaveBeenCalledWith(4004, expect.any(String));
+  });
+
+  it('unregisterSession não lança quando os sockets não têm .close (fakeSocket de outros testes)', () => {
+    registerSession('s1', { machineId: 'm1', mode: 'normal', companionToken: 'tok-abc', dashboardToken: 'dash-abc' });
+    const session = getSession('s1');
+    session.dashboardWs = fakeSocket();
+    session.companionWs = fakeSocket();
+
+    expect(() => unregisterSession('s1')).not.toThrow();
+  });
+
   it('routeMessage em sessão inexistente não lança erro', () => {
     expect(() => routeMessage('nao-existe', 'dashboard', 'x')).not.toThrow();
   });

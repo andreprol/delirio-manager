@@ -15,19 +15,33 @@ const logger = require('./logger');
 
 const MODE_NORMAL = 'normal';
 
+// CLOSE_CODES: todo código de fechamento de WS não-padrão que este relay usa
+// de propósito, nomeado aqui — achado do code-reviewer: antes eram literais
+// soltos (4000 aqui, 4003 ali), fácil de mudar um sem lembrar do outro (ou
+// do dashboard, que mantém sua PRÓPRIA cópia em TERMINAL_CLOSE_CODES,
+// useLiveSession.js — nenhum vínculo automático entre os dois pacotes, só
+// os comentários de cada lado e os testes que afirmam os valores literais).
+const CLOSE_CODES = {
+  SESSION_NOT_FOUND: 4000,
+  INVALID_TOKEN: 4001,
+  INVALID_ROLE: 4002,
+  STALE_CONNECTION: 4003,
+  SESSION_ENDED: 4004,
+};
+
 const sessions = new Map();
 
 // dashboardUnlockGraceMs é o tempo que o relay espera, depois do socket do
 // dashboard cair, antes de mandar unlock-local-input de verdade pro
 // companion — maior que RECONNECT_DELAY_MS (3000ms, useLiveSession.js), pra
-// dar tempo da ÚNICA retentativa automática do dashboard reconectar antes
-// do input ser liberado. Sem essa folga, um blip de rede (Wi-Fi, VPN) que
-// se recupera em 3s já destravava o input físico da loja no meio do
-// suporte, sem o operador saber (achado 🔴 do code-reviewer) — a UI
-// (LiveSessionWindow.jsx) não tinha como saber que o servidor já liberou
-// por conta própria, e continuava mostrando "travado" quando já não estava
-// mais. `let`, não `const`, só pra setDashboardUnlockGraceMsForTests poder
-// encurtar em teste.
+// dar tempo da reconexão automática do dashboard reconectar antes do input
+// ser liberado (reconecta indefinidamente desde 11/11/2026, não só 1x). Sem
+// essa folga, um blip de rede (Wi-Fi, VPN) que se recupera rápido já
+// destravava o input físico da loja no meio do suporte, sem o operador
+// saber (achado 🔴 do code-reviewer) — a UI (LiveSessionWindow.jsx) não
+// tinha como saber que o servidor já liberou por conta própria, e
+// continuava mostrando "travado" quando já não estava mais. `let`, não
+// `const`, só pra setDashboardUnlockGraceMsForTests poder encurtar em teste.
 let dashboardUnlockGraceMs = 5000;
 
 function setDashboardUnlockGraceMsForTests(ms) {
@@ -82,17 +96,35 @@ function getSession(sessionId) {
   return sessions.get(sessionId);
 }
 
+// unregisterSession fecha os 2 sockets com CLOSE_CODES.SESSION_ENDED antes
+// de apagar a sessão do Map — achado do code-reviewer: sem isso, um
+// encerramento de propósito (POST /:sessionId/stop) só apagava a sessão em
+// memória, mas nem o dashboard nem o companion recebiam 'close' nenhum.
+// Ficavam "Conectado" pra sempre com o último frame congelado, sem saber
+// que a sessão já acabou do lado do servidor. useLiveSession.js (dashboard)
+// trata este código como terminal (TERMINAL_CLOSE_CODES) — não tenta
+// reconectar.
 function unregisterSession(sessionId) {
   const session = sessions.get(sessionId);
-  if (session) cancelPendingUnlock(session);
+  if (session) {
+    cancelPendingUnlock(session);
+    safeClose(session.dashboardWs, CLOSE_CODES.SESSION_ENDED, 'sessão encerrada');
+    safeClose(session.companionWs, CLOSE_CODES.SESSION_ENDED, 'sessão encerrada');
+  }
   sessions.delete(sessionId);
+}
+
+// safeClose fecha um socket com código/motivo dados, sem lançar se ele já
+// estiver fechado/em closing — mesma defesa em profundidade de safeSend.
+function safeClose(ws, code, reason) {
+  if (ws && typeof ws.close === 'function') ws.close(code, reason);
 }
 
 // Fecha o socket anterior (se houver e for diferente do novo) antes de
 // substituir — uma reconexão não deve deixar a conexão antiga pra trás ainda
 // viva, recebendo/mandando mensagens em paralelo com a nova.
 function closeStale(ws) {
-  if (ws && typeof ws.close === 'function') ws.close(4003, 'substituído por nova conexão');
+  safeClose(ws, CLOSE_CODES.STALE_CONNECTION, 'substituído por nova conexão');
 }
 
 function attachCompanionSocket(sessionId, ws) {
@@ -249,7 +281,7 @@ function initLiveRelay() {
     const session = getSession(sessionId);
     if (!session) {
       logger.warn('[liveSessionRelay] conexão recusada: sessão inexistente', { sessionId, role });
-      ws.close(4000, 'sessão inexistente');
+      ws.close(CLOSE_CODES.SESSION_NOT_FOUND, 'sessão inexistente');
       return;
     }
 
@@ -260,13 +292,13 @@ function initLiveRelay() {
     // token pro companion.
     if (role !== 'companion' && role !== 'dashboard') {
       logger.warn('[liveSessionRelay] conexão recusada: role inválido', { sessionId, role });
-      ws.close(4002, 'role inválido');
+      ws.close(CLOSE_CODES.INVALID_ROLE, 'role inválido');
       return;
     }
 
     if (!authenticateAndAttach(session, sessionId, role, token, ws)) {
       logger.warn('[liveSessionRelay] conexão recusada: token inválido', { sessionId, role, machineId: session.machineId });
-      ws.close(4001, 'token inválido');
+      ws.close(CLOSE_CODES.INVALID_TOKEN, 'token inválido');
       return;
     }
 

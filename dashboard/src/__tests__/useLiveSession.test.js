@@ -45,11 +45,14 @@ class FakeWebSocket {
     FakeWebSocket.instances.push(this)
   }
   send(data) { this.sent.push(data) }
-  close() { this.readyState = 3; this.onclose?.({}) }
+  close() { this.readyState = 3; this.onclose?.({ code: 1000 }) }
   // helpers de teste
   _open() { this.readyState = 1; this.onopen?.({}) }
   _message(data) { this.onmessage?.({ data }) }
-  _closeFromServer() { this.readyState = 3; this.onclose?.({}) }
+  // code default 1006 (abnormal closure) -- queda transitória de rede, a
+  // mais comum na prática; testes de código terminal (4000/4001/4002/4003)
+  // passam o code explicitamente.
+  _closeFromServer(code = 1006) { this.readyState = 3; this.onclose?.({ code }) }
 }
 FakeWebSocket.OPEN = 1
 
@@ -71,7 +74,12 @@ describe('useLiveSession', () => {
   afterEach(() => {
     global.WebSocket = originalWebSocket
     global.createImageBitmap = originalCreateImageBitmap
-    getContextSpy.mockRestore()
+    // vi.restoreAllMocks() (não só getContextSpy.mockRestore()) -- achado
+    // 🟠 do code-reviewer: um spy criado DENTRO de um teste (ex: Math.random
+    // mockado no teste de backoff) e só restaurado na última linha do corpo
+    // ficaria preso pra sempre se alguma asserção anterior lançasse — este
+    // afterEach roda sempre, mesmo com o teste falhando no meio.
+    vi.restoreAllMocks()
     vi.useRealTimers()
   })
 
@@ -211,21 +219,99 @@ describe('useLiveSession', () => {
     expect(ws.sent).toHaveLength(0)
   })
 
-  it('reconecta 1x, 3s depois de cair, e não tenta de novo numa 2ª queda', () => {
+  // Achado real em produção (André, 11/11/2026): a versão anterior só
+  // tentava reconectar 1x e desistia pra sempre numa 2ª queda — rede de
+  // loja instável deixava a sessão morta até fechar e reabrir a janela
+  // manualmente. Agora reconecta indefinidamente em qualquer queda
+  // transitória (qualquer code que não seja um dos TERMINAL_CLOSE_CODES do
+  // próprio relay — ver liveSessionRelay.js).
+  it('reconecta indefinidamente em quedas transitórias (sem código terminal do relay)', () => {
     vi.useFakeTimers()
+    const canvasRef = makeCanvasRef()
+    const onStatusChange = vi.fn()
+    renderHook(() => useLiveSession({
+      serverUrl: 'https://s.example.com', sessionId: 's1', dashboardToken: 'tok', mode: 'shadow', canvasRef, onStatusChange,
+    }))
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    // Delay cresce com backoff exponencial + jitter (0.5x-1.5x de 3s, 6s,
+    // 12s, 24s, 30s-teto) -- 45000ms (teto*1.5, o pior caso possível com
+    // jitter) é sempre >= qualquer delay real nessa faixa.
+    for (let i = 0; i < 5; i++) {
+      act(() => { FakeWebSocket.instances[i]._closeFromServer() }) // code 1006 (default), transitório
+      act(() => { vi.advanceTimersByTime(45000) })
+      expect(FakeWebSocket.instances).toHaveLength(i + 2) // reconectou de novo, sem desistir
+    }
+    expect(onStatusChange).not.toHaveBeenCalledWith('error')
+  })
+
+  // Math.random mockado em 0.5 -> jitter vira exatamente 1x (0.5 + 0.5) --
+  // deixa o delay determinístico pra testar o valor exato do backoff sem
+  // perder a cobertura real da multiplicação por jitter.
+  it('reconexão usa backoff exponencial com teto de 30s, reseta ao conectar com sucesso', () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0.5) // restaurado no afterEach global
     const canvasRef = makeCanvasRef()
     renderHook(() => useLiveSession({
       serverUrl: 'https://s.example.com', sessionId: 's1', dashboardToken: 'tok', mode: 'shadow', canvasRef,
     }))
-    expect(FakeWebSocket.instances).toHaveLength(1)
 
     act(() => { FakeWebSocket.instances[0]._closeFromServer() })
-    act(() => { vi.advanceTimersByTime(3000) })
-    expect(FakeWebSocket.instances).toHaveLength(2) // reconectou 1x
+    act(() => { vi.advanceTimersByTime(2999) })
+    expect(FakeWebSocket.instances).toHaveLength(1) // ainda não, faltam 1ms pros 3s
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(FakeWebSocket.instances).toHaveLength(2) // 1ª tentativa: 3s
 
     act(() => { FakeWebSocket.instances[1]._closeFromServer() })
-    act(() => { vi.advanceTimersByTime(5000) })
-    expect(FakeWebSocket.instances).toHaveLength(2) // não tentou de novo
+    act(() => { vi.advanceTimersByTime(5999) })
+    expect(FakeWebSocket.instances).toHaveLength(2) // ainda não, faltam 1ms pros 6s
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(FakeWebSocket.instances).toHaveLength(3) // 2ª tentativa: 6s (dobrou)
+
+    // Conecta com sucesso -- reseta o contador de tentativas.
+    act(() => { FakeWebSocket.instances[2]._open() })
+    act(() => { FakeWebSocket.instances[2]._closeFromServer() })
+    act(() => { vi.advanceTimersByTime(2999) })
+    expect(FakeWebSocket.instances).toHaveLength(3) // ainda não, voltou pro delay base de 3s
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(FakeWebSocket.instances).toHaveLength(4)
+  })
+
+  // TERMINAL_CLOSE_CODES: quando o PRÓPRIO relay recusa a conexão ou encerra
+  // a sessão de propósito, reconectar pra sempre não ajuda -- a sessão em si
+  // já era. Só aí desiste de verdade. Parametrizado pelos 5 códigos reais
+  // (ver liveSessionRelay.js) -- achado do code-reviewer: testar só 4000
+  // deixava 4001/4002/4003/4004 sem cobertura nenhuma.
+  it.each([4000, 4001, 4002, 4003, 4004])('não reconecta quando o fechamento é terminal (código %i)', (code) => {
+    vi.useFakeTimers()
+    const canvasRef = makeCanvasRef()
+    const onStatusChange = vi.fn()
+    renderHook(() => useLiveSession({
+      serverUrl: 'https://s.example.com', sessionId: 's1', dashboardToken: 'tok', mode: 'shadow', canvasRef, onStatusChange,
+    }))
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    act(() => { FakeWebSocket.instances[0]._closeFromServer(code) })
+    act(() => { vi.advanceTimersByTime(60000) })
+
+    expect(FakeWebSocket.instances).toHaveLength(1) // não tentou reconectar
+    expect(onStatusChange).toHaveBeenCalledWith('error')
+    expect(onStatusChange).not.toHaveBeenCalledWith('disconnected')
+  })
+
+  it('para de reconectar quando o componente desmonta (usuário fechou a janela)', () => {
+    vi.useFakeTimers()
+    const canvasRef = makeCanvasRef()
+    const { unmount } = renderHook(() => useLiveSession({
+      serverUrl: 'https://s.example.com', sessionId: 's1', dashboardToken: 'tok', mode: 'shadow', canvasRef,
+    }))
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    act(() => { FakeWebSocket.instances[0]._closeFromServer() }) // queda transitória, agendaria reconexão
+    unmount() // mas o usuário fechou a janela antes do timer disparar
+    act(() => { vi.advanceTimersByTime(10000) })
+
+    expect(FakeWebSocket.instances).toHaveLength(1) // nunca reconectou
   })
 
   it('mensagem de texto file-transfer-progress chama onFileTransferStatus em vez de drawFrame', () => {

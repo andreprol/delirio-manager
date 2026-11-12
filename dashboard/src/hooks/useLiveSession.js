@@ -23,6 +23,29 @@ export function scaleInputCoordinate(clientX, clientY, rect, frameWidth, frameHe
 }
 
 const RECONNECT_DELAY_MS = 3000
+// RECONNECT_DELAY_MAX_MS limita o backoff exponencial do retry infinito —
+// achado 🟡 do code-reviewer: sem teto, uma queda prolongada (deploy,
+// restart de VM) faria cada janela de Acesso Remoto aberta martelar o
+// servidor com 1 handshake WS a cada 3s pra sempre, bem no momento em que
+// ele pode estar mais sobrecarregado. 3s→6s→12s→24s→30s (teto), reseta pra
+// 3s assim que uma conexão abre com sucesso.
+const RECONNECT_DELAY_MAX_MS = 30000
+
+// TERMINAL_CLOSE_CODES são os códigos que o PRÓPRIO relay usa (ver
+// liveSessionRelay.js) quando recusa a conexão ou encerra a sessão de
+// propósito — sessão não existe mais (4000), token inválido (4001), role
+// inválido (4002), conexão substituída por uma janela mais nova pro mesmo
+// sessionId (4003), ou sessão encerrada explicitamente via POST /stop
+// (4004 — achado do code-reviewer: sem isso, um /stop disparado de outro
+// lugar nunca fechava o socket do dashboard, que ficava "Conectado" pra
+// sempre com o último frame congelado). Nenhum desses se resolve tentando
+// de novo (a sessão em si já era, não é um blip de rede) — qualquer OUTRO
+// código (1006 abnormal closure, 1001 going away, etc.) é tratado como
+// queda transitória e tenta reconectar, já que o relay mantém a sessão viva
+// no servidor independente do socket do dashboard cair (ver
+// attachDashboardSocket/scheduleUnlockOnDashboardDisconnect) — só precisa
+// reabrir o WS com o mesmo sessionId/token, o servidor reataca sozinho.
+const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004])
 
 // useLiveSession conecta no WS /live como role=dashboard, desenha cada frame
 // recebido no canvas apontado por canvasRef, e expõe sendInput pra mandar
@@ -35,7 +58,7 @@ const RECONNECT_DELAY_MS = 3000
 // Shadow mesmo que o dashboard mande por engano/bug).
 export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange, onFileTransferStatus }) {
   const wsRef = useRef(null)
-  const hasRetriedRef = useRef(false)
+  const reconnectAttemptsRef = useRef(0)
   const frameSizeRef = useRef({ width: 0, height: 0 })
   const mountedRef = useRef(true)
   const modeRef = useRef(mode)
@@ -67,7 +90,10 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     const ws = new WebSocket(url)
     wsRef.current = ws
 
-    ws.onopen = () => notifyStatus('connected')
+    ws.onopen = () => {
+      reconnectAttemptsRef.current = 0
+      notifyStatus('connected')
+    }
     ws.onmessage = (e) => {
       // Mensagens de texto são status de transferência de arquivo (JSON) —
       // o companion manda file-transfer-progress/-done/-error pelo mesmo WS
@@ -83,15 +109,28 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
       }
       drawFrame(e.data)
     }
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (!mountedRef.current) return
-      notifyStatus('disconnected')
-      if (!hasRetriedRef.current) {
-        hasRetriedRef.current = true
-        setTimeout(() => { if (mountedRef.current) connect() }, RECONNECT_DELAY_MS)
-      } else {
+      if (TERMINAL_CLOSE_CODES.has(event.code)) {
+        // Achado real em produção (André, 11/11/2026): antes só tentava
+        // reconectar 1x e desistia pra sempre — qualquer 2ª queda (comum em
+        // rede de loja instável) deixava a sessão morta até fechar e reabrir
+        // a janela manualmente. Agora só desiste de verdade quando o PRÓPRIO
+        // servidor recusou de propósito (ver TERMINAL_CLOSE_CODES) — qualquer
+        // outra queda tenta pra sempre, até o componente desmontar.
         notifyStatus('error')
+        return
       }
+      notifyStatus('disconnected')
+      // Jitter (0.5x-1.5x do delay calculado) -- achado do code-reviewer:
+      // sem isso, múltiplas janelas de Acesso Remoto abertas ao mesmo tempo
+      // (ou reabertas juntas após um erro) recalculam o mesmo delay
+      // determinístico e martelam o servidor no mesmo instante a cada
+      // tentativa.
+      const baseDelay = Math.min(RECONNECT_DELAY_MS * 2 ** reconnectAttemptsRef.current, RECONNECT_DELAY_MAX_MS)
+      const delay = baseDelay * (0.5 + Math.random())
+      reconnectAttemptsRef.current += 1
+      setTimeout(() => { if (mountedRef.current) connect() }, delay)
     }
     ws.onerror = () => { ws.close() }
   }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus, onFileTransferStatus])
@@ -114,9 +153,9 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
   // escuta 'live-session-cleanup-and-close' chegar a rodar — por isso a
   // janela nem desenhava nada nem fechava com o X.
   //
-  // hasConnectedRef garante só 1 tentativa real de conexão mesmo que o
-  // efeito rode de novo (ex: mode mudando de referência) — reconectar por
-  // causa desse reset quebraria a lógica de retry único (hasRetriedRef).
+  // hasConnectedRef garante só 1 tentativa real de conexão inicial mesmo
+  // que o efeito rode de novo (ex: mode mudando de referência) — o próprio
+  // ws.onclose (ver connect acima) já cuida de toda reconexão depois disso.
   const hasConnectedRef = useRef(false)
   useEffect(() => {
     if (hasConnectedRef.current) return
