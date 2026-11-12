@@ -36,7 +36,14 @@ app.use(express.json({ limit: '5mb' }));
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin',  '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Agent-Version');
+  // X-Admin-Secret (Acesso Remoto/watchlist, adminAuth.js) e X-Internal-Key
+  // (internalAuth.js) faltavam aqui -- achado 12/11/2026: dashboard/src/api.js
+  // já manda os dois de origens de browser (ex: dev mode, localhost:5173),
+  // e sem entrar na allow-list o preflight recusa a requisição real ANTES
+  // dela sair ("Request header field x-admin-secret is not allowed by
+  // Access-Control-Allow-Headers"), aparecendo no cliente só como "Failed
+  // to fetch" -- sem nenhum detalhe do motivo real.
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Agent-Version,X-Admin-Secret,X-Internal-Key');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });

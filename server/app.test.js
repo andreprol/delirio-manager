@@ -120,6 +120,22 @@ function freshMachine(overrides = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /health
 // ─────────────────────────────────────────────────────────────────────────────
+// Achado real em produção (12/11/2026): dashboard/src/api.js manda
+// X-Admin-Secret (Acesso Remoto/watchlist) e X-Internal-Key de origens de
+// browser (ex: dev mode do Dashboard, localhost:5173) -- sem esses 2
+// headers na allow-list, o preflight CORS recusa a requisição real ANTES
+// dela sair, e o cliente só via "Failed to fetch", sem nenhum detalhe do
+// motivo verdadeiro (só aparecia no Console do DevTools).
+describe('CORS — Access-Control-Allow-Headers', () => {
+  it('inclui X-Admin-Secret e X-Internal-Key, além dos headers já existentes', async () => {
+    const res = await request(app).options('/health').expect(200);
+    const allowed = res.headers['access-control-allow-headers'].split(',').map((h) => h.trim().toLowerCase());
+    expect(allowed).toEqual(expect.arrayContaining([
+      'content-type', 'authorization', 'x-agent-version', 'x-admin-secret', 'x-internal-key',
+    ]));
+  });
+});
+
 describe('GET /health', () => {
   it('retorna 200 com campos obrigatórios', async () => {
     const res = await request(app).get('/health').expect(200);
