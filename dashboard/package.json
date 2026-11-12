@@ -1,6 +1,6 @@
 {
   "name": "delirio-manager-dashboard",
-  "version": "1.0.113",
+  "version": "1.0.114",
   "description": "Delirio Manager - Dashboard de Monitoramento",
   "main": "electron/main.js",
   "scripts": {
@@ -49,7 +49,10 @@
       "**/node_modules/ffmpeg-static/**"
     ],
     "extraResources": [
-      { "from": "winkeyhook/winkeyhook.exe", "to": "winkeyhook.exe" }
+      {
+        "from": "winkeyhook/winkeyhook.exe",
+        "to": "winkeyhook.exe"
+      }
     ],
     "win": {
       "target": "nsis",
