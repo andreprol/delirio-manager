@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "build:icon": "node scripts/build-icon.js",
+    "build:winkeyhook": "cd winkeyhook && go build -o winkeyhook.exe .",
     "electron": "electron .",
     "start": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "dist": "npm run build:icon && vite build && electron-builder",
+    "dist": "npm run build:icon && npm run build:winkeyhook && vite build && electron-builder",
     "release": "bash scripts/release.sh",
     "release:auto": "npm version patch --no-git-tag-version && bash scripts/release.sh",
     "test": "vitest run"
@@ -46,6 +47,9 @@
     ],
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**"
+    ],
+    "extraResources": [
+      { "from": "winkeyhook/winkeyhook.exe", "to": "winkeyhook.exe" }
     ],
     "win": {
       "target": "nsis",

@@ -19,11 +19,26 @@ const VK_V = 86
 // sessão atual ou por um caminho que o rastreamento não previu.
 const EMERGENCY_RELEASE_KEYCODES = [91, 92, 17, 162, 163, 18, 164, 165, 16, 160, 161]
 
+// WIN_COMBO_VK traduz os eventos que o winkeyhook manda ("win+r" etc, ver
+// electron/main.js) pro keyCode da tecla que acompanha Win -- mesmos
+// valores que o VK_* do Win32 e o keyCode que o navegador usa pra letras
+// (82='R', 69='E', 68='D'), sem precisar de tradução adicional.
+const WIN_COMBO_VK = { 'win+r': 82, 'win+e': 69, 'win+d': 68 }
+
 export function LiveSessionWindow() {
   const [session, setSession] = useState(null) // { sessionId, machineId, mode, dashboardToken, serverUrl }
   const [status, setStatus] = useState('connecting')
   const [recording, setRecording] = useState(false)
   const [inputLocked, setInputLocked] = useState(false)
+  // remoteUser chega pelo WS (session-info, mandado 1x pelo companion no
+  // início da sessão) -- nunca pelo IPC live-session-init, que não carrega
+  // esse campo (achado real 12/11/2026: session.remoteUser era lido mas
+  // NUNCA setado em lugar nenhum, defaultDestDir sempre caía no fallback
+  // literal "Loja", que quase nunca batia com o usuário de verdade logado
+  // na loja). null até a mensagem chegar -- nesse meio-tempo o placeholder
+  // abaixo pede confirmação em vez de mentir um caminho provavelmente errado.
+  const [remoteUser, setRemoteUser] = useState(null)
+  const handleSessionInfo = useCallback((msg) => { setRemoteUser(msg.remoteUser) }, [])
   const [recordingSecs, setRecordingSecs] = useState(0)
   const canvasRef = useRef(null)
   const mediaRecorderRef = useRef(null)
@@ -79,9 +94,14 @@ export function LiveSessionWindow() {
     canvasRef,
     onStatusChange: setStatus,
     onFileTransferStatus: handleFileTransferStatus,
+    onSessionInfo: handleSessionInfo,
   })
 
-  const defaultDestDir = `C:\\Users\\${session?.remoteUser || 'Loja'}\\Desktop`
+  // Enquanto remoteUser ainda não chegou (session-info é mandado 1x, pode
+  // levar um instante ou nunca chegar — agent antigo sem essa versão), o
+  // placeholder do campo de destino (abaixo, no JSX) pede pro operador
+  // confirmar o caminho em vez de mostrar um default provavelmente errado.
+  const defaultDestDir = remoteUser ? `C:\\Users\\${remoteUser}\\Desktop` : ''
 
   // sendLocalFileToRemote é o caminho ÚNICO pra transferência de arquivo —
   // tanto o botão "Enviar arquivo" (handlePickFile) quanto o drop na janela
@@ -99,6 +119,19 @@ export function LiveSessionWindow() {
     // então a checagem tem que estar aqui, não só na UI do botão.
     if (status !== 'connected') {
       setFileTransferProgress('error: sem conexão com a sessão ao vivo')
+      return
+    }
+    // Sem destino nenhum (nem digitado pelo operador, nem o default —
+    // remoteUser ainda não chegou via session-info): melhor recusar aqui
+    // do que mandar destDir vazio pro companion (que faria MkdirAll("")
+    // falhar só no lado remoto, sem o operador saber por quê).
+    // .trim(): um valor só com espaço(s) digitado por engano é truthy em JS
+    // -- sem o trim, passava o guard abaixo como se fosse um destino válido
+    // e ia pro companion, que cria o diretório " " em vez de recusar (achado
+    // do code-reviewer, 12/11/2026).
+    const destDir = fileDestDir.trim() || defaultDestDir
+    if (!destDir) {
+      setFileTransferProgress('error: confirme o caminho de destino antes de enviar')
       return
     }
     transferringRef.current = true
@@ -120,7 +153,7 @@ export function LiveSessionWindow() {
         setIsTransferring(false)
         return
       }
-      sendFileTransfer(downloadUrl, fileName, fileDestDir || defaultDestDir)
+      sendFileTransfer(downloadUrl, fileName, destDir)
       // transferringRef/isTransferring continuam true daqui até
       // handleFileTransferStatus receber file-transfer-done/-error — o
       // upload pro Blob terminou aqui, mas o download na máquina remota
@@ -525,6 +558,32 @@ export function LiveSessionWindow() {
     }
   }, [session?.mode, sendKeyEvent, sendClipboardPaste, releaseAllHeldKeys])
 
+  // winkeyhook (processo nativo separado, ver electron/main.js) manda 1
+  // evento por combo detectado ANTES do Explorer local processá-lo --
+  // aditivo ao onKeyDown acima (regra 3): quando o hook está ativo, o
+  // Windows nunca entrega o keydown de Win/R/E/D pra esta janela (nem pra
+  // nenhuma), então o caminho acima simplesmente não dispara pra essas
+  // teclas -- sem duplo encaminhamento. Se o hook não estiver rodando por
+  // qualquer motivo, nada chega aqui e o caminho acima (regra 3) continua
+  // sendo a única rede, exatamente como antes desta sessão.
+  useEffect(() => {
+    if (session?.mode !== 'normal') return
+    const unsubscribe = window.electronAPI?.onWinKeyCombo((combo) => {
+      if (combo === 'win-tap') {
+        sendKeyEvent('keydown', VK_LWIN)
+        sendKeyEvent('keyup', VK_LWIN)
+        return
+      }
+      const vk = WIN_COMBO_VK[combo]
+      if (!vk) return
+      sendKeyEvent('keydown', VK_LWIN)
+      sendKeyEvent('keydown', vk)
+      sendKeyEvent('keyup', vk)
+      sendKeyEvent('keyup', VK_LWIN)
+    })
+    return unsubscribe
+  }, [session?.mode, sendKeyEvent])
+
   if (!session) {
     return <div style={{ color: '#9ca3af', padding: 24, fontFamily: 'monospace' }}>Conectando à sessão...</div>
   }
@@ -575,7 +634,7 @@ export function LiveSessionWindow() {
               type="text"
               value={fileDestDir}
               onChange={(e) => setFileDestDir(e.target.value)}
-              placeholder={defaultDestDir}
+              placeholder={defaultDestDir || 'Confirme o caminho de destino'}
               style={{ width: 220 }}
             />
             <button

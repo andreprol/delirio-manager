@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog, clipboard } = require('elect
 const path = require('path')
 const fs   = require('fs')
 const { spawn } = require('child_process')
+const readline = require('readline')
 const { isInsideSensitiveDir } = require('./sensitiveDirGuard')
 const { countVisibleNormalWindows } = require('./liveSessionRegistry')
 
@@ -127,6 +128,95 @@ function broadcastNormalWindowVisibility() {
   }
 }
 
+// winkeyhook (dashboard/winkeyhook, binário Go separado -- SEM relação com
+// o agent/serviço das ~130 lojas) instala um hook de teclado de baixo
+// nível (WH_KEYBOARD_LL) pra interceptar a tecla Windows e os combos
+// Win+R/E/D ANTES do Explorer local processá-los -- testado ao vivo
+// (12/11/2026) que globalShortcut/RegisterHotKey do próprio Electron NÃO
+// dá: Windows já reserva Win sozinho (Electron nem aceita o acelerador) e
+// Win+R/Win+L (RegisterHotKey recusa, já reservado pelo sistema). Só roda
+// enquanto uma janela de sessão Normal tem FOCO (não só visível) -- ADITIVO
+// ao encaminhamento via onKeyDown em LiveSessionWindow.jsx (regra 3,
+// 11/11/2026), nunca substitui: enquanto o hook está ativo, o Windows
+// nunca entrega WM_KEYDOWN de Win/R/E/D pra NENHUMA janela (nem a nossa),
+// então o caminho antigo simplesmente não dispara -- os 2 caminhos são
+// mutuamente exclusivos por construção. Se o hook não subir por qualquer
+// motivo (exe ausente, SetWindowsHookExW falhar), a rede de segurança
+// antiga continua funcionando exatamente como antes, sem nenhuma mudança
+// de comportamento.
+let winKeyHookProcess = null
+let winKeyHookTargetWin = null
+let winKeyHookStopTimer = null
+
+function winkeyhookExePath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'winkeyhook.exe')
+    : path.join(__dirname, '..', 'winkeyhook', 'winkeyhook.exe')
+}
+
+function startWinKeyHook() {
+  if (winKeyHookProcess) return
+  const exePath = winkeyhookExePath()
+  if (!fs.existsSync(exePath)) {
+    console.warn('[winkeyhook] binário não encontrado, seguindo sem hook de teclado Windows:', exePath)
+    return
+  }
+  const proc = spawn(exePath, [], { windowsHide: true })
+  winKeyHookProcess = proc
+
+  // stderr nunca lido antes (achado do code-reviewer): se
+  // SetWindowsHookExW falhar lá dentro (main.go escreve lá e sai com
+  // exit 1), o Electron só via o 'exit' silencioso, sem diagnóstico
+  // nenhum de por que o hook não subiu -- justo no cenário de fallback
+  // que o design já prevê (ver comentário acima).
+  proc.stderr.on('data', (chunk) => {
+    console.warn('[winkeyhook]', chunk.toString().trim())
+  })
+
+  const rl = readline.createInterface({ input: proc.stdout })
+  rl.on('line', (line) => {
+    const combo = line.trim()
+    if (!combo || combo === 'ready') return
+    if (winKeyHookTargetWin && !winKeyHookTargetWin.isDestroyed()) {
+      winKeyHookTargetWin.webContents.send('win-key-combo', combo)
+    }
+  })
+
+  const clearIfCurrent = () => { if (winKeyHookProcess === proc) winKeyHookProcess = null }
+  proc.on('exit', clearIfCurrent)
+  proc.on('error', (err) => {
+    console.warn('[winkeyhook] falha ao iniciar:', err.message)
+    clearIfCurrent()
+  })
+}
+
+function stopWinKeyHook() {
+  if (!winKeyHookProcess) return
+  winKeyHookProcess.kill()
+  winKeyHookProcess = null
+}
+
+// updateWinKeyHookTarget decide, a cada foco/perda de foco de uma janela
+// de sessão Normal, se o hook deve estar rodando e PRA QUAL janela
+// encaminhar os eventos dele. Debounce de 150ms antes de parar -- trocar
+// foco entre 2 janelas Normal dispara blur-da-antiga seguido de
+// focus-da-nova, e sem o debounce o hook pararia e religaria sem
+// necessidade a cada troca.
+function updateWinKeyHookTarget(win, focused) {
+  if (win.__liveSessionMode !== 'normal') return
+  clearTimeout(winKeyHookStopTimer)
+  if (focused) {
+    winKeyHookTargetWin = win
+    startWinKeyHook()
+    return
+  }
+  if (winKeyHookTargetWin !== win) return
+  winKeyHookStopTimer = setTimeout(() => {
+    winKeyHookTargetWin = null
+    stopWinKeyHook()
+  }, 150)
+}
+
 function createLiveSessionWindow(params) {
   const liveWin = new BrowserWindow({
     width: 1280,
@@ -148,6 +238,8 @@ function createLiveSessionWindow(params) {
   liveWin.on('minimize', broadcastNormalWindowVisibility)
   liveWin.on('restore', broadcastNormalWindowVisibility)
   liveWin.on('show', broadcastNormalWindowVisibility)
+  liveWin.on('focus', () => updateWinKeyHookTarget(liveWin, true))
+  liveWin.on('blur', () => updateWinKeyHookTarget(liveWin, false))
 
   // setMenu(null) (não só setMenuBarVisibility(false)): Electron cria um menu
   // PADRÃO automaticamente quando nenhum é definido (Edit > Paste com
@@ -215,6 +307,7 @@ function createLiveSessionWindow(params) {
 
   liveWin.on('closed', () => {
     liveSessionWindows.delete(liveWin)
+    updateWinKeyHookTarget(liveWin, false)
     broadcastNormalWindowVisibility()
   })
 
@@ -583,4 +676,20 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// Mata o winkeyhook de forma SÍNCRONA no quit -- achado 🔴 do
+// code-reviewer (12/11/2026): o encerramento normal (fechar a última
+// janela Normal enquanto focada) dispara 'closed' (agenda o debounce de
+// 150ms) e, no mesmo ciclo, window-all-closed→app.quit() -- o processo
+// Electron costuma encerrar ANTES do timer disparar, deixando
+// winkeyhook.exe órfão com o hook WH_KEYBOARD_LL ainda instalado: a
+// tecla Windows (+R/E/D) do PRÓPRIO operador ficaria morta globalmente
+// até alguém matar o processo manualmente ou reiniciar -- o mesmo tipo
+// de incidente ("tecla presa") que este fix existe pra evitar, agora do
+// lado local. before-quit roda sempre antes do processo encerrar de
+// verdade, sem depender do debounce.
+app.on('before-quit', () => {
+  clearTimeout(winKeyHookStopTimer)
+  stopWinKeyHook()
 })

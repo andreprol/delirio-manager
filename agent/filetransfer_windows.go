@@ -33,7 +33,13 @@ func sendFileTransferStatus(w frameWriter, status fileTransferStatus) {
 		logWarn(fmt.Sprintf("companion: falha ao serializar status de transferencia: %v", err))
 		return
 	}
-	if err := w.WriteMessage(websocket.TextMessage, b); err != nil {
+	// Mesmo deadline do frame de vídeo (liveSessionWriteTimeout) — antes
+	// esta escrita não setava deadline próprio nenhum, dependendo de
+	// qualquer deadline que a ÚLTIMA chamada a SetWriteDeadline (do loop de
+	// vídeo) tivesse deixado na conexão. Ver WriteMessageWithDeadline
+	// (wsconn_windows.go) pro bug real que isso causava.
+	deadline := time.Now().Add(liveSessionWriteTimeout)
+	if err := w.WriteMessageWithDeadline(websocket.TextMessage, b, deadline); err != nil {
 		logWarn(fmt.Sprintf("companion: falha ao mandar status de transferencia: %v", err))
 	}
 }

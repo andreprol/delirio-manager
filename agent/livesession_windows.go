@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/gorilla/websocket"
 )
@@ -128,6 +131,68 @@ func redactLiveSessionURL(wsURL string) string {
 // canal já ter sido fechado.
 const liveSessionWriteTimeout = 2 * time.Second
 
+// sessionInfoMsg é o protocolo de volta pro dashboard (companion → relay →
+// dashboard), mandado 1x no início da sessão — mesmo canal de texto já
+// usado pelo status de transferência de arquivo (ver
+// filetransfer_windows.go, fileTransferStatus). RemoteUser é o username
+// REAL da sessão interativa onde o companion roda.
+type sessionInfoMsg struct {
+	Type       string `json:"type"` // "session-info"
+	RemoteUser string `json:"remoteUser"`
+}
+
+var (
+	advapi32         = syscall.NewLazyDLL("advapi32.dll")
+	procGetUserNameW = advapi32.NewProc("GetUserNameW")
+)
+
+// maxUserNameChars: UNLEN+1 (256+1), o limite documentado da Win32 API pra
+// nome de usuário — buffer fixo, sem retry: generoso o bastante pra nunca
+// precisar de 2ª chamada na prática.
+const maxUserNameChars = 257
+
+// currentUserNameFn é a indireção testável de currentUserName — mesmo
+// padrão de injectMouseMoveFn/startLiveSessionFn no projeto.
+var currentUserNameFn = currentUserName
+
+// currentUserName devolve o username real do processo chamador —
+// CreateProcessAsUser (session_windows.go) garante que o companion roda SOB
+// a sessão interativa do usuário da loja, então "quem sou eu" já é a
+// resposta certa, sem precisar de WTSQuerySessionInformation nem de token
+// de outro processo.
+func currentUserName() (string, error) {
+	buf := make([]uint16, maxUserNameChars)
+	size := uint32(len(buf))
+	ret, _, err := procGetUserNameW.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)))
+	if ret == 0 {
+		return "", fmt.Errorf("GetUserNameW falhou: %w", err)
+	}
+	// size, depois da chamada, inclui o terminador nulo — size-1 é o
+	// tamanho real da string.
+	return syscall.UTF16ToString(buf[:size-1]), nil
+}
+
+// sendSessionInfo busca o username local e manda o session-info — qualquer
+// falha (GetUserNameW, serialização, escrita no WS) só loga, nunca impede
+// a sessão de vídeo/input de seguir funcionando (ver comentário no
+// chamador, runLiveSessionLoop).
+func sendSessionInfo(w frameWriter, sessionID string) {
+	username, err := currentUserNameFn()
+	if err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao obter username local (sessão %s): %v", sessionID, err))
+		return
+	}
+	b, err := json.Marshal(sessionInfoMsg{Type: "session-info", RemoteUser: username})
+	if err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao serializar session-info (sessão %s): %v", sessionID, err))
+		return
+	}
+	deadline := time.Now().Add(liveSessionWriteTimeout)
+	if err := w.WriteMessageWithDeadline(websocket.TextMessage, b, deadline); err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao mandar session-info (sessão %s): %v", sessionID, err))
+	}
+}
+
 // liveSessionDialer: cópia do websocket.DefaultDialer com NetDialContext
 // resiliente a DNS local quebrado (ver resilient_dns.go) — achado em
 // produção (01/11/2026, KIONE-ESC): "falha ao conectar em wss://...: dial
@@ -179,6 +244,14 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 	// abaixo (sendLiveSessionFrame e readLiveSessionInput) em vez do conn
 	// crú.
 	writer := newSafeConn(conn)
+
+	// Manda o username real da sessão interativa 1x, logo no início —
+	// achado real em produção (12/11/2026): o dashboard usava um fallback
+	// literal ("Loja") pro destino default de transferência de arquivo, que
+	// quase nunca batia com o usuário de verdade logado em cada loja. Fire-
+	// and-forget (mesmo padrão de sendFileTransferStatus): falha aqui só
+	// loga, nunca impede a sessão de vídeo/input de funcionar.
+	sendSessionInfo(writer, sessionID)
 
 	// Normal mode: lê mensagens de input numa goroutine separada e injeta
 	// via SendInput. Shadow: o servidor nunca repassa input pra cá, mas o
@@ -251,13 +324,14 @@ func readLiveSessionInput(conn messageReader, mode string, sessionID string, w f
 	}
 }
 
-// frameWriter é o subconjunto de *websocket.Conn que sendLiveSessionFrame
+// frameWriter é o subconjunto de *safeConn que sendLiveSessionFrame
 // precisa — extraído pra permitir testar a lógica de contagem de falhas/
 // throttle de log/recuperação (a parte rica desta função) com um fake, sem
-// discar um WebSocket real.
+// discar um WebSocket real. 1 método só (não SetWriteDeadline+WriteMessage
+// separados) — ver comentário de safeConn.WriteMessageWithDeadline
+// (wsconn_windows.go) pro bug real que a junção dos dois corrige.
 type frameWriter interface {
-	SetWriteDeadline(time.Time) error
-	WriteMessage(messageType int, data []byte) error
+	WriteMessageWithDeadline(messageType int, data []byte, deadline time.Time) error
 }
 
 // sendLiveSessionFrame captura e envia um frame. Retorna false quando o
@@ -283,10 +357,8 @@ func sendLiveSessionFrame(conn frameWriter, sessionID string, capturer screenCap
 		logInfo(fmt.Sprintf("companion: captura de frame recuperada após %d falha(s) consecutiva(s) (sessão %s)", *captureFailures, sessionID))
 		*captureFailures = 0
 	}
-	if err := conn.SetWriteDeadline(time.Now().Add(liveSessionWriteTimeout)); err != nil {
-		logWarn(fmt.Sprintf("companion: falha ao definir write deadline (sessão %s): %v", sessionID, err))
-	}
-	if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+	deadline := time.Now().Add(liveSessionWriteTimeout)
+	if err := conn.WriteMessageWithDeadline(websocket.BinaryMessage, frame, deadline); err != nil {
 		logWarn(fmt.Sprintf("companion: falha ao enviar frame, encerrando sessão %s: %v", sessionID, err))
 		return false
 	}

@@ -4,6 +4,7 @@ const {
   registerSession, getSession, unregisterSession, routeMessage,
   attachCompanionSocket, attachDashboardSocket,
 } = require('./liveSessionRelay');
+const logger = require('./logger');
 
 function fakeSocket() {
   const sent = [];
@@ -169,6 +170,35 @@ describe('liveSessionRelay', () => {
     expect(getSession('s1')).toBeUndefined();
   });
 
+  // Achado do code-reviewer (12/11/2026): mensagem 1x-só do companion (ex:
+  // session-info, agent/livesession_windows.go) que chegasse ANTES do
+  // dashboard anexar se perdia em silêncio, sem nenhum log -- ficava
+  // indistinguível de "agent antigo sem suporte a session-info".
+  it('routeMessage loga 1x quando companion manda mensagem sem dashboard anexado', () => {
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+    registerSession('s1', { machineId: 'm1', mode: 'normal', companionToken: 'tok-abc', dashboardToken: 'dash-abc' });
+
+    routeMessage('s1', 'companion', Buffer.from('{"type":"session-info"}'));
+    routeMessage('s1', 'companion', Buffer.from([1, 2, 3])); // frame de vídeo, mesma janela de corrida
+
+    expect(warnSpy).toHaveBeenCalledTimes(1); // throttlado -- não 1 por mensagem perdida
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('sem dashboard anexado'), { sessionId: 's1' });
+
+    warnSpy.mockRestore();
+  });
+
+  it('routeMessage não loga quando o dashboard está anexado de verdade', () => {
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+    registerSession('s1', { machineId: 'm1', mode: 'normal', companionToken: 'tok-abc', dashboardToken: 'dash-abc' });
+    const session = getSession('s1');
+    session.dashboardWs = fakeSocket();
+
+    routeMessage('s1', 'companion', Buffer.from([1, 2, 3]));
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
   it('attachCompanionSocket/attachDashboardSocket anexam o socket na sessão', () => {
     registerSession('s1', { machineId: 'm1', mode: 'normal', companionToken: 'tok-abc', dashboardToken: 'dash-abc' });
     const companionWs = fakeSocket();
@@ -300,6 +330,45 @@ describe('initLiveRelay — conexão real', () => {
       companionWs.on('open', () => {
         companionWs.send(JSON.stringify({ type: 'file-transfer-progress' })); // texto -- send('string') infere binary:false
         companionWs.send(Buffer.from('frame-binario'), { binary: true }); // binário de propósito
+      });
+    });
+  });
+
+  // Bug real achado em produção (12/11/2026): o companion podia cair com a
+  // sessão ainda registrada (ex: a race do safeConn em
+  // agent/wsconn_windows.go, ou qualquer outra queda de rede) sem NUNCA
+  // avisar o dashboard — ele ficava "Conectado" pra sempre, sem receber
+  // mais nenhum frame, sem erro nenhum na tela. Diferente de um stop
+  // explícito (POST /stop → unregisterSession, testado acima com o código
+  // 4004), esta queda usa o código 4005 — útil pra distinguir os dois casos
+  // num diagnóstico futuro, mesmo que a UI trate ambos como terminal.
+  it('companion desconectar sem stop explícito encerra a sessão e avisa o dashboard com 4005', (done) => {
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'shadow', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
+
+    const companionWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
+    );
+    let dashboardWs;
+
+    companionWs.on('open', () => {
+      dashboardWs = new WebSocket(
+        `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+      );
+      dashboardWs.on('open', () => {
+        // Companion cai sem ninguém pedir stop — nunca chama unregisterSession
+        // por fora, só o próprio close deste socket.
+        companionWs.close();
+      });
+      dashboardWs.on('close', (code) => {
+        try {
+          expect(code).toBe(4005);
+          expect(getSession('s-real')).toBeUndefined();
+          done();
+        } catch (err) {
+          done(err);
+        }
       });
     });
   });

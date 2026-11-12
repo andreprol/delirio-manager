@@ -22,19 +22,26 @@ type messageWriter interface {
 // escrita" pela própria documentação do gorilla). Antes da transferência de
 // arquivo, só sendLiveSessionFrame escrevia (goroutine principal, via
 // ticker). Agora a goroutine de download de arquivo também escreve
-// (progresso/done/erro), concorrente com os frames de vídeo — sem isso,
-// corrupção de frame no WS.
+// (progresso/done/erro), concorrente com os frames de vídeo.
 //
-// *safeConn implementa frameWriter inteiro (SetWriteDeadline + WriteMessage)
-// mesmo guardando só um messageWriter internamente — runLiveSessionLoop
-// passa este wrapper tanto pra sendLiveSessionFrame (que chama os dois
-// métodos) quanto pra readLiveSessionInput (que o repassa como frameWriter
-// pra applyFileTransferFn), então precisa satisfazer a interface inteira
-// pra compilar nos dois pontos de uso. SetWriteDeadline faz type-assertion
-// pra dentro, delegando pro conn real quando ele suporta (sempre o caso em
-// produção, onde conn é um *websocket.Conn); um fake de teste sem
-// SetWriteDeadline (como countingWriter) simplesmente não recebe a chamada
-// nesse caminho — nenhum teste atual exercita SetWriteDeadline via safeConn.
+// 🔴 bug real corrigido aqui (achado em produção 12/11/2026 — ver memória
+// do projeto, "transferência de arquivo trava a sessão"): SetWriteDeadline
+// e WriteMessage eram 2 MÉTODOS PÚBLICOS separados, cada um com seu próprio
+// Lock/Unlock — sendLiveSessionFrame chamava um, depois o outro, contando
+// que o deadline setado valesse pra ESSE write específico. Mas entre as
+// duas chamadas o mutex era liberado, e a goroutine de transferência de
+// arquivo (sem deadline próprio, só WriteMessage) podia intercalar sua
+// própria escrita nessa janela — como o deadline é estado ABSOLUTO da
+// conexão (não por mensagem), essa escrita concorrente consumia parte do
+// prazo que era pra proteger o frame de vídeo. Quando isso estourava o
+// deadline do frame, sendLiveSessionFrame retornava false e
+// runLiveSessionLoop encerrava a sessão inteira — sem fechar nem avisar o
+// socket do dashboard (ver liveSessionRelay.js), virando "a tela congela e
+// não funciona mais" sem erro nenhum na tela.
+//
+// WriteMessageWithDeadline substitui os 2 métodos por 1 só, cobrindo os 2
+// passos com UM ÚNICO Lock — nenhuma outra goroutine consegue mais
+// intercalar entre "setar o deadline" e "escrever com esse deadline".
 type safeConn struct {
 	mu   sync.Mutex
 	conn messageWriter
@@ -44,17 +51,19 @@ func newSafeConn(conn messageWriter) *safeConn {
 	return &safeConn{conn: conn}
 }
 
-func (s *safeConn) WriteMessage(messageType int, data []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.conn.WriteMessage(messageType, data)
-}
-
-func (s *safeConn) SetWriteDeadline(t time.Time) error {
+// WriteMessageWithDeadline seta o deadline de escrita e grava a mensagem
+// numa seção crítica só — ver comentário do tipo safeConn pro bug real que
+// isto corrige. SetWriteDeadline faz type-assertion pra dentro, delegando
+// pro conn real quando ele suporta (sempre o caso em produção, onde conn é
+// um *websocket.Conn); um fake de teste sem SetWriteDeadline simplesmente
+// não recebe a chamada nesse caminho.
+func (s *safeConn) WriteMessageWithDeadline(messageType int, data []byte, deadline time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if d, ok := s.conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
-		return d.SetWriteDeadline(t)
+		if err := d.SetWriteDeadline(deadline); err != nil {
+			return err
+		}
 	}
-	return nil
+	return s.conn.WriteMessage(messageType, data)
 }

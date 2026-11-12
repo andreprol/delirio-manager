@@ -68,6 +68,10 @@ beforeEach(() => {
       return () => {}
     }),
     getNormalWindowVisibility: vi.fn().mockResolvedValue({ visibleNormalCount: 0 }),
+    onWinKeyCombo: vi.fn((cb) => {
+      window.electronAPI.__fireWinKeyCombo = (combo) => cb(combo)
+      return () => {}
+    }),
   }
 })
 
@@ -229,6 +233,45 @@ describe('LiveSessionWindow', () => {
 
     expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 65)
     expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 65)
+  })
+
+  // winkeyhook (processo nativo separado, ver electron/main.js) manda 1
+  // evento por combo detectado -- aditivo ao onKeyDown/regra 3 acima, não
+  // depende de visibleNormalCount (o hook só roda com foco, já resolve
+  // ambiguidade de janela por construção).
+  it('mode normal: winkeyhook "win-tap" manda keydown+keyup de Win pro remoto', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { window.electronAPI.__fireWinKeyCombo('win-tap') })
+
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 91)
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 91)
+  })
+
+  it.each([
+    ['win+r', 82],
+    ['win+e', 69],
+    ['win+d', 68],
+  ])('mode normal: winkeyhook "%s" manda a sequência Win+tecla completa pro remoto', (combo, vk) => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { window.electronAPI.__fireWinKeyCombo(combo) })
+
+    expect(sendKeyEventMock.mock.calls).toEqual([
+      ['keydown', 91],
+      ['keydown', vk],
+      ['keyup', vk],
+      ['keyup', 91],
+    ])
+  })
+
+  it('mode shadow: winkeyhook nunca é escutado (sem controle remoto pra travar)', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    expect(window.electronAPI.onWinKeyCombo).not.toHaveBeenCalled()
   })
 
   // Ctrl+V é interceptado: nunca encaminha o keydown cru de 'V' (colaria o
@@ -423,6 +466,9 @@ describe('LiveSessionWindow', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    // session-info (username real, mandado 1x pelo companion) -- sem isso
+    // defaultDestDir fica vazio e o novo guard de destino recusa o envio.
+    act(() => { lastUseLiveSessionArgs.onSessionInfo({ remoteUser: 'Loja' }) })
 
     await act(async () => {
       fireEvent.click(screen.getByText(/Enviar arquivo/i))
@@ -449,6 +495,7 @@ describe('LiveSessionWindow', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    act(() => { lastUseLiveSessionArgs.onSessionInfo({ remoteUser: 'Loja' }) })
 
     const dropZone = screen.getByTestId('live-session-dropzone')
     const file = new File(['conteudo'], 'driver.exe', { type: 'application/octet-stream' })
@@ -496,6 +543,7 @@ describe('LiveSessionWindow', () => {
 
     // confirma que nao travou: uma 2a tentativa, agora conectada, funciona
     act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    act(() => { lastUseLiveSessionArgs.onSessionInfo({ remoteUser: 'Loja' }) })
     await act(async () => {
       fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
       await Promise.resolve()
@@ -503,6 +551,84 @@ describe('LiveSessionWindow', () => {
       await Promise.resolve()
     })
     expect(window.electronAPI.readLocalFile).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\driver.exe')
+  })
+
+  // Achado real em produção (12/11/2026): session.remoteUser nunca era
+  // setado em lugar nenhum (nem MachineCard manda, nem o IPC aceita esse
+  // campo) -- defaultDestDir caía sempre no literal "Loja", que quase nunca
+  // batia com o usuário de verdade logado na loja. session-info (mandado
+  // pelo companion, 1x, via WS) substitui esse fallback morto.
+  it('mode normal: session-info (username real do companion) vira o destino default da transferência', async () => {
+    window.electronAPI.pickFile = vi.fn().mockResolvedValue('C:\\x\\a.txt')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(1))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true })
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    act(() => { lastUseLiveSessionArgs.onSessionInfo({ remoteUser: 'ASS AUXILIAR01' }) })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Enviar arquivo/i))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(sendFileTransferMock).toHaveBeenCalledWith(expect.any(String), 'a.txt', 'C:\\Users\\ASS AUXILIAR01\\Desktop')
+  })
+
+  // Antes desta sessão, destino sem resposta nenhuma (nem digitado, nem
+  // session-info chegado) virava silenciosamente "C:\Users\Loja\Desktop" --
+  // agora recusa o envio em vez de mandar um caminho provavelmente errado
+  // sem o operador saber.
+  it('mode normal: sem session-info nem destino digitado, recusa o envio em vez de adivinhar o caminho', async () => {
+    window.electronAPI.pickFile = vi.fn().mockResolvedValue('C:\\x\\a.txt')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(1))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true })
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    // nunca chama onSessionInfo
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Enviar arquivo/i))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.readLocalFile).not.toHaveBeenCalled()
+    expect(sendFileTransferMock).not.toHaveBeenCalled()
+    expect(screen.getByText(/confirme o caminho/i)).toBeInTheDocument()
+  })
+
+  // Achado do code-reviewer (12/11/2026): string só com espaço(s) é truthy
+  // em JS -- sem .trim(), passava o guard de destino vazio como se fosse um
+  // caminho válido e ia pro companion, que criaria o diretório " " em vez
+  // de recusar (mesmo risco de "enviado ✓ mas não está lá" que este fix
+  // existe pra evitar).
+  it('mode normal: destino só com espaços é tratado como vazio, recusa o envio', async () => {
+    window.electronAPI.pickFile = vi.fn().mockResolvedValue('C:\\x\\a.txt')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(1))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true })
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    // nunca chama onSessionInfo -- defaultDestDir fica vazio, só o campo digitado importa aqui
+
+    const destInput = screen.getByPlaceholderText(/confirme o caminho/i)
+    fireEvent.change(destInput, { target: { value: '   ' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Enviar arquivo/i))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.readLocalFile).not.toHaveBeenCalled()
+    expect(sendFileTransferMock).not.toHaveBeenCalled()
+    expect(screen.getByText(/confirme o caminho/i)).toBeInTheDocument()
   })
 
   it('ao receber live-session-cleanup-and-close, para, avisa o servidor e chama cleanupDone', async () => {

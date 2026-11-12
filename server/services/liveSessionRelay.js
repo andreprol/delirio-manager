@@ -27,6 +27,16 @@ const CLOSE_CODES = {
   INVALID_ROLE: 4002,
   STALE_CONNECTION: 4003,
   SESSION_ENDED: 4004,
+  // COMPANION_LOST: o companion caiu com a sessão ainda registrada (não foi
+  // um stop explícito — esse caminho já teria apagado a sessão antes do
+  // close deste socket rodar, ver isCurrentSocket em wireLiveSocket). Achado
+  // real em produção (12/11/2026): sem fechar o dashboardWs aqui, ele ficava
+  // "Conectado" pra sempre sem nunca mais receber frame — a sessão virava
+  // zumbi no servidor (companionWs null, dashboardWs vivo, ninguém nunca
+  // limpava). useLiveSession.js trata este código como terminal, igual
+  // SESSION_ENDED — a diferença é só pra log/diagnóstico (ver comentário de
+  // unregisterSessionDueToCompanionLoss).
+  COMPANION_LOST: 4005,
 };
 
 const sessions = new Map();
@@ -104,12 +114,12 @@ function getSession(sessionId) {
 // que a sessão já acabou do lado do servidor. useLiveSession.js (dashboard)
 // trata este código como terminal (TERMINAL_CLOSE_CODES) — não tenta
 // reconectar.
-function unregisterSession(sessionId) {
+function unregisterSession(sessionId, { code = CLOSE_CODES.SESSION_ENDED, reason = 'sessão encerrada' } = {}) {
   const session = sessions.get(sessionId);
   if (session) {
     cancelPendingUnlock(session);
-    safeClose(session.dashboardWs, CLOSE_CODES.SESSION_ENDED, 'sessão encerrada');
-    safeClose(session.companionWs, CLOSE_CODES.SESSION_ENDED, 'sessão encerrada');
+    safeClose(session.dashboardWs, code, reason);
+    safeClose(session.companionWs, code, reason);
   }
   sessions.delete(sessionId);
 }
@@ -140,11 +150,6 @@ function attachDashboardSocket(sessionId, ws) {
   if (session.dashboardWs && session.dashboardWs !== ws) closeStale(session.dashboardWs);
   cancelPendingUnlock(session);
   session.dashboardWs = ws;
-}
-
-function detachCompanionSocket(sessionId) {
-  const session = sessions.get(sessionId);
-  if (session) session.companionWs = null;
 }
 
 function detachDashboardSocket(sessionId) {
@@ -199,6 +204,20 @@ function routeMessage(sessionId, origin, data, isBinary = false) {
   if (origin === 'companion') {
     // Frame de vídeo (ou qualquer mensagem do companion) — sempre repassa pro dashboard,
     // em qualquer modo. Quem está vendo a tela sempre recebe a imagem.
+    if (session.dashboardWs && session.dashboardWs.readyState === session.dashboardWs.OPEN) {
+      session.warnedCompanionNoDashboard = false;
+    } else if (!session.warnedCompanionNoDashboard) {
+      // Achado do code-reviewer (12/11/2026): sem isto, uma mensagem 1x-só
+      // do companion (ex: session-info, agent/livesession_windows.go) que
+      // chegasse ANTES do dashboard anexar se perdia em silêncio — ficava
+      // indistinguível de "agent antigo sem suporte a session-info" (mesmo
+      // fallback visual no dashboard). Logado 1x por sessão (reseta quando
+      // o dashboard anexa), não a cada frame de vídeo perdido na mesma
+      // janela de corrida — evita inundar o log (achado de sessão anterior:
+      // este log já roda verboso sob carga normal).
+      session.warnedCompanionNoDashboard = true;
+      logger.warn('[liveSessionRelay] companion mandou mensagem sem dashboard anexado — descartada', { sessionId });
+    }
     safeSend(session.dashboardWs, data, isBinary);
     return;
   }
@@ -266,7 +285,24 @@ function wireLiveSocket(sessionId, role, ws) {
   ws.on('close', (code, reasonBuf) => {
     if (!isCurrentSocket(sessionId, role, ws)) return;
     logger.info('[liveSessionRelay] socket desconectado', { sessionId, role, code, reason: reasonBuf?.toString() });
-    if (role === 'companion') detachCompanionSocket(sessionId);
+    if (role === 'companion') {
+      // Chegou até aqui (isCurrentSocket true) só quando a sessão AINDA
+      // estava registrada — um stop explícito (POST /stop → unregisterSession)
+      // já teria apagado a sessão antes deste close rodar, fazendo
+      // isCurrentSocket devolver false acima. Então todo close de companion
+      // que chega aqui é uma queda INESPERADA (rede, ou a race do safeConn
+      // corrigida em agent/wsconn_windows.go) — sem encerrar a sessão de vez
+      // e avisar o dashboard, ele ficava "Conectado" pra sempre sem nunca
+      // mais receber frame nenhum.
+      logger.warn('[liveSessionRelay] companion desconectou inesperadamente, encerrando sessão', {
+        sessionId, code, reason: reasonBuf?.toString(),
+      });
+      unregisterSession(sessionId, {
+        code: CLOSE_CODES.COMPANION_LOST,
+        reason: 'companion desconectou inesperadamente',
+      });
+      return;
+    }
     if (role === 'dashboard') {
       detachDashboardSocket(sessionId);
       // O operador pode cair sem clicar "desbloquear" (rede, crash do app) —
@@ -332,7 +368,7 @@ function initLiveRelay() {
 module.exports = {
   registerSession, getSession, unregisterSession, routeMessage,
   attachCompanionSocket, attachDashboardSocket,
-  detachCompanionSocket, detachDashboardSocket,
+  detachDashboardSocket,
   initLiveRelay,
   setDashboardUnlockGraceMsForTests,
 };

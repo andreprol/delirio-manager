@@ -70,6 +70,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('live-session:normal-window-visibility', handler)
   },
   getNormalWindowVisibility: () => ipcRenderer.invoke('live-session:get-normal-window-visibility'),
+
+  // winkeyhook (dashboard/winkeyhook, processo nativo separado) -- tecla
+  // Windows/combos Win+R/E/D interceptados ANTES do Explorer local, ver
+  // dashboard/electron/main.js (startWinKeyHook) e
+  // dashboard/src/components/LiveSessionWindow.jsx. Aditivo ao
+  // encaminhamento via onKeyDown que já existia (regra 3, 11/11/2026).
+  onWinKeyCombo: (cb) => {
+    const handler = (_, combo) => cb(combo)
+    ipcRenderer.on('win-key-combo', handler)
+    return () => ipcRenderer.removeListener('win-key-combo', handler)
+  },
   cleanupDone: () => ipcRenderer.send('live-session-cleanup-done'),
   reportCleanupProgress: () => ipcRenderer.send('live-session-cleanup-progress'),
   reportCleanupFailed: () => ipcRenderer.send('live-session-cleanup-failed'),

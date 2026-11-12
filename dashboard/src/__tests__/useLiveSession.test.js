@@ -333,10 +333,12 @@ describe('useLiveSession', () => {
 
   // TERMINAL_CLOSE_CODES: quando o PRÓPRIO relay recusa a conexão ou encerra
   // a sessão de propósito, reconectar pra sempre não ajuda -- a sessão em si
-  // já era. Só aí desiste de verdade. Parametrizado pelos 5 códigos reais
+  // já era. Só aí desiste de verdade. Parametrizado pelos 6 códigos reais
   // (ver liveSessionRelay.js) -- achado do code-reviewer: testar só 4000
-  // deixava 4001/4002/4003/4004 sem cobertura nenhuma.
-  it.each([4000, 4001, 4002, 4003, 4004])('não reconecta quando o fechamento é terminal (código %i)', (code) => {
+  // deixava os outros sem cobertura nenhuma. 4005 (companion caiu
+  // inesperadamente, 12/11/2026) é terminal pelo mesmo motivo que 4004:
+  // reconectar não ajuda numa sessão sem companion nenhum do outro lado.
+  it.each([4000, 4001, 4002, 4003, 4004, 4005])('não reconecta quando o fechamento é terminal (código %i)', (code) => {
     vi.useFakeTimers()
     const canvasRef = makeCanvasRef()
     const onStatusChange = vi.fn()

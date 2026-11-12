@@ -101,12 +101,12 @@ func TestIsLiveSessionActive(t *testing.T) {
 type fakeFrameWriter struct {
 	writeErr error
 	writes   int
+	lastData []byte
 }
 
-func (f *fakeFrameWriter) SetWriteDeadline(time.Time) error { return nil }
-
-func (f *fakeFrameWriter) WriteMessage(messageType int, data []byte) error {
+func (f *fakeFrameWriter) WriteMessageWithDeadline(messageType int, data []byte, deadline time.Time) error {
 	f.writes++
+	f.lastData = data
 	return f.writeErr
 }
 
@@ -157,6 +157,48 @@ func TestReadLiveSessionInputNonNormalModeConsumesAllMessages(t *testing.T) {
 	if calls != 0 {
 		t.Errorf("injectMouseMoveFn/injectMouseButtonFn chamadas %d vez(es) em mode shadow, want 0", calls)
 	}
+}
+
+// TestCurrentUserName chama a Win32 API de verdade — qualquer processo
+// (serviço, usuário, CI) tem um "usuário atual", diferente de
+// captureForegroundWindow (precisa de desktop interativo ativo), então é
+// seguro exercitar sem mock nenhum.
+func TestCurrentUserName(t *testing.T) {
+	username, err := currentUserName()
+	if err != nil {
+		t.Fatalf("currentUserName() erro inesperado: %v", err)
+	}
+	if username == "" {
+		t.Error("currentUserName() devolveu string vazia")
+	}
+}
+
+func TestSendSessionInfo(t *testing.T) {
+	originalUserName := currentUserNameFn
+	defer func() { currentUserNameFn = originalUserName }()
+
+	t.Run("manda session-info com o username real", func(t *testing.T) {
+		currentUserNameFn = func() (string, error) { return "ASS AUXILIAR01", nil }
+		w := &fakeFrameWriter{}
+		sendSessionInfo(w, "s1")
+
+		if w.writes != 1 {
+			t.Fatalf("writes = %d, want 1", w.writes)
+		}
+		if string(w.lastData) != `{"type":"session-info","remoteUser":"ASS AUXILIAR01"}` {
+			t.Errorf("payload = %s, want session-info com remoteUser", w.lastData)
+		}
+	})
+
+	t.Run("falha ao obter username não escreve nada (só loga)", func(t *testing.T) {
+		currentUserNameFn = func() (string, error) { return "", fmt.Errorf("GetUserNameW falhou") }
+		w := &fakeFrameWriter{}
+		sendSessionInfo(w, "s1")
+
+		if w.writes != 0 {
+			t.Errorf("writes = %d, want 0 (não deveria escrever sem username)", w.writes)
+		}
+	})
 }
 
 // fakeScreenCapturer implementa screenCapturer sem GDI/DXGI real — permite

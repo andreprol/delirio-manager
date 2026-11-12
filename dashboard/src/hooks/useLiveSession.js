@@ -35,17 +35,21 @@ const RECONNECT_DELAY_MAX_MS = 30000
 // liveSessionRelay.js) quando recusa a conexão ou encerra a sessão de
 // propósito — sessão não existe mais (4000), token inválido (4001), role
 // inválido (4002), conexão substituída por uma janela mais nova pro mesmo
-// sessionId (4003), ou sessão encerrada explicitamente via POST /stop
+// sessionId (4003), sessão encerrada explicitamente via POST /stop
 // (4004 — achado do code-reviewer: sem isso, um /stop disparado de outro
 // lugar nunca fechava o socket do dashboard, que ficava "Conectado" pra
-// sempre com o último frame congelado). Nenhum desses se resolve tentando
-// de novo (a sessão em si já era, não é um blip de rede) — qualquer OUTRO
-// código (1006 abnormal closure, 1001 going away, etc.) é tratado como
-// queda transitória e tenta reconectar, já que o relay mantém a sessão viva
-// no servidor independente do socket do dashboard cair (ver
+// sempre com o último frame congelado), ou companion caiu inesperadamente
+// com a sessão ainda registrada (4005 — achado real em produção
+// 12/11/2026: sem tratar como terminal, o dashboard tentaria reconectar pra
+// sempre numa sessão que não tem mais companion nenhum do outro lado —
+// reconectar não resolve, precisa abrir uma sessão NOVA). Nenhum desses se
+// resolve tentando de novo (a sessão em si já era, não é um blip de rede) —
+// qualquer OUTRO código (1006 abnormal closure, 1001 going away, etc.) é
+// tratado como queda transitória e tenta reconectar, já que o relay mantém
+// a sessão viva no servidor independente do socket do dashboard cair (ver
 // attachDashboardSocket/scheduleUnlockOnDashboardDisconnect) — só precisa
 // reabrir o WS com o mesmo sessionId/token, o servidor reataca sozinho.
-const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004])
+const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004, 4005])
 
 // useLiveSession conecta no WS /live como role=dashboard, desenha cada frame
 // recebido no canvas apontado por canvasRef, e expõe sendInput pra mandar
@@ -56,7 +60,7 @@ const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004])
 // isso sendInput também recusa (defesa em profundidade, mesmo princípio do
 // relay no servidor — liveSessionRelay.routeMessage nunca repassa input em
 // Shadow mesmo que o dashboard mande por engano/bug).
-export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange, onFileTransferStatus }) {
+export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange, onFileTransferStatus, onSessionInfo }) {
   const wsRef = useRef(null)
   const reconnectAttemptsRef = useRef(0)
   const frameSizeRef = useRef({ width: 0, height: 0 })
@@ -130,6 +134,11 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
         try {
           const msg = JSON.parse(e.data)
           if (msg.type?.startsWith('file-transfer-')) onFileTransferStatus?.(msg)
+          // session-info: username real da máquina remota, mandado 1x pelo
+          // companion no início da sessão (ver agent/livesession_windows.go,
+          // sendSessionInfo) -- substitui o fallback literal "Loja" que o
+          // destino default de transferência de arquivo usava antes.
+          else if (msg.type === 'session-info') onSessionInfo?.(msg)
         } catch { /* mensagem de texto nao-JSON, ignora */ }
         return
       }
@@ -159,7 +168,7 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
       setTimeout(() => { if (mountedRef.current) connect() }, delay)
     }
     ws.onerror = () => { ws.close() }
-  }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus, onFileTransferStatus])
+  }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus, onFileTransferStatus, onSessionInfo])
 
   useEffect(() => {
     mountedRef.current = true

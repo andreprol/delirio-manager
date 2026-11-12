@@ -35,6 +35,7 @@ agentdb.rvf.lock
 dist/
 dist-electron/
 agent/*.exe
+dashboard/winkeyhook/*.exe
 /*.exe
 
 # Database & sensitive config
