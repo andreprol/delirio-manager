@@ -156,9 +156,9 @@ function detachDashboardSocket(sessionId) {
 // processo inteiro — mesmo padrão de services/websocket.js, mas logando o erro
 // em vez de engolir em silêncio (esse módulo é sensível demais pra isso passar
 // despercebido).
-function safeSend(ws, data) {
+function safeSend(ws, data, isBinary = false) {
   if (ws && ws.readyState === ws.OPEN) {
-    ws.send(data, (err) => {
+    ws.send(data, { binary: isBinary }, (err) => {
       if (err) logger.error('[liveSessionRelay] erro ao enviar', { error: err.message });
     });
   }
@@ -174,15 +174,32 @@ function safeTokenEqual(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-// origin: 'dashboard' | 'companion'
-function routeMessage(sessionId, origin, data) {
+// origin: 'dashboard' | 'companion'. isBinary preserva o TIPO original do
+// frame WS (texto vs binário) ao repassar — achado real em produção
+// (André, 11/11/2026): a lib `ws` sempre entrega `data` como Buffer no
+// evento 'message', seja o frame original TextMessage ou BinaryMessage (só
+// `isBinary`, o 2º argumento do evento, diz qual era de verdade). Sem
+// repassar esse flag pro `.send()` de saída, `ws` infere `binary: typeof
+// data !== 'string'` (ver node_modules/ws/lib/websocket.js) — como `data`
+// aqui é SEMPRE Buffer, TUDO vira frame binário ao sair daqui, mesmo que o
+// companion tenha mandado como TextMessage de propósito (ex:
+// file-transfer-progress/-done/-error, agent/filetransfer_windows.go). O
+// dashboard distingue os dois pelo tipo (useLiveSession.js: `typeof
+// e.data === 'string'` → JSON de status; senão → tenta decodificar como
+// frame de vídeo) — sem este fix, todo status de transferência de arquivo
+// virava binário e o dashboard tentava createImageBitmap() no JSON,
+// lançando "InvalidStateError: source image could not be decoded" sem
+// NUNCA processar o status de verdade (silêncio total na UI). Frame de
+// vídeo (sempre binário mesmo) não é afetado — só por isso o bug nunca
+// apareceu em input/vídeo, só na transferência de arquivo.
+function routeMessage(sessionId, origin, data, isBinary = false) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
   if (origin === 'companion') {
     // Frame de vídeo (ou qualquer mensagem do companion) — sempre repassa pro dashboard,
     // em qualquer modo. Quem está vendo a tela sempre recebe a imagem.
-    safeSend(session.dashboardWs, data);
+    safeSend(session.dashboardWs, data, isBinary);
     return;
   }
 
@@ -192,7 +209,7 @@ function routeMessage(sessionId, origin, data) {
   // que Shadow nunca vira controle remoto por engano de código em outro lugar
   // do projeto, mesmo que o dashboard mande input por bug.
   if (session.mode !== MODE_NORMAL) return;
-  safeSend(session.companionWs, data);
+  safeSend(session.companionWs, data, isBinary);
 }
 
 // true se `ws` ainda é o socket anexado pro seu papel nesta sessão — usado
@@ -238,9 +255,12 @@ function authenticateAndAttach(session, sessionId, role, token, ws) {
 // autenticado e anexado — mesma extração de authenticateAndAttach, pelo
 // mesmo motivo (comprimento de função).
 function wireLiveSocket(sessionId, role, ws) {
-  ws.on('message', (data) => {
+  // isBinary (2º argumento do evento 'message' da lib `ws`) é o único jeito
+  // de saber se o frame original era TextMessage ou BinaryMessage — `data`
+  // sozinho não diz (ver comentário de routeMessage pro porquê isso importa).
+  ws.on('message', (data, isBinary) => {
     if (!isCurrentSocket(sessionId, role, ws)) return;
-    routeMessage(sessionId, role, data);
+    routeMessage(sessionId, role, data, isBinary);
   });
 
   ws.on('close', (code, reasonBuf) => {

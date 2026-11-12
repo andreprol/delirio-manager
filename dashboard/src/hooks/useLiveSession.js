@@ -70,18 +70,44 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
 
   const drawFrame = useCallback(async (data) => {
     if (!(data instanceof Blob)) return
-    const bitmap = await createImageBitmap(data)
-    frameSizeRef.current = { width: bitmap.width, height: bitmap.height }
-    const canvas = canvasRef.current
-    if (canvas) {
-      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-        canvas.width = bitmap.width
-        canvas.height = bitmap.height
-      }
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(bitmap, 0, 0)
+    // try/catch em volta de createImageBitmap: achado real em produção
+    // (André, 11/11/2026) -- um bug no relay (ver liveSessionRelay.js,
+    // isBinary) fazia mensagens de TEXTO (status de transferência de
+    // arquivo) chegarem aqui como se fossem frame de vídeo, e
+    // createImageBitmap lançava "InvalidStateError: source image could not
+    // be decoded" como unhandled rejection, sem nenhum aviso visível na UI.
+    // Já corrigido na origem (relay preserva o opcode agora), mas qualquer
+    // outro frame corrompido/incompleto no futuro (perda de pacote, etc.)
+    // cairia no mesmo buraco sem isto -- só loga e descarta o frame, não
+    // trava a sessão inteira por causa de 1 frame ruim.
+    let bitmap
+    try {
+      bitmap = await createImageBitmap(data)
+    } catch (err) {
+      console.warn('[useLiveSession] frame descartado, falha ao decodificar:', err?.message)
+      return
     }
-    bitmap.close?.()
+    // try/finally (não só o try acima): achado do code-reviewer -- se
+    // drawImage/getContext falhar, sem isto a exceção escaparia sem catch
+    // (unhandled rejection de novo, o exato problema que este fix existe
+    // pra eliminar) E bitmap.close() nunca rodaria, vazando o recurso do
+    // ImageBitmap decodificado com sucesso.
+    try {
+      frameSizeRef.current = { width: bitmap.width, height: bitmap.height }
+      const canvas = canvasRef.current
+      if (canvas) {
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width
+          canvas.height = bitmap.height
+        }
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(bitmap, 0, 0)
+      }
+    } catch (err) {
+      console.warn('[useLiveSession] falha ao desenhar frame decodificado:', err?.message)
+    } finally {
+      bitmap.close?.()
+    }
   }, [canvasRef])
 
   const connect = useCallback(() => {

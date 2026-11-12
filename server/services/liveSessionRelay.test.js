@@ -7,7 +7,19 @@ const {
 
 function fakeSocket() {
   const sent = [];
-  return { send: (data) => sent.push(data), _sent: sent, readyState: 1, OPEN: 1 };
+  const sentOptions = [];
+  return {
+    send: (data, options, callback) => {
+      sent.push(data);
+      sentOptions.push(typeof options === 'object' ? options : undefined);
+      const cb = typeof options === 'function' ? options : callback;
+      if (cb) cb();
+    },
+    _sent: sent,
+    _sentOptions: sentOptions,
+    readyState: 1,
+    OPEN: 1,
+  };
 }
 
 describe('liveSessionRelay', () => {
@@ -51,6 +63,42 @@ describe('liveSessionRelay', () => {
     routeMessage('s1', 'companion', Buffer.from([1, 2, 3]));
 
     expect(dashboardWs._sent).toHaveLength(1);
+  });
+
+  // Achado real em produção (André, 11/11/2026): a lib `ws` sempre entrega
+  // `data` como Buffer no evento 'message', seja o frame original
+  // TextMessage ou BinaryMessage -- sem repassar o 2º argumento do evento
+  // (isBinary) pro `.send()` de saída, `ws` infere `binary: typeof data !==
+  // 'string'` (sempre true pra um Buffer), convertendo TODO frame de texto
+  // em binário ao sair daqui. O companion manda file-transfer-progress/
+  // -done/-error como TextMessage de propósito (agent/filetransfer_windows.go)
+  // -- sem este fix, o dashboard recebia isso como frame BINÁRIO, tentava
+  // decodificar o JSON como imagem de vídeo (createImageBitmap) e lançava
+  // "InvalidStateError: source image could not be decoded", sem NUNCA
+  // processar o status de verdade (silêncio total na UI de transferência).
+  it('routeMessage preserva isBinary (texto permanece texto, binário permanece binário) ao repassar', () => {
+    registerSession('s1', { machineId: 'm1', mode: 'normal', companionToken: 'tok-abc', dashboardToken: 'dash-abc' });
+    const session = getSession('s1');
+    const dashboardWs = fakeSocket();
+    session.dashboardWs = dashboardWs;
+
+    // Companion manda file-transfer-progress como TextMessage (isBinary=false).
+    routeMessage('s1', 'companion', Buffer.from(JSON.stringify({ type: 'file-transfer-progress' })), false);
+    // Companion manda um frame de vídeo JPEG como BinaryMessage (isBinary=true).
+    routeMessage('s1', 'companion', Buffer.from([0xff, 0xd8, 0xff]), true);
+
+    expect(dashboardWs._sentOptions).toEqual([{ binary: false }, { binary: true }]);
+  });
+
+  it('routeMessage sem isBinary (chamador não passou) repassa como texto por padrão', () => {
+    registerSession('s1', { machineId: 'm1', mode: 'normal', companionToken: 'tok-abc', dashboardToken: 'dash-abc' });
+    const session = getSession('s1');
+    const companionWs = fakeSocket();
+    session.companionWs = companionWs;
+
+    routeMessage('s1', 'dashboard', JSON.stringify({ type: 'unlock-local-input' }));
+
+    expect(companionWs._sentOptions).toEqual([{ binary: false }]);
   });
 
   it('unregisterSession remove a sessão', () => {
@@ -203,6 +251,56 @@ describe('initLiveRelay — conexão real', () => {
         `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
       );
       companionWs.on('open', () => companionWs.send('frame-de-teste'));
+    });
+  });
+
+  // Teste ponta-a-ponta com sockets reais (não fakeSocket) do bug real: o
+  // companion manda duas mensagens, uma de texto (JSON, como um
+  // file-transfer-progress de verdade) e uma binária (como um frame JPEG de
+  // verdade) -- confirma que o relay preserva o opcode original de cada uma
+  // na saída pro dashboard (isBinary do evento 'message' do cliente `ws`
+  // reflete o frame real recebido pela rede, não é cosmético).
+  it('relay preserva o opcode (texto vs binário) de cada mensagem do companion ao repassar pro dashboard', (done) => {
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'shadow', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
+
+    const dashboardWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+    );
+    let companionWs;
+    const received = [];
+
+    // try/catch/finally (achado 🔵 do code-reviewer): sem isto, se as
+    // expects falhassem o teste travaria até o timeout do Jest em vez de
+    // reportar a asserção que falhou de forma limpa (sockets nunca
+    // fechados, done() nunca chamado). done(err) no catch garante que uma
+    // falha real aqui é reportada como falha, não como timeout nem --
+    // crucial -- como sucesso falso-positivo (um finally sem catch
+    // chamaria done() sem erro mesmo com a expect tendo lançado).
+    dashboardWs.on('message', (data, isBinary) => {
+      received.push({ text: data.toString(), isBinary });
+      if (received.length !== 2) return;
+      try {
+        expect(received[0]).toEqual({ text: JSON.stringify({ type: 'file-transfer-progress' }), isBinary: false });
+        expect(received[1]).toEqual({ text: 'frame-binario', isBinary: true });
+        done();
+      } catch (err) {
+        done(err);
+      } finally {
+        dashboardWs.close();
+        companionWs.close();
+      }
+    });
+
+    dashboardWs.on('open', () => {
+      companionWs = new WebSocket(
+        `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
+      );
+      companionWs.on('open', () => {
+        companionWs.send(JSON.stringify({ type: 'file-transfer-progress' })); // texto -- send('string') infere binary:false
+        companionWs.send(Buffer.from('frame-binario'), { binary: true }); // binário de propósito
+      });
     });
   });
 

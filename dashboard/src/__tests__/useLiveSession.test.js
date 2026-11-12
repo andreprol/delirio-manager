@@ -149,6 +149,60 @@ describe('useLiveSession', () => {
     expect(canvasRef.current.height).toBe(240)
   })
 
+  // Achado real em produção (André, 11/11/2026): um bug no relay (server)
+  // fazia mensagens de texto chegarem aqui como se fossem frame de vídeo --
+  // createImageBitmap lançava e virava unhandled rejection, sem nenhum
+  // aviso. Já corrigido na origem (liveSessionRelay.js), mas este teste
+  // garante que um frame que falha ao decodificar (corrompido, incompleto,
+  // ou qualquer outra causa futura) nunca mais derruba a sessão inteira --
+  // só descarta o frame e segue.
+  it('frame que falha ao decodificar é descartado, sem lançar/travar a sessão', async () => {
+    global.createImageBitmap = vi.fn().mockRejectedValue(new DOMException('source image could not be decoded', 'InvalidStateError'))
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const canvasRef = makeCanvasRef()
+    renderHook(() => useLiveSession({
+      serverUrl: 'https://s.example.com', sessionId: 's1', dashboardToken: 'tok', mode: 'shadow', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    const corruptBlob = new Blob(['nao-e-um-jpeg-de-verdade'])
+
+    await act(async () => {
+      ws._open()
+      ws._message(corruptBlob)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('frame descartado'), expect.any(String))
+  })
+
+  // Achado 🟡 do code-reviewer: o try/catch acima só cobria o decode
+  // (createImageBitmap) -- se drawImage/getContext falhasse DEPOIS do
+  // decode ter sucesso, a exceção escaparia sem catch (unhandled rejection
+  // de novo) E bitmap.close() nunca rodaria (vazando o ImageBitmap). Este
+  // teste garante que bitmap.close() roda mesmo quando o desenho falha.
+  it('bitmap.close() roda mesmo quando desenhar o frame falha (ex: drawImage lança)', async () => {
+    const closeSpy = vi.fn()
+    global.createImageBitmap = vi.fn().mockResolvedValue({ width: 320, height: 240, close: closeSpy })
+    getContextSpy.mockReturnValue({ drawImage: vi.fn(() => { throw new Error('contexto perdido') }) })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const canvasRef = makeCanvasRef()
+    renderHook(() => useLiveSession({
+      serverUrl: 'https://s.example.com', sessionId: 's1', dashboardToken: 'tok', mode: 'shadow', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+
+    await act(async () => {
+      ws._open()
+      ws._message(new Blob(['fake-jpeg']))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(closeSpy).toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('falha ao desenhar'), expect.any(String))
+  })
+
   it('sendInput manda JSON pelo WS quando mode normal e conexão aberta', () => {
     const canvasRef = makeCanvasRef()
     const { result } = renderHook(() => useLiveSession({
