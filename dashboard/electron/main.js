@@ -162,6 +162,26 @@ function createLiveSessionWindow(params) {
   liveWin.setMenu(null)
   liveWin.setMenuBarVisibility(false)
 
+  // setMenu(null) acima também remove o atalho padrão de DevTools (F12/
+  // Ctrl+Shift+I), que no Electron vem do menu da aplicação — efeito
+  // colateral não intencional do fix de Ctrl+V acima, achado ao vivo
+  // 11/11/2026 (André não conseguia abrir o DevTools pra diagnosticar um
+  // bug real de transferência de arquivo). Religa só o atalho de DevTools
+  // via before-input-event, sem trazer de volta o menu inteiro (que
+  // reintroduziria o acelerador de Paste que causava o bug original de
+  // Ctrl+V). preventDefault só nesse atalho específico — qualquer outra
+  // tecla segue intacta pro keydown/keyup normal do React (captura/injeção
+  // de input remoto, EMERGENCY_RELEASE_KEYCODES, etc.), sem interferência.
+  liveWin.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    const isDevToolsShortcut = input.key === 'F12' ||
+      (input.control && input.shift && input.key.toLowerCase() === 'i')
+    if (isDevToolsShortcut) {
+      event.preventDefault()
+      liveWin.webContents.toggleDevTools()
+    }
+  })
+
   if (IS_DEV) {
     liveWin.loadURL('http://localhost:5173')
   } else {
