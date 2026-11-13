@@ -18,7 +18,7 @@ import (
 // relay → dashboard) — primeira vez que o companion manda TextMessage
 // JSON nesse sentido (antes só vídeo binário).
 type fileTransferStatus struct {
-	Type          string `json:"type"` // "file-transfer-progress" | "file-transfer-done" | "file-transfer-error"
+	Type          string `json:"type"` // "file-transfer-progress" | "file-transfer-done" | "file-transfer-error" | "file-download-progress" | "file-download-done" | "file-download-error"
 	BytesReceived int64  `json:"bytesReceived,omitempty"`
 	BytesTotal    int64  `json:"bytesTotal,omitempty"`
 	Message       string `json:"message,omitempty"`
@@ -138,6 +138,113 @@ func downloadFileWithProgress(downloadURL, destDir, fileName string, onProgress 
 		return fmt.Errorf("mover pra destino final %q: %w", finalPath, err)
 	}
 	return nil
+}
+
+// maxUploadFileBytes espelha MAX_FILE_BYTES (server/services/blobSas.js) --
+// a direcao remoto->operador nao tem o mesmo passo de validacao ANTES de
+// comecar (o servidor nao sabe o tamanho do arquivo, so o operador informa
+// um caminho), entao a checagem acontece aqui, cedo, depois do Stat, em vez
+// de deixar um arquivo gigante estourar o limite de PUT de block blob do
+// proprio Azure (~5000 MiB numa unica requisicao) no meio do upload. var,
+// nao const, so pra TestUploadFileWithProgressAcimaDoLimite poder encurtar
+// sem precisar criar um arquivo de teste de 2GB de verdade.
+var maxUploadFileBytes int64 = 2 * 1024 * 1024 * 1024 // 2GB
+
+// progressReader conta bytes lidos e chama onProgress no maximo 1x por
+// progressThrottle -- espelho de progressWriter (upload em vez de
+// download), mesmo motivo (io.Copy/http.NewRequest chamam Read varias
+// vezes por segundo pra arquivo grande).
+type progressReader struct {
+	src        io.Reader
+	sent       int64
+	total      int64
+	onProgress func(sent, total int64)
+	lastSent   time.Time
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.src.Read(b)
+	p.sent += int64(n)
+	if time.Since(p.lastSent) >= progressThrottle {
+		p.lastSent = time.Now()
+		p.onProgress(p.sent, p.total)
+	}
+	return n, err
+}
+
+// uploadFileWithProgress le localPath (arquivo NESTA maquina, a remota do
+// ponto de vista do operador) e sobe pro mesmo blob que uploadURL assina --
+// espelho de downloadFileWithProgress, direcao contraria. x-ms-blob-type
+// BlockBlob e obrigatorio pro Azure aceitar um PUT direto (sem isso devolve
+// 400 MissingRequiredHeader) -- mesmo header que o lado dashboard (browser)
+// ja manda pro upload local->remoto (ver sendLocalFileToRemote,
+// LiveSessionWindow.jsx).
+func uploadFileWithProgress(localPath, uploadURL string, onProgress func(sent, total int64)) error {
+	f, err := os.Open(localPath) // #nosec -- caminho vem do operador que ja controla teclado/mouse/shell nesta sessao, nao e vetor de privilegio novo
+	if err != nil {
+		return fmt.Errorf("abrir arquivo %q: %w", localPath, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("verificar arquivo %q: %w", localPath, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%q é um diretório, não um arquivo", localPath)
+	}
+	total := info.Size()
+	if total > maxUploadFileBytes {
+		return fmt.Errorf("arquivo acima do limite de 2GB (%d bytes)", total)
+	}
+
+	pr := &progressReader{src: f, total: total, onProgress: onProgress}
+	req, err := http.NewRequest(http.MethodPut, uploadURL, pr) // #nosec -- URL vem do servidor confiavel, SAS de escrita com expiracao curta
+	if err != nil {
+		// sanitizeDownloadErr tambem aqui (achado do code-reviewer): URL
+		// malformada faz net/url devolver *url.Error, que embute a URL
+		// COMPLETA -- com o SAS de escrita -- na propria Error(), igual ao
+		// caso de http.DefaultClient.Do mais abaixo (ja sanitizado).
+		return fmt.Errorf("criar requisição de upload: %w", sanitizeDownloadErr(err))
+	}
+	req.ContentLength = total
+	req.Header.Set("x-ms-blob-type", "BlockBlob")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("upload do arquivo falhou: %w", sanitizeDownloadErr(err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("servidor retornou HTTP %d ao subir arquivo: %s", resp.StatusCode, body)
+	}
+	onProgress(total, total) // garante 1 última chamada com o total real
+	return nil
+}
+
+// applyFileDownloadFn indireciona applyFileDownload pra permitir mock em
+// teste (mesmo padrao de applyFileTransferFn acima).
+var applyFileDownloadFn = applyFileDownload
+
+// applyFileDownload dispara o upload em goroutine separada -- mesmo motivo
+// de applyFileTransfer (upload de arquivo grande NAO PODE bloquear a
+// goroutine leitora de mouse/teclado).
+func applyFileDownload(msg inputMessage, sessionID string, w frameWriter) {
+	safeGo("file-download-"+sessionID, func() {
+		err := uploadFileWithProgress(msg.RemotePath, msg.UploadURL, func(sent, total int64) {
+			sendFileTransferStatus(w, fileTransferStatus{
+				Type: "file-download-progress", BytesReceived: sent, BytesTotal: total,
+			})
+		})
+		if err != nil {
+			logWarn(fmt.Sprintf("companion: envio de arquivo pro operador falhou: %v", err))
+			sendFileTransferStatus(w, fileTransferStatus{Type: "file-download-error", Message: err.Error()})
+			return
+		}
+		sendFileTransferStatus(w, fileTransferStatus{Type: "file-download-done"})
+	})
 }
 
 // applyFileTransferFn indireciona applyFileTransfer pra permitir mock em

@@ -16,7 +16,7 @@ import (
 // servidor garante isso, ver liveSessionRelay.routeMessage no plano do
 // server). Tipos: "mousemove", "mousedown", "mouseup", "keydown", "keyup",
 // "lock-local-input", "unlock-local-input", "clipboard-paste",
-// "file-transfer".
+// "file-transfer", "file-download".
 type inputMessage struct {
 	Type        string `json:"type"`
 	X           int32  `json:"x,omitempty"`
@@ -27,6 +27,8 @@ type inputMessage struct {
 	DownloadURL string `json:"downloadUrl,omitempty"` // file-transfer: SAS de leitura do blob
 	FileName    string `json:"fileName,omitempty"`    // file-transfer: nome final do arquivo
 	DestDir     string `json:"destDir,omitempty"`     // file-transfer: diretorio de destino (sem o nome do arquivo)
+	RemotePath  string `json:"remotePath,omitempty"`  // file-download: caminho completo do arquivo NESTA maquina a subir pro Blob
+	UploadURL   string `json:"uploadUrl,omitempty"`   // file-download: SAS de escrita do blob
 }
 
 func parseInputMessage(data []byte) (inputMessage, error) {
@@ -131,6 +133,8 @@ func dispatchSessionControlInput(msg inputMessage, sessionID string, w frameWrit
 		applyClipboardPaste(msg)
 	case "file-transfer":
 		applyFileTransferFn(msg, sessionID, w)
+	case "file-download":
+		applyFileDownloadFn(msg, sessionID, w)
 	default:
 		logWarn(fmt.Sprintf("companion: tipo de input não suportado ainda: %s", msg.Type))
 	}
