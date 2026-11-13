@@ -67,13 +67,35 @@ function createWindow() {
   // escolher outra pasta, mantendo este default pra quem não escolhe
   // (ex: PDF da DANFE, AlohaDANFESearch.jsx).
   win.webContents.session.on('will-download', (event, item) => {
-    const targetDir = pendingDownloadTargets.get(item.getURL()) || app.getPath('downloads')
-    pendingDownloadTargets.delete(item.getURL())
+    // requestUrl capturado AQUI (não de novo em 'done') -- é a mesma chave
+    // que pendingDownloadTargets já usa, confirmado estável por essa
+    // mesma lógica já funcionando em produção ("← Baixar"). Mandado de
+    // volta no 'download-done' pra quem precisar correlacionar por URL em
+    // vez de filename -- achado 🟠 do code-reviewer/bug real ao vivo
+    // (13/11/2026): o blob tem prefixo UUID (blobSas.js, blobName =
+    // `${randomUUID()}-${fileName}`), então item.getFilename() NUNCA bate
+    // com o nome limpo que o fluxo Ctrl+C remoto->local esperava --
+    // onDownloadDone nunca disparava o match, travava até o timeout de
+    // 30s. filename continua no evento (outros consumidores já usam:
+    // AlohaDANFESearch.jsx, App.jsx, GenerateModal.jsx).
+    const requestUrl = item.getURL()
+    // Achado 🟡 do code-reviewer: se o download falhar ANTES da URL
+    // resolver (erro de rede/DNS pré-request, raro), requestUrl vem vazio
+    // -- o 'download-done' ainda sai (com url:''), nunca casa com nenhum
+    // pendingClipboardDownloadUrlRef (sempre uma SAS de verdade), e o
+    // fluxo Ctrl+C só sai pelo timeout de 30s em vez de reportar a causa
+    // real na hora. Log aqui não resolve, mas pelo menos fica registrado
+    // pra diagnóstico futuro.
+    if (!requestUrl) {
+      console.warn('[download] will-download sem URL resolvida -- item:', item.getFilename())
+    }
+    const targetDir = pendingDownloadTargets.get(requestUrl) || app.getPath('downloads')
+    pendingDownloadTargets.delete(requestUrl)
     const savePath = path.join(targetDir, item.getFilename())
     item.setSavePath(savePath)
     item.on('done', (e, state) => {
       if (!win.isDestroyed()) {
-        win.webContents.send('download-done', { state, filename: item.getFilename(), savePath })
+        win.webContents.send('download-done', { state, filename: item.getFilename(), savePath, url: requestUrl })
       }
     })
   })

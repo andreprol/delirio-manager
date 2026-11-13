@@ -121,14 +121,20 @@ export function LiveSessionWindow() {
   // 'file-download-done' (o companion não sabe/não precisa saber qual dos
   // 2 fluxos locais pediu o download).
   const pendingClipboardDownloadRef = useRef(null) // {fileName} | null
-  // pendingClipboardDownloadNameRef: nome do arquivo cujo download (pra
-  // pasta Downloads, via window.electronAPI.downloadFile) este componente
-  // está esperando terminar DE VERDADE (onDownloadDone, abaixo) antes de
-  // escrever no clipboard local -- filtra o evento certo em meio a
-  // qualquer outro download concorrente de OUTRA feature (DANFE, relatório
-  // etc.), mesmo padrão de filtro-por-filename já usado em
-  // AlohaDANFESearch.jsx/App.jsx.
-  const pendingClipboardDownloadNameRef = useRef(null)
+  // pendingClipboardDownloadUrlRef: URL do download (pra pasta Downloads,
+  // via window.electronAPI.downloadFile) este componente está esperando
+  // terminar DE VERDADE (onDownloadDone, abaixo) antes de escrever no
+  // clipboard local -- filtra o evento certo em meio a qualquer outro
+  // download concorrente de OUTRA feature (DANFE, relatório etc.).
+  // Correlação por URL, NÃO por filename -- bug real ao vivo (13/11/2026):
+  // o blob tem prefixo UUID (blobSas.js, blobName =
+  // `${randomUUID()}-${fileName}`), então o filename que o Electron
+  // reporta (item.getFilename(), ver main.js) NUNCA bate com o nome limpo
+  // que remotePath.split(...).pop() produz aqui -- o match por filename
+  // nunca disparava, e a UI só saía do "Copiando..." pelo timeout de 30s
+  // (nunca pelo sucesso de verdade). URL é a mesma string em ambas as
+  // pontas, sem transformação nenhuma no meio.
+  const pendingClipboardDownloadUrlRef = useRef(null)
   // downloadRemoteFileToLocalClipboardRef: downloadRemoteFileToLocalClipboard
   // só existe depois da chamada de useLiveSession (precisa de
   // sendFileDownload, devolvido por ela) mas handleClipboardFileResult
@@ -193,13 +199,13 @@ export function LiveSessionWindow() {
         // fluxo "← Baixar" abaixo, que só usa esta promise (aproximada) como
         // sinal de "concluído o bastante".
         setFileTransferProgress('copiando arquivo da loja...')
-        pendingClipboardDownloadNameRef.current = pendingClipboard.fileName
+        pendingClipboardDownloadUrlRef.current = pendingClipboard.url
         // Rede de segurança: se 'download-done' (evento real, onDownloadDone)
         // nunca chegar, destrava sozinho em vez de travar a UI pra sempre.
         clearTimeout(clipboardDownloadTimeoutRef.current)
         clipboardDownloadTimeoutRef.current = setTimeout(() => {
-          if (pendingClipboardDownloadNameRef.current !== pendingClipboard.fileName) return // já resolveu por outro caminho
-          pendingClipboardDownloadNameRef.current = null
+          if (pendingClipboardDownloadUrlRef.current !== pendingClipboard.url) return // já resolveu por outro caminho
+          pendingClipboardDownloadUrlRef.current = null
           setFileTransferProgress('error: tempo esgotado esperando o download terminar')
           transferringRef.current = false
           setIsTransferring(false)
@@ -207,7 +213,7 @@ export function LiveSessionWindow() {
         window.electronAPI.downloadFile(pendingClipboard.url).catch((err) => {
           clearTimeout(clipboardDownloadTimeoutRef.current)
           setFileTransferProgress('error: ' + (err?.message || 'falha ao copiar arquivo da loja'))
-          pendingClipboardDownloadNameRef.current = null
+          pendingClipboardDownloadUrlRef.current = null
           transferringRef.current = false
           setIsTransferring(false)
         })
@@ -407,9 +413,10 @@ export function LiveSessionWindow() {
   // downloadRemoteFileToLocalClipboard: fluxo Ctrl+C remoto->local (ver
   // handleCtrlCFromRemote abaixo) -- espelho de sendRemoteFileToLocal, só
   // que baixa pra Downloads (sem pasta escolhida, não passa pelo navegador
-  // dual-pane) e guarda o NOME em pendingClipboardDownloadRef em vez da
-  // pasta -- handleFileTransferStatus decide, ao ver esta ref preenchida,
-  // que o 'file-download-done' é deste fluxo, não do "← Baixar".
+  // dual-pane) -- handleFileTransferStatus decide, ao ver
+  // pendingClipboardDownloadRef preenchida, que o 'file-download-done' é
+  // deste fluxo, não do "← Baixar" (fileName guardado só pro pedido de SAS
+  // -- a correlação do download REAL é por url, ver pendingClipboardDownloadUrlRef).
   const downloadRemoteFileToLocalClipboard = useCallback(async (remotePath) => {
     if (transferringRef.current) return
     if (status !== 'connected') return
@@ -543,16 +550,19 @@ export function LiveSessionWindow() {
 
   // Completa o fluxo Ctrl+C remoto->local: 'download-done' é o evento REAL
   // (savePath exato, ao contrário da promise aproximada de downloadFile()
-  // usada no "← Baixar") -- filtra pelo nome que downloadRemoteFileToLocalClipboard
-  // guardou (pendingClipboardDownloadNameRef), ignorando qualquer OUTRO
-  // download concorrente desta janela (DANFE, relatório etc. não passam
-  // por aqui, mesmo padrão de filtro-por-filename de AlohaDANFESearch.jsx).
-  // Fica montado a sessão inteira (nunca "unsubscribe uma vez só") porque
+  // usada no "← Baixar") -- filtra pela URL que downloadRemoteFileToLocalClipboard
+  // guardou (pendingClipboardDownloadUrlRef), ignorando qualquer OUTRO
+  // download concorrente desta janela (DANFE, relatório etc.). Por URL, NÃO
+  // por filename -- bug real ao vivo (13/11/2026): o blob tem prefixo UUID
+  // (blobSas.js), então item.getFilename() nunca batia com o nome limpo
+  // esperado aqui, e o fluxo só saía pelo timeout de 30s, nunca pelo
+  // sucesso de verdade (ver pendingClipboardDownloadUrlRef acima). Fica
+  // montado a sessão inteira (nunca "unsubscribe uma vez só") porque
   // Ctrl+C pode acontecer várias vezes.
   useEffect(() => {
-    const unsubscribe = window.electronAPI?.onDownloadDone(({ state, filename, savePath }) => {
-      if (filename !== pendingClipboardDownloadNameRef.current) return
-      pendingClipboardDownloadNameRef.current = null
+    const unsubscribe = window.electronAPI?.onDownloadDone(({ state, savePath, url }) => {
+      if (url !== pendingClipboardDownloadUrlRef.current) return
+      pendingClipboardDownloadUrlRef.current = null
       clearTimeout(clipboardDownloadTimeoutRef.current) // chegou de verdade -- cancela a rede de segurança
       if (state !== 'completed') {
         setFileTransferProgress('error: falha ao salvar o arquivo copiado')

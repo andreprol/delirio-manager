@@ -488,12 +488,72 @@ describe('LiveSessionWindow', () => {
       // 'download-done' REAL (evento, não a promise aproximada) -- só agora
       // escreve no clipboard local.
       await act(async () => {
-        window.electronAPI.__fireDownloadDone({ state: 'completed', filename: 'nota.txt', savePath: 'C:\\Users\\Andre\\Downloads\\nota.txt' })
+        window.electronAPI.__fireDownloadDone({ state: 'completed', filename: 'nota.txt', savePath: 'C:\\Users\\Andre\\Downloads\\nota.txt', url: 'https://blob/y?sas-down' })
         await Promise.resolve()
       })
 
       expect(window.electronAPI.writeFileToClipboard).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\nota.txt')
       expect(screen.getByText(/Pronto pra colar/i)).toBeInTheDocument()
+    })
+
+    // Bug real ao vivo (13/11/2026, ASSBOH): o blob no Azure tem prefixo
+    // UUID (blobSas.js, blobName = `${randomUUID()}-${fileName}`), então
+    // item.getFilename() do Electron NUNCA bate com o nome limpo que
+    // remotePath.split(...).pop() produz aqui -- a correlação tinha que
+    // ser por URL (único valor que não passa por nenhuma transformação no
+    // meio do caminho), não por filename. Este teste prova exatamente o
+    // sintoma real: filename "errado" (com prefixo), url certa -- tem que
+    // completar mesmo assim.
+    it('download-done com filename prefixado (UUID do blob, Azure) mas URL certa -- completa normalmente (bug real corrigido)', async () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\Users\\Loja\\Desktop\\Audit.pdf', requestId: 1 })
+        await Promise.resolve()
+      })
+      await act(async () => {
+        lastUseLiveSessionArgs.onFileTransferStatus({ type: 'file-download-done' })
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        window.electronAPI.__fireDownloadDone({
+          state: 'completed',
+          filename: 'ef94a9c2-c283-4870-acde-a76b27e5c295-Audit.pdf', // NÃO é "Audit.pdf" -- igual ao bug real
+          savePath: 'C:\\Users\\Andre\\Downloads\\ef94a9c2-c283-4870-acde-a76b27e5c295-Audit.pdf',
+          url: 'https://blob/y?sas-down',
+        })
+        await Promise.resolve()
+      })
+
+      expect(window.electronAPI.writeFileToClipboard).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\ef94a9c2-c283-4870-acde-a76b27e5c295-Audit.pdf')
+      expect(screen.getByText(/Pronto pra colar/i)).toBeInTheDocument()
+    })
+
+    it('download-done com URL diferente (download de OUTRA feature concorrente) é ignorado, não completa o fluxo Ctrl+C', async () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\Users\\Loja\\Desktop\\nota.txt', requestId: 1 })
+        await Promise.resolve()
+      })
+      await act(async () => {
+        lastUseLiveSessionArgs.onFileTransferStatus({ type: 'file-download-done' })
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        window.electronAPI.__fireDownloadDone({ state: 'completed', filename: 'relatorio-bios-x.pdf', savePath: 'C:\\Users\\Andre\\Downloads\\relatorio-bios-x.pdf', url: 'https://outra-url/relatorio' })
+        await Promise.resolve()
+      })
+
+      expect(window.electronAPI.writeFileToClipboard).not.toHaveBeenCalled()
     })
 
     it('download-done com falha (state != completed) mostra erro, destrava, NÃO escreve no clipboard', async () => {
@@ -512,7 +572,7 @@ describe('LiveSessionWindow', () => {
       })
 
       await act(async () => {
-        window.electronAPI.__fireDownloadDone({ state: 'interrupted', filename: 'nota.txt', savePath: 'C:\\x\\nota.txt' })
+        window.electronAPI.__fireDownloadDone({ state: 'interrupted', filename: 'nota.txt', savePath: 'C:\\x\\nota.txt', url: 'https://blob/y?sas-down' })
         await Promise.resolve()
       })
 
@@ -597,7 +657,7 @@ describe('LiveSessionWindow', () => {
         await Promise.resolve()
       })
       await act(async () => {
-        window.electronAPI.__fireDownloadDone({ state: 'completed', filename: 'a.txt', savePath: 'C:\\Users\\Andre\\Downloads\\a.txt' })
+        window.electronAPI.__fireDownloadDone({ state: 'completed', filename: 'a.txt', savePath: 'C:\\Users\\Andre\\Downloads\\a.txt', url: 'https://blob/y?sas-down' })
         await Promise.resolve()
       })
 
@@ -624,6 +684,40 @@ describe('LiveSessionWindow', () => {
       })
 
       // onDownloadDone NUNCA chega -- só o timeout.
+      await act(async () => { vi.advanceTimersByTime(30000) })
+
+      expect(window.electronAPI.writeFileToClipboard).not.toHaveBeenCalled()
+      expect(screen.getByText(/tempo esgotado/i)).toBeInTheDocument()
+      vi.useRealTimers()
+    })
+
+    // Achado 🟡 do code-reviewer: se o download falhar ANTES da URL
+    // resolver (raro, erro de rede pré-request), 'download-done' sai com
+    // url:'' -- nunca casa com pendingClipboardDownloadUrlRef (sempre uma
+    // SAS real), então cai no mesmo timeout de 30s -- não deveria travar
+    // nem crashar, mesmo com esse valor degenerado.
+    it('download-done com url vazia (falha antes de resolver) não crasha -- cai no timeout normal', async () => {
+      vi.useFakeTimers()
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\a.txt', requestId: 1 })
+        await Promise.resolve()
+      })
+      await act(async () => {
+        lastUseLiveSessionArgs.onFileTransferStatus({ type: 'file-download-done' })
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        window.electronAPI.__fireDownloadDone({ state: 'completed', filename: 'a.txt', savePath: 'C:\\x\\a.txt', url: '' })
+        await Promise.resolve()
+      })
+      expect(window.electronAPI.writeFileToClipboard).not.toHaveBeenCalled() // url vazia nunca bate com a SAS real -- ignorado, não é o evento certo
+
       await act(async () => { vi.advanceTimersByTime(30000) })
 
       expect(window.electronAPI.writeFileToClipboard).not.toHaveBeenCalled()
