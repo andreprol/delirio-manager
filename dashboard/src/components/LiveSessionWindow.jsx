@@ -203,7 +203,65 @@ export function LiveSessionWindow() {
     }
   }, [session, sendLocalFileToRemote])
 
-  const handleDragOver = useCallback((e) => { e.preventDefault() }, [])
+  // dropEffect: achado real (13/11/2026) — preventDefault() sozinho no
+  // dragover é o suficiente pra um drag INTERNO da própria página HTML5,
+  // mas um arquivo real vindo do Explorer é um drag OLE do próprio Windows,
+  // que o Chromium embute via IDropTarget nativo: sem setar dropEffect
+  // explicitamente aqui, ele fica 'none' (default), e o Windows trata isso
+  // como "não pode soltar aqui" NO NÍVEL DO SO -- o cursor mostra o ícone
+  // de bloqueio sobre a janela inteira (não só o canvas) e o 'drop' nunca
+  // chega a disparar, mesmo com preventDefault(). André relatou exatamente
+  // isso ("nem consegue entrar no frame", nas duas direções) -- sintoma
+  // clássico de dropEffect nunca setado, não um bug no handler de drop em
+  // si (que nunca chegava a ser chamado). Só é setado quando o drag carrega
+  // arquivo(s) de verdade
+  // (dataTransfer.types inclui 'Files') — achado do code-reviewer: setar
+  // incondicionalmente faz QUALQUER drag sobre a janela (texto selecionado,
+  // imagem de outra página) mostrar o cursor de "copiar" mesmo quando o
+  // handleDrop não faz nada com esse conteúdo (ele só lê
+  // e.dataTransfer.files).
+  // pasteClipboardToRemote resolve o Ctrl+V interceptado em onKeyDown: 3ª
+  // via de transferência de arquivo (Ctrl+C no Explorer → Ctrl+V aqui,
+  // mesmo caminho do botão/drag) com fallback pro paste de texto já
+  // existente. Extraída do onKeyDown pra não aumentar ainda mais a
+  // complexidade ciclomática dessa função (já trata vários atalhos/teclas)
+  // — achado do code-reviewer. transferringRef.current também é checado
+  // AQUI, antes de sequer ler o clipboard: sendLocalFileToRemote já tem
+  // essa guarda no início de si mesma, mas só depois do round-trip IPC de
+  // readClipboardFilePath -- dois Ctrl+V físicos rápidos disparariam 2
+  // leituras de clipboard concorrentes antes da 1ª guarda interna rodar,
+  // arriscando 2 uploads do mesmo arquivo (achado 🟠 do code-reviewer).
+  const pasteClipboardToRemote = useCallback(() => {
+    if (transferringRef.current) return
+    window.electronAPI?.readClipboardFilePath().then((filePath) => {
+      if (filePath) {
+        sendLocalFileToRemote(filePath).catch((err) => {
+          console.error('Falha ao enviar arquivo colado pra sessão remota:', err)
+        })
+        return
+      }
+      window.electronAPI?.readClipboardText().then((text) => {
+        if (!text) return
+        sendClipboardPaste(text)
+        // injectClipboardPaste solta Ctrl no remoto ao final da sequência
+        // sintética — se o operador ainda está segurando Ctrl fisicamente
+        // (comum: Ctrl+V é 2 teclas, Ctrl já desceu antes), reafirma o
+        // keydown pra não dessincronizar o estado local/remoto.
+        if (heldKeysRef.current.has(VK_CONTROL)) sendKeyEvent('keydown', VK_CONTROL)
+      }).catch((err) => {
+        console.error('Falha ao ler clipboard local pra colar na sessão remota:', err)
+      })
+    }).catch((err) => {
+      console.error('Falha ao checar arquivo no clipboard local:', err)
+    })
+  }, [sendLocalFileToRemote, sendClipboardPaste, sendKeyEvent])
+
+  const acceptFileDrag = useCallback((e) => {
+    e.preventDefault()
+    if (e.dataTransfer.types?.includes('Files')) {
+      e.dataTransfer.dropEffect = 'copy'
+    }
+  }, [])
 
   useEffect(() => {
     const unsubscribe = window.electronAPI?.onLiveSessionInit((data) => setSession(data))
@@ -513,17 +571,10 @@ export function LiveSessionWindow() {
       if (e.ctrlKey && e.keyCode === VK_V) {
         e.preventDefault()
         if (e.repeat) return
-        window.electronAPI?.readClipboardText().then((text) => {
-          if (!text) return
-          sendClipboardPaste(text)
-          // injectClipboardPaste solta Ctrl no remoto ao final da sequência
-          // sintética — se o operador ainda está segurando Ctrl fisicamente
-          // (comum: Ctrl+V é 2 teclas, Ctrl já desceu antes), reafirma o
-          // keydown pra não dessincronizar o estado local/remoto.
-          if (heldKeysRef.current.has(VK_CONTROL)) sendKeyEvent('keydown', VK_CONTROL)
-        }).catch((err) => {
-          console.error('Falha ao ler clipboard local pra colar na sessão remota:', err)
-        })
+        // Checa arquivo ANTES de texto (dentro de pasteClipboardToRemote):
+        // copiar um arquivo no Explorer não deixa nada útil no clipboard de
+        // texto, então a ordem nunca rouba um paste de texto legítimo.
+        pasteClipboardToRemote()
         return
       }
       heldKeysRef.current.add(e.keyCode)
@@ -556,7 +607,7 @@ export function LiveSessionWindow() {
       document.removeEventListener('visibilitychange', onVisibilityChange)
       releaseAllHeldKeys()
     }
-  }, [session?.mode, sendKeyEvent, sendClipboardPaste, releaseAllHeldKeys])
+  }, [session?.mode, sendKeyEvent, releaseAllHeldKeys, pasteClipboardToRemote])
 
   // winkeyhook (processo nativo separado, ver electron/main.js) manda 1
   // evento por combo detectado ANTES do Explorer local processá-lo --
@@ -592,7 +643,8 @@ export function LiveSessionWindow() {
     <div
       data-testid="live-session-dropzone"
       onDrop={handleDrop}
-      onDragOver={handleDragOver}
+      onDragOver={acceptFileDrag}
+      onDragEnter={acceptFileDrag}
       style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0f1117', color: '#e5e7eb', fontFamily: 'monospace' }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 16px', borderBottom: '1px solid #1e1e30' }}>

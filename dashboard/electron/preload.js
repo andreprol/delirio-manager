@@ -89,6 +89,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Clipboard local (operador) — pra colar texto na sessão ao vivo (modo
   // Normal), ver dashboard/src/components/LiveSessionWindow.jsx
   readClipboardText: () => ipcRenderer.invoke('clipboard:read-text'),
+  // Caminho de um arquivo copiado (Ctrl+C no Explorer) — 3ª via de
+  // transferência de arquivo (Ctrl+V), mesmo componente.
+  readClipboardFilePath: () => ipcRenderer.invoke('clipboard:read-file-path'),
 
   // Transferência de arquivo (operador → máquina remota) — seletor de
   // arquivo local nativo + leitura do conteúdo pra upload no Blob, ver

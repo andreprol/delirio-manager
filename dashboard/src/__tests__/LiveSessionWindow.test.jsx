@@ -60,6 +60,7 @@ beforeEach(() => {
     convertRecording: vi.fn().mockResolvedValue({ saved: true }),
     getConfig: vi.fn().mockResolvedValue({ serverUrl: 'https://s.example.com', adminSecret: 'secret-xyz' }),
     readClipboardText: vi.fn().mockResolvedValue('shutdown /s /t 300'),
+    readClipboardFilePath: vi.fn().mockResolvedValue(null),
     pickFile: vi.fn().mockResolvedValue(null),
     readLocalFile: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
     getPathForFile: vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe'),
@@ -291,6 +292,33 @@ describe('LiveSessionWindow', () => {
     expect(sendKeyEventMock).not.toHaveBeenCalledWith('keydown', 86)
   })
 
+  // 3ª via de transferência de arquivo: Ctrl+C num arquivo no Explorer,
+  // Ctrl+V na sessão ao vivo -- mesmo caminho do botão/drag (upload pro
+  // Blob + sendFileTransfer), NUNCA um paste de teclado no remoto.
+  it('Ctrl+V com arquivo copiado no clipboard local sobe o arquivo pro remoto, não chama sendClipboardPaste', async () => {
+    window.electronAPI.readClipboardFilePath = vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(4))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true })
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    act(() => { lastUseLiveSessionArgs.onSessionInfo({ remoteUser: 'Loja' }) })
+
+    await act(async () => {
+      fireEvent.keyDown(window, { keyCode: 86, ctrlKey: true })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.readLocalFile).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\driver.exe')
+    expect(sendFileTransferMock).toHaveBeenCalled()
+    expect(window.electronAPI.readClipboardText).not.toHaveBeenCalled()
+    expect(sendClipboardPasteMock).not.toHaveBeenCalled()
+    expect(sendKeyEventMock).not.toHaveBeenCalledWith('keydown', 86)
+  })
+
   it('Ctrl+V com clipboard local vazio não manda clipboard-paste', async () => {
     window.electronAPI.readClipboardText = vi.fn().mockResolvedValue('')
     render(<LiveSessionWindow />)
@@ -485,6 +513,40 @@ describe('LiveSessionWindow', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     expect(screen.queryByText(/Enviar arquivo/i)).not.toBeInTheDocument()
+  })
+
+  // Achado real (13/11/2026): preventDefault() sozinho no dragover não é
+  // suficiente pra um arquivo vindo do Explorer (drag OLE nativo do SO,
+  // diferente de um drag interno da página) -- sem setar dropEffect, o
+  // Windows nunca deixa o 'drop' nem disparar, cursor mostra bloqueado
+  // sobre a janela inteira. André relatou exatamente isso ("nem consegue
+  // entrar no frame", nas duas direções).
+  it('dragover e dragenter setam dataTransfer.dropEffect = "copy" quando o drag carrega arquivo (drag OLE do Explorer precisa disso)', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    const dropZone = screen.getByTestId('live-session-dropzone')
+    const dataTransferOver = { dropEffect: 'none', types: ['Files'] }
+    fireEvent.dragOver(dropZone, { dataTransfer: dataTransferOver })
+    expect(dataTransferOver.dropEffect).toBe('copy')
+
+    const dataTransferEnter = { dropEffect: 'none', types: ['Files'] }
+    fireEvent.dragEnter(dropZone, { dataTransfer: dataTransferEnter })
+    expect(dataTransferEnter.dropEffect).toBe('copy')
+  })
+
+  // Achado do code-reviewer: setar dropEffect incondicionalmente faria
+  // QUALQUER drag sobre a janela (texto selecionado, imagem de outra
+  // página) mostrar o cursor de "copiar", mesmo sem ser um arquivo —
+  // handleDrop só lê e.dataTransfer.files, nunca faz nada com esse drag.
+  it('dragover NÃO seta dropEffect quando o drag não é de arquivo (ex: texto selecionado)', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    const dropZone = screen.getByTestId('live-session-dropzone')
+    const dataTransferOver = { dropEffect: 'none', types: ['text/plain'] }
+    fireEvent.dragOver(dropZone, { dataTransfer: dataTransferOver })
+    expect(dataTransferOver.dropEffect).toBe('none')
   })
 
   it('mode normal: soltar arquivo na janela usa webUtils.getPathForFile e chama sendLocalFileToRemote', async () => {

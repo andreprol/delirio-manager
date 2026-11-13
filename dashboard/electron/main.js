@@ -525,6 +525,23 @@ app.whenReady().then(() => {
   // navegador/Electron colar o clipboard da sessão remota por engano.
   ipcMain.handle('clipboard:read-text', () => clipboard.readText())
 
+  // IPC: lê o CAMINHO de um arquivo copiado (Ctrl+C no Explorer) da área de
+  // transferência LOCAL do operador -- usado pelo Ctrl+V interceptado em
+  // LiveSessionWindow.jsx pra oferecer uma 3ª via de transferência de
+  // arquivo (além do botão e do arrastar-e-soltar), sem reabrir o dialog.
+  // Explorer no Windows preenche o formato CF_HDROP (lista completa, só
+  // acessível via parsing binário da struct DROPFILES) E, em paralelo, o
+  // formato clássico "FileNameW" com o caminho UTF-16 do PRIMEIRO arquivo
+  // copiado -- suficiente pro caso de suporte remoto (1 arquivo por vez,
+  // igual ao botão/drag). clipboard.has/readBuffer são a API pública do
+  // Electron pra formatos nativos arbitrários, sem precisar de módulo
+  // nativo extra só pra isso.
+  ipcMain.handle('clipboard:read-file-path', () => {
+    if (!clipboard.has('FileNameW')) return null
+    const raw = clipboard.readBuffer('FileNameW').toString('ucs2').replace(/\0+$/, '')
+    return raw || null
+  })
+
   // file:read não usa mais allowlist-de-origem (só path que passou pelo
   // dialog de file:pick) — achado pela revisão: isso quebraria o
   // arrastar-e-soltar (Task 10, plano em
