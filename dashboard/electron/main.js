@@ -11,12 +11,24 @@ const { countVisibleNormalWindows } = require('./liveSessionRegistry')
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 const IS_DEV      = process.env.NODE_ENV === 'development' || !app.isPackaged
 
-// pendingDownloadTargets: url do download -> pasta de destino escolhida
-// (download-file IPC, abaixo) -- Map em vez de 1 variável única pra evitar
-// race entre downloads concorrentes (ex: PDF da DANFE ao mesmo tempo que
-// um arquivo do navegador dual-pane): cada entrada é consumida pela MESMA
-// url exata no 'will-download' correspondente, nunca pela ordem de chegada.
-const pendingDownloadTargets = new Map()
+// pendingDownloads: url do download -> {targetDir, win} -- Map em vez de 1
+// variável única pra evitar race entre downloads concorrentes (ex: PDF da
+// DANFE ao mesmo tempo que um arquivo da sessão ao vivo): cada entrada é
+// consumida pela MESMA url exata no 'will-download' correspondente, nunca
+// pela ordem de chegada. `win` é a janela que REALMENTE pediu o download
+// (BrowserWindow.fromWebContents(event.sender), ver ipcMain.handle('download-file')
+// abaixo) -- bug real ao vivo (13/11/2026, ASSBOH): antes disto, o
+// 'will-download'/'done' sempre mandava 'download-done' pra janela
+// PRINCIPAL (a `win` de createWindow(), fixa por closure), nunca pra quem
+// de fato chamou downloadFile() -- o fluxo Ctrl+C remoto->local (sessão ao
+// vivo, uma BrowserWindow DIFERENTE) nunca recebia o evento, por mais que
+// a correlação por url/filename estivesse certa (o arquivo baixava
+// certinho, só a notificação ia pro lugar errado). "← Baixar" nunca
+// expôs esse bug porque usa só a PROMISE aproximada do próprio invoke
+// (resolve assim que o download COMEÇA, não quando termina de verdade),
+// nunca onDownloadDone -- só o Ctrl+C, que precisa do savePath real, é
+// que dependia da notificação chegar na janela certa.
+const pendingDownloads = new Map()
 
 // THIS_PC_SENTINEL: valor especial de "diretório" que significa "mostra
 // as unidades disponíveis" em vez de uma pasta de verdade -- equivalente
@@ -62,40 +74,43 @@ function createWindow() {
   })
 
   // Intercepta todos os downloads → salva direto na pasta Downloads do
-  // usuário por padrão (sem dialog) -- pendingDownloadTargets (módulo,
-  // abaixo) deixa um chamador específico (navegador de arquivos dual-pane)
-  // escolher outra pasta, mantendo este default pra quem não escolhe
-  // (ex: PDF da DANFE, AlohaDANFESearch.jsx).
+  // usuário por padrão (sem dialog) -- pendingDownloads (módulo, abaixo)
+  // deixa um chamador específico (navegador de arquivos dual-pane, Ctrl+C
+  // remoto->local) escolher outra pasta, mantendo este default pra quem
+  // não escolhe (ex: PDF da DANFE, AlohaDANFESearch.jsx). Registrado uma
+  // única vez aqui (no window PRINCIPAL), mas cobre downloads de QUALQUER
+  // janela: todas as BrowserWindow deste app (sem `partition` própria no
+  // webPreferences) compartilham o mesmo session.defaultSession, então
+  // este listener dispara pra download pedido por qualquer uma.
   win.webContents.session.on('will-download', (event, item) => {
     // requestUrl capturado AQUI (não de novo em 'done') -- é a mesma chave
-    // que pendingDownloadTargets já usa, confirmado estável por essa
-    // mesma lógica já funcionando em produção ("← Baixar"). Mandado de
-    // volta no 'download-done' pra quem precisar correlacionar por URL em
-    // vez de filename -- achado 🟠 do code-reviewer/bug real ao vivo
-    // (13/11/2026): o blob tem prefixo UUID (blobSas.js, blobName =
-    // `${randomUUID()}-${fileName}`), então item.getFilename() NUNCA bate
-    // com o nome limpo que o fluxo Ctrl+C remoto->local esperava --
-    // onDownloadDone nunca disparava o match, travava até o timeout de
-    // 30s. filename continua no evento (outros consumidores já usam:
-    // AlohaDANFESearch.jsx, App.jsx, GenerateModal.jsx).
+    // que pendingDownloads já usa.
     const requestUrl = item.getURL()
-    // Achado 🟡 do code-reviewer: se o download falhar ANTES da URL
-    // resolver (erro de rede/DNS pré-request, raro), requestUrl vem vazio
-    // -- o 'download-done' ainda sai (com url:''), nunca casa com nenhum
-    // pendingClipboardDownloadUrlRef (sempre uma SAS de verdade), e o
-    // fluxo Ctrl+C só sai pelo timeout de 30s em vez de reportar a causa
-    // real na hora. Log aqui não resolve, mas pelo menos fica registrado
-    // pra diagnóstico futuro.
     if (!requestUrl) {
+      // Achado 🟡 do code-reviewer: download falhou ANTES da URL resolver
+      // (erro de rede/DNS pré-request, raro) -- log não resolve, mas fica
+      // registrado pra diagnóstico futuro.
       console.warn('[download] will-download sem URL resolvida -- item:', item.getFilename())
     }
-    const targetDir = pendingDownloadTargets.get(requestUrl) || app.getPath('downloads')
-    pendingDownloadTargets.delete(requestUrl)
+    const pending = pendingDownloads.get(requestUrl)
+    pendingDownloads.delete(requestUrl)
+    const targetDir = pending?.targetDir || app.getPath('downloads')
+    // Bug real ao vivo (13/11/2026, ASSBOH): manda 'download-done' pra
+    // quem REALMENTE pediu este download (pending.win), não sempre pra
+    // `win` (a janela PRINCIPAL) -- ver comentário completo em
+    // pendingDownloads, acima. Sem isso, o fluxo Ctrl+C remoto->local
+    // (sessão ao vivo, outra BrowserWindow) nunca recebia a notificação
+    // nenhuma, mesmo com o download completando certinho no disco --
+    // "← Baixar" nunca expôs isso por só confiar na promise aproximada do
+    // invoke, nunca em onDownloadDone de verdade. targetWin cai pra `win`
+    // só se a janela que pediu já foi destruída/fechada nesse meio-tempo
+    // (ex: operador fechou a sessão ao vivo com o download em andamento).
+    const targetWin = (pending?.win && !pending.win.isDestroyed()) ? pending.win : win
     const savePath = path.join(targetDir, item.getFilename())
     item.setSavePath(savePath)
     item.on('done', (e, state) => {
-      if (!win.isDestroyed()) {
-        win.webContents.send('download-done', { state, filename: item.getFilename(), savePath, url: requestUrl })
+      if (!targetWin.isDestroyed()) {
+        targetWin.webContents.send('download-done', { state, filename: item.getFilename(), savePath, url: requestUrl })
       }
     })
   })
@@ -489,11 +504,18 @@ app.whenReady().then(() => {
 
   // IPC: download de arquivo -- pasta Downloads por padrão (sem dialog),
   // ou targetDir explícito (navegador de arquivos dual-pane, ver
-  // pendingDownloadTargets acima e o 'will-download' que consome isto).
-  ipcMain.handle('download-file', (_, { url, targetDir }) => {
-    if (!win || win.isDestroyed()) return false
-    if (targetDir) pendingDownloadTargets.set(url, targetDir)
-    win.webContents.downloadURL(url)
+  // pendingDownloads acima e o 'will-download' que consome isto).
+  // BrowserWindow.fromWebContents(event.sender) -- NUNCA a `win` fixa
+  // deste closure (bug real ao vivo 13/11/2026, ver comentário completo
+  // em pendingDownloads): quem chama este IPC pode ser a janela PRINCIPAL
+  // (relatório, DANFE) OU uma janela de sessão ao vivo (Ctrl+C
+  // remoto->local, "← Baixar") -- o download tem que voltar pra notificar
+  // QUEM PEDIU, não sempre a principal.
+  ipcMain.handle('download-file', (event, { url, targetDir }) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWin || senderWin.isDestroyed()) return false
+    pendingDownloads.set(url, { targetDir, win: senderWin })
+    senderWin.webContents.downloadURL(url)
     return true
   })
 
