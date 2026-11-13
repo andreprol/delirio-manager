@@ -8,12 +8,29 @@ name: CI — Server
 #
 # Repo público — clone sem PAT. Nenhum setup adicional na VM necessário.
 # O job 'deploy' só roda em push direto ao master (nunca em PRs).
-
+#
+# paths: achado real (13/11/2026) — sem filtro, QUALQUER push ao master
+# (dashboard/**, agent/**, docs, etc.) disparava o job 'deploy' e reiniciava
+# o Node de produção via safe-restart.sh, mesmo sem nenhum arquivo de
+# server/**/infra/** ter mudado. Em sessão de trabalho com vários pushes
+# seguidos (dashboard + agent), isso causou quedas reais (502/timeout)
+# observadas em produção, servindo ~130 lojas, em horário comercial. Filtro
+# restringe o workflow inteiro (test + deploy) a mudanças que de fato
+# afetam o server — inclui o próprio arquivo do workflow, pra ele continuar
+# se autovalidando quando for editado.
 on:
   push:
     branches: [master]
+    paths:
+      - 'server/**'
+      - 'infra/**'
+      - '.github/workflows/ci-server.yml'
   pull_request:
     branches: [master]
+    paths:
+      - 'server/**'
+      - 'infra/**'
+      - '.github/workflows/ci-server.yml'
 
 jobs:
   test:
