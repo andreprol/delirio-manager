@@ -13,6 +13,7 @@ const express   = require('express');
 const router    = express.Router();
 const crypto    = require('crypto');
 const db        = require('../db');
+const logger    = require('../services/logger');
 const relay     = require('../services/liveSessionRelay');
 const { adminAuth } = require('../middleware/adminAuth');
 const { generateFileTransferUrls, MAX_FILE_BYTES } = require('../services/blobSas');
@@ -72,10 +73,10 @@ router.post('/:sessionId/file/upload-url', adminAuth, (req, res) => {
     // Achado do code-reviewer: diferente de mouse/teclado (visível na tela
     // física da loja), transferência de arquivo não deixa rastro nenhum
     // sem log -- auditoria mínima de quem pediu o quê.
-    console.log(`[FileTransfer] upload-url pedido: fileName=${fileName} sessionId=${session.id} machineId=${session.machine_id}`);
+    logger.info('[FileTransfer] upload-url pedido', { fileName, sessionId: session.id, machineId: session.machine_id });
     res.json(result);
   } catch (err) {
-    console.log(`[FileTransfer] upload-url falhou: fileName=${fileName} sessionId=${session.id} erro=${err.message}`);
+    logger.error('[FileTransfer] upload-url falhou', { fileName, sessionId: session.id, error: err.message });
     res.status(500).json({ error: err.message });
   }
 });
@@ -106,10 +107,10 @@ router.post('/:sessionId/file/download-url', adminAuth, (req, res) => {
     // Blob é SILENCIOSO (nenhum sinal visual pra quem estiver na loja,
     // diferente de mouse/teclado) -- sem log, uma exfiltração não deixa
     // rastro nenhum pra auditoria posterior.
-    console.log(`[FileTransfer] download-url pedido: fileName=${fileName} sessionId=${session.id} machineId=${session.machine_id}`);
+    logger.info('[FileTransfer] download-url pedido', { fileName, sessionId: session.id, machineId: session.machine_id });
     res.json(result);
   } catch (err) {
-    console.log(`[FileTransfer] download-url falhou: fileName=${fileName} sessionId=${session.id} erro=${err.message}`);
+    logger.error('[FileTransfer] download-url falhou', { fileName, sessionId: session.id, error: err.message });
     res.status(500).json({ error: err.message });
   }
 });

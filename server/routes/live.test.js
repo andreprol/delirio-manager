@@ -181,6 +181,16 @@ describe('POST /api/live/:sessionId/file/upload-url — resposta do serviço', (
     expect(res.status).toBe(500);
   });
 
+});
+
+// Describe irmão próprio (não dentro de "resposta do serviço" acima) só
+// pra ficar abaixo do limite de linhas por função do ESLint — mesmo motivo
+// já documentado nos 2 describes de upload-url originais.
+describe('POST /api/live/:sessionId/file/upload-url — validação de sessão', () => {
+  beforeEach(() => {
+    process.env.ADMIN_SECRET = 'segredo-123';
+  });
+
   // Achado do code-reviewer: sessionId nunca era checado contra uma sessão
   // viva antes de emitir SAS -- mesmo guard que /stop já tinha.
   it('404 quando a sessão não existe', async () => {
@@ -262,6 +272,13 @@ describe('POST /api/live/:sessionId/file/download-url — resposta do serviço',
       .set('x-admin-secret', 'segredo-123')
       .send({ fileName: 'a.txt' });
     expect(res.status).toBe(500);
+  });
+
+});
+
+describe('POST /api/live/:sessionId/file/download-url — validação de sessão', () => {
+  beforeEach(() => {
+    process.env.ADMIN_SECRET = 'segredo-123';
   });
 
   it('404 quando a sessão não existe', async () => {
