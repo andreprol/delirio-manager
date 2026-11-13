@@ -79,6 +79,44 @@ func TestHookStateUnsupportedCombo(t *testing.T) {
 	}
 }
 
+// TestHookStateRepeatComboAfterWinReleasedFirst: bug real reportado por André
+// em produção (13/11/2026) -- soltar Win ANTES da tecla do combo (ordem
+// física comum: Win sai do mindinho primeiro) deixava comboKeyDown preso no
+// VK antigo, fazendo o MESMO combo repetido não disparar de novo (um combo
+// DIFERENTE no meio "destravava" só por ter VK diferente, não por o estado
+// estar correto). Todos os testes acima soltam a tecla do combo ANTES de
+// Win -- nenhum cobria esta ordem, exatamente o gap que escondeu o bug.
+func TestHookStateRepeatComboAfterWinReleasedFirst(t *testing.T) {
+	var s HookState
+	const vkR = 0x52
+
+	pressAndReleaseWinFirst := func(n int) {
+		suppress, event := s.Handle(vkLWin, false) // Win down
+		if !suppress || event != "" {
+			t.Fatalf("%dª vez, keydown Win: got (%v, %q), want (true, \"\")", n, suppress, event)
+		}
+		suppress, event = s.Handle(vkR, false) // R down -- é aqui que o evento "win+r" sai
+		if !suppress || event != "win+r" {
+			t.Fatalf("%dª vez, keydown R: got (%v, %q), want (true, \"win+r\")", n, suppress, event)
+		}
+		suppress, event = s.Handle(vkLWin, true) // Win up ANTES de R -- ordem que disparava o bug
+		if !suppress || event != "" {
+			t.Fatalf("%dª vez, keyup Win (antes de R): got (%v, %q), want (true, \"\")", n, suppress, event)
+		}
+		// Achado 🔴 CRÍTICO do code-reviewer: este keyup de R, chegando com
+		// winDown já false, tem que CONTINUAR suprimido (suppress=true) --
+		// um fix anterior que zerava comboKeyDown no keyup de Win fazia este
+		// retorno virar (false, ""), vazando o keyup de R pro Windows real.
+		suppress, event = s.Handle(vkR, true) // R up
+		if !suppress || event != "" {
+			t.Fatalf("%dª vez, keyup R (depois de Win): got (%v, %q), want (true, \"\") -- vazou pro Windows real?", n, suppress, event)
+		}
+	}
+
+	pressAndReleaseWinFirst(1)
+	pressAndReleaseWinFirst(2) // mesmo combo, repetido -- comboKeyDown preso de antes?
+}
+
 // TestHookStateNormalKeyNeverSuppressed: tecla comum, sem Win pressionado,
 // nunca é suprimida -- o hook só se intromete quando Win está envolvido.
 func TestHookStateNormalKeyNeverSuppressed(t *testing.T) {

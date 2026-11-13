@@ -72,6 +72,16 @@ func (s *HookState) Handle(vk uint32, isKeyUp bool) (suppress bool, event string
 			}
 			s.winDown = false
 			s.comboFired = false
+			// NÃO zera s.comboKeyDown aqui -- achado 🔴 CRÍTICO do code-reviewer
+			// (13/11/2026): zerar cedo faz o keyup da tecla do combo, quando
+			// ainda chega depois (Win solto ANTES da tecla do combo -- ordem
+			// física comum, Win sai do mindinho primeiro), cair no guard
+			// `!s.winDown` abaixo e devolver suppress=false -- vazando esse
+			// keyup pro Windows de verdade (main.go: suppress=false chama
+			// CallNextHookEx). O reset correto continua condicionado ao guard
+			// abaixo (comboKeyDown != vk), que deixa o keyup da PRÓPRIA tecla
+			// do combo passar e se resetar sozinho (linhas 114-117), mesmo com
+			// winDown já false.
 			return true, event
 		}
 		if !s.winDown {
@@ -81,9 +91,12 @@ func (s *HookState) Handle(vk uint32, isKeyUp bool) (suppress bool, event string
 		return true, ""
 	}
 
-	if !s.winDown {
+	if !s.winDown && s.comboKeyDown != vk {
 		// Tecla normal, Win não pressionado -- não é nosso assunto, nunca
-		// suprime.
+		// suprime. Excessão: a PRÓPRIA tecla do combo ainda pendente de
+		// keyup/repeat depois de Win ter sido solto primeiro (comboKeyDown ==
+		// vk) continua suprimida e processada abaixo, só pra poder se resetar
+		// -- ver comentário no keyup de Win acima.
 		return false, ""
 	}
 
