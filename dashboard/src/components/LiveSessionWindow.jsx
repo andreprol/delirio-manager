@@ -752,7 +752,17 @@ export function LiveSessionWindow() {
       onDragEnter={acceptFileDrag}
       style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0f1117', color: '#e5e7eb', fontFamily: 'monospace' }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 16px', borderBottom: '1px solid #1e1e30' }}>
+      {/* flexWrap: achado real (13/11/2026) -- esta janela NUNCA redimensiona
+          sozinha pra caber a barra de ferramentas (o auto-resize via
+          window:fit-topbar só existe na janela PRINCIPAL, App.jsx -- nunca
+          foi ligado aqui). Com os controles de "baixar arquivo" somados aos
+          de "enviar arquivo", a barra ficou mais larga que a janela e o
+          campo de caminho saía da área visível sem rolagem nem aviso
+          nenhum -- o operador clicava "Baixar arquivo" sem nunca ter visto
+          o campo de texto, sempre recebendo "informe o caminho". Quebrar
+          linha é a correção mínima que não depende de IPC novo nem de medir
+          largura -- funciona em qualquer tamanho de janela. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, padding: '8px 16px', borderBottom: '1px solid #1e1e30' }}>
         <span>{session.mode === 'normal' ? '🖥 Normal' : '✍️ Shadow'} — {session.machineName || session.machineId}</span>
         <span style={{ color: status === 'connected' ? '#22c55e' : status === 'error' ? '#ef4444' : '#f59e0b' }}>
           {status === 'connected' ? 'Conectado'
