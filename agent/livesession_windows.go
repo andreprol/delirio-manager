@@ -53,7 +53,7 @@ func startLiveSession(sessionID, mode, companionToken, serverURL string) bool {
 	wsURL := buildLiveWebSocketURL(serverURL, sessionID, companionToken)
 
 	safeGo("liveSession-"+sessionID, func() {
-		runLiveSessionLoop(sessionID, wsURL, mode, handle.stopCh)
+		runLiveSessionWithReconnect(sessionID, wsURL, mode, handle.stopCh)
 		// IMPORTANTE (correção de concorrência): só remove do mapa se a
 		// entrada ainda for ESTE handle específico, não qualquer coisa que
 		// esteja sob esta sessionID no momento. Sem essa checagem de
@@ -203,6 +203,73 @@ var liveSessionDialer = &websocket.Dialer{
 	Proxy:            websocket.DefaultDialer.Proxy,
 	HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout,
 	NetDialContext:   resilientDialContext,
+}
+
+// liveSessionReconnectInitialDelay/liveSessionReconnectMaxDelay/
+// liveSessionReconnectMaxAttempts controlam o backoff de reconexão do
+// companion quando a sessão cai de forma INESPERADA (erro de rede/escrita),
+// nunca quando foi stop explícito (ver runLiveSessionWithReconnect). Teto
+// de tentativas existe pro caso em que o SERVIDOR já desistiu da sessão de
+// vez (o grace period dele expirou, ver liveSessionRelay.js) — sem isso, o
+// companion tentaria reconectar pra sempre contra uma sessão que não existe
+// mais. var, não const, só pra testes encurtarem (mesmo padrão já usado por
+// blockInputWorkerTimeout/localInputLockFailsafe em input_windows.go).
+var (
+	liveSessionReconnectInitialDelay = 1 * time.Second
+	liveSessionReconnectMaxDelay     = 8 * time.Second
+	liveSessionReconnectMaxAttempts  = 6
+)
+
+// runLiveSessionLoopFn é a indireção testável de runLiveSessionLoop —
+// permite testar o loop de reconexão (runLiveSessionWithReconnect) sem
+// discar um WebSocket de verdade, mesmo padrão de injectMouseMoveFn
+// (input_windows.go).
+var runLiveSessionLoopFn = runLiveSessionLoop
+
+// runLiveSessionWithReconnect chama runLiveSessionLoopFn repetidamente
+// enquanto a sessão cair de forma INESPERADA, com backoff exponencial, até
+// um teto de tentativas ou até stopCh fechar (stop explícito — nunca tenta
+// de novo nesse caso, só nesse). Espelha o grace period que o servidor dá
+// antes de matar a sessão de vez (liveSessionRelay.js, achado real
+// 13/11/2026): sem isso dos dois lados, uma queda de rede breve (Wi-Fi da
+// loja, blip de NAT) sempre exigia fechar e reabrir a janela manualmente no
+// dashboard, mesmo a conexão voltando sozinha segundos depois — o servidor
+// já apagava a sessão na hora, e o companion nunca tentava de novo.
+//
+// Cada chamada a runLiveSessionLoopFn redisca do zero (novo capturer de
+// tela, novo session-info) — mesmo fluxo de uma conexão nova, só repetido.
+// stopCh é checado ANTES e DEPOIS do delay de backoff: antes, pra nunca
+// reconectar depois de um stop explícito que chegou enquanto a última
+// tentativa ainda rodava; depois, pra um stop chegar durante a espera não
+// disparar mais uma tentativa inútil.
+func runLiveSessionWithReconnect(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
+	delay := liveSessionReconnectInitialDelay
+	retries := 0
+	for {
+		runLiveSessionLoopFn(sessionID, wsURL, mode, stopCh)
+
+		select {
+		case <-stopCh:
+			return // stop explícito -- nunca tenta de novo
+		default:
+		}
+
+		if retries >= liveSessionReconnectMaxAttempts {
+			logWarn(fmt.Sprintf("companion: sessão %s não reconectou após %d tentativa(s), desistindo", sessionID, retries))
+			return
+		}
+		retries++
+
+		logWarn(fmt.Sprintf("companion: sessão %s caiu inesperadamente, tentando reconectar em %s (tentativa %d/%d)", sessionID, delay, retries, liveSessionReconnectMaxAttempts))
+
+		select {
+		case <-stopCh:
+			return
+		case <-time.After(delay):
+		}
+
+		delay = min(delay*2, liveSessionReconnectMaxDelay)
+	}
 }
 
 func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {

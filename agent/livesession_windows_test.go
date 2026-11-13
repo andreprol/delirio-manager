@@ -159,6 +159,85 @@ func TestReadLiveSessionInputNonNormalModeConsumesAllMessages(t *testing.T) {
 	}
 }
 
+// TestRunLiveSessionWithReconnect cobre o loop de reconexão (achado real
+// 13/11/2026: sem ele, qualquer queda inesperada da sessão exigia fechar e
+// reabrir a janela manualmente no dashboard, mesmo a rede voltando sozinha
+// segundos depois). Encurta os parâmetros de backoff pra rodar rápido
+// (mesmo padrão de blockInputWorkerTimeout/localInputLockFailsafe em
+// input_windows.go — var, não const, só por isso).
+func TestRunLiveSessionWithReconnect(t *testing.T) {
+	originalFn := runLiveSessionLoopFn
+	originalInitial, originalMax, originalAttempts := liveSessionReconnectInitialDelay, liveSessionReconnectMaxDelay, liveSessionReconnectMaxAttempts
+	defer func() {
+		runLiveSessionLoopFn = originalFn
+		liveSessionReconnectInitialDelay, liveSessionReconnectMaxDelay, liveSessionReconnectMaxAttempts = originalInitial, originalMax, originalAttempts
+	}()
+	liveSessionReconnectInitialDelay = 1 * time.Millisecond
+	liveSessionReconnectMaxDelay = 4 * time.Millisecond
+	liveSessionReconnectMaxAttempts = 3
+
+	t.Run("stop explícito (stopCh já fechado quando o loop retorna) nunca tenta de novo", func(t *testing.T) {
+		calls := 0
+		stopCh := make(chan struct{})
+		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}) {
+			calls++
+			close(stopCh) // simula stopLiveSession tendo sido chamado DURANTE esta "conexão"
+		}
+		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh)
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (stop explícito não deveria reconectar)", calls)
+		}
+	})
+
+	t.Run("queda inesperada reconecta e eventualmente se recupera", func(t *testing.T) {
+		calls := 0
+		stopCh := make(chan struct{})
+		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}) {
+			calls++
+			if calls >= 3 {
+				close(stopCh) // "conexão estabilizou" -- simula um stop real chegando depois
+			}
+			// calls 1 e 2: retorna sem fechar stopCh -- simula queda inesperada
+		}
+		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh)
+		if calls != 3 {
+			t.Errorf("calls = %d, want 3 (2 quedas inesperadas + reconexão que se estabiliza)", calls)
+		}
+	})
+
+	t.Run("desiste após o teto de tentativas sem fechar stopCh (sessão deve ter sido abandonada pelo servidor)", func(t *testing.T) {
+		calls := 0
+		stopCh := make(chan struct{})
+		defer close(stopCh) // limpeza -- não deveria ser necessário pro teste passar, só evita vazar o canal
+		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}) {
+			calls++ // nunca fecha stopCh -- toda tentativa "cai" de novo
+		}
+		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh)
+		wantCalls := 1 + liveSessionReconnectMaxAttempts // 1ª tentativa + N retries
+		if calls != wantCalls {
+			t.Errorf("calls = %d, want %d (1ª tentativa + %d retries, depois desiste)", calls, wantCalls, liveSessionReconnectMaxAttempts)
+		}
+	})
+
+	t.Run("stop chegando DURANTE a espera de backoff não dispara mais uma tentativa", func(t *testing.T) {
+		calls := 0
+		stopCh := make(chan struct{})
+		liveSessionReconnectInitialDelay = 50 * time.Millisecond // folga pra fechar stopCh no meio da espera
+		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}) {
+			calls++
+			// nunca fecha stopCh aqui -- quem fecha é a goroutine abaixo, durante o delay de backoff
+		}
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			close(stopCh)
+		}()
+		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh)
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (stop durante o backoff não deveria disparar nova tentativa)", calls)
+		}
+	})
+}
+
 // TestCurrentUserName chama a Win32 API de verdade — qualquer processo
 // (serviço, usuário, CI) tem um "usuário atual", diferente de
 // captureForegroundWindow (precisa de desktop interativo ativo), então é

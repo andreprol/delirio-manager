@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.9.2" // patch: fix race em safeConn (WriteMessage+SetWriteDeadline atomico via WriteMessageWithDeadline) travando sessao de acesso remoto na transferencia de arquivo; adiciona session-info (usuario remoto real) pro dashboard popular destino do arquivo
+	Version            = "1.9.3" // patch: companion reconecta sozinho (backoff) quando a sessao ao vivo cai inesperadamente, em vez de exigir fechar/reabrir a janela manualmente no dashboard
 )
 
 func main() {
