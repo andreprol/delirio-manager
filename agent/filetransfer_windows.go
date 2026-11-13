@@ -88,13 +88,53 @@ func sendRemoteDirListing(w frameWriter, listing remoteDirListing) {
 // teste poder encurtar sem precisar criar milhares de arquivos de verdade.
 var maxRemoteDirEntries = 2000
 
+// thisPCSentinel e o valor especial de "diretorio" que significa "mostra
+// as unidades disponiveis" (C:, D:, etc.) em vez de listar uma pasta de
+// verdade -- equivalente ao "Este Computador"/"This PC" do Explorer.
+// Alcancado subindo (parentWindowsPath, dashboard) a partir da raiz de
+// qualquer unidade -- antes disso, so dava pra navegar dentro da arvore
+// que comeca em %USERPROFILE%\Desktop, sem jeito de ver OUTRAS unidades
+// (D:, pendrive, etc.), que Andre pediu pra existir nas duas pontas.
+const thisPCSentinel = "Este Computador"
+
+// procGetLogicalDrives (kernel32, ja declarado em activity_windows.go)
+// devolve um bitmask: bit 0 = unidade A existe, bit 1 = B, etc. --
+// GetLogicalDriveStringsW tambem resolveria isso, mas exigiria um buffer
+// de tamanho incerto; o bitmask e mais simples pra só confirmar existencia
+// por letra.
+var procGetLogicalDrives = kernel32.NewProc("GetLogicalDrives")
+
+// listLogicalDrivesFn indirecona listLogicalDrives pra permitir mock em
+// teste (chamar GetLogicalDrives de verdade exigiria rodar em Windows com
+// as unidades exatas do ambiente de teste, nao portavel/determinístico).
+var listLogicalDrivesFn = listLogicalDrives
+
+// listLogicalDrives devolve cada unidade existente (A:\, C:\, etc.) como
+// uma entrada de pasta -- usado quando dir == thisPCSentinel.
+func listLogicalDrives() []remoteDirEntry {
+	mask, _, _ := procGetLogicalDrives.Call()
+	entries := make([]remoteDirEntry, 0, 4)
+	for i := 0; i < 26; i++ {
+		if mask&(1<<uint(i)) == 0 {
+			continue
+		}
+		letter := string(rune('A' + i))
+		entries = append(entries, remoteDirEntry{Name: letter + ":\\", IsDir: true})
+	}
+	return entries
+}
+
 // listRemoteDir lista dir (diretorio NESTE computador, remoto do ponto de
 // vista do operador) -- dir vazio abre em %USERPROFILE%\Desktop (mesmo
-// usuario interativo que o companion roda sob, ver session_windows.go).
-// Entrada ilegivel (permissao, link quebrado) e pulada, nao derruba a
-// listagem inteira -- 1 arquivo problematico nao pode impedir ver o resto
-// da pasta.
+// usuario interativo que o companion roda sob, ver session_windows.go);
+// dir == thisPCSentinel lista as unidades disponiveis em vez de uma pasta
+// de verdade. Entrada ilegivel (permissao, link quebrado) e pulada, nao
+// derruba a listagem inteira -- 1 arquivo problematico nao pode impedir
+// ver o resto da pasta.
 func listRemoteDir(dir string) (string, []remoteDirEntry, error) {
+	if dir == thisPCSentinel {
+		return thisPCSentinel, listLogicalDrivesFn(), nil
+	}
 	if dir == "" {
 		dir = filepath.Join(os.Getenv("USERPROFILE"), "Desktop")
 	}

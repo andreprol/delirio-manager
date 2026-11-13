@@ -219,6 +219,48 @@ func TestUploadFileWithProgressAcimaDoLimite(t *testing.T) {
 	}
 }
 
+// TestListRemoteDirThisPCListaUnidades cobre o sentinela "Este Computador"
+// -- dir == thisPCSentinel devolve as unidades (mockadas via
+// listLogicalDrivesFn, mesma indireção de applyFileTransferFn etc.) em vez
+// de tentar ler uma pasta de verdade com esse nome.
+func TestListRemoteDirThisPCListaUnidades(t *testing.T) {
+	original := listLogicalDrivesFn
+	defer func() { listLogicalDrivesFn = original }()
+	listLogicalDrivesFn = func() []remoteDirEntry {
+		return []remoteDirEntry{{Name: "C:\\", IsDir: true}, {Name: "D:\\", IsDir: true}}
+	}
+
+	path, entries, err := listRemoteDir(thisPCSentinel)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if path != thisPCSentinel {
+		t.Errorf("path = %q, want %q", path, thisPCSentinel)
+	}
+	if len(entries) != 2 || entries[0].Name != "C:\\" || entries[1].Name != "D:\\" {
+		t.Errorf("entries = %+v, want unidades C:\\ e D:\\", entries)
+	}
+}
+
+// TestListLogicalDrivesSempreTemC confirma a função REAL (sem mock) contra
+// o Windows de verdade do ambiente de teste -- toda instalação Windows tem
+// pelo menos a unidade C:, então C:\ sempre deve aparecer na lista.
+func TestListLogicalDrivesSempreTemC(t *testing.T) {
+	drives := listLogicalDrives()
+	found := false
+	for _, d := range drives {
+		if d.Name == "C:\\" {
+			found = true
+		}
+		if !d.IsDir {
+			t.Errorf("unidade %q deveria ter IsDir=true", d.Name)
+		}
+	}
+	if !found {
+		t.Errorf("unidades = %+v, esperava encontrar C:\\ (toda instalação Windows tem)", drives)
+	}
+}
+
 // TestListRemoteDirSuccess cobre o happy path do navegador de arquivos
 // dual-pane: pastas primeiro, depois arquivos, cada grupo alfabético.
 func TestListRemoteDirSuccess(t *testing.T) {
