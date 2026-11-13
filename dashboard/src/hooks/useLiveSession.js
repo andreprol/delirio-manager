@@ -139,6 +139,16 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
           // sendSessionInfo) -- substitui o fallback literal "Loja" que o
           // destino default de transferência de arquivo usava antes.
           else if (msg.type === 'session-info') onSessionInfo?.(msg)
+          // companion-reconnecting/-reconnected: o companion caiu de forma
+          // inesperada mas o relay dá uma folga antes de matar a sessão de
+          // vez (liveSessionRelay.js, companionLostGraceMs) -- o socket
+          // dashboard↔servidor nunca cai nesse meio tempo, só os frames
+          // param de chegar. Sem avisar a UI, a tela ficava congelada no
+          // último frame sem nenhuma explicação, indistinguível de um
+          // travamento de verdade. 'reconnecting' é só um status
+          // intermediário; 'connected' de novo quando o companion volta.
+          else if (msg.type === 'companion-reconnecting') notifyStatus('reconnecting')
+          else if (msg.type === 'companion-reconnected') notifyStatus('connected')
         } catch { /* mensagem de texto nao-JSON, ignora */ }
         return
       }

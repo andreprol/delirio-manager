@@ -384,6 +384,30 @@ describe('useLiveSession', () => {
     expect(onFileTransferStatus).toHaveBeenCalledWith({ type: 'file-transfer-progress', bytesReceived: 50, bytesTotal: 100 })
   })
 
+  // companion-reconnecting/-reconnected: o relay dá uma folga antes de
+  // matar a sessão de vez quando o companion cai de forma inesperada
+  // (liveSessionRelay.js) -- o WS dashboard↔servidor nunca fecha nesse meio
+  // tempo (por isso não é um close code, é mensagem de texto pela mesma
+  // conexão), só os frames param. Sem avisar a UI, a tela ficava congelada
+  // sem nenhuma explicação.
+  it('companion-reconnecting muda status pra "reconnecting", companion-reconnected volta pra "connected"', () => {
+    const canvasRef = makeCanvasRef()
+    const onStatusChange = vi.fn()
+    renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef, onStatusChange,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    onStatusChange.mockClear() // limpa a chamada de 'connected' do próprio _open()
+
+    ws._message(JSON.stringify({ type: 'companion-reconnecting' }))
+    expect(onStatusChange).toHaveBeenCalledWith('reconnecting')
+
+    ws._message(JSON.stringify({ type: 'companion-reconnected' }))
+    expect(onStatusChange).toHaveBeenCalledWith('connected')
+  })
+
   it('sendFileTransfer manda type file-transfer com downloadUrl/fileName/destDir', () => {
     const canvasRef = makeCanvasRef()
     const { result } = renderHook(() => useLiveSession({

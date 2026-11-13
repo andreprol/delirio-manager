@@ -28,6 +28,14 @@ const WIN_COMBO_VK = { 'win+r': 82, 'win+e': 69, 'win+d': 68 }
 export function LiveSessionWindow() {
   const [session, setSession] = useState(null) // { sessionId, machineId, mode, dashboardToken, serverUrl }
   const [status, setStatus] = useState('connecting')
+  // statusRef: leitura síncrona de status dentro dos listeners de
+  // teclado (window.addEventListener, registrados 1x por sessão/modo, não
+  // por mudança de status — ver efeito de onKeyDown/onKeyUp abaixo) sem
+  // precisar incluir `status` na dependência do efeito, o que
+  // reatacharia os listeners a cada reconexão (mesmo padrão de modeRef em
+  // useLiveSession.js).
+  const statusRef = useRef(status)
+  statusRef.current = status
   const [recording, setRecording] = useState(false)
   const [inputLocked, setInputLocked] = useState(false)
   // remoteUser chega pelo WS (session-info, mandado 1x pelo companion no
@@ -500,16 +508,26 @@ export function LiveSessionWindow() {
     setInputLocked(next)
   }
 
+  // status !== 'reconnecting' (não status === 'connected': 'connecting' é
+  // o handshake inicial, onde sendInput/sendMouseEvent já no-opam sozinhos
+  // via ws.readyState !== OPEN — sem bug nenhum ali, então sem motivo pra
+  // alargar o guard e arriscar comportamento diferente nesse caso):
+  // achado 🟡 do code-reviewer — durante 'reconnecting' especificamente
+  // (companion caiu, mas o relay dá uma folga antes de matar a sessão, ver
+  // liveSessionRelay.js) o socket dashboard↔servidor CONTINUA aberto
+  // (diferente de 'connecting'), então sem este guard todo
+  // clique/mousemove seria mandado de verdade e descartado em silêncio em
+  // routeMessage (companionWs null) — sem nenhum feedback.
   function handleMouseDown(e) {
-    if (session?.mode !== 'normal') return
+    if (session?.mode !== 'normal' || status === 'reconnecting') return
     sendMouseEvent('mousedown', e.clientX, e.clientY, MOUSE_BUTTON[e.button] || 'left')
   }
   function handleMouseUp(e) {
-    if (session?.mode !== 'normal') return
+    if (session?.mode !== 'normal' || status === 'reconnecting') return
     sendMouseEvent('mouseup', e.clientX, e.clientY, MOUSE_BUTTON[e.button] || 'left')
   }
   function handleMouseMove(e) {
-    if (session?.mode !== 'normal') return
+    if (session?.mode !== 'normal' || status === 'reconnecting') return
     sendMouseEvent('mousemove', e.clientX, e.clientY)
   }
 
@@ -577,6 +595,17 @@ export function LiveSessionWindow() {
         pasteClipboardToRemote()
         return
       }
+      // statusRef === 'reconnecting' (não "!== connected" — mesmo motivo
+      // dos handlers de mouse acima: 'connecting' já no-opa sozinho via
+      // ws.readyState, sem bug ali): mesmo achado 🟡 do code-reviewer —
+      // durante 'reconnecting' o socket dashboard↔servidor segue aberto,
+      // então sem isto o keydown seria mandado de verdade e descartado em
+      // silêncio (companionWs null em routeMessage), sem nenhum feedback.
+      // onKeyUp (abaixo) NÃO ganha o mesmo guard de propósito: soltar uma
+      // tecla já rastreada em heldKeysRef precisa continuar acontecendo
+      // pra não dessincronizar o rastreamento local, mesmo que o envio em
+      // si vire no-op do outro lado.
+      if (statusRef.current === 'reconnecting') return
       heldKeysRef.current.add(e.keyCode)
       sendKeyEvent('keydown', e.keyCode)
     }
@@ -650,7 +679,10 @@ export function LiveSessionWindow() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 16px', borderBottom: '1px solid #1e1e30' }}>
         <span>{session.mode === 'normal' ? '🖥 Normal' : '✍️ Shadow'} — {session.machineName || session.machineId}</span>
         <span style={{ color: status === 'connected' ? '#22c55e' : status === 'error' ? '#ef4444' : '#f59e0b' }}>
-          {status === 'connected' ? 'Conectado' : status === 'error' ? 'Conexão perdida' : 'Conectando...'}
+          {status === 'connected' ? 'Conectado'
+            : status === 'error' ? 'Conexão perdida'
+            : status === 'reconnecting' ? 'Reconectando à máquina remota...'
+            : 'Conectando...'}
         </span>
         {recording && <span style={{ color: '#ef4444' }}>⏺ Gravando {recordingSecs}s</span>}
         {ending && <span style={{ color: '#f59e0b' }}>Encerrando sessão...</span>}

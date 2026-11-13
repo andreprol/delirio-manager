@@ -82,6 +82,18 @@ describe('LiveSessionWindow', () => {
     expect(screen.getByText(/conectando/i)).toBeInTheDocument()
   })
 
+  // status 'reconnecting' (companion caiu, mas o relay dá uma folga antes
+  // de matar a sessão de vez, ver liveSessionRelay.js) precisa de um texto
+  // PRÓPRIO -- sem isso caía no mesmo "Conectando..." genérico da conexão
+  // inicial, indistinguível de uma sessão nova, em vez de avisar que é uma
+  // reconexão de uma sessão já em andamento.
+  it('status "reconnecting" mostra "Reconectando à máquina remota...", distinto de "Conectando..."', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('reconnecting') })
+    expect(screen.getByText(/Reconectando à máquina remota/i)).toBeInTheDocument()
+  })
+
   // Regressão achada em produção: esta janela é um BrowserWindow/processo
   // separado da janela principal, com sua PRÓPRIA instância do módulo
   // api.js (serverUrl/adminSecret nascem vazios aqui, mesmo configurados
@@ -122,6 +134,34 @@ describe('LiveSessionWindow', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     const canvas = screen.getByTestId('live-canvas')
+    fireEvent.mouseDown(canvas, { clientX: 10, clientY: 20, button: 0 })
+    expect(sendMouseEventMock).toHaveBeenCalledWith('mousedown', 10, 20, 'left')
+  })
+
+  // Achado 🟡 do code-reviewer (13/11/2026): durante 'reconnecting'
+  // (companion caiu, relay dá uma folga antes de matar a sessão — ver
+  // liveSessionRelay.js) o socket dashboard↔servidor continua aberto, só
+  // os frames param. Sem este guard, clique/tecla eram mandados de verdade
+  // e descartados em silêncio no servidor (companionWs null), sem nenhum
+  // feedback ao operador.
+  it('mode normal, status "reconnecting": mousedown/keydown NÃO chamam sendMouseEvent/sendKeyEvent', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('reconnecting') })
+
+    const canvas = screen.getByTestId('live-canvas')
+    fireEvent.mouseDown(canvas, { clientX: 10, clientY: 20, button: 0 })
+    fireEvent.mouseMove(canvas, { clientX: 15, clientY: 25 })
+    fireEvent.mouseUp(canvas, { clientX: 10, clientY: 20, button: 0 })
+    fireEvent.keyDown(window, { key: 'a', keyCode: 65 })
+
+    expect(sendMouseEventMock).not.toHaveBeenCalled()
+    expect(sendKeyEventMock).not.toHaveBeenCalledWith('keydown', 65)
+
+    // Volta a 'connected' -- confirma que o guard é só temporário, não
+    // trava o input pro resto da sessão.
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
     fireEvent.mouseDown(canvas, { clientX: 10, clientY: 20, button: 0 })
     expect(sendMouseEventMock).toHaveBeenCalledWith('mousedown', 10, 20, 'left')
   })
