@@ -81,6 +81,45 @@ func sendRemoteDirListing(w frameWriter, listing remoteDirListing) {
 	}
 }
 
+// clipboardFileResult é o protocolo de volta pro dashboard em resposta a
+// "clipboard-get-file" OU "clipboard-get-sequence" (ver input_windows.go,
+// applyClipboardGetFile/applyClipboardGetSequence -- mesmo struct pros 2,
+// Type diferencia qual é qual, campos não usados num deles ficam
+// zero/omitidos). Path vazio significa "nada de arquivo no clipboard
+// remoto agora" -- não é erro (ex: o operador copiou texto, ou nada foi
+// copiado ainda). Message só vem preenchido numa falha real de Win32
+// (OpenClipboard contestado além do retry, etc.). Sequence é o número de
+// sequência do clipboard (GetClipboardSequenceNumber) -- o dashboard
+// compara o de "clipboard-get-sequence" (baseline, antes do Ctrl+C) contra
+// o de "clipboard-get-file" (depois) pra confirmar que o clipboard mudou
+// de verdade, não um arquivo velho que já estava lá (achado 🟠 do
+// code-reviewer). ExtraFiles conta quantos arquivos A MAIS foram copiados
+// junto (só o 1º é baixado) -- achado 🟡 do code-reviewer, antes os
+// extras eram descartados em silêncio.
+type clipboardFileResult struct {
+	Type       string `json:"type"` // "clipboard-file-result" | "clipboard-sequence-result"
+	Path       string `json:"path"`
+	Message    string `json:"message,omitempty"`
+	Sequence   uint32 `json:"sequence,omitempty"`
+	ExtraFiles int    `json:"extraFiles,omitempty"`
+	RequestID  int64  `json:"requestId,omitempty"`
+}
+
+func sendClipboardFileResult(w frameWriter, result clipboardFileResult) {
+	if w == nil {
+		return
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao serializar resultado de clipboard: %v", err))
+		return
+	}
+	deadline := time.Now().Add(liveSessionWriteTimeout)
+	if err := w.WriteMessageWithDeadline(websocket.TextMessage, b, deadline); err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao mandar resultado de clipboard: %v", err))
+	}
+}
+
 // maxRemoteDirEntries limita quantas entradas uma listagem devolve -- uma
 // pasta com dezenas de milhares de arquivos (ex: cache de algum app,
 // pasta de logs) nao pode gerar um payload JSON gigante nem travar a UI do

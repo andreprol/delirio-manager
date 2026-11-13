@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.9.6" // patch: list-remote-dir ganha o sentinela "Este Computador" -- lista as unidades disponiveis (C:, D:, etc.), nao so a arvore do Desktop do usuario
+	Version            = "1.9.7" // minor: clipboard-get-file -- companion le o clipboard remoto (CF_HDROP) sob pedido, usado pelo Ctrl+C remoto->local (copiar arquivo da loja e deixar pronto pro Ctrl+V local)
 )
 
 func main() {

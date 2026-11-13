@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf16"
 	"unsafe"
@@ -16,7 +17,8 @@ import (
 // servidor garante isso, ver liveSessionRelay.routeMessage no plano do
 // server). Tipos: "mousemove", "mousedown", "mouseup", "keydown", "keyup",
 // "lock-local-input", "unlock-local-input", "clipboard-paste",
-// "file-transfer", "file-download", "list-remote-dir".
+// "clipboard-get-file", "clipboard-get-sequence", "file-transfer",
+// "file-download", "list-remote-dir".
 type inputMessage struct {
 	Type        string `json:"type"`
 	X           int32  `json:"x,omitempty"`
@@ -30,7 +32,7 @@ type inputMessage struct {
 	RemotePath  string `json:"remotePath,omitempty"`  // file-download: caminho completo do arquivo NESTA maquina a subir pro Blob
 	UploadURL   string `json:"uploadUrl,omitempty"`   // file-download: SAS de escrita do blob
 	RemoteDir   string `json:"remoteDir,omitempty"`   // list-remote-dir: diretorio a listar (vazio = %USERPROFILE%\Desktop)
-	RequestID   int64  `json:"requestId,omitempty"`   // list-remote-dir: id de correlacao, ecoado de volta em remoteDirListing
+	RequestID   int64  `json:"requestId,omitempty"`   // list-remote-dir/clipboard-get-file: id de correlacao, ecoado de volta
 }
 
 func parseInputMessage(data []byte) (inputMessage, error) {
@@ -57,6 +59,8 @@ var (
 	injectMouseButtonFn    = injectMouseButton
 	injectKeyboardFn       = injectKeyboard
 	injectClipboardPasteFn = injectClipboardPaste
+	getClipboardFilePathFn = getClipboardFilePath
+	getClipboardSequenceFn = getClipboardSequence
 )
 
 // handleLiveSessionInput processa 1 mensagem de input recebida pela conexão
@@ -118,7 +122,8 @@ func dispatchLiveSessionInput(msg inputMessage, sessionID string, w frameWriter)
 }
 
 // dispatchSessionControlInput cobre os tipos de mensagem "de sessão"
-// (lock/unlock de input local, clipboard-paste, file-transfer) — extraído
+// (lock/unlock de input local, clipboard-paste, clipboard-get-file,
+// clipboard-get-sequence, file-transfer) — extraído
 // do switch de dispatchLiveSessionInput só pra manter a complexidade
 // ciclomática de cada função dentro do limite do linter (cyclop, max 10),
 // depois que adicionar o case "file-transfer" ali estourou o limite. w é
@@ -133,6 +138,10 @@ func dispatchSessionControlInput(msg inputMessage, sessionID string, w frameWrit
 		applyLocalInputLock(sessionID, false)
 	case "clipboard-paste":
 		applyClipboardPaste(msg)
+	case "clipboard-get-file":
+		applyClipboardGetFile(msg, w)
+	case "clipboard-get-sequence":
+		applyClipboardGetSequence(msg, w)
 	case "file-transfer":
 		applyFileTransferFn(msg, sessionID, w)
 	case "file-download":
@@ -187,6 +196,44 @@ func applyClipboardPaste(msg inputMessage) {
 	if err := injectClipboardPasteFn(msg.Text); err != nil {
 		logWarn(fmt.Sprintf("companion: falha ao colar via clipboard: %v", err))
 	}
+}
+
+// applyClipboardGetFile responde "o que tem de ARQUIVO no seu clipboard
+// agora" -- usado pelo fluxo Ctrl+C remoto->local (dashboard intercepta o
+// keydown SEM bloquear o encaminhamento normal pro remoto, espera um
+// instante, e pergunta aqui; se vier um caminho, baixa o arquivo e escreve
+// no clipboard REAL do operador -- ver LiveSessionWindow.jsx). Sempre
+// responde, mesmo sem arquivo (Path vazio não é erro, ex: o remoto copiou
+// texto, ou nada foi copiado ainda) -- o dashboard decide o que fazer.
+// Sequence (ver applyClipboardGetSequence) deixa o dashboard confirmar que
+// o clipboard mudou DE VERDADE desde antes do Ctrl+C, não um arquivo velho
+// que já estava lá. ExtraFiles avisa quando há mais de 1 arquivo copiado
+// (só o 1º é baixado).
+func applyClipboardGetFile(msg inputMessage, w frameWriter) {
+	path, count, err := getClipboardFilePathFn()
+	if err != nil {
+		sendClipboardFileResult(w, clipboardFileResult{Type: "clipboard-file-result", Message: err.Error(), RequestID: msg.RequestID})
+		return
+	}
+	extraFiles := 0
+	if count > 1 {
+		extraFiles = count - 1
+	}
+	sendClipboardFileResult(w, clipboardFileResult{
+		Type: "clipboard-file-result", Path: path, Sequence: getClipboardSequenceFn(),
+		ExtraFiles: extraFiles, RequestID: msg.RequestID,
+	})
+}
+
+// applyClipboardGetSequence responde só com o número de sequência ATUAL
+// do clipboard remoto -- usado como BASELINE (disparado no instante do
+// Ctrl+C, antes do Explorer da loja processar a cópia), comparado depois
+// contra o Sequence devolvido por applyClipboardGetFile (disparado ~400ms
+// depois). Round-trip separado: GetClipboardSequenceNumber não precisa de
+// OpenClipboard, então esta resposta chega quase instantânea, bem antes do
+// pedido de clipboard-get-file (que só sai depois do delay no dashboard).
+func applyClipboardGetSequence(msg inputMessage, w frameWriter) {
+	sendClipboardFileResult(w, clipboardFileResult{Type: "clipboard-sequence-result", Sequence: getClipboardSequenceFn(), RequestID: msg.RequestID})
 }
 
 // applyLocalInputLock chama setLocalInputLockedFn e loga o resultado —
@@ -520,22 +567,29 @@ const clipboardPasteMaxChars = 32 * 1024
 
 const (
 	cfUnicodeText = 13     // CF_UNICODETEXT
+	cfHDrop       = 15     // CF_HDROP -- lista de arquivo(s) copiado(s) no Explorer
 	gmemMoveable  = 0x0002 // GMEM_MOVEABLE
 	vkControl     = 0x11   // VK_CONTROL
 	vkV           = 0x56   // 'V'
 )
 
-// user32/kernel32 já declarados em activity_windows.go (mesmo pacote) —
-// reusados aqui pros procs de clipboard.
+// shell32 (DragQueryFileW) é novo aqui -- user32/kernel32 já declarados em
+// activity_windows.go (mesmo pacote), reusados pros procs de clipboard.
+var shell32 = syscall.NewLazyDLL("shell32.dll")
+
 var (
-	procOpenClipboard    = user32.NewProc("OpenClipboard")
-	procCloseClipboard   = user32.NewProc("CloseClipboard")
-	procEmptyClipboard   = user32.NewProc("EmptyClipboard")
-	procSetClipboardData = user32.NewProc("SetClipboardData")
-	procGlobalAlloc      = kernel32.NewProc("GlobalAlloc")
-	procGlobalLock       = kernel32.NewProc("GlobalLock")
-	procGlobalUnlock     = kernel32.NewProc("GlobalUnlock")
-	procGlobalFree       = kernel32.NewProc("GlobalFree")
+	procOpenClipboard           = user32.NewProc("OpenClipboard")
+	procCloseClipboard          = user32.NewProc("CloseClipboard")
+	procEmptyClipboard          = user32.NewProc("EmptyClipboard")
+	procSetClipboardData        = user32.NewProc("SetClipboardData")
+	procGetClipboardData        = user32.NewProc("GetClipboardData")
+	procIsClipboardFormatAvail  = user32.NewProc("IsClipboardFormatAvailable")
+	procDragQueryFileW          = shell32.NewProc("DragQueryFileW")
+	procGetClipboardSequenceNumber = user32.NewProc("GetClipboardSequenceNumber")
+	procGlobalAlloc             = kernel32.NewProc("GlobalAlloc")
+	procGlobalLock              = kernel32.NewProc("GlobalLock")
+	procGlobalUnlock            = kernel32.NewProc("GlobalUnlock")
+	procGlobalFree              = kernel32.NewProc("GlobalFree")
 )
 
 // openClipboardRetries/openClipboardRetryDelay cobrem contenção transitória
@@ -632,6 +686,75 @@ func openClipboardWithRetry() error {
 		time.Sleep(openClipboardRetryDelay)
 	}
 	return fmt.Errorf("OpenClipboard falhou após %d tentativas: %w", openClipboardRetries, lastErr)
+}
+
+// getClipboardFilePath lê o que está no clipboard desta máquina (remota,
+// do ponto de vista do operador) e devolve o caminho do PRIMEIRO arquivo
+// copiado (se houver) + a CONTAGEM total de arquivos -- direção oposta de
+// setClipboardText (aquela escreve, esta lê). "" sem erro significa "nada
+// de arquivo agora" (ex: o remoto copiou texto, ou a área de transferência
+// está vazia) -- não é falha, é a resposta legítima na maioria das vezes
+// que isto é chamado (todo Ctrl+C dentro da sessão dispara esta leitura,
+// não só quando o operador copiou um arquivo de propósito). Só o 1º
+// arquivo é BAIXADO quando vários são copiados juntos -- mesmo limite de
+// "um arquivo por vez" já aceito no resto desta feature (handleDrop,
+// dashboard, também só pega files[0]) -- mas count é devolvido pro
+// dashboard poder avisar o operador que os demais NÃO foram copiados
+// (achado 🟡 do code-reviewer: antes, os extras eram descartados em
+// silêncio, sem o operador perceber).
+func getClipboardFilePath() (string, int, error) {
+	if err := openClipboardWithRetry(); err != nil {
+		return "", 0, err
+	}
+	defer procCloseClipboard.Call() //nolint:errcheck
+
+	avail, _, _ := procIsClipboardFormatAvail.Call(cfHDrop)
+	if avail == 0 {
+		return "", 0, nil
+	}
+	hDrop, _, _ := procGetClipboardData.Call(cfHDrop)
+	if hDrop == 0 {
+		return "", 0, nil
+	}
+	// iFile=0xFFFFFFFF devolve a CONTAGEM de arquivos (não um caminho) --
+	// contrato documentado do DragQueryFileW.
+	count, _, _ := procDragQueryFileW.Call(hDrop, 0xFFFFFFFF, 0, 0)
+	if count == 0 {
+		return "", 0, nil
+	}
+	// lpszFile=NULL (0) devolve o tamanho em CARACTERES do nome do
+	// arquivo de índice 0, sem contar o terminador nulo -- preciso saber
+	// o tamanho antes de alocar o buffer de verdade.
+	length, _, _ := procDragQueryFileW.Call(hDrop, 0, 0, 0)
+	if length == 0 {
+		return "", int(count), nil
+	}
+	buf := make([]uint16, length+1)
+	procDragQueryFileW.Call(hDrop, 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf))) //nolint:errcheck // já validamos count/length acima, chamada final só preenche o buffer
+	for i, c := range buf {
+		if c == 0 {
+			buf = buf[:i]
+			break
+		}
+	}
+	return string(utf16.Decode(buf)), int(count), nil
+}
+
+// getClipboardSequence devolve o número de sequência do clipboard desta
+// máquina (GetClipboardSequenceNumber, Win32) -- incrementa a CADA
+// mudança de conteúdo, mesmo pra conteúdo idêntico ao anterior, e não
+// precisa de OpenClipboard (consulta livre, sem contenção). Usado pelo
+// dashboard pra confirmar que o Ctrl+C realmente mudou o clipboard remoto
+// ANTES de baixar o que getClipboardFilePathFn devolver -- achado 🟠 do
+// code-reviewer: sem isso, um Ctrl+C que não pegou nada (foco errado, app
+// ainda carregando) silenciosamente baixava e colava um arquivo VELHO que
+// já estava no clipboard remoto de antes, sem o operador perceber a troca.
+// Falha (desktop não-interativo etc.) devolve 0 pelo próprio contrato da
+// API -- degradação segura: compara igual a "nada mudou", nunca falsifica
+// uma mudança que não aconteceu.
+func getClipboardSequence() uint32 {
+	seq, _, _ := procGetClipboardSequenceNumber.Call()
+	return uint32(seq)
 }
 
 // sendPasteKeystroke reusa injectKeyboard (já usado pro teclado normal da

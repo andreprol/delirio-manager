@@ -7,12 +7,14 @@ package main
 // outros testes silenciosamente.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -333,6 +335,203 @@ func TestHandleLiveSessionInputClipboardPaste(t *testing.T) {
 			t.Error("injectClipboardPasteFn não deveria ter sido chamada em mode shadow")
 		}
 	})
+}
+
+// TestApplyClipboardGetFile cobre applyClipboardGetFile (mock de
+// getClipboardFilePathFn/getClipboardSequenceFn, mesmo padrão de
+// injectClipboardPasteFn acima) -- confirma que o resultado
+// (path/erro/sequence/extraFiles/requestId) chega até o frameWriter sem
+// alteração, nos 4 casos possíveis: com arquivo, vários arquivos (extras
+// avisados), sem arquivo (não é erro) e falha real de Win32.
+func TestApplyClipboardGetFile(t *testing.T) {
+	originalPath := getClipboardFilePathFn
+	originalSeq := getClipboardSequenceFn
+	defer func() { getClipboardFilePathFn = originalPath; getClipboardSequenceFn = originalSeq }()
+	getClipboardSequenceFn = func() uint32 { return 99 }
+
+	t.Run("com arquivo: Path preenchido, Message vazio, ExtraFiles zero", func(t *testing.T) {
+		getClipboardFilePathFn = func() (string, int, error) { return `C:\Users\Loja\Desktop\nota.txt`, 1, nil }
+		w := &fakeFrameWriter{}
+
+		applyClipboardGetFile(inputMessage{RequestID: 42}, w)
+
+		var result clipboardFileResult
+		if err := json.Unmarshal(w.lastData, &result); err != nil {
+			t.Fatalf("falha ao decodificar resultado: %v", err)
+		}
+		if result.Type != "clipboard-file-result" || result.Path != `C:\Users\Loja\Desktop\nota.txt` || result.Message != "" || result.RequestID != 42 || result.ExtraFiles != 0 || result.Sequence != 99 {
+			t.Errorf("result = %+v", result)
+		}
+	})
+
+	t.Run("vários arquivos copiados: ExtraFiles avisa quantos NÃO foram baixados", func(t *testing.T) {
+		getClipboardFilePathFn = func() (string, int, error) { return `C:\a.txt`, 3, nil }
+		w := &fakeFrameWriter{}
+
+		applyClipboardGetFile(inputMessage{RequestID: 10}, w)
+
+		var result clipboardFileResult
+		if err := json.Unmarshal(w.lastData, &result); err != nil {
+			t.Fatalf("falha ao decodificar resultado: %v", err)
+		}
+		if result.ExtraFiles != 2 {
+			t.Errorf("ExtraFiles = %d, want 2 (3 copiados, só 1 baixado)", result.ExtraFiles)
+		}
+	})
+
+	t.Run("sem arquivo (clipboard tem texto, ex.): Path e Message vazios, não é erro", func(t *testing.T) {
+		getClipboardFilePathFn = func() (string, int, error) { return "", 0, nil }
+		w := &fakeFrameWriter{}
+
+		applyClipboardGetFile(inputMessage{RequestID: 7}, w)
+
+		var result clipboardFileResult
+		if err := json.Unmarshal(w.lastData, &result); err != nil {
+			t.Fatalf("falha ao decodificar resultado: %v", err)
+		}
+		if result.Path != "" || result.Message != "" || result.RequestID != 7 {
+			t.Errorf("result = %+v, esperava Path/Message vazios", result)
+		}
+	})
+
+	t.Run("falha real de Win32: Message preenchido, Path vazio", func(t *testing.T) {
+		getClipboardFilePathFn = func() (string, int, error) { return "", 0, errors.New("OpenClipboard falhou após 5 tentativas") }
+		w := &fakeFrameWriter{}
+
+		applyClipboardGetFile(inputMessage{RequestID: 9}, w)
+
+		var result clipboardFileResult
+		if err := json.Unmarshal(w.lastData, &result); err != nil {
+			t.Fatalf("falha ao decodificar resultado: %v", err)
+		}
+		if result.Path != "" || result.Message == "" || result.RequestID != 9 {
+			t.Errorf("result = %+v, esperava Message preenchido", result)
+		}
+	})
+}
+
+// TestApplyClipboardGetSequence cobre applyClipboardGetSequence -- round
+// trip separado/leve usado como baseline (ver comentário na função) antes
+// do Ctrl+C ser processado pelo remoto.
+func TestApplyClipboardGetSequence(t *testing.T) {
+	original := getClipboardSequenceFn
+	defer func() { getClipboardSequenceFn = original }()
+	getClipboardSequenceFn = func() uint32 { return 123 }
+
+	w := &fakeFrameWriter{}
+	applyClipboardGetSequence(inputMessage{RequestID: 5}, w)
+
+	var result clipboardFileResult
+	if err := json.Unmarshal(w.lastData, &result); err != nil {
+		t.Fatalf("falha ao decodificar resultado: %v", err)
+	}
+	if result.Type != "clipboard-sequence-result" || result.Sequence != 123 || result.RequestID != 5 {
+		t.Errorf("result = %+v", result)
+	}
+}
+
+// TestGetClipboardFilePathSemArquivoQuandoClipboardTemTexto confirma, com o
+// clipboard de VERDADE do host de teste (sem mock), que getClipboardFilePath
+// devolve "" sem erro quando o clipboard tem TEXTO (CF_UNICODETEXT), não
+// arquivo -- usa setClipboardText (já existente, escreve texto de verdade)
+// pra deixar o clipboard num estado CONHECIDO antes de ler, em vez de
+// depender do que já estava lá antes do teste rodar.
+func TestGetClipboardFilePathSemArquivoQuandoClipboardTemTexto(t *testing.T) {
+	if err := setClipboardText("so texto, nao e arquivo " + t.Name()); err != nil {
+		t.Fatalf("falha ao preparar o clipboard pro teste: %v", err)
+	}
+	path, count, err := getClipboardFilePath()
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if path != "" || count != 0 {
+		t.Errorf("path = %q, count = %d, esperava vazio/zero (clipboard tem texto, não arquivo)", path, count)
+	}
+}
+
+// TestGetClipboardFilePathRoundTrip escreve um CF_HDROP de verdade no
+// clipboard do host de teste (réplica mínima do que
+// dashboard/winkeyhook/clipboardwrite.go implementa pro operador -- os 2
+// módulos Go são binários SEPARADOS, go.mod distintos, não dá pra importar
+// um do outro) e confirma que getClipboardFilePath lê de volta exatamente
+// o caminho escrito.
+func TestGetClipboardFilePathRoundTrip(t *testing.T) {
+	wantPath := `C:\Users\Teste\arquivo-round-trip.txt`
+	if err := testWriteClipboardHDrop(wantPath); err != nil {
+		t.Fatalf("falha ao escrever CF_HDROP de teste: %v", err)
+	}
+	gotPath, count, err := getClipboardFilePath()
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if gotPath != wantPath {
+		t.Errorf("path = %q, want %q", gotPath, wantPath)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
+	}
+}
+
+// TestGetClipboardSequenceReal confirma, com o Win32 de verdade do host de
+// teste (sem mock), que getClipboardSequence muda depois de uma escrita no
+// clipboard -- é exatamente essa mudança que o dashboard usa como prova de
+// "o Ctrl+C realmente copiou algo novo".
+func TestGetClipboardSequenceReal(t *testing.T) {
+	before := getClipboardSequence()
+	if err := setClipboardText("mudando o clipboard " + t.Name()); err != nil {
+		t.Fatalf("falha ao escrever no clipboard: %v", err)
+	}
+	after := getClipboardSequence()
+	if after == before {
+		t.Errorf("sequence não mudou (before=after=%d) depois de escrever no clipboard", before)
+	}
+}
+
+// testWriteClipboardHDrop é uma réplica MÍNIMA (só pra TestGetClipboardFilePathRoundTrip
+// acima) do que dashboard/winkeyhook/clipboardwrite.go implementa de
+// verdade pro operador.
+func testWriteClipboardHDrop(filePath string) error {
+	if err := openClipboardWithRetry(); err != nil {
+		return err
+	}
+	defer procCloseClipboard.Call() //nolint:errcheck
+
+	if ret, _, err := procEmptyClipboard.Call(); ret == 0 {
+		return fmt.Errorf("EmptyClipboard falhou: %w", err)
+	}
+
+	utf16Path := utf16.Encode([]rune(filePath))
+	utf16Path = append(utf16Path, 0, 0) // terminador duplo exigido pelo formato DROPFILES
+
+	type testDropFiles struct {
+		PFiles       uint32
+		PtX, PtY     int32
+		FNC, FWide   int32
+	}
+	headerSize := uintptr(unsafe.Sizeof(testDropFiles{}))
+	byteSize := headerSize + uintptr(len(utf16Path))*2
+
+	hMem, _, err := procGlobalAlloc.Call(gmemMoveable, byteSize)
+	if hMem == 0 {
+		return fmt.Errorf("GlobalAlloc falhou: %w", err)
+	}
+	ptr, _, err := procGlobalLock.Call(hMem)
+	if ptr == 0 {
+		procGlobalFree.Call(hMem) //nolint:errcheck
+		return fmt.Errorf("GlobalLock falhou: %w", err)
+	}
+	hdr := (*testDropFiles)(unsafe.Pointer(ptr))
+	hdr.PFiles = uint32(headerSize)
+	hdr.FWide = 1
+	dst := unsafe.Slice((*uint16)(unsafe.Pointer(ptr+headerSize)), len(utf16Path)) //nolint:govet
+	copy(dst, utf16Path)
+	procGlobalUnlock.Call(hMem) //nolint:errcheck
+
+	if ret, _, err := procSetClipboardData.Call(cfHDrop, hMem); ret == 0 {
+		procGlobalFree.Call(hMem) //nolint:errcheck
+		return fmt.Errorf("SetClipboardData falhou: %w", err)
+	}
+	return nil
 }
 
 // TestInjectClipboardPasteValidation cobre os fail-safes de
