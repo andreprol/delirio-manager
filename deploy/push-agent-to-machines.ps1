@@ -119,9 +119,29 @@ $blobUrl = "https://$StorageAccount.blob.core.windows.net/$Container/$blobName" 
 Write-Host "Upload OK: $blobName (SAS expira em 2h)" -ForegroundColor Green
 
 # 3. Script Windows (PowerShell) que cada maquina alvo vai executar via
-#    run_powershell -- baixa PRIMEIRO, valida, so DEPOIS para o servico
-#    (minimiza a janela com o agente fora do ar: stop+copy+start, nao
-#    stop+download+copy+start).
+#    run_powershell -- baixa PRIMEIRO, valida, so DEPOIS troca o binario.
+#
+#    NUNCA usar Stop-Service aqui (bug real, achado 12/11/2026 depois de 2
+#    pushes pra ASSBOH ficarem presos pra sempre em status "sent", nunca
+#    acked, e o .exe nunca trocar de verdade): run_powershell roda DENTRO
+#    do proprio processo DelirioAgent.exe (handleCommand -> exec.Command
+#    spawna este script como FILHO do servico) -- Stop-Service pede pro SCM
+#    derrubar esse mesmo processo pai ENQUANTO ele ainda esta no meio da
+#    execucao deste script, entao Copy-Item/Start-Service nunca chegam a
+#    rodar. O ACK em si tambem nunca seria enviado nesse desenho (quem
+#    manda o ACK e o Go, no processo pai que acabou de morrer) -- por
+#    design, nao da pra confiar em ACK pra este comando especifico.
+#
+#    Fix: mesma tecnica que agent/updater.go ja usa pro self-update (e
+#    funciona, prova viva disso) -- RENOMEAR o exe corrente (Windows deixa
+#    renomear um .exe em execucao, so nao deixa sobrescrever/apagar) em vez
+#    de parar o servico, so DEPOIS matar o processo (Stop-Process -Force,
+#    nao Stop-Service -- abrupto, dispara a recovery action ja configurada
+#    em main.go/SetRecoveryActions: restart em 5s/10s/30s) pra reiniciar
+#    com o arquivo novo ja no lugar. O arquivo troca garantido ANTES de
+#    qualquer coisa que possa matar o processo que esta rodando isto.
+#    Confirmar sucesso real depois via GET /api/machines (agentVersion),
+#    nunca via status do comando.
 $swapScript = @'
 $tmp = "$env:TEMP\delirio-agent-push.exe"
 try {
@@ -130,12 +150,13 @@ try {
     if ($len -lt 1000000) { throw "download suspeito: $len bytes" }
     $svc = Get-WmiObject Win32_Service -Filter "Name='DelirioAgent'"
     $exePath = ($svc.PathName -replace '"','').Trim()
-    Stop-Service DelirioAgent -Force
-    Copy-Item $tmp $exePath -Force
-    Start-Service DelirioAgent
-    Start-Sleep -Seconds 2
-    $status = (Get-Service DelirioAgent).Status
-    Write-Output "OK status=$status path=$exePath size=$len"
+    $oldPath = "$exePath.old"
+    $targetPid = $svc.ProcessId
+    Remove-Item $oldPath -Force -ErrorAction SilentlyContinue
+    Rename-Item $exePath $oldPath -Force
+    Move-Item $tmp $exePath -Force
+    if ($targetPid -and $targetPid -ne 0) { Stop-Process -Id $targetPid -Force }
+    Write-Output "OK path=$exePath size=$len (rename trick, processo derrubado p/ SCM reiniciar via recovery action)"
 } catch {
     Write-Output "ERRO: $($_.Exception.Message)"
 }
