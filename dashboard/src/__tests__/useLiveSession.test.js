@@ -445,4 +445,53 @@ describe('useLiveSession', () => {
 
     expect(ws.sent).toHaveLength(0)
   })
+
+  // Direção contrária (máquina remota -> operador) — espelho dos 2 testes
+  // de sendFileTransfer acima.
+  it('sendFileDownload manda type file-download com remotePath/uploadUrl', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => {
+      result.current.sendFileDownload('C:\\Users\\Loja\\Desktop\\relatorio.pdf', 'https://blob/y?sas-escrita')
+    })
+
+    expect(ws.sent).toContain(JSON.stringify({
+      type: 'file-download', remotePath: 'C:\\Users\\Loja\\Desktop\\relatorio.pdf', uploadUrl: 'https://blob/y?sas-escrita',
+    }))
+  })
+
+  it('sendFileDownload não manda nada em mode shadow', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'shadow', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    act(() => { ws._open() })
+
+    act(() => {
+      result.current.sendFileDownload('C:\\Users\\Loja\\Desktop\\relatorio.pdf', 'https://blob/y?sas-escrita')
+    })
+
+    expect(ws.sent).toHaveLength(0)
+  })
+
+  it('mensagem de texto file-download-progress chama onFileTransferStatus (mesmo callback de file-transfer-*)', () => {
+    const canvasRef = makeCanvasRef()
+    const onFileTransferStatus = vi.fn()
+    renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef, onFileTransferStatus,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    ws._message(JSON.stringify({ type: 'file-download-progress', bytesReceived: 30, bytesTotal: 100 }))
+
+    expect(onFileTransferStatus).toHaveBeenCalledWith({ type: 'file-download-progress', bytesReceived: 30, bytesTotal: 100 })
+  })
 })

@@ -65,7 +65,11 @@ export function LiveSessionWindow() {
   recordingSecsRef.current = recordingSecs
 
   const [fileDestDir, setFileDestDir] = useState('')
-  const [fileTransferProgress, setFileTransferProgress] = useState(null) // {bytesReceived, bytesTotal} | 'error: ...' | 'done' | null
+  // remoteFilePath: caminho completo do arquivo NO REMOTO que o operador
+  // quer baixar pro próprio computador — direção contrária de fileDestDir
+  // (que é o destino NO remoto de um arquivo enviado DAQUI).
+  const [remoteFilePath, setRemoteFilePath] = useState('')
+  const [fileTransferProgress, setFileTransferProgress] = useState(null) // {bytesReceived, bytesTotal} | 'error: ...' | 'done-upload' | 'done-download' | 'baixando pro seu computador...' | null
   // Guarda se já existe uma transferência em andamento — tanto o upload pro
   // Blob (síncrono do ponto de vista desta função) quanto o download real na
   // máquina remota (assíncrono, só termina quando handleFileTransferStatus
@@ -79,22 +83,58 @@ export function LiveSessionWindow() {
   // (achado 🟠 do code-reviewer).
   const transferringRef = useRef(false)
   const [isTransferring, setIsTransferring] = useState(false)
+  // pendingDownloadUrlRef: SAS de leitura do blob (direção remoto->operador)
+  // guardada entre o pedido inicial (getFileDownloadUrl) e o momento em que
+  // o companion avisa 'file-download-done' -- só então o Electron baixa de
+  // fato (window.electronAPI.downloadFile), ver sendRemoteFileToLocal.
+  const pendingDownloadUrlRef = useRef(null)
 
   const handleFileTransferStatus = useCallback((msg) => {
-    if (msg.type === 'file-transfer-progress') {
+    if (msg.type === 'file-transfer-progress' || msg.type === 'file-download-progress') {
       setFileTransferProgress({ bytesReceived: msg.bytesReceived, bytesTotal: msg.bytesTotal })
     } else if (msg.type === 'file-transfer-done') {
-      setFileTransferProgress('done')
+      setFileTransferProgress('done-upload') // "done" sozinho era ambíguo entre as 2 direções
       transferringRef.current = false
       setIsTransferring(false)
-    } else if (msg.type === 'file-transfer-error') {
+    } else if (msg.type === 'file-download-done') {
+      // O companion já subiu o arquivo pro Blob -- falta só baixar pro
+      // computador do operador. transferringRef/isTransferring continuam
+      // true até o download local terminar (ou falhar).
+      const url = pendingDownloadUrlRef.current
+      pendingDownloadUrlRef.current = null
+      // Achado 🔴 ALTO do code-reviewer: `window.electronAPI?.downloadFile(url).then()...`
+      // encadeado a partir do próprio optional chaining — se electronAPI
+      // faltar, a cadeia INTEIRA (incluindo .then/.catch/.finally) vira
+      // `undefined` e NENHUM dos 3 callbacks roda, travando
+      // transferringRef/isTransferring em true pra sempre (UI presa em
+      // "Baixando..." sem erro visível, sem recuperação sem recarregar a
+      // janela). Resto do projeto guarda ANTES de chamar, nunca encadeia a
+      // partir do acesso opcional (App.jsx, AlohaDANFESearch.jsx) — mesmo
+      // padrão aqui.
+      if (!window.electronAPI?.downloadFile) {
+        setFileTransferProgress('error: recurso de download indisponível nesta janela')
+        transferringRef.current = false
+        setIsTransferring(false)
+        return
+      }
+      setFileTransferProgress('baixando pro seu computador...')
+      window.electronAPI.downloadFile(url).then(() => {
+        setFileTransferProgress('done-download')
+      }).catch((err) => {
+        setFileTransferProgress('error: ' + (err?.message || 'falha ao salvar o arquivo baixado'))
+      }).finally(() => {
+        transferringRef.current = false
+        setIsTransferring(false)
+      })
+    } else if (msg.type === 'file-transfer-error' || msg.type === 'file-download-error') {
       setFileTransferProgress('error: ' + msg.message)
+      pendingDownloadUrlRef.current = null
       transferringRef.current = false
       setIsTransferring(false)
     }
   }, [])
 
-  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer } = useLiveSession({
+  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload } = useLiveSession({
     serverUrl: session?.serverUrl,
     sessionId: session?.sessionId,
     dashboardToken: session?.dashboardToken,
@@ -177,6 +217,42 @@ export function LiveSessionWindow() {
       setIsTransferring(false)
     }
   }, [session, fileDestDir, defaultDestDir, sendFileTransfer, status])
+
+  // sendRemoteFileToLocal: direção contrária de sendLocalFileToRemote --
+  // pede ao servidor o par de SAS (upload+download pro mesmo blob, mesma
+  // API que a outra direção, só rota diferente), manda o companion ler
+  // remotePath e subir pro Blob, e guarda a downloadUrl pra usar quando
+  // ele terminar (handleFileTransferStatus, 'file-download-done').
+  const sendRemoteFileToLocal = useCallback(async (remotePath) => {
+    if (transferringRef.current) return
+    if (status !== 'connected') {
+      setFileTransferProgress('error: sem conexão com a sessão ao vivo')
+      return
+    }
+    const trimmedPath = remotePath.trim()
+    if (!trimmedPath) {
+      setFileTransferProgress('error: informe o caminho do arquivo na máquina remota')
+      return
+    }
+    transferringRef.current = true
+    setIsTransferring(true)
+    const fileName = trimmedPath.split(/[\\/]/).pop()
+    setFileTransferProgress({ bytesReceived: 0, bytesTotal: 0 })
+    try {
+      const { uploadUrl, downloadUrl } = await api.live.getFileDownloadUrl(session.sessionId, fileName)
+      pendingDownloadUrlRef.current = downloadUrl
+      sendFileDownload(trimmedPath, uploadUrl)
+      // transferringRef/isTransferring continuam true daqui até
+      // handleFileTransferStatus receber file-download-done/-error -- o
+      // pedido de SAS terminou aqui, mas o upload do companion pro Blob
+      // (e depois o download local, via downloadFile) ainda estão por vir.
+    } catch (err) {
+      setFileTransferProgress('error: ' + (err?.message || 'falha ao iniciar o download'))
+      pendingDownloadUrlRef.current = null
+      transferringRef.current = false
+      setIsTransferring(false)
+    }
+  }, [session, status, sendFileDownload])
 
   const handlePickFile = useCallback(async () => {
     const localPath = await window.electronAPI.pickFile()
@@ -733,10 +809,31 @@ export function LiveSessionWindow() {
             >
               Enviar arquivo
             </button>
+            <input
+              type="text"
+              value={remoteFilePath}
+              onChange={(e) => setRemoteFilePath(e.target.value)}
+              placeholder="Caminho do arquivo no remoto"
+              style={{ width: 220 }}
+            />
+            <button
+              className="btn btn-secondary"
+              onClick={() => sendRemoteFileToLocal(remoteFilePath)}
+              disabled={ending || isTransferring || status !== 'connected'}
+              title={
+                isTransferring ? 'Já existe uma transferência em andamento'
+                  : status !== 'connected' ? 'Sem conexão com a sessão ao vivo'
+                  : undefined
+              }
+            >
+              Baixar arquivo
+            </button>
             {fileTransferProgress && typeof fileTransferProgress === 'object' && (
               <progress value={fileTransferProgress.bytesReceived} max={fileTransferProgress.bytesTotal || 1} />
             )}
-            {fileTransferProgress === 'done' && <span style={{ color: '#22c55e' }}>Arquivo enviado ✓</span>}
+            {fileTransferProgress === 'baixando pro seu computador...' && <span style={{ color: '#f59e0b' }}>Baixando pro seu computador...</span>}
+            {fileTransferProgress === 'done-upload' && <span style={{ color: '#22c55e' }}>Arquivo enviado ✓</span>}
+            {fileTransferProgress === 'done-download' && <span style={{ color: '#22c55e' }}>Arquivo baixado ✓</span>}
             {typeof fileTransferProgress === 'string' && fileTransferProgress.startsWith('error') && (
               <span style={{ color: '#ef4444' }}>{fileTransferProgress}</span>
             )}

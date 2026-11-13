@@ -187,6 +187,10 @@ export const api = {
     stop:  (sessionId, recorded)    => request('POST', `/api/live/${sessionId}/stop`, { recorded: !!recorded }, { admin: true }),
     getFileUploadUrl: (sessionId, fileName, fileSize) =>
       request('POST', `/api/live/${sessionId}/file/upload-url`, { fileName, fileSize }, { admin: true }),
+    // Direção contrária (máquina remota -> operador) -- sem fileSize: o
+    // tamanho só é conhecido quando o companion abre o arquivo pra ler.
+    getFileDownloadUrl: (sessionId, fileName) =>
+      request('POST', `/api/live/${sessionId}/file/download-url`, { fileName }, { admin: true }),
   },
 
   // Ponto remoto (REP-P/REP-A) — grupo específico de funcionários, fora do

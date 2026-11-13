@@ -7,6 +7,7 @@ const sendMouseEventMock = vi.fn()
 const sendKeyEventMock = vi.fn()
 const sendClipboardPasteMock = vi.fn()
 const sendFileTransferMock = vi.fn()
+const sendFileDownloadMock = vi.fn()
 let lastUseLiveSessionArgs = null
 
 vi.mock('../hooks/useLiveSession', () => ({
@@ -18,6 +19,7 @@ vi.mock('../hooks/useLiveSession', () => ({
       sendKeyEvent: sendKeyEventMock,
       sendClipboardPaste: sendClipboardPasteMock,
       sendFileTransfer: sendFileTransferMock,
+      sendFileDownload: sendFileDownloadMock,
     }
   },
 }))
@@ -27,6 +29,7 @@ vi.mock('../api', () => ({
     live: {
       stop: vi.fn().mockResolvedValue({ ok: true }),
       getFileUploadUrl: vi.fn().mockResolvedValue({ uploadUrl: 'https://blob/x?sas-up', downloadUrl: 'https://blob/x?sas-down' }),
+      getFileDownloadUrl: vi.fn().mockResolvedValue({ uploadUrl: 'https://blob/y?sas-up', downloadUrl: 'https://blob/y?sas-down' }),
     },
   },
   setServerUrl: vi.fn(),
@@ -64,6 +67,7 @@ beforeEach(() => {
     pickFile: vi.fn().mockResolvedValue(null),
     readLocalFile: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
     getPathForFile: vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe'),
+    downloadFile: vi.fn().mockResolvedValue(true),
     onNormalWindowVisibilityChange: vi.fn((cb) => {
       window.electronAPI.__fireNormalWindowVisibility = (data) => cb(data)
       return () => {}
@@ -547,6 +551,97 @@ describe('LiveSessionWindow', () => {
     expect(api.live.getFileUploadUrl).toHaveBeenCalledWith('s1', 'instalador.exe', 8)
     expect(global.fetch).toHaveBeenCalledWith('https://blob/x?sas-up', expect.objectContaining({ method: 'PUT' }))
     expect(sendFileTransferMock).toHaveBeenCalledWith('https://blob/x?sas-down', 'instalador.exe', expect.any(String))
+  })
+
+  // Direção contrária (máquina remota -> operador) -- espelho do teste
+  // acima, mas sem upload do lado do dashboard: o companion é quem sobe pro
+  // Blob (simulado aqui só pela chegada de file-download-done via WS), e
+  // quem baixa de fato é o Electron (window.electronAPI.downloadFile).
+  it('mode normal: botão Baixar arquivo pede download-url, manda sendFileDownload, e baixa via Electron quando o companion termina', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+    const input = screen.getByPlaceholderText(/Caminho do arquivo no remoto/i)
+    fireEvent.change(input, { target: { value: 'C:\\Users\\Loja\\Desktop\\relatorio.pdf' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Baixar arquivo/i))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(api.live.getFileDownloadUrl).toHaveBeenCalledWith('s1', 'relatorio.pdf')
+    expect(sendFileDownloadMock).toHaveBeenCalledWith('C:\\Users\\Loja\\Desktop\\relatorio.pdf', 'https://blob/y?sas-up')
+    expect(window.electronAPI.downloadFile).not.toHaveBeenCalled() // só depois do companion avisar, não antes
+
+    // Companion termina de subir pro Blob -- só AGORA o Electron baixa de fato.
+    await act(async () => {
+      lastUseLiveSessionArgs.onFileTransferStatus({ type: 'file-download-done' })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.downloadFile).toHaveBeenCalledWith('https://blob/y?sas-down')
+    expect(screen.getByText(/Arquivo baixado/i)).toBeInTheDocument()
+  })
+
+  it('mode normal: Baixar arquivo sem caminho informado recusa, sem chamar getFileDownloadUrl', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Baixar arquivo/i))
+      await Promise.resolve()
+    })
+
+    expect(api.live.getFileDownloadUrl).not.toHaveBeenCalled()
+    expect(screen.getByText(/informe o caminho/i)).toBeInTheDocument()
+  })
+
+  // Achado 🔴 ALTO do code-reviewer (13/11/2026): `window.electronAPI?.downloadFile(url).then()...`
+  // encadeado a partir do optional chaining -- se electronAPI faltar
+  // (ex: preload ainda não rodou, versão antiga), a cadeia INTEIRA
+  // (then/catch/finally) vira undefined e NENHUM callback roda, travando
+  // isTransferring=true pra sempre, sem erro visível. Este teste prova que
+  // o guard explícito evita exatamente isso.
+  it('file-download-done sem window.electronAPI.downloadFile mostra erro e destrava, não trava pra sempre', async () => {
+    delete window.electronAPI.downloadFile // simula electronAPI sem esse método
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+    const input = screen.getByPlaceholderText(/Caminho do arquivo no remoto/i)
+    fireEvent.change(input, { target: { value: 'C:\\Users\\Loja\\Desktop\\relatorio.pdf' } })
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Baixar arquivo/i))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      lastUseLiveSessionArgs.onFileTransferStatus({ type: 'file-download-done' })
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText(/error:/i)).toBeInTheDocument()
+    // Destravado -- um 2º "Baixar arquivo" (agora com electronAPI de volta)
+    // funciona normalmente, não fica preso em isTransferring pra sempre.
+    window.electronAPI.downloadFile = vi.fn().mockResolvedValue(true)
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Baixar arquivo/i))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(api.live.getFileDownloadUrl).toHaveBeenCalledTimes(2)
+  })
+
+  it('mode shadow: botao Baixar arquivo nao aparece', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    expect(screen.queryByText(/Baixar arquivo/i)).not.toBeInTheDocument()
   })
 
   it('mode shadow: botao Enviar arquivo nao aparece', () => {

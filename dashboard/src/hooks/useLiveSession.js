@@ -133,7 +133,9 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
       if (typeof e.data === 'string') {
         try {
           const msg = JSON.parse(e.data)
-          if (msg.type?.startsWith('file-transfer-')) onFileTransferStatus?.(msg)
+          // file-download-* (direção remoto->operador) reusa o MESMO
+          // callback -- LiveSessionWindow.jsx distingue pelo msg.type.
+          if (msg.type?.startsWith('file-transfer-') || msg.type?.startsWith('file-download-')) onFileTransferStatus?.(msg)
           // session-info: username real da máquina remota, mandado 1x pelo
           // companion no início da sessão (ver agent/livesession_windows.go,
           // sendSessionInfo) -- substitui o fallback literal "Loja" que o
@@ -245,5 +247,14 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     sendInput({ type: 'file-transfer', downloadUrl, fileName, destDir })
   }, [sendInput])
 
-  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer }
+  // sendFileDownload: direção contrária (máquina remota -> operador) — o
+  // companion lê remotePath (arquivo NELE, do ponto de vista do operador) e
+  // sobe pro mesmo blob que uploadUrl assina (SAS de escrita gerada pelo
+  // servidor); o dashboard baixa depois via downloadUrl, quando o companion
+  // avisar 'file-download-done' (ver LiveSessionWindow.jsx).
+  const sendFileDownload = useCallback((remotePath, uploadUrl) => {
+    sendInput({ type: 'file-download', remotePath, uploadUrl })
+  }, [sendInput])
+
+  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload }
 }
