@@ -64,7 +64,7 @@ describe('FileBrowserModal', () => {
     expect(props.requestRemoteDir).not.toHaveBeenCalled()
   })
 
-  it('botão "⬆" (subir) pede o diretório pai, parando na raiz da unidade', () => {
+  it('botão "⬆" (subir) pede o diretório pai; na raiz da unidade, sobe pra "Este Computador" (lista de unidades)', () => {
     const props = makeProps({
       localListing: { path: 'C:\\Users\\Andre\\Desktop\\Projetos', entries: [] },
       remoteListing: { path: 'C:\\', entries: [] },
@@ -73,11 +73,11 @@ describe('FileBrowserModal', () => {
     const upButtons = screen.getAllByTitle('Subir um nível')
     fireEvent.click(upButtons[0]) // painel local
     expect(props.requestLocalDir).toHaveBeenCalledWith('C:\\Users\\Andre\\Desktop')
-    fireEvent.click(upButtons[1]) // painel remoto, já na raiz -- não desce além
-    expect(props.requestRemoteDir).toHaveBeenCalledWith('C:\\')
+    fireEvent.click(upButtons[1]) // painel remoto, já na raiz -- sobe pra ver as outras unidades
+    expect(props.requestRemoteDir).toHaveBeenCalledWith('Este Computador')
   })
 
-  it('botão "⬆" numa raiz UNC (\\\\servidor\\share) não corta no meio do nome do servidor', () => {
+  it('botão "⬆" numa raiz UNC (\\\\servidor\\share) sobe pra "Este Computador", sem cortar no meio do nome do servidor', () => {
     const props = makeProps({
       localListing: { path: '\\\\servidor\\share\\pasta', entries: [] },
       remoteListing: { path: '\\\\servidor\\share', entries: [] },
@@ -86,8 +86,38 @@ describe('FileBrowserModal', () => {
     const upButtons = screen.getAllByTitle('Subir um nível')
     fireEvent.click(upButtons[0]) // sobe de \\servidor\share\pasta -- pára na raiz do compartilhamento
     expect(props.requestLocalDir).toHaveBeenCalledWith('\\\\servidor\\share')
-    fireEvent.click(upButtons[1]) // já na raiz do compartilhamento -- não corta no meio de "servidor"
-    expect(props.requestRemoteDir).toHaveBeenCalledWith('\\\\servidor\\share')
+    fireEvent.click(upButtons[1]) // já na raiz do compartilhamento -- sobe pra "Este Computador", nunca corta no meio de "servidor"
+    expect(props.requestRemoteDir).toHaveBeenCalledWith('Este Computador')
+  })
+
+  // Achado 🟠 do code-reviewer: parentWindowsPath fundia "já na raiz da
+  // unidade" (ex: "C:\") com "1 nível acima da raiz" (ex: "C:\Users") no
+  // mesmo if -- "⬆" a partir de QUALQUER pasta de topo (C:\Users,
+  // D:\Projetos etc.) saltava direto pra "Este Computador", pulando a
+  // listagem da raiz da unidade por completo.
+  it('botão "⬆" numa pasta de topo (ex: "C:\\Users") pára na raiz da unidade, não pula pra "Este Computador"', () => {
+    const props = makeProps({ remoteListing: { path: 'C:\\Users', entries: [] } })
+    render(<FileBrowserModal {...props} />)
+    fireEvent.click(screen.getAllByTitle('Subir um nível')[1])
+    expect(props.requestRemoteDir).toHaveBeenCalledWith('C:\\')
+  })
+
+  // "Este Computador" (THIS_PC): sentinela que lista as unidades
+  // disponíveis -- André pediu pra dar pra navegar entre TODAS as
+  // unidades (C:, D:, etc.), não só a árvore do Desktop.
+  it('no topo ("Este Computador"), botão "⬆" fica desabilitado', () => {
+    const props = makeProps({ localListing: { path: 'Este Computador', entries: [] } })
+    render(<FileBrowserModal {...props} />)
+    expect(screen.getAllByTitle('Subir um nível')[0]).toBeDisabled()
+  })
+
+  it('duplo-clique numa unidade listada em "Este Computador" navega DIRETO pra ela (não junta os caminhos)', () => {
+    const props = makeProps({
+      remoteListing: { path: 'Este Computador', entries: [{ name: 'D:\\', isDir: true, size: 0 }] },
+    })
+    render(<FileBrowserModal {...props} />)
+    fireEvent.doubleClick(screen.getByTestId('remote-pane-entry-D:\\'))
+    expect(props.requestRemoteDir).toHaveBeenCalledWith('D:\\')
   })
 
   // Achado 🟠 do code-reviewer: "⬆" navegava SEM limpar a seleção —

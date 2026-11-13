@@ -18,36 +18,54 @@ function formatBytes(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
+// THIS_PC: sentinela que significa "mostra as unidades disponíveis" em
+// vez de uma pasta de verdade -- equivalente ao "Este Computador"/"This
+// PC" do Explorer. André pediu pra dar pra navegar entre TODAS as
+// unidades (C:, D:, etc.), não só a árvore do Desktop -- esse literal
+// precisa bater EXATAMENTE com thisPCSentinel (agent/filetransfer_windows.go)
+// e THIS_PC_SENTINEL (dashboard/electron/main.js), mesmo risco já
+// documentado pra LIVE_SESSION_MSG/CLOSE_CODES (server).
+const THIS_PC = 'Este Computador'
+
+// DRIVE_RE identifica uma entrada de unidade (ex: "C:\") -- usado pra
+// escolher o ícone certo e pra joinWindowsPath saber que, partindo de
+// THIS_PC, deve navegar DIRETO pra unidade em vez de juntar os caminhos.
+const DRIVE_RE = /^[A-Za-z]:\\?$/
+
 // Ambos os lados (operador e loja) são sempre Windows (app só roda nesse
 // SO) — backslash fixo, sem precisar detectar separador, mesmo padrão já
 // usado no resto do projeto (ex: defaultDestDir em LiveSessionWindow.jsx).
 function joinWindowsPath(base, name) {
+  if (base === THIS_PC) return DRIVE_RE.test(name) ? name.replace(/\\?$/, '\\') : name
   return base.replace(/[\\/]+$/, '') + '\\' + name
 }
 
-// parentWindowsPath pára na raiz da unidade (ex: "C:\") em vez de descer
-// pra string vazia — descer além da raiz reabriria o default (Desktop),
-// confuso pra quem clicou "subir" esperando ver a raiz do disco. Trata
-// raiz UNC (\\servidor\share) como piso também -- achado 🟡 do
+// parentWindowsPath pára em THIS_PC (unidades disponíveis) em vez de
+// ficar preso na raiz da unidade (ex: "C:\") pra sempre -- é assim que o
+// operador alcança OUTRAS unidades (D:, pendrive, etc.), subindo a partir
+// de qualquer uma. Trata raiz UNC (\\servidor\share) como piso igual à
+// raiz de unidade (sobe pra THIS_PC também) -- achado 🟡 do
 // code-reviewer: sem isso, "⬆" na raiz de um compartilhamento de rede
 // (comum em loja com pasta compartilhada mapeada) cortava no meio do nome
 // do servidor (ex: "\\servidor"), um caminho incompleto que fs.readdir
 // rejeitaria.
 function parentWindowsPath(p) {
+  if (p === THIS_PC) return THIS_PC // já no topo, não sobe mais
   const trimmed = p.replace(/[\\/]+$/, '')
   const uncMatch = trimmed.match(/^\\\\[^\\]+\\[^\\]+/)
   if (uncMatch) {
     const uncRoot = uncMatch[0]
-    if (trimmed.length <= uncRoot.length) return uncRoot // já na raiz do compartilhamento
+    if (trimmed.length <= uncRoot.length) return THIS_PC // já na raiz do compartilhamento
     const idx = trimmed.lastIndexOf('\\')
     return idx <= uncRoot.length ? uncRoot : trimmed.slice(0, idx)
   }
   const idx = trimmed.lastIndexOf('\\')
-  if (idx < 0 || idx <= 2) return trimmed.slice(0, 2) + '\\'
+  if (idx < 0) return THIS_PC // já na raiz da unidade (ex: "C:\") -- sobe pras outras unidades
+  if (idx <= 2) return trimmed.slice(0, 2) + '\\' // 1 nível acima da raiz (ex: "C:\Users") -- pára na raiz da unidade, não pula pra THIS_PC
   return trimmed.slice(0, idx)
 }
 
-function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp }) {
+function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, onBrowse }) {
   const path = listing?.path || ''
   const entries = listing?.entries || []
   const error = listing?.error || listing?.message
@@ -55,7 +73,16 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp }) 
     <div data-testid={testId} style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, border: '1px solid #1e1e30', borderRadius: 6 }}>
       <div style={{ padding: '6px 10px', borderBottom: '1px solid #1e1e30', display: 'flex', alignItems: 'center', gap: 6 }}>
         <strong style={{ flexShrink: 0 }}>{title}</strong>
-        <button className="btn btn-secondary" onClick={onUp} title="Subir um nível" style={{ padding: '2px 8px' }}>⬆</button>
+        <button className="btn btn-secondary" onClick={onUp} disabled={path === THIS_PC} title="Subir um nível" style={{ padding: '2px 8px' }}>⬆</button>
+        {/* onBrowse (só no painel LOCAL): abre o seletor de pasta NATIVO do
+            Windows -- pedido do André, "mais parecido com o que já há no
+            mercado" (FileZilla etc. têm um atalho assim pro lado local).
+            Não existe equivalente pro painel remoto -- sem Explorer rodando
+            DENTRO da sessão remota pra loja clicar, a navegação de lá
+            continua só por breadcrumb + duplo-clique. */}
+        {onBrowse && (
+          <button className="btn btn-secondary" onClick={onBrowse} title="Procurar pasta..." style={{ padding: '2px 8px' }}>📂</button>
+        )}
         <span style={{ fontSize: 12, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{path}</span>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 4 }}>
@@ -73,7 +100,7 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp }) 
               display: 'flex', justifyContent: 'space-between', gap: 8,
             }}
           >
-            <span>{e.isDir ? '📁' : '📄'} {e.name}</span>
+            <span>{e.isDir ? (DRIVE_RE.test(e.name) ? '💽' : '📁') : '📄'} {e.name}</span>
             {!e.isDir && <span style={{ color: '#9ca3af' }}>{formatBytes(e.size)}</span>}
           </div>
         ))}
@@ -84,7 +111,7 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp }) 
 
 export function FileBrowserModal({
   localListing, remoteListing, requestLocalDir, requestRemoteDir,
-  onSendToRemote, onSendToLocal, isTransferring, onClose,
+  onSendToRemote, onSendToLocal, isTransferring, onClose, onBrowseLocal,
 }) {
   const [selectedLocal, setSelectedLocal] = useState(null)
   const [selectedRemote, setSelectedRemote] = useState(null)
@@ -127,6 +154,20 @@ export function FileBrowserModal({
     requestRemoteDir(parentWindowsPath(remotePath))
   }, [remotePath, requestRemoteDir])
 
+  // handleBrowseLocal: onBrowseLocal (prop) é só "pergunta ao SO por uma
+  // pasta" (window.electronAPI.pickLocalFolder, em LiveSessionWindow.jsx)
+  // -- quem limpa a seleção e navega é AQUI, igual goUpLocal/navigateLocal
+  // acima, mesmo motivo (achado 🟠 do code-reviewer sobre "⬆" não limpar
+  // seleção se aplica igual aqui: pular pra uma pasta nova via dialog sem
+  // limpar a seleção também arriscaria enviar o arquivo errado se a pasta
+  // nova tiver um arquivo de mesmo nome).
+  const handleBrowseLocal = useCallback(async () => {
+    const picked = await onBrowseLocal?.()
+    if (!picked) return // operador cancelou o dialog
+    setSelectedLocal(null)
+    requestLocalDir(picked)
+  }, [onBrowseLocal, requestLocalDir])
+
   const canSend = !!selectedLocal && !isTransferring
   const canDownload = !!selectedRemote && !isTransferring
 
@@ -149,6 +190,7 @@ export function FileBrowserModal({
             onSelect={(e) => !e.isDir && setSelectedLocal(e.name)}
             onNavigate={navigateLocal}
             onUp={goUpLocal}
+            onBrowse={onBrowseLocal ? handleBrowseLocal : undefined}
           />
           <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8 }}>
             <button

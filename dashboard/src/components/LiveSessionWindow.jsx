@@ -856,6 +856,7 @@ export function LiveSessionWindow() {
           requestRemoteDir={sendListRemoteDir}
           isTransferring={isTransferring}
           onClose={() => setFileBrowserOpen(false)}
+          onBrowseLocal={() => window.electronAPI?.pickLocalFolder()}
           onSendToRemote={(localFullPath, fileName, destDir) => {
             sendLocalFileToRemote(localFullPath, fileName, destDir)
             setFileBrowserOpen(false)

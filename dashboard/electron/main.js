@@ -18,6 +18,15 @@ const IS_DEV      = process.env.NODE_ENV === 'development' || !app.isPackaged
 // url exata no 'will-download' correspondente, nunca pela ordem de chegada.
 const pendingDownloadTargets = new Map()
 
+// THIS_PC_SENTINEL: valor especial de "diretório" que significa "mostra
+// as unidades disponíveis" em vez de uma pasta de verdade -- equivalente
+// ao "Este Computador"/"This PC" do Explorer. Precisa ser EXATAMENTE
+// igual ao mesmo literal em dashboard/src/components/FileBrowserModal.jsx
+// e à thisPCSentinel em agent/filetransfer_windows.go (lado remoto) -- os
+// 3 lados concordam só por este comentário + os testes de cada um, mesmo
+// risco já documentado pra LIVE_SESSION_MSG/CLOSE_CODES (server).
+const THIS_PC_SENTINEL = 'Este Computador'
+
 // app.asar.unpacked: ffmpeg-static embute um binário nativo, que não pode
 // ser executado de dentro do .asar — asarUnpack (package.json/build) copia
 // esse binário pra fora, em app.asar.unpacked; em dev (sem asar) a troca de
@@ -466,10 +475,40 @@ app.whenReady().then(() => {
     return true
   })
 
+  // IPC: abre o seletor de PASTA nativo do Windows -- botão "📂 Procurar
+  // pasta..." no painel LOCAL do navegador de arquivos dual-pane
+  // (FileBrowserModal.jsx). Só existe pro lado local: não tem como abrir o
+  // Explorer DENTRO da sessão remota pra loja clicar -- a navegação remota
+  // continua só por list-remote-dir (breadcrumb + duplo-clique).
+  ipcMain.handle('pick-local-folder', async (event) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(senderWin, { properties: ['openDirectory'] })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  // listWindowsDrives enumera as unidades existentes (C:\, D:\, etc.) --
+  // usado quando list-local-dir recebe THIS_PC_SENTINEL em vez de um
+  // caminho de verdade. fs.access (não readdir) só confirma existência,
+  // sem ler conteúdo -- mais barato pra 26 tentativas, a maioria vazia.
+  async function listWindowsDrives() {
+    const entries = []
+    for (let i = 65; i <= 90; i++) {
+      const letter = `${String.fromCharCode(i)}:\\`
+      try {
+        await fs.promises.access(letter)
+        entries.push({ name: letter, isDir: true, size: 0, modTime: null })
+      } catch { /* unidade nao existe ou sem midia (ex: leitor de CD vazio) -- pula */ }
+    }
+    return entries
+  }
+
   // IPC: lista um diretório LOCAL (do ponto de vista do operador) --
   // painel esquerdo do navegador de arquivos dual-pane (FileBrowserModal.jsx),
   // espelho de list-remote-dir (agent/filetransfer_windows.go). dirPath
-  // vazio abre na área de trabalho do operador.
+  // vazio abre na área de trabalho do operador; THIS_PC_SENTINEL lista as
+  // unidades disponíveis em vez de uma pasta de verdade (Andre pediu pra
+  // dar pra navegar entre TODAS as unidades, não só a árvore do Desktop).
   //
   // isInsideSensitiveAppDir + bloqueio de UNC: achado 🟠 do code-reviewer
   // -- esta rota lia QUALQUER caminho sem a mesma guarda que file:read já
@@ -481,6 +520,9 @@ app.whenReady().then(() => {
   // file:read: fs.readdir num caminho \\host\share dispara handshake SMB
   // de saída (vazamento de credencial NTLM) se o host não for confiável.
   ipcMain.handle('list-local-dir', async (_, dirPath) => {
+    if (dirPath === THIS_PC_SENTINEL) {
+      return { path: THIS_PC_SENTINEL, entries: await listWindowsDrives() }
+    }
     const target = dirPath || app.getPath('desktop')
     if (/^[\\/]{2}/.test(target)) {
       return { path: target, error: 'Caminho de rede (UNC) não é permitido' }

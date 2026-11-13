@@ -26,6 +26,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Lista um diretório LOCAL -- painel esquerdo do navegador de arquivos
   // dual-pane (FileBrowserModal.jsx), espelho de list-remote-dir (agent).
   listLocalDir:    (dirPath) => ipcRenderer.invoke('list-local-dir', dirPath),
+  // Abre o seletor de PASTA nativo do Windows -- botão "📂 Procurar
+  // pasta..." no painel LOCAL do navegador de arquivos (só existe desse
+  // lado, não tem Explorer pra abrir DENTRO da sessão remota).
+  pickLocalFolder: () => ipcRenderer.invoke('pick-local-folder'),
   showInFolder:    (p)    => ipcRenderer.invoke('shell:showItemInFolder', p),
   onDownloadDone: (cb) => {
     const handler = (_, data) => cb(data)
