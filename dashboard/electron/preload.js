@@ -19,8 +19,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Janela cresce para acomodar o topbar quando necessário
   fitTopbar: (neededWidth) => ipcRenderer.invoke('window:fit-topbar', neededWidth),
 
-  // Download de arquivo → salva direto na pasta Downloads (sem dialog do Windows Explorer)
-  downloadFile:    (url)  => ipcRenderer.invoke('download-file', { url }),
+  // Download de arquivo → salva direto na pasta Downloads por padrão (sem
+  // dialog do Windows Explorer), ou em targetDir se informado (navegador
+  // de arquivos dual-pane).
+  downloadFile:    (url, targetDir)  => ipcRenderer.invoke('download-file', { url, targetDir }),
+  // Lista um diretório LOCAL -- painel esquerdo do navegador de arquivos
+  // dual-pane (FileBrowserModal.jsx), espelho de list-remote-dir (agent).
+  listLocalDir:    (dirPath) => ipcRenderer.invoke('list-local-dir', dirPath),
   showInFolder:    (p)    => ipcRenderer.invoke('shell:showItemInFolder', p),
   onDownloadDone: (cb) => {
     const handler = (_, data) => cb(data)
@@ -93,10 +98,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // transferência de arquivo (Ctrl+V), mesmo componente.
   readClipboardFilePath: () => ipcRenderer.invoke('clipboard:read-file-path'),
 
-  // Transferência de arquivo (operador → máquina remota) — seletor de
-  // arquivo local nativo + leitura do conteúdo pra upload no Blob, ver
+  // Transferência de arquivo (operador → máquina remota) — leitura do
+  // conteúdo (arquivo escolhido no navegador dual-pane, arrastado, ou
+  // colado via Ctrl+V) pra upload no Blob, ver
   // dashboard/src/hooks/useLiveSession.js (sendFileTransfer).
-  pickFile: () => ipcRenderer.invoke('file:pick'),
   readLocalFile: (path) => ipcRenderer.invoke('file:read', path),
 
   // Drag-and-drop de arquivo (janela → sessão ao vivo): o objeto File do

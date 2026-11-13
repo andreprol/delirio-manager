@@ -8,6 +8,7 @@ const sendKeyEventMock = vi.fn()
 const sendClipboardPasteMock = vi.fn()
 const sendFileTransferMock = vi.fn()
 const sendFileDownloadMock = vi.fn()
+const sendListRemoteDirMock = vi.fn()
 let lastUseLiveSessionArgs = null
 
 vi.mock('../hooks/useLiveSession', () => ({
@@ -20,6 +21,7 @@ vi.mock('../hooks/useLiveSession', () => ({
       sendClipboardPaste: sendClipboardPasteMock,
       sendFileTransfer: sendFileTransferMock,
       sendFileDownload: sendFileDownloadMock,
+      sendListRemoteDir: sendListRemoteDirMock,
     }
   },
 }))
@@ -64,10 +66,10 @@ beforeEach(() => {
     getConfig: vi.fn().mockResolvedValue({ serverUrl: 'https://s.example.com', adminSecret: 'secret-xyz' }),
     readClipboardText: vi.fn().mockResolvedValue('shutdown /s /t 300'),
     readClipboardFilePath: vi.fn().mockResolvedValue(null),
-    pickFile: vi.fn().mockResolvedValue(null),
     readLocalFile: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
     getPathForFile: vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe'),
     downloadFile: vi.fn().mockResolvedValue(true),
+    listLocalDir: vi.fn().mockResolvedValue({ path: 'C:\\Users\\Andre\\Desktop', entries: [] }),
     onNormalWindowVisibilityChange: vi.fn((cb) => {
       window.electronAPI.__fireNormalWindowVisibility = (data) => cb(data)
       return () => {}
@@ -530,43 +532,72 @@ describe('LiveSessionWindow', () => {
     expect(screen.queryByText('🔒 Travar usuário')).not.toBeInTheDocument()
   })
 
-  it('mode normal: botao Enviar arquivo pede upload-url, sobe pro blob e manda sendFileTransfer', async () => {
-    window.electronAPI.pickFile = vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\instalador.exe')
+  // Navegador de arquivos dual-pane (FileBrowserModal) -- substitui os
+  // campos de caminho digitado. Abre o modal, espera as 2 listagens
+  // (local via IPC, remoto via WS simulado), seleciona um arquivo em cada
+  // painel e confirma que "Enviar →"/"← Baixar" chamam exatamente o mesmo
+  // mecanismo de antes (SAS/Blob), só com o caminho vindo de clique em vez
+  // de texto digitado.
+  async function openFileBrowserAndWaitListings() {
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Transferir arquivo/i))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // Listagem remota não chega sozinha em teste (não há companion de
+    // verdade) -- simula a resposta via WS, mesmo canal de
+    // file-transfer-status (onRemoteDirListing, ver useLiveSession.js).
+    act(() => {
+      lastUseLiveSessionArgs.onRemoteDirListing({
+        type: 'remote-dir-listing', path: 'C:\\Users\\Loja\\Desktop',
+        entries: [{ name: 'relatorio.pdf', isDir: false, size: 2048 }],
+      })
+    })
+  }
+
+  it('mode normal: navegador de arquivos -- "Enviar →" pede upload-url, sobe pro blob e manda sendFileTransfer com a pasta remota navegada', async () => {
+    window.electronAPI.listLocalDir = vi.fn().mockResolvedValue({
+      path: 'C:\\Users\\Andre\\Desktop',
+      entries: [{ name: 'instalador.exe', isDir: false, size: 8 }],
+    })
     window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(8))
     global.fetch = vi.fn().mockResolvedValue({ ok: true }) // PUT pro blob
 
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
-    // session-info (username real, mandado 1x pelo companion) -- sem isso
-    // defaultDestDir fica vazio e o novo guard de destino recusa o envio.
-    act(() => { lastUseLiveSessionArgs.onSessionInfo({ remoteUser: 'Loja' }) })
+    await openFileBrowserAndWaitListings()
 
+    fireEvent.click(screen.getByTestId('local-pane-entry-instalador.exe'))
     await act(async () => {
-      fireEvent.click(screen.getByText(/Enviar arquivo/i))
+      fireEvent.click(screen.getByText('Enviar →'))
       await Promise.resolve()
       await Promise.resolve()
     })
 
     expect(api.live.getFileUploadUrl).toHaveBeenCalledWith('s1', 'instalador.exe', 8)
     expect(global.fetch).toHaveBeenCalledWith('https://blob/x?sas-up', expect.objectContaining({ method: 'PUT' }))
-    expect(sendFileTransferMock).toHaveBeenCalledWith('https://blob/x?sas-down', 'instalador.exe', expect.any(String))
+    expect(sendFileTransferMock).toHaveBeenCalledWith('https://blob/x?sas-down', 'instalador.exe', 'C:\\Users\\Loja\\Desktop')
   })
 
   // Direção contrária (máquina remota -> operador) -- espelho do teste
   // acima, mas sem upload do lado do dashboard: o companion é quem sobe pro
   // Blob (simulado aqui só pela chegada de file-download-done via WS), e
-  // quem baixa de fato é o Electron (window.electronAPI.downloadFile).
-  it('mode normal: botão Baixar arquivo pede download-url, manda sendFileDownload, e baixa via Electron quando o companion termina', async () => {
+  // quem baixa de fato é o Electron (window.electronAPI.downloadFile),
+  // pra pasta do PAINEL LOCAL navegado (não mais sempre Downloads).
+  it('mode normal: navegador de arquivos -- "← Baixar" pede download-url, manda sendFileDownload, e baixa via Electron pra pasta local navegada', async () => {
+    window.electronAPI.listLocalDir = vi.fn().mockResolvedValue({
+      path: 'C:\\Users\\Andre\\Desktop\\Projetos', entries: [],
+    })
+
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
 
-    const input = screen.getByPlaceholderText(/Caminho do arquivo no remoto/i)
-    fireEvent.change(input, { target: { value: 'C:\\Users\\Loja\\Desktop\\relatorio.pdf' } })
-
+    fireEvent.click(screen.getByTestId('remote-pane-entry-relatorio.pdf'))
     await act(async () => {
-      fireEvent.click(screen.getByText(/Baixar arquivo/i))
+      fireEvent.click(screen.getByText('← Baixar'))
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -582,22 +613,8 @@ describe('LiveSessionWindow', () => {
       await Promise.resolve()
     })
 
-    expect(window.electronAPI.downloadFile).toHaveBeenCalledWith('https://blob/y?sas-down')
+    expect(window.electronAPI.downloadFile).toHaveBeenCalledWith('https://blob/y?sas-down', 'C:\\Users\\Andre\\Desktop\\Projetos')
     expect(screen.getByText(/Arquivo baixado/i)).toBeInTheDocument()
-  })
-
-  it('mode normal: Baixar arquivo sem caminho informado recusa, sem chamar getFileDownloadUrl', async () => {
-    render(<LiveSessionWindow />)
-    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
-    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
-
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Baixar arquivo/i))
-      await Promise.resolve()
-    })
-
-    expect(api.live.getFileDownloadUrl).not.toHaveBeenCalled()
-    expect(screen.getByText(/informe o caminho/i)).toBeInTheDocument()
   })
 
   // Achado 🔴 ALTO do code-reviewer (13/11/2026): `window.electronAPI?.downloadFile(url).then()...`
@@ -612,11 +629,11 @@ describe('LiveSessionWindow', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
 
-    const input = screen.getByPlaceholderText(/Caminho do arquivo no remoto/i)
-    fireEvent.change(input, { target: { value: 'C:\\Users\\Loja\\Desktop\\relatorio.pdf' } })
+    fireEvent.click(screen.getByTestId('remote-pane-entry-relatorio.pdf'))
     await act(async () => {
-      fireEvent.click(screen.getByText(/Baixar arquivo/i))
+      fireEvent.click(screen.getByText('← Baixar'))
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -627,27 +644,23 @@ describe('LiveSessionWindow', () => {
     })
 
     expect(screen.getByText(/error:/i)).toBeInTheDocument()
-    // Destravado -- um 2º "Baixar arquivo" (agora com electronAPI de volta)
-    // funciona normalmente, não fica preso em isTransferring pra sempre.
+    // Destravado -- uma 2ª transferência (agora com electronAPI de volta)
+    // funciona normalmente, não fica presa em isTransferring pra sempre.
     window.electronAPI.downloadFile = vi.fn().mockResolvedValue(true)
+    await openFileBrowserAndWaitListings()
+    fireEvent.click(screen.getByTestId('remote-pane-entry-relatorio.pdf'))
     await act(async () => {
-      fireEvent.click(screen.getByText(/Baixar arquivo/i))
+      fireEvent.click(screen.getByText('← Baixar'))
       await Promise.resolve()
       await Promise.resolve()
     })
     expect(api.live.getFileDownloadUrl).toHaveBeenCalledTimes(2)
   })
 
-  it('mode shadow: botao Baixar arquivo nao aparece', () => {
+  it('mode shadow: botão "Transferir arquivo..." não aparece (não há controle remoto)', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
-    expect(screen.queryByText(/Baixar arquivo/i)).not.toBeInTheDocument()
-  })
-
-  it('mode shadow: botao Enviar arquivo nao aparece', () => {
-    render(<LiveSessionWindow />)
-    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
-    expect(screen.queryByText(/Enviar arquivo/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Transferir arquivo/i)).not.toBeInTheDocument()
   })
 
   // Achado real (13/11/2026): preventDefault() sozinho no dragover não é
@@ -705,8 +718,38 @@ describe('LiveSessionWindow', () => {
     })
 
     expect(window.electronAPI.getPathForFile).toHaveBeenCalledWith(file)
-    expect(window.electronAPI.pickFile).not.toHaveBeenCalled() // drop nao usa o dialog
     expect(window.electronAPI.readLocalFile).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\driver.exe')
+    // session-info (username real do companion) vira o destino default --
+    // drop/Ctrl+V não passam pelo navegador de arquivos, então dependem
+    // deste fallback (ver defaultDestDir em LiveSessionWindow.jsx).
+    expect(sendFileTransferMock).toHaveBeenCalledWith(expect.any(String), 'driver.exe', 'C:\\Users\\Loja\\Desktop')
+  })
+
+  // Antes desta sessão, destino sem resposta nenhuma (nem navegado, nem
+  // session-info chegado) virava silenciosamente "C:\Users\Loja\Desktop" --
+  // agora recusa o envio em vez de mandar um caminho provavelmente errado
+  // sem o operador saber.
+  it('mode normal: soltar arquivo sem session-info nem destino, recusa o envio em vez de adivinhar o caminho', async () => {
+    window.electronAPI.getPathForFile = vi.fn().mockResolvedValue('C:\\x\\a.txt')
+    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(1))
+    global.fetch = vi.fn().mockResolvedValue({ ok: true })
+
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    // nunca chama onSessionInfo
+
+    const dropZone = screen.getByTestId('live-session-dropzone')
+    const file = new File(['x'], 'a.txt', { type: 'text/plain' })
+    await act(async () => {
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.readLocalFile).not.toHaveBeenCalled()
+    expect(sendFileTransferMock).not.toHaveBeenCalled()
+    expect(screen.getByText(/confirme o caminho/i)).toBeInTheDocument()
   })
 
   // Achado pelo code-reviewer: sem isso, um drop com a sessao desconectada
@@ -750,83 +793,6 @@ describe('LiveSessionWindow', () => {
     expect(window.electronAPI.readLocalFile).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\driver.exe')
   })
 
-  // Achado real em produção (12/11/2026): session.remoteUser nunca era
-  // setado em lugar nenhum (nem MachineCard manda, nem o IPC aceita esse
-  // campo) -- defaultDestDir caía sempre no literal "Loja", que quase nunca
-  // batia com o usuário de verdade logado na loja. session-info (mandado
-  // pelo companion, 1x, via WS) substitui esse fallback morto.
-  it('mode normal: session-info (username real do companion) vira o destino default da transferência', async () => {
-    window.electronAPI.pickFile = vi.fn().mockResolvedValue('C:\\x\\a.txt')
-    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(1))
-    global.fetch = vi.fn().mockResolvedValue({ ok: true })
-
-    render(<LiveSessionWindow />)
-    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
-    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
-    act(() => { lastUseLiveSessionArgs.onSessionInfo({ remoteUser: 'ASS AUXILIAR01' }) })
-
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Enviar arquivo/i))
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(sendFileTransferMock).toHaveBeenCalledWith(expect.any(String), 'a.txt', 'C:\\Users\\ASS AUXILIAR01\\Desktop')
-  })
-
-  // Antes desta sessão, destino sem resposta nenhuma (nem digitado, nem
-  // session-info chegado) virava silenciosamente "C:\Users\Loja\Desktop" --
-  // agora recusa o envio em vez de mandar um caminho provavelmente errado
-  // sem o operador saber.
-  it('mode normal: sem session-info nem destino digitado, recusa o envio em vez de adivinhar o caminho', async () => {
-    window.electronAPI.pickFile = vi.fn().mockResolvedValue('C:\\x\\a.txt')
-    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(1))
-    global.fetch = vi.fn().mockResolvedValue({ ok: true })
-
-    render(<LiveSessionWindow />)
-    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
-    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
-    // nunca chama onSessionInfo
-
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Enviar arquivo/i))
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(window.electronAPI.readLocalFile).not.toHaveBeenCalled()
-    expect(sendFileTransferMock).not.toHaveBeenCalled()
-    expect(screen.getByText(/confirme o caminho/i)).toBeInTheDocument()
-  })
-
-  // Achado do code-reviewer (12/11/2026): string só com espaço(s) é truthy
-  // em JS -- sem .trim(), passava o guard de destino vazio como se fosse um
-  // caminho válido e ia pro companion, que criaria o diretório " " em vez
-  // de recusar (mesmo risco de "enviado ✓ mas não está lá" que este fix
-  // existe pra evitar).
-  it('mode normal: destino só com espaços é tratado como vazio, recusa o envio', async () => {
-    window.electronAPI.pickFile = vi.fn().mockResolvedValue('C:\\x\\a.txt')
-    window.electronAPI.readLocalFile = vi.fn().mockResolvedValue(new ArrayBuffer(1))
-    global.fetch = vi.fn().mockResolvedValue({ ok: true })
-
-    render(<LiveSessionWindow />)
-    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
-    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
-    // nunca chama onSessionInfo -- defaultDestDir fica vazio, só o campo digitado importa aqui
-
-    const destInput = screen.getByPlaceholderText(/confirme o caminho/i)
-    fireEvent.change(destInput, { target: { value: '   ' } })
-
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Enviar arquivo/i))
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(window.electronAPI.readLocalFile).not.toHaveBeenCalled()
-    expect(sendFileTransferMock).not.toHaveBeenCalled()
-    expect(screen.getByText(/confirme o caminho/i)).toBeInTheDocument()
-  })
 
   it('ao receber live-session-cleanup-and-close, para, avisa o servidor e chama cleanupDone', async () => {
     render(<LiveSessionWindow />)

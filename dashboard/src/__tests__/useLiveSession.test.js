@@ -494,4 +494,88 @@ describe('useLiveSession', () => {
 
     expect(onFileTransferStatus).toHaveBeenCalledWith({ type: 'file-download-progress', bytesReceived: 30, bytesTotal: 100 })
   })
+
+  // sendListRemoteDir/remote-dir-listing/-error: navegador de arquivos
+  // dual-pane (FileBrowserModal.jsx) -- espelho dos testes de
+  // sendFileTransfer/sendFileDownload acima.
+  it('sendListRemoteDir manda type list-remote-dir com remoteDir + requestId crescente', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => {
+      result.current.sendListRemoteDir('C:\\Users\\Loja\\Desktop')
+    })
+    expect(ws.sent).toContain(JSON.stringify({ type: 'list-remote-dir', remoteDir: 'C:\\Users\\Loja\\Desktop', requestId: 1 }))
+
+    act(() => {
+      result.current.sendListRemoteDir('C:\\Users\\Loja\\Desktop\\Projetos')
+    })
+    expect(ws.sent).toContain(JSON.stringify({ type: 'list-remote-dir', remoteDir: 'C:\\Users\\Loja\\Desktop\\Projetos', requestId: 2 }))
+  })
+
+  it('sendListRemoteDir não manda nada em mode shadow', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'shadow', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    act(() => { ws._open() })
+
+    act(() => {
+      result.current.sendListRemoteDir('C:\\Users\\Loja\\Desktop')
+    })
+
+    expect(ws.sent).toHaveLength(0)
+  })
+
+  it('mensagem remote-dir-listing/-error com requestId do último pedido chama onRemoteDirListing, nunca onFileTransferStatus', () => {
+    const canvasRef = makeCanvasRef()
+    const onRemoteDirListing = vi.fn()
+    const onFileTransferStatus = vi.fn()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef, onRemoteDirListing, onFileTransferStatus,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => { result.current.sendListRemoteDir('C:\\Users\\Loja\\Desktop') }) // requestId=1
+    const listing = { type: 'remote-dir-listing', path: 'C:\\Users\\Loja\\Desktop', entries: [{ name: 'a.txt', isDir: false, size: 1 }], requestId: 1 }
+    ws._message(JSON.stringify(listing))
+
+    expect(onRemoteDirListing).toHaveBeenCalledWith(listing)
+    expect(onFileTransferStatus).not.toHaveBeenCalled()
+  })
+
+  // Achado 🟡 do code-reviewer: cada list-remote-dir roda numa goroutine
+  // própria no companion, sem ordem garantida de conclusão -- a resposta
+  // de um pedido já ABANDONADO (ex: operador entrou numa pasta de rede
+  // lenta, depois "⬆" pra uma rápida) não pode chegar depois e fazer a UI
+  // "voltar" sozinha pro diretório antigo.
+  it('resposta de um list-remote-dir abandonado (requestId antigo) é descartada', () => {
+    const canvasRef = makeCanvasRef()
+    const onRemoteDirListing = vi.fn()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef, onRemoteDirListing,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => { result.current.sendListRemoteDir('C:\\pasta-lenta') }) // requestId=1
+    act(() => { result.current.sendListRemoteDir('C:\\pasta-rapida') }) // requestId=2 -- abandona o 1º
+
+    // A resposta da pasta LENTA (requestId=1) chega DEPOIS, mesmo tendo
+    // sido pedida primeiro -- tem que ser ignorada.
+    ws._message(JSON.stringify({ type: 'remote-dir-listing', path: 'C:\\pasta-lenta', entries: [], requestId: 1 }))
+    expect(onRemoteDirListing).not.toHaveBeenCalled()
+
+    // A resposta certa (requestId=2) chega e É aceita.
+    const listingCerto = { type: 'remote-dir-listing', path: 'C:\\pasta-rapida', entries: [], requestId: 2 }
+    ws._message(JSON.stringify(listingCerto))
+    expect(onRemoteDirListing).toHaveBeenCalledWith(listingCerto)
+  })
 })

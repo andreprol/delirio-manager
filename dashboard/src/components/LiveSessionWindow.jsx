@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLiveSession } from '../hooks/useLiveSession'
 import { useNormalWindowVisibility } from '../hooks/useNormalWindowVisibility'
 import { api, setServerUrl, setAdminSecret } from '../api'
+import { FileBrowserModal } from './FileBrowserModal'
 
 const MOUSE_BUTTON = { 0: 'left', 2: 'right' }
 
@@ -64,11 +65,13 @@ export function LiveSessionWindow() {
   sessionRef.current = session
   recordingSecsRef.current = recordingSecs
 
-  const [fileDestDir, setFileDestDir] = useState('')
-  // remoteFilePath: caminho completo do arquivo NO REMOTO que o operador
-  // quer baixar pro próprio computador — direção contrária de fileDestDir
-  // (que é o destino NO remoto de um arquivo enviado DAQUI).
-  const [remoteFilePath, setRemoteFilePath] = useState('')
+  // Navegador de arquivos dual-pane (FileBrowserModal) -- substitui os
+  // campos de caminho digitado. localListing/remoteListing são o estado
+  // {path, entries}|{path, error} de cada painel, alimentados pelas
+  // respostas de list-local-dir (IPC)/list-remote-dir (WS).
+  const [fileBrowserOpen, setFileBrowserOpen] = useState(false)
+  const [localListing, setLocalListing] = useState(null)
+  const [remoteListing, setRemoteListing] = useState(null)
   const [fileTransferProgress, setFileTransferProgress] = useState(null) // {bytesReceived, bytesTotal} | 'error: ...' | 'done-upload' | 'done-download' | 'baixando pro seu computador...' | null
   // Guarda se já existe uma transferência em andamento — tanto o upload pro
   // Blob (síncrono do ponto de vista desta função) quanto o download real na
@@ -83,11 +86,15 @@ export function LiveSessionWindow() {
   // (achado 🟠 do code-reviewer).
   const transferringRef = useRef(false)
   const [isTransferring, setIsTransferring] = useState(false)
-  // pendingDownloadUrlRef: SAS de leitura do blob (direção remoto->operador)
-  // guardada entre o pedido inicial (getFileDownloadUrl) e o momento em que
-  // o companion avisa 'file-download-done' -- só então o Electron baixa de
-  // fato (window.electronAPI.downloadFile), ver sendRemoteFileToLocal.
-  const pendingDownloadUrlRef = useRef(null)
+  // pendingDownloadRef: SAS de leitura do blob + pasta local de destino
+  // (direção remoto->operador), guardados entre o pedido inicial
+  // (getFileDownloadUrl) e o momento em que o companion avisa
+  // 'file-download-done' -- só então o Electron baixa de fato
+  // (window.electronAPI.downloadFile), ver sendRemoteFileToLocal. targetDir
+  // é a pasta do PAINEL LOCAL no momento do clique "← Baixar" -- sem isso,
+  // o arquivo sempre cairia na pasta Downloads fixa, ignorando a pasta que
+  // o operador escolheu navegando no navegador de arquivos.
+  const pendingDownloadRef = useRef(null) // {url, targetDir} | null
 
   const handleFileTransferStatus = useCallback((msg) => {
     if (msg.type === 'file-transfer-progress' || msg.type === 'file-download-progress') {
@@ -100,8 +107,8 @@ export function LiveSessionWindow() {
       // O companion já subiu o arquivo pro Blob -- falta só baixar pro
       // computador do operador. transferringRef/isTransferring continuam
       // true até o download local terminar (ou falhar).
-      const url = pendingDownloadUrlRef.current
-      pendingDownloadUrlRef.current = null
+      const pending = pendingDownloadRef.current
+      pendingDownloadRef.current = null
       // Achado 🔴 ALTO do code-reviewer: `window.electronAPI?.downloadFile(url).then()...`
       // encadeado a partir do próprio optional chaining — se electronAPI
       // faltar, a cadeia INTEIRA (incluindo .then/.catch/.finally) vira
@@ -118,7 +125,7 @@ export function LiveSessionWindow() {
         return
       }
       setFileTransferProgress('baixando pro seu computador...')
-      window.electronAPI.downloadFile(url).then(() => {
+      window.electronAPI.downloadFile(pending?.url, pending?.targetDir).then(() => {
         setFileTransferProgress('done-download')
       }).catch((err) => {
         setFileTransferProgress('error: ' + (err?.message || 'falha ao salvar o arquivo baixado'))
@@ -128,13 +135,25 @@ export function LiveSessionWindow() {
       })
     } else if (msg.type === 'file-transfer-error' || msg.type === 'file-download-error') {
       setFileTransferProgress('error: ' + msg.message)
-      pendingDownloadUrlRef.current = null
+      pendingDownloadRef.current = null
       transferringRef.current = false
       setIsTransferring(false)
     }
   }, [])
 
-  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload } = useLiveSession({
+  // handleRemoteDirListing alimenta o painel REMOTO do navegador de
+  // arquivos (remote-dir-listing/-error, ver useLiveSession.js) --
+  // extraída de handleFileTransferStatus porque é um protocolo diferente
+  // (não é progresso/fim de transferência).
+  const handleRemoteDirListing = useCallback((msg) => {
+    if (msg.type === 'remote-dir-error') {
+      setRemoteListing({ path: msg.path, error: msg.message })
+      return
+    }
+    setRemoteListing({ path: msg.path, entries: msg.entries || [] })
+  }, [])
+
+  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir } = useLiveSession({
     serverUrl: session?.serverUrl,
     sessionId: session?.sessionId,
     dashboardToken: session?.dashboardToken,
@@ -143,7 +162,19 @@ export function LiveSessionWindow() {
     onStatusChange: setStatus,
     onFileTransferStatus: handleFileTransferStatus,
     onSessionInfo: handleSessionInfo,
+    onRemoteDirListing: handleRemoteDirListing,
   })
+
+  // requestLocalDir (painel esquerdo, FileBrowserModal) -- list-local-dir é
+  // puro IPC (Electron, sem round-trip de rede), por isso não passa pelo
+  // WS/companion feito o remoto.
+  const requestLocalDir = useCallback((dirPath) => {
+    window.electronAPI?.listLocalDir(dirPath).then((result) => {
+      setLocalListing(result)
+    }).catch((err) => {
+      setLocalListing({ path: dirPath, error: err?.message || 'falha ao listar pasta local' })
+    })
+  }, [])
 
   // Enquanto remoteUser ainda não chegou (session-info é mandado 1x, pode
   // levar um instante ou nunca chegar — agent antigo sem essa versão), o
@@ -152,9 +183,13 @@ export function LiveSessionWindow() {
   const defaultDestDir = remoteUser ? `C:\\Users\\${remoteUser}\\Desktop` : ''
 
   // sendLocalFileToRemote é o caminho ÚNICO pra transferência de arquivo —
-  // tanto o botão "Enviar arquivo" (handlePickFile) quanto o drop na janela
-  // (handleDrop) terminam aqui, pra não duplicar a lógica de upload+comando.
-  const sendLocalFileToRemote = useCallback(async (localPath, fileNameHint) => {
+  // o drop na janela (handleDrop), o Ctrl+V de arquivo (pasteClipboardToRemote)
+  // e o botão "Enviar →" do navegador de arquivos (FileBrowserModal) terminam
+  // aqui, pra não duplicar a lógica de upload+comando. destDirOverride é a
+  // pasta REMOTA escolhida navegando no painel direito do navegador — sem
+  // isso (drop/paste, que não passam pelo navegador), cai no default
+  // (Desktop da loja).
+  const sendLocalFileToRemote = useCallback(async (localPath, fileNameHint, destDirOverride) => {
     // Ignora silenciosamente um 2º clique/drop enquanto a transferência
     // anterior ainda não terminou (upload pro Blob OU download remoto) —
     // ver comentário em transferringRef acima.
@@ -169,15 +204,11 @@ export function LiveSessionWindow() {
       setFileTransferProgress('error: sem conexão com a sessão ao vivo')
       return
     }
-    // Sem destino nenhum (nem digitado pelo operador, nem o default —
+    // Sem destino nenhum (nem o escolhido no navegador, nem o default —
     // remoteUser ainda não chegou via session-info): melhor recusar aqui
     // do que mandar destDir vazio pro companion (que faria MkdirAll("")
     // falhar só no lado remoto, sem o operador saber por quê).
-    // .trim(): um valor só com espaço(s) digitado por engano é truthy em JS
-    // -- sem o trim, passava o guard abaixo como se fosse um destino válido
-    // e ia pro companion, que cria o diretório " " em vez de recusar (achado
-    // do code-reviewer, 12/11/2026).
-    const destDir = fileDestDir.trim() || defaultDestDir
+    const destDir = destDirOverride || defaultDestDir
     if (!destDir) {
       setFileTransferProgress('error: confirme o caminho de destino antes de enviar')
       return
@@ -216,49 +247,42 @@ export function LiveSessionWindow() {
       transferringRef.current = false
       setIsTransferring(false)
     }
-  }, [session, fileDestDir, defaultDestDir, sendFileTransfer, status])
+  }, [session, defaultDestDir, sendFileTransfer, status])
 
   // sendRemoteFileToLocal: direção contrária de sendLocalFileToRemote --
   // pede ao servidor o par de SAS (upload+download pro mesmo blob, mesma
   // API que a outra direção, só rota diferente), manda o companion ler
-  // remotePath e subir pro Blob, e guarda a downloadUrl pra usar quando
-  // ele terminar (handleFileTransferStatus, 'file-download-done').
-  const sendRemoteFileToLocal = useCallback(async (remotePath) => {
+  // remotePath e subir pro Blob, e guarda downloadUrl+targetLocalDir pra
+  // usar quando ele terminar (handleFileTransferStatus, 'file-download-done').
+  // targetLocalDir é a pasta do PAINEL LOCAL no navegador de arquivos no
+  // momento do clique "← Baixar" -- sem isso, o arquivo sempre cairia na
+  // pasta Downloads fixa, ignorando a pasta escolhida navegando.
+  const sendRemoteFileToLocal = useCallback(async (remotePath, targetLocalDir) => {
     if (transferringRef.current) return
     if (status !== 'connected') {
       setFileTransferProgress('error: sem conexão com a sessão ao vivo')
       return
     }
-    const trimmedPath = remotePath.trim()
-    if (!trimmedPath) {
-      setFileTransferProgress('error: informe o caminho do arquivo na máquina remota')
-      return
-    }
+    if (!remotePath) return
     transferringRef.current = true
     setIsTransferring(true)
-    const fileName = trimmedPath.split(/[\\/]/).pop()
+    const fileName = remotePath.split(/[\\/]/).pop()
     setFileTransferProgress({ bytesReceived: 0, bytesTotal: 0 })
     try {
       const { uploadUrl, downloadUrl } = await api.live.getFileDownloadUrl(session.sessionId, fileName)
-      pendingDownloadUrlRef.current = downloadUrl
-      sendFileDownload(trimmedPath, uploadUrl)
+      pendingDownloadRef.current = { url: downloadUrl, targetDir: targetLocalDir }
+      sendFileDownload(remotePath, uploadUrl)
       // transferringRef/isTransferring continuam true daqui até
       // handleFileTransferStatus receber file-download-done/-error -- o
       // pedido de SAS terminou aqui, mas o upload do companion pro Blob
       // (e depois o download local, via downloadFile) ainda estão por vir.
     } catch (err) {
       setFileTransferProgress('error: ' + (err?.message || 'falha ao iniciar o download'))
-      pendingDownloadUrlRef.current = null
+      pendingDownloadRef.current = null
       transferringRef.current = false
       setIsTransferring(false)
     }
   }, [session, status, sendFileDownload])
-
-  const handlePickFile = useCallback(async () => {
-    const localPath = await window.electronAPI.pickFile()
-    if (!localPath) return
-    sendLocalFileToRemote(localPath)
-  }, [sendLocalFileToRemote])
 
   // handleDrop só repassa pra sendLocalFileToRemote (mesma lógica do
   // botão) — o guard de mode aqui é a ÚNICA barreira contra um drop em
@@ -800,16 +824,9 @@ export function LiveSessionWindow() {
         </button>
         {session?.mode === 'normal' && (
           <div className="file-transfer-controls" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <input
-              type="text"
-              value={fileDestDir}
-              onChange={(e) => setFileDestDir(e.target.value)}
-              placeholder={defaultDestDir || 'Confirme o caminho de destino'}
-              style={{ width: 220 }}
-            />
             <button
               className="btn btn-secondary"
-              onClick={handlePickFile}
+              onClick={() => setFileBrowserOpen(true)}
               disabled={ending || isTransferring || status !== 'connected'}
               title={
                 isTransferring ? 'Já existe uma transferência em andamento'
@@ -817,26 +834,7 @@ export function LiveSessionWindow() {
                   : undefined
               }
             >
-              Enviar arquivo
-            </button>
-            <input
-              type="text"
-              value={remoteFilePath}
-              onChange={(e) => setRemoteFilePath(e.target.value)}
-              placeholder="Caminho do arquivo no remoto"
-              style={{ width: 220 }}
-            />
-            <button
-              className="btn btn-secondary"
-              onClick={() => sendRemoteFileToLocal(remoteFilePath)}
-              disabled={ending || isTransferring || status !== 'connected'}
-              title={
-                isTransferring ? 'Já existe uma transferência em andamento'
-                  : status !== 'connected' ? 'Sem conexão com a sessão ao vivo'
-                  : undefined
-              }
-            >
-              Baixar arquivo
+              📁 Transferir arquivo...
             </button>
             {fileTransferProgress && typeof fileTransferProgress === 'object' && (
               <progress value={fileTransferProgress.bytesReceived} max={fileTransferProgress.bytesTotal || 1} />
@@ -850,6 +848,24 @@ export function LiveSessionWindow() {
           </div>
         )}
       </div>
+      {fileBrowserOpen && (
+        <FileBrowserModal
+          localListing={localListing}
+          remoteListing={remoteListing}
+          requestLocalDir={requestLocalDir}
+          requestRemoteDir={sendListRemoteDir}
+          isTransferring={isTransferring}
+          onClose={() => setFileBrowserOpen(false)}
+          onSendToRemote={(localFullPath, fileName, destDir) => {
+            sendLocalFileToRemote(localFullPath, fileName, destDir)
+            setFileBrowserOpen(false)
+          }}
+          onSendToLocal={(remoteFullPath) => {
+            sendRemoteFileToLocal(remoteFullPath, localListing?.path)
+            setFileBrowserOpen(false)
+          }}
+        />
+      )}
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto' }}>
         <canvas
           data-testid="live-canvas"

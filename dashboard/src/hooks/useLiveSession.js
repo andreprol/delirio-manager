@@ -60,13 +60,22 @@ const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004, 4005])
 // isso sendInput também recusa (defesa em profundidade, mesmo princípio do
 // relay no servidor — liveSessionRelay.routeMessage nunca repassa input em
 // Shadow mesmo que o dashboard mande por engano/bug).
-export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange, onFileTransferStatus, onSessionInfo }) {
+export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange, onFileTransferStatus, onSessionInfo, onRemoteDirListing }) {
   const wsRef = useRef(null)
   const reconnectAttemptsRef = useRef(0)
   const frameSizeRef = useRef({ width: 0, height: 0 })
   const mountedRef = useRef(true)
   const modeRef = useRef(mode)
   modeRef.current = mode
+  // remoteDirRequestIdRef/latestRemoteDirRequestIdRef: correlação de
+  // list-remote-dir -- achado 🟡 do code-reviewer: cada pedido roda numa
+  // goroutine própria no companion, sem ordem garantida de conclusão. 2
+  // navegações rápidas (ex: entrar numa pasta de rede lenta, depois "⬆"
+  // pra uma rápida) podiam ter a resposta mais LENTA chegar DEPOIS e fazer
+  // a UI "voltar" pra um diretório já abandonado. Só a resposta cujo id
+  // bate com o do ÚLTIMO pedido enviado é repassada pro componente.
+  const remoteDirRequestIdRef = useRef(0)
+  const latestRemoteDirRequestIdRef = useRef(null)
 
   const notifyStatus = useCallback((status) => {
     onStatusChange?.(status)
@@ -151,6 +160,13 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
           // intermediário; 'connected' de novo quando o companion volta.
           else if (msg.type === 'companion-reconnecting') notifyStatus('reconnecting')
           else if (msg.type === 'companion-reconnected') notifyStatus('connected')
+          // remote-dir-listing/-error: resposta a list-remote-dir (ver
+          // sendListRemoteDir abaixo) -- painel remoto do navegador de
+          // arquivos dual-pane (FileBrowserModal.jsx). Descarta resposta
+          // de um pedido já abandonado (ver remoteDirRequestIdRef acima).
+          else if (msg.type === 'remote-dir-listing' || msg.type === 'remote-dir-error') {
+            if (msg.requestId === latestRemoteDirRequestIdRef.current) onRemoteDirListing?.(msg)
+          }
         } catch { /* mensagem de texto nao-JSON, ignora */ }
         return
       }
@@ -180,7 +196,7 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
       setTimeout(() => { if (mountedRef.current) connect() }, delay)
     }
     ws.onerror = () => { ws.close() }
-  }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus, onFileTransferStatus, onSessionInfo])
+  }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus, onFileTransferStatus, onSessionInfo, onRemoteDirListing])
 
   useEffect(() => {
     mountedRef.current = true
@@ -256,5 +272,16 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     sendInput({ type: 'file-download', remotePath, uploadUrl })
   }, [sendInput])
 
-  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload }
+  // sendListRemoteDir pede o conteúdo de um diretório remoto -- painel
+  // remoto do navegador de arquivos dual-pane. remoteDir vazio abre em
+  // %USERPROFILE%\Desktop (ver agent/filetransfer_windows.go, listRemoteDir).
+  // requestId sempre cresce e nunca repete -- o companion ecoa de volta, e
+  // só a resposta com o id do ÚLTIMO pedido enviado é aceita (ver onmessage acima).
+  const sendListRemoteDir = useCallback((remoteDir) => {
+    remoteDirRequestIdRef.current += 1
+    latestRemoteDirRequestIdRef.current = remoteDirRequestIdRef.current
+    sendInput({ type: 'list-remote-dir', remoteDir, requestId: remoteDirRequestIdRef.current })
+  }, [sendInput])
+
+  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir }
 }

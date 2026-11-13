@@ -11,6 +11,13 @@ const { countVisibleNormalWindows } = require('./liveSessionRegistry')
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 const IS_DEV      = process.env.NODE_ENV === 'development' || !app.isPackaged
 
+// pendingDownloadTargets: url do download -> pasta de destino escolhida
+// (download-file IPC, abaixo) -- Map em vez de 1 variável única pra evitar
+// race entre downloads concorrentes (ex: PDF da DANFE ao mesmo tempo que
+// um arquivo do navegador dual-pane): cada entrada é consumida pela MESMA
+// url exata no 'will-download' correspondente, nunca pela ordem de chegada.
+const pendingDownloadTargets = new Map()
+
 // app.asar.unpacked: ffmpeg-static embute um binário nativo, que não pode
 // ser executado de dentro do .asar — asarUnpack (package.json/build) copia
 // esse binário pra fora, em app.asar.unpacked; em dev (sem asar) a troca de
@@ -45,9 +52,15 @@ function createWindow() {
     },
   })
 
-  // Intercepta todos os downloads → salva direto na pasta Downloads do usuário (sem dialog)
+  // Intercepta todos os downloads → salva direto na pasta Downloads do
+  // usuário por padrão (sem dialog) -- pendingDownloadTargets (módulo,
+  // abaixo) deixa um chamador específico (navegador de arquivos dual-pane)
+  // escolher outra pasta, mantendo este default pra quem não escolhe
+  // (ex: PDF da DANFE, AlohaDANFESearch.jsx).
   win.webContents.session.on('will-download', (event, item) => {
-    const savePath = path.join(app.getPath('downloads'), item.getFilename())
+    const targetDir = pendingDownloadTargets.get(item.getURL()) || app.getPath('downloads')
+    pendingDownloadTargets.delete(item.getURL())
+    const savePath = path.join(targetDir, item.getFilename())
     item.setSavePath(savePath)
     item.on('done', (e, state) => {
       if (!win.isDestroyed()) {
@@ -443,11 +456,78 @@ app.whenReady().then(() => {
     shell.showItemInFolder(resolved)
   })
 
-  // IPC: download de arquivo para a pasta Downloads do usuário (sem dialog)
-  ipcMain.handle('download-file', (_, { url }) => {
+  // IPC: download de arquivo -- pasta Downloads por padrão (sem dialog),
+  // ou targetDir explícito (navegador de arquivos dual-pane, ver
+  // pendingDownloadTargets acima e o 'will-download' que consome isto).
+  ipcMain.handle('download-file', (_, { url, targetDir }) => {
     if (!win || win.isDestroyed()) return false
+    if (targetDir) pendingDownloadTargets.set(url, targetDir)
     win.webContents.downloadURL(url)
     return true
+  })
+
+  // IPC: lista um diretório LOCAL (do ponto de vista do operador) --
+  // painel esquerdo do navegador de arquivos dual-pane (FileBrowserModal.jsx),
+  // espelho de list-remote-dir (agent/filetransfer_windows.go). dirPath
+  // vazio abre na área de trabalho do operador.
+  //
+  // isInsideSensitiveAppDir + bloqueio de UNC: achado 🟠 do code-reviewer
+  // -- esta rota lia QUALQUER caminho sem a mesma guarda que file:read já
+  // usa (definida abaixo, hoisted) pra impedir um renderer comprometido de
+  // enumerar app.getPath('userData') (onde mora o config.json/adminSecret
+  // do Dashboard, achado 🔴 CRÍTICO em revisão anterior deste arquivo) --
+  // listar nomes/tamanhos já seria o suficiente pra reconhecimento, sem
+  // precisar nem ler o conteúdo. UNC bloqueado pelo mesmo motivo de
+  // file:read: fs.readdir num caminho \\host\share dispara handshake SMB
+  // de saída (vazamento de credencial NTLM) se o host não for confiável.
+  ipcMain.handle('list-local-dir', async (_, dirPath) => {
+    const target = dirPath || app.getPath('desktop')
+    if (/^[\\/]{2}/.test(target)) {
+      return { path: target, error: 'Caminho de rede (UNC) não é permitido' }
+    }
+    const resolvedTarget = path.resolve(target)
+    if (isInsideSensitiveAppDir(resolvedTarget)) {
+      return { path: target, error: 'Listagem recusada: caminho dentro dos diretórios internos do app' }
+    }
+
+    let dirents
+    try {
+      dirents = await fs.promises.readdir(resolvedTarget, { withFileTypes: true })
+    } catch (err) {
+      return { path: target, error: err.message }
+    }
+
+    // Ordena ANTES de cortar pelo teto -- achado 🟠 do code-reviewer:
+    // fs.readdir não garante NENHUMA ordem específica (diferente do Go,
+    // que ao menos devolve alfabético bruto) -- cortar antes de reordenar
+    // "pastas primeiro" descartava entradas de forma essencialmente
+    // arbitrária/inconsistente entre chamadas numa pasta grande. Ordenar
+    // os Dirent crus (isDirectory()/name, sem stat ainda) é barato -- só
+    // faz stat() nos que sobrarem depois do corte.
+    dirents.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    })
+    // Mesmo teto do lado remoto (maxRemoteDirEntries, agent/filetransfer_windows.go)
+    // -- uma pasta com dezenas de milhares de arquivos não pode travar a
+    // UI tentando renderizar tudo de uma vez.
+    const maxLocalDirEntries = 2000
+    const survivors = dirents.slice(0, maxLocalDirEntries)
+
+    // stat() em paralelo (achado 🟡 do code-reviewer) -- sequencial podia
+    // levar segundos numa pasta grande ou unidade de rede lenta, já que
+    // cada stat() esperava o anterior terminar antes de começar.
+    const statted = await Promise.all(survivors.map(async (d) => {
+      try {
+        const stat = await fs.promises.stat(path.join(resolvedTarget, d.name))
+        return { name: d.name, isDir: d.isDirectory(), size: stat.size, modTime: stat.mtime.toISOString() }
+      } catch {
+        return null // entrada ilegível (permissão, link quebrado) -- pulada, não derruba a listagem inteira
+      }
+    }))
+    const entries = statted.filter(Boolean)
+
+    return { path: resolvedTarget, entries }
   })
 
   // IPC: instalar update e reiniciar (só funciona em produção)
@@ -578,16 +658,6 @@ app.whenReady().then(() => {
     return isInsideSensitiveDir(resolvedPath, sensitiveDirs)
   }
 
-  // IPC: abre o seletor de arquivo nativo do Windows — usado pela feature de
-  // transferência de arquivo (arrastar/escolher arquivo local pra enviar pra
-  // máquina remota via Blob, ver useLiveSession.sendFileTransfer). Retorna
-  // null se o operador cancelar o dialog.
-  ipcMain.handle('file:pick', async () => {
-    const result = await dialog.showOpenDialog({ properties: ['openFile'] })
-    if (result.canceled || result.filePaths.length === 0) return null
-    return result.filePaths[0]
-  })
-
   // Limite de tamanho antes de carregar o arquivo inteiro em memória no
   // processo principal (que também serve todas as outras janelas do
   // Dashboard) — sem isso, um arquivo gigante travaria/estouraria memória
@@ -598,10 +668,10 @@ app.whenReady().then(() => {
   // arquivo válido entre 500MB e 2GB (achado na revisão).
   const MAX_FILE_READ_BYTES = 2 * 1024 * 1024 * 1024
 
-  // IPC: lê o conteúdo do arquivo local escolhido em file:pick OU
-  // arrastado via drag-and-drop (Task 10), pra upload pro Blob (Task 9,
-  // ainda não implementada aqui). Qualquer caminho absoluto é aceito — a
-  // defesa real é isInsideSensitiveAppDir acima, não a origem do path.
+  // IPC: lê o conteúdo do arquivo local arrastado (drag-and-drop) ou
+  // selecionado no navegador de arquivos dual-pane (FileBrowserModal.jsx),
+  // pra upload pro Blob. Qualquer caminho absoluto é aceito — a defesa
+  // real é isInsideSensitiveAppDir acima, não a origem do path.
   ipcMain.handle('file:read', async (_event, filePath) => {
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
       throw new Error('Caminho de arquivo inválido')
