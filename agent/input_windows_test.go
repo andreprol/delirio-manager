@@ -217,6 +217,35 @@ func TestDispatchLiveSessionInputFileTransfer(t *testing.T) {
 	}
 }
 
+// TestDispatchLiveSessionInputListRemoteDir cobre o case "list-remote-dir"
+// do dispatch: delega pra applyListRemoteDirFn (indireção mockável), mesmo
+// padrão de TestDispatchLiveSessionInputFileTransfer acima -- achado do
+// code-reviewer: só a função listRemoteDir isolada tinha teste, pulando a
+// camada de roteamento.
+func TestDispatchLiveSessionInputListRemoteDir(t *testing.T) {
+	original := applyListRemoteDirFn
+	defer func() { applyListRemoteDirFn = original }()
+
+	var gotMsg inputMessage
+	var gotSession string
+	called := false
+	applyListRemoteDirFn = func(msg inputMessage, sessionID string, w frameWriter) {
+		called = true
+		gotMsg = msg
+		gotSession = sessionID
+	}
+
+	msg := inputMessage{Type: "list-remote-dir", RemoteDir: `C:\Users\Loja\Desktop`}
+	dispatchLiveSessionInput(msg, "session-1", nil)
+
+	if !called {
+		t.Fatal("esperava applyListRemoteDirFn chamado")
+	}
+	if gotMsg.RemoteDir != `C:\Users\Loja\Desktop` || gotSession != "session-1" {
+		t.Errorf("msg/sessionID incorretos: %+v / %s", gotMsg, gotSession)
+	}
+}
+
 // TestInjectKeyboardInvalidKeyCode cobre o fail-safe de keyCode=0 (campo
 // omitido/ausente na mensagem JSON, já que KeyCode usa omitempty) — evita
 // mandar SendInput com VK inválido.

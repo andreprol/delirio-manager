@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -215,5 +216,137 @@ func TestUploadFileWithProgressAcimaDoLimite(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "limite") {
 		t.Errorf("mensagem de erro = %q, esperava mencionar o limite", err.Error())
+	}
+}
+
+// TestListRemoteDirSuccess cobre o happy path do navegador de arquivos
+// dual-pane: pastas primeiro, depois arquivos, cada grupo alfabético.
+func TestListRemoteDirSuccess(t *testing.T) {
+	tmp := t.TempDir()
+	for _, name := range []string{"zebra.txt", "banana.txt"} {
+		if err := os.WriteFile(filepath.Join(tmp, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"Zpasta", "Apasta"} {
+		if err := os.Mkdir(filepath.Join(tmp, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gotDir, entries, err := listRemoteDir(tmp)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if gotDir != tmp {
+		t.Errorf("dir devolvido = %q, want %q", gotDir, tmp)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("entries = %d, want 4", len(entries))
+	}
+	// pastas primeiro (alfabético entre si), depois arquivos (alfabético entre si)
+	wantOrder := []string{"Apasta", "Zpasta", "banana.txt", "zebra.txt"}
+	for i, want := range wantOrder {
+		if entries[i].Name != want {
+			t.Errorf("entries[%d].Name = %q, want %q (ordem completa: %v)", i, entries[i].Name, want, entries)
+		}
+	}
+	if !entries[0].IsDir || !entries[1].IsDir {
+		t.Errorf("entries[0]/[1] deveriam ser pastas (IsDir=true)")
+	}
+	if entries[2].IsDir || entries[3].IsDir {
+		t.Errorf("entries[2]/[3] deveriam ser arquivos (IsDir=false)")
+	}
+	if entries[2].Size != 1 {
+		t.Errorf("banana.txt size = %d, want 1", entries[2].Size)
+	}
+}
+
+func TestListRemoteDirDiretorioInexistente(t *testing.T) {
+	tmp := t.TempDir()
+	naoExiste := filepath.Join(tmp, "nao-existe")
+	_, _, err := listRemoteDir(naoExiste)
+	if err == nil {
+		t.Fatal("esperava erro pra diretório inexistente")
+	}
+}
+
+func TestListRemoteDirVazioUsaUserProfileDesktop(t *testing.T) {
+	original := os.Getenv("USERPROFILE")
+	defer os.Setenv("USERPROFILE", original)
+	tmp := t.TempDir()
+	os.Setenv("USERPROFILE", tmp)
+	if err := os.MkdirAll(filepath.Join(tmp, "Desktop"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	gotDir, _, err := listRemoteDir("")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	wantDir := filepath.Join(tmp, "Desktop")
+	if gotDir != wantDir {
+		t.Errorf("dir = %q, want %q (USERPROFILE\\Desktop)", gotDir, wantDir)
+	}
+}
+
+// TestListRemoteDirRespeitaTeto confirma que maxRemoteDirEntries corta a
+// listagem em vez de devolver um payload gigante -- encurtado pra não
+// precisar criar milhares de arquivos de verdade (mesmo padrão de
+// maxUploadFileBytes acima, var pra teste).
+func TestListRemoteDirRespeitaTeto(t *testing.T) {
+	original := maxRemoteDirEntries
+	defer func() { maxRemoteDirEntries = original }()
+	maxRemoteDirEntries = 3
+
+	tmp := t.TempDir()
+	for i := 0; i < 10; i++ {
+		if err := os.WriteFile(filepath.Join(tmp, fmt.Sprintf("arquivo-%02d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, entries, err := listRemoteDir(tmp)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("entries = %d, want 3 (teto respeitado)", len(entries))
+	}
+}
+
+// TestListRemoteDirOrdenaAntesDeCortar é a regressão do achado 🟠 do
+// code-reviewer: TestListRemoteDirRespeitaTeto acima só usa nomes
+// puramente numéricos, onde a ordem bruta de os.ReadDir e a ordem final
+// (pastas primeiro) coincidem -- nunca pegaria o bug de cortar pelo teto
+// ANTES de reordenar. Aqui, "zzz-pasta" (uma PASTA) vem depois dos 3
+// arquivos na ordem alfabética BRUTA (zzz > aaa/bbb/ccc) -- se o corte
+// acontecesse antes da ordenação, "zzz-pasta" seria descartado mesmo
+// devendo aparecer PRIMEIRO no resultado final (pastas sempre antes de
+// arquivos).
+func TestListRemoteDirOrdenaAntesDeCortar(t *testing.T) {
+	original := maxRemoteDirEntries
+	defer func() { maxRemoteDirEntries = original }()
+	maxRemoteDirEntries = 3
+
+	tmp := t.TempDir()
+	for _, name := range []string{"aaa.txt", "bbb.txt", "ccc.txt"} {
+		if err := os.WriteFile(filepath.Join(tmp, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(tmp, "zzz-pasta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, entries, err := listRemoteDir(tmp)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %d, want 3 (teto respeitado)", len(entries))
+	}
+	if entries[0].Name != "zzz-pasta" || !entries[0].IsDir {
+		t.Errorf("entries[0] = %+v, want zzz-pasta (pasta) primeiro -- corte aconteceu antes da ordenação?", entries[0])
 	}
 }

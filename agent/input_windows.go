@@ -16,7 +16,7 @@ import (
 // servidor garante isso, ver liveSessionRelay.routeMessage no plano do
 // server). Tipos: "mousemove", "mousedown", "mouseup", "keydown", "keyup",
 // "lock-local-input", "unlock-local-input", "clipboard-paste",
-// "file-transfer", "file-download".
+// "file-transfer", "file-download", "list-remote-dir".
 type inputMessage struct {
 	Type        string `json:"type"`
 	X           int32  `json:"x,omitempty"`
@@ -29,6 +29,8 @@ type inputMessage struct {
 	DestDir     string `json:"destDir,omitempty"`     // file-transfer: diretorio de destino (sem o nome do arquivo)
 	RemotePath  string `json:"remotePath,omitempty"`  // file-download: caminho completo do arquivo NESTA maquina a subir pro Blob
 	UploadURL   string `json:"uploadUrl,omitempty"`   // file-download: SAS de escrita do blob
+	RemoteDir   string `json:"remoteDir,omitempty"`   // list-remote-dir: diretorio a listar (vazio = %USERPROFILE%\Desktop)
+	RequestID   int64  `json:"requestId,omitempty"`   // list-remote-dir: id de correlacao, ecoado de volta em remoteDirListing
 }
 
 func parseInputMessage(data []byte) (inputMessage, error) {
@@ -135,6 +137,8 @@ func dispatchSessionControlInput(msg inputMessage, sessionID string, w frameWrit
 		applyFileTransferFn(msg, sessionID, w)
 	case "file-download":
 		applyFileDownloadFn(msg, sessionID, w)
+	case "list-remote-dir":
+		applyListRemoteDirFn(msg, sessionID, w)
 	default:
 		logWarn(fmt.Sprintf("companion: tipo de input não suportado ainda: %s", msg.Type))
 	}

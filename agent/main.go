@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.9.4" // minor: transferencia de arquivo mao dupla -- companion agora tambem sobe um arquivo local (remoto, do ponto de vista do operador) pro Blob a pedido do dashboard (file-download), pra download no computador do operador
+	Version            = "1.9.5" // minor: navegador de arquivos dual-pane -- companion ganha list-remote-dir, lista um diretorio remoto (pastas primeiro, teto de entradas) pro dashboard construir o painel remoto do seletor visual de arquivos
 )
 
 func main() {

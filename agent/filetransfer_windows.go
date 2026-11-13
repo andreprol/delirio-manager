@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -42,6 +44,122 @@ func sendFileTransferStatus(w frameWriter, status fileTransferStatus) {
 	if err := w.WriteMessageWithDeadline(websocket.TextMessage, b, deadline); err != nil {
 		logWarn(fmt.Sprintf("companion: falha ao mandar status de transferencia: %v", err))
 	}
+}
+
+// remoteDirEntry é 1 item (arquivo ou pasta) de uma listagem de diretório
+// remoto -- navegador de arquivos dual-pane (FileBrowserModal.jsx).
+type remoteDirEntry struct {
+	Name    string `json:"name"`
+	IsDir   bool   `json:"isDir"`
+	Size    int64  `json:"size"`
+	ModTime string `json:"modTime"` // RFC3339, UTC
+}
+
+// remoteDirListing é o protocolo de volta pro dashboard (mesmo canal de
+// texto de fileTransferStatus/sessionInfoMsg) em resposta a
+// "list-remote-dir".
+type remoteDirListing struct {
+	Type      string           `json:"type"` // "remote-dir-listing" | "remote-dir-error"
+	Path      string           `json:"path"`
+	Entries   []remoteDirEntry `json:"entries,omitempty"`
+	Message   string           `json:"message,omitempty"` // só em "remote-dir-error"
+	RequestID int64            `json:"requestId,omitempty"`
+}
+
+func sendRemoteDirListing(w frameWriter, listing remoteDirListing) {
+	if w == nil {
+		return
+	}
+	b, err := json.Marshal(listing)
+	if err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao serializar listagem de diretorio: %v", err))
+		return
+	}
+	deadline := time.Now().Add(liveSessionWriteTimeout)
+	if err := w.WriteMessageWithDeadline(websocket.TextMessage, b, deadline); err != nil {
+		logWarn(fmt.Sprintf("companion: falha ao mandar listagem de diretorio: %v", err))
+	}
+}
+
+// maxRemoteDirEntries limita quantas entradas uma listagem devolve -- uma
+// pasta com dezenas de milhares de arquivos (ex: cache de algum app,
+// pasta de logs) nao pode gerar um payload JSON gigante nem travar a UI do
+// dashboard tentando renderizar tudo de uma vez. var, nao const, so pra
+// teste poder encurtar sem precisar criar milhares de arquivos de verdade.
+var maxRemoteDirEntries = 2000
+
+// listRemoteDir lista dir (diretorio NESTE computador, remoto do ponto de
+// vista do operador) -- dir vazio abre em %USERPROFILE%\Desktop (mesmo
+// usuario interativo que o companion roda sob, ver session_windows.go).
+// Entrada ilegivel (permissao, link quebrado) e pulada, nao derruba a
+// listagem inteira -- 1 arquivo problematico nao pode impedir ver o resto
+// da pasta.
+func listRemoteDir(dir string) (string, []remoteDirEntry, error) {
+	if dir == "" {
+		dir = filepath.Join(os.Getenv("USERPROFILE"), "Desktop")
+	}
+	dirEntries, err := os.ReadDir(dir)
+	if err != nil {
+		return dir, nil, fmt.Errorf("ler diretorio %q: %w", dir, err)
+	}
+
+	// Ordena ANTES de cortar pelo teto -- achado 🟠 do code-reviewer:
+	// os.ReadDir devolve em ordem alfabética BRUTA (sem separar pastas de
+	// arquivos). Cortar pelo teto antes de reordenar "pastas primeiro"
+	// descartava uma pasta inteira sempre que seu nome vinha depois do
+	// ponto de corte na ordem bruta, mesmo que ela devesse aparecer
+	// PRIMEIRO no resultado final -- pastas primeiro, depois arquivos,
+	// cada grupo em ordem alfabética (convenção universal de qualquer
+	// navegador de arquivos: Explorer, FileZilla, etc.). Ordenar os
+	// DirEntry crus (IsDir()/Name(), sem Info() ainda) é barato -- só
+	// chama Info() (stat) nos que sobrarem depois do corte, abaixo.
+	sort.Slice(dirEntries, func(i, j int) bool {
+		if dirEntries[i].IsDir() != dirEntries[j].IsDir() {
+			return dirEntries[i].IsDir()
+		}
+		return strings.ToLower(dirEntries[i].Name()) < strings.ToLower(dirEntries[j].Name())
+	})
+
+	entries := make([]remoteDirEntry, 0, min(len(dirEntries), maxRemoteDirEntries))
+	for _, e := range dirEntries {
+		if len(entries) >= maxRemoteDirEntries {
+			break
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		entries = append(entries, remoteDirEntry{
+			Name: e.Name(), IsDir: e.IsDir(), Size: info.Size(),
+			ModTime: info.ModTime().UTC().Format(time.RFC3339),
+		})
+	}
+	return dir, entries, nil
+}
+
+// applyListRemoteDirFn indireciona applyListRemoteDir pra permitir mock em
+// teste (mesmo padrao de applyFileTransferFn/applyFileDownloadFn).
+var applyListRemoteDirFn = applyListRemoteDir
+
+// applyListRemoteDir roda em goroutine separada -- mesmo motivo de
+// applyFileTransfer/applyFileDownload: uma pasta de rede lenta ou disco
+// ocupado nao pode bloquear a goroutine leitora de mouse/teclado. Ecoa
+// msg.RequestID na resposta -- achado 🟡 do code-reviewer: cada
+// "list-remote-dir" roda numa goroutine própria, sem ordem garantida de
+// conclusão; sem o id de correlação, 2 navegações rápidas (ex: entrar numa
+// pasta de rede lenta, depois "⬆" pra uma rápida) podiam ter a resposta
+// mais lenta chegar DEPOIS e fazer a UI "voltar" pra um diretório já
+// abandonado. O dashboard (useLiveSession.js) descarta qualquer resposta
+// cujo requestId não seja o do último pedido que ele mesmo mandou.
+func applyListRemoteDir(msg inputMessage, sessionID string, w frameWriter) {
+	safeGo("list-remote-dir-"+sessionID, func() {
+		dir, entries, err := listRemoteDir(msg.RemoteDir)
+		if err != nil {
+			sendRemoteDirListing(w, remoteDirListing{Type: "remote-dir-error", Path: dir, Message: err.Error(), RequestID: msg.RequestID})
+			return
+		}
+		sendRemoteDirListing(w, remoteDirListing{Type: "remote-dir-listing", Path: dir, Entries: entries, RequestID: msg.RequestID})
+	})
 }
 
 // progressWriter conta bytes escritos e chama onProgress no maximo 1x por
