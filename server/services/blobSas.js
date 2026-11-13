@@ -44,8 +44,16 @@ function sanitizeFileName(fileName) {
 }
 
 // generateFileTransferUrls({fileName, fileSize}) -> {uploadUrl, downloadUrl, blobName}
+// fileSize é OPCIONAL de propósito: usado na direção operador->remoto (o
+// browser já sabe o tamanho do arquivo antes de pedir a SAS, ver
+// routes/live.js /file/upload-url) pra rejeitar cedo, mas não existe ainda
+// na direção remoto->operador (/file/download-url) -- o operador só informa
+// um CAMINHO no remoto, o tamanho real só é descoberto quando o companion
+// abre o arquivo pra ler. `undefined` pula a checagem explicitamente (não é
+// um acidente de `undefined > número` ser falsy) -- a MESMA função de
+// geração de SAS serve as 2 direções, só quem chama decide se valida antes.
 function generateFileTransferUrls({ fileName, fileSize }) {
-  if (fileSize > MAX_FILE_BYTES) {
+  if (fileSize !== undefined && fileSize > MAX_FILE_BYTES) {
     throw new Error(`Arquivo acima do limite de 2GB (recebido: ${fileSize} bytes)`);
   }
 

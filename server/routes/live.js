@@ -60,10 +60,56 @@ router.post('/:sessionId/file/upload-url', adminAuth, (req, res) => {
   if (fileSize > MAX_FILE_BYTES) {
     return res.status(400).json({ error: `Arquivo acima do limite de 2GB (recebido: ${fileSize} bytes)` });
   }
+  // Achado do code-reviewer: sem isto, qualquer chamador com X-Admin-Secret
+  // recebia SAS válidas pra um sessionId inexistente/já finalizado (mesmo
+  // guard que /stop já tinha).
+  const session = db.getLiveSession(req.params.sessionId);
+  if (!session) {
+    return res.status(404).json({ error: 'Sessão não encontrada' });
+  }
   try {
     const result = generateFileTransferUrls({ fileName, fileSize });
+    // Achado do code-reviewer: diferente de mouse/teclado (visível na tela
+    // física da loja), transferência de arquivo não deixa rastro nenhum
+    // sem log -- auditoria mínima de quem pediu o quê.
+    console.log(`[FileTransfer] upload-url pedido: fileName=${fileName} sessionId=${session.id} machineId=${session.machine_id}`);
     res.json(result);
   } catch (err) {
+    console.log(`[FileTransfer] upload-url falhou: fileName=${fileName} sessionId=${session.id} erro=${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/live/:sessionId/file/download-url  { fileName }
+// Mesmo par de SAS (upload+download pro MESMO blob) que /file/upload-url,
+// só que pra direção CONTRÁRIA — transferência de arquivo máquina
+// remota->operador. O companion recebe a uploadUrl (sobe o arquivo lido do
+// disco remoto pro Blob) e o dashboard guarda a downloadUrl (baixa do Blob
+// pro computador do operador via window.electronAPI.downloadFile, assim
+// que o companion avisar 'file-download-done'). Sem fileSize aqui de
+// propósito: o operador só informa um CAMINHO no remoto, o tamanho real só
+// é conhecido quando o companion abre o arquivo pra ler — generateFileTransferUrls
+// tolera fileSize ausente (a checagem de MAX_FILE_BYTES simplesmente não
+// dispara pra undefined), então não precisa de variante própria no serviço.
+router.post('/:sessionId/file/download-url', adminAuth, (req, res) => {
+  const { fileName } = req.body || {};
+  if (!fileName) {
+    return res.status(400).json({ error: 'fileName é obrigatório' });
+  }
+  const session = db.getLiveSession(req.params.sessionId);
+  if (!session) {
+    return res.status(404).json({ error: 'Sessão não encontrada' });
+  }
+  try {
+    const result = generateFileTransferUrls({ fileName });
+    // Achado do code-reviewer: ler um arquivo do disco remoto e subir pro
+    // Blob é SILENCIOSO (nenhum sinal visual pra quem estiver na loja,
+    // diferente de mouse/teclado) -- sem log, uma exfiltração não deixa
+    // rastro nenhum pra auditoria posterior.
+    console.log(`[FileTransfer] download-url pedido: fileName=${fileName} sessionId=${session.id} machineId=${session.machine_id}`);
+    res.json(result);
+  } catch (err) {
+    console.log(`[FileTransfer] download-url falhou: fileName=${fileName} sessionId=${session.id} erro=${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });

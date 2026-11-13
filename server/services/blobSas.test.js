@@ -43,6 +43,16 @@ describe('blobSas.generateFileTransferUrls — validação de entrada', () => {
     expect(() => generateFileTransferUrls({ fileName: 'a.txt', fileSize: TWO_GB_PLUS_1 }))
       .toThrow(/2GB/);
   });
+
+  // fileSize ausente (direção remoto->operador, /file/download-url) nunca
+  // deve lançar -- explícito aqui pra não depender de "undefined > número"
+  // ser falsy por acidente continuar funcionando se alguém reescrever essa
+  // checagem no futuro.
+  it('fileSize ausente não lança (direção remoto->operador, tamanho desconhecido antecipadamente)', () => {
+    mockConfig({ blobStorage: { accountName: 'acc', accountKey: 'key', container: 'live-transfer' } });
+    const { generateFileTransferUrls } = require('./blobSas');
+    expect(() => generateFileTransferUrls({ fileName: 'relatorio.pdf' })).not.toThrow();
+  });
 });
 
 describe('blobSas.generateFileTransferUrls — geração de URLs e nome do blob', () => {

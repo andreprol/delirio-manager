@@ -148,7 +148,9 @@ describe('POST /api/live/:sessionId/file/upload-url — resposta do serviço', (
   });
 
   it('200 com uploadUrl/downloadUrl quando tudo ok', async () => {
+    const db = require('../db');
     const blobSas = require('../services/blobSas');
+    db.getLiveSession.mockReturnValue({ id: 's1', machine_id: 'm1' });
     blobSas.generateFileTransferUrls.mockReturnValue({
       uploadUrl: 'https://acc.blob.core.windows.net/live-transfer/x?sas',
       downloadUrl: 'https://acc.blob.core.windows.net/live-transfer/x?sas2',
@@ -165,7 +167,9 @@ describe('POST /api/live/:sessionId/file/upload-url — resposta do serviço', (
   });
 
   it('500 quando blobSas lança erro inesperado (ex: config ausente)', async () => {
+    const db = require('../db');
     const blobSas = require('../services/blobSas');
+    db.getLiveSession.mockReturnValue({ id: 's1', machine_id: 'm1' });
     blobSas.generateFileTransferUrls.mockImplementation(() => {
       throw new Error('blobStorage não configurado em config.json (accountName/accountKey)');
     });
@@ -175,6 +179,100 @@ describe('POST /api/live/:sessionId/file/upload-url — resposta do serviço', (
       .set('x-admin-secret', 'segredo-123')
       .send({ fileName: 'a.txt', fileSize: 1000 });
     expect(res.status).toBe(500);
+  });
+
+  // Achado do code-reviewer: sessionId nunca era checado contra uma sessão
+  // viva antes de emitir SAS -- mesmo guard que /stop já tinha.
+  it('404 quando a sessão não existe', async () => {
+    const db = require('../db');
+    db.getLiveSession.mockReturnValue(null);
+    const app = makeApp();
+    const res = await request(app)
+      .post('/api/live/nao-existe/file/upload-url')
+      .set('x-admin-secret', 'segredo-123')
+      .send({ fileName: 'a.txt', fileSize: 1000 });
+    expect(res.status).toBe(404);
+  });
+});
+
+// Mesmo padrão dos 2 describes de upload-url acima (divididos só pelo
+// limite de linhas do ESLint) — a direção CONTRÁRIA (máquina remota ->
+// operador) não tem o mesmo passo de validação de tamanho, porque o
+// operador só informa um caminho; o tamanho real só é conhecido quando o
+// companion abre o arquivo.
+describe('POST /api/live/:sessionId/file/download-url — autenticação e validação', () => {
+  beforeEach(() => {
+    process.env.ADMIN_SECRET = 'segredo-123';
+  });
+
+  it('401 sem X-Admin-Secret', async () => {
+    const app = makeApp();
+    const res = await request(app)
+      .post('/api/live/s1/file/download-url')
+      .send({ fileName: 'relatorio.pdf' });
+    expect(res.status).toBe(401);
+  });
+
+  it('400 sem fileName', async () => {
+    const app = makeApp();
+    const res = await request(app)
+      .post('/api/live/s1/file/download-url')
+      .set('x-admin-secret', 'segredo-123')
+      .send({});
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/live/:sessionId/file/download-url — resposta do serviço', () => {
+  beforeEach(() => {
+    process.env.ADMIN_SECRET = 'segredo-123';
+  });
+
+  it('200 com uploadUrl/downloadUrl quando tudo ok, sem fileSize no corpo', async () => {
+    const db = require('../db');
+    const blobSas = require('../services/blobSas');
+    db.getLiveSession.mockReturnValue({ id: 's1', machine_id: 'm1' });
+    blobSas.generateFileTransferUrls.mockClear();
+    blobSas.generateFileTransferUrls.mockReturnValue({
+      uploadUrl: 'https://acc.blob.core.windows.net/live-transfer/y?sas',
+      downloadUrl: 'https://acc.blob.core.windows.net/live-transfer/y?sas2',
+      blobName: 'y',
+    });
+    const app = makeApp();
+    const res = await request(app)
+      .post('/api/live/s1/file/download-url')
+      .set('x-admin-secret', 'segredo-123')
+      .send({ fileName: 'relatorio.pdf' });
+    expect(res.status).toBe(200);
+    expect(res.body.uploadUrl).toContain('live-transfer');
+    expect(res.body.downloadUrl).toContain('live-transfer');
+    expect(blobSas.generateFileTransferUrls).toHaveBeenCalledWith({ fileName: 'relatorio.pdf' });
+  });
+
+  it('500 quando blobSas lança erro inesperado (ex: config ausente)', async () => {
+    const db = require('../db');
+    const blobSas = require('../services/blobSas');
+    db.getLiveSession.mockReturnValue({ id: 's1', machine_id: 'm1' });
+    blobSas.generateFileTransferUrls.mockImplementation(() => {
+      throw new Error('blobStorage não configurado em config.json (accountName/accountKey)');
+    });
+    const app = makeApp();
+    const res = await request(app)
+      .post('/api/live/s1/file/download-url')
+      .set('x-admin-secret', 'segredo-123')
+      .send({ fileName: 'a.txt' });
+    expect(res.status).toBe(500);
+  });
+
+  it('404 quando a sessão não existe', async () => {
+    const db = require('../db');
+    db.getLiveSession.mockReturnValue(null);
+    const app = makeApp();
+    const res = await request(app)
+      .post('/api/live/nao-existe/file/download-url')
+      .set('x-admin-secret', 'segredo-123')
+      .send({ fileName: 'a.txt' });
+    expect(res.status).toBe(404);
   });
 });
 
