@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, act } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { LiveSessionWindow } from '../components/LiveSessionWindow'
 
 const sendInputMock = vi.fn()
@@ -9,6 +9,8 @@ const sendClipboardPasteMock = vi.fn()
 const sendFileTransferMock = vi.fn()
 const sendFileDownloadMock = vi.fn()
 const sendListRemoteDirMock = vi.fn()
+const sendClipboardGetFileMock = vi.fn()
+const sendClipboardGetSequenceMock = vi.fn()
 let lastUseLiveSessionArgs = null
 
 vi.mock('../hooks/useLiveSession', () => ({
@@ -22,6 +24,8 @@ vi.mock('../hooks/useLiveSession', () => ({
       sendFileTransfer: sendFileTransferMock,
       sendFileDownload: sendFileDownloadMock,
       sendListRemoteDir: sendListRemoteDirMock,
+      sendClipboardGetFile: sendClipboardGetFileMock,
+      sendClipboardGetSequence: sendClipboardGetSequenceMock,
     }
   },
 }))
@@ -79,6 +83,16 @@ beforeEach(() => {
       window.electronAPI.__fireWinKeyCombo = (combo) => cb(combo)
       return () => {}
     }),
+    // onDownloadDone/writeFileToClipboard: fluxo Ctrl+C remoto->local (ver
+    // handleCtrlCFromRemote/useEffect de onDownloadDone em
+    // LiveSessionWindow.jsx) -- __fireDownloadDone exposto do mesmo jeito
+    // que __fireWinKeyCombo/__fireNormalWindowVisibility acima, pra testes
+    // disparar o evento sem precisar de um download de verdade.
+    onDownloadDone: vi.fn((cb) => {
+      window.electronAPI.__fireDownloadDone = (data) => cb(data)
+      return () => {}
+    }),
+    writeFileToClipboard: vi.fn().mockResolvedValue(true),
   }
 })
 
@@ -376,6 +390,246 @@ describe('LiveSessionWindow', () => {
     })
 
     expect(sendClipboardPasteMock).not.toHaveBeenCalled()
+  })
+
+  // Ctrl+C remoto->local: espelho exato de Ctrl+V (paste local->remoto),
+  // só que NUNCA intercepta/bloqueia -- o keydown continua indo pro
+  // remoto normal (Explorer da loja copia de verdade), só dispara um
+  // efeito colateral a mais (pergunta ao companion o que ficou no
+  // clipboard, depois de um delay).
+  describe('Ctrl+C remoto->local (clipboard-get-file)', () => {
+    beforeEach(() => { vi.useFakeTimers() })
+    afterEach(() => { vi.useRealTimers() })
+
+    it('Ctrl+C continua encaminhado normal pro remoto (keydown real), dispara sendClipboardGetSequence NA HORA (baseline) e sendClipboardGetFile depois do delay', () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+      fireEvent.keyDown(window, { keyCode: 67, ctrlKey: true }) // 'C'
+
+      expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 67) // nunca interceptado, ao contrário de Ctrl+V
+      expect(sendClipboardGetSequenceMock).toHaveBeenCalledTimes(1) // baseline, na hora, sem esperar o delay
+      expect(sendClipboardGetFileMock).not.toHaveBeenCalled() // ainda não passou o delay
+
+      vi.advanceTimersByTime(400)
+      expect(sendClipboardGetFileMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('Ctrl+C em auto-repeat não dispara um novo sendClipboardGetFile a cada repetição', () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+      fireEvent.keyDown(window, { keyCode: 67, ctrlKey: true }) // 1ª vez
+      fireEvent.keyDown(window, { keyCode: 67, ctrlKey: true, repeat: true }) // segurando
+      fireEvent.keyDown(window, { keyCode: 67, ctrlKey: true, repeat: true })
+
+      vi.advanceTimersByTime(1000)
+      expect(sendClipboardGetFileMock).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  // clipboard-file-result: resposta a sendClipboardGetFile -- fluxo
+  // completo Ctrl+C remoto->local, sem fake timers (não precisa, o
+  // keydown/delay já foi coberto acima -- aqui o teste simula a resposta
+  // chegando direto via lastUseLiveSessionArgs.onClipboardFileResult).
+  describe('clipboard-file-result (fluxo completo Ctrl+C remoto->local)', () => {
+    it('path vazio (clipboard remoto sem arquivo, ex: copiou texto) não inicia download nenhum', async () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: '', requestId: 1 })
+        await Promise.resolve()
+      })
+
+      expect(api.live.getFileDownloadUrl).not.toHaveBeenCalled()
+      expect(sendFileDownloadMock).not.toHaveBeenCalled()
+    })
+
+    it('message preenchido (falha real de Win32 do lado da loja) mostra erro, não inicia download', async () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: '', message: 'OpenClipboard falhou', requestId: 1 })
+        await Promise.resolve()
+      })
+
+      expect(screen.getByText(/OpenClipboard falhou/i)).toBeInTheDocument()
+      expect(api.live.getFileDownloadUrl).not.toHaveBeenCalled()
+    })
+
+    it('path preenchido: pede download-url, manda sendFileDownload, baixa pra Downloads (sem targetDir) e, ao terminar de verdade, escreve no clipboard local', async () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\Users\\Loja\\Desktop\\nota.txt', requestId: 1 })
+        await Promise.resolve()
+      })
+
+      expect(api.live.getFileDownloadUrl).toHaveBeenCalledWith('s1', 'nota.txt')
+      expect(sendFileDownloadMock).toHaveBeenCalledWith('C:\\Users\\Loja\\Desktop\\nota.txt', 'https://blob/y?sas-up')
+
+      // Companion termina de subir pro Blob -- Electron baixa SEM targetDir
+      // (vai pra Downloads, não navega nenhuma pasta -- diferente do "←
+      // Baixar").
+      await act(async () => {
+        lastUseLiveSessionArgs.onFileTransferStatus({ type: 'file-download-done' })
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(window.electronAPI.downloadFile).toHaveBeenCalledWith('https://blob/y?sas-down')
+      expect(window.electronAPI.writeFileToClipboard).not.toHaveBeenCalled() // só depois do download REAL terminar
+
+      // 'download-done' REAL (evento, não a promise aproximada) -- só agora
+      // escreve no clipboard local.
+      await act(async () => {
+        window.electronAPI.__fireDownloadDone({ state: 'completed', filename: 'nota.txt', savePath: 'C:\\Users\\Andre\\Downloads\\nota.txt' })
+        await Promise.resolve()
+      })
+
+      expect(window.electronAPI.writeFileToClipboard).toHaveBeenCalledWith('C:\\Users\\Andre\\Downloads\\nota.txt')
+      expect(screen.getByText(/Pronto pra colar/i)).toBeInTheDocument()
+    })
+
+    it('download-done com falha (state != completed) mostra erro, destrava, NÃO escreve no clipboard', async () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\Users\\Loja\\Desktop\\nota.txt', requestId: 1 })
+        await Promise.resolve()
+      })
+      await act(async () => {
+        lastUseLiveSessionArgs.onFileTransferStatus({ type: 'file-download-done' })
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        window.electronAPI.__fireDownloadDone({ state: 'interrupted', filename: 'nota.txt', savePath: 'C:\\x\\nota.txt' })
+        await Promise.resolve()
+      })
+
+      expect(window.electronAPI.writeFileToClipboard).not.toHaveBeenCalled()
+      expect(screen.getByText(/error:/i)).toBeInTheDocument()
+
+      // Destravado -- uma 2ª cópia (agora via sendClipboardGetFile de novo)
+      // funciona normalmente.
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\Users\\Loja\\Desktop\\outra.txt', requestId: 2 })
+        await Promise.resolve()
+      })
+      expect(api.live.getFileDownloadUrl).toHaveBeenCalledTimes(2)
+    })
+
+    it('2 cópias rápidas (transferringRef ocupado na 2ª) -- só processa 1 por vez', async () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\a.txt', requestId: 1 })
+        await Promise.resolve()
+      })
+      // 2ª resposta chega enquanto a 1ª transferência ainda está em
+      // andamento (isTransferring=true) -- deve ser ignorada em silêncio.
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\b.txt', requestId: 2 })
+        await Promise.resolve()
+      })
+
+      expect(api.live.getFileDownloadUrl).toHaveBeenCalledTimes(1)
+      expect(api.live.getFileDownloadUrl).toHaveBeenCalledWith('s1', 'a.txt')
+    })
+
+    // Achado 🟠 do code-reviewer: sem comparar o sequence, um Ctrl+C que
+    // não pegou nada (foco errado, nada selecionado) baixava e colava em
+    // silêncio um arquivo VELHO que já estava no clipboard remoto de
+    // antes -- sequence igual ao baseline significa "nada mudou".
+    it('sequence igual ao baseline (clipboard remoto não mudou) -- ignora, não baixa o arquivo velho', async () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      act(() => { lastUseLiveSessionArgs.onClipboardSequenceResult({ type: 'clipboard-sequence-result', sequence: 10, requestId: 1 }) })
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\velho.txt', sequence: 10, requestId: 1 })
+        await Promise.resolve()
+      })
+
+      expect(api.live.getFileDownloadUrl).not.toHaveBeenCalled()
+    })
+
+    it('sequence diferente do baseline (clipboard mudou de verdade) -- baixa normalmente', async () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      act(() => { lastUseLiveSessionArgs.onClipboardSequenceResult({ type: 'clipboard-sequence-result', sequence: 10, requestId: 1 }) })
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\novo.txt', sequence: 11, requestId: 1 })
+        await Promise.resolve()
+      })
+
+      expect(api.live.getFileDownloadUrl).toHaveBeenCalledWith('s1', 'novo.txt')
+    })
+
+    // Achado 🟡 do code-reviewer: antes, copiar vários arquivos juntos
+    // (só o 1º é baixado) descartava os demais em silêncio.
+    it('extraFiles > 0 (vários arquivos copiados juntos) -- mensagem final avisa quantos não foram copiados', async () => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\a.txt', extraFiles: 2, requestId: 1 })
+        await Promise.resolve()
+      })
+      await act(async () => {
+        lastUseLiveSessionArgs.onFileTransferStatus({ type: 'file-download-done' })
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      await act(async () => {
+        window.electronAPI.__fireDownloadDone({ state: 'completed', filename: 'a.txt', savePath: 'C:\\Users\\Andre\\Downloads\\a.txt' })
+        await Promise.resolve()
+      })
+
+      expect(screen.getByText(/\+2 não copiado/i)).toBeInTheDocument()
+    })
+
+    // Achado 🟠 do code-reviewer: sem rede de segurança, se 'download-done'
+    // (evento real) nunca chegasse, a UI travava em "Copiando arquivo da
+    // loja..." pra sempre, sem erro visível.
+    it('onDownloadDone nunca chega -- depois do timeout, destrava e mostra erro, não trava pra sempre', async () => {
+      vi.useFakeTimers()
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onClipboardFileResult({ type: 'clipboard-file-result', path: 'C:\\a.txt', requestId: 1 })
+        await Promise.resolve()
+      })
+      await act(async () => {
+        lastUseLiveSessionArgs.onFileTransferStatus({ type: 'file-download-done' })
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      // onDownloadDone NUNCA chega -- só o timeout.
+      await act(async () => { vi.advanceTimersByTime(30000) })
+
+      expect(window.electronAPI.writeFileToClipboard).not.toHaveBeenCalled()
+      expect(screen.getByText(/tempo esgotado/i)).toBeInTheDocument()
+      vi.useRealTimers()
+    })
   })
 
   // injectClipboardPaste (agent) solta Ctrl no remoto ao final da sequência

@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // pasta..." no painel LOCAL do navegador de arquivos (só existe desse
   // lado, não tem Explorer pra abrir DENTRO da sessão remota).
   pickLocalFolder: () => ipcRenderer.invoke('pick-local-folder'),
+  // Escreve um arquivo de verdade no clipboard do Windows (CF_HDROP) --
+  // fluxo Ctrl+C remoto->local (ver LiveSessionWindow.jsx), deixa o
+  // arquivo pronto pro operador colar (Ctrl+V) em qualquer app local.
+  writeFileToClipboard: (filePath) => ipcRenderer.invoke('clipboard-write-file', filePath),
   showInFolder:    (p)    => ipcRenderer.invoke('shell:showItemInFolder', p),
   onDownloadDone: (cb) => {
     const handler = (_, data) => cb(data)

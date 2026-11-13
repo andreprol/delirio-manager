@@ -60,7 +60,7 @@ const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004, 4005])
 // isso sendInput também recusa (defesa em profundidade, mesmo princípio do
 // relay no servidor — liveSessionRelay.routeMessage nunca repassa input em
 // Shadow mesmo que o dashboard mande por engano/bug).
-export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange, onFileTransferStatus, onSessionInfo, onRemoteDirListing }) {
+export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange, onFileTransferStatus, onSessionInfo, onRemoteDirListing, onClipboardFileResult, onClipboardSequenceResult }) {
   const wsRef = useRef(null)
   const reconnectAttemptsRef = useRef(0)
   const frameSizeRef = useRef({ width: 0, height: 0 })
@@ -76,6 +76,20 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
   // bate com o do ÚLTIMO pedido enviado é repassada pro componente.
   const remoteDirRequestIdRef = useRef(0)
   const latestRemoteDirRequestIdRef = useRef(null)
+  // clipboardFileRequestIdRef/latestClipboardFileRequestIdRef: mesma
+  // correlação de remoteDirRequestIdRef acima -- 2 Ctrl+C em sequência
+  // rápida (comum, operador copia vários arquivos um atrás do outro) não
+  // pode deixar a resposta do PRIMEIRO pedido (mais lenta por qualquer
+  // motivo) sobrescrever o clipboard local com o arquivo ERRADO depois da
+  // resposta do segundo já ter sido tratada.
+  const clipboardFileRequestIdRef = useRef(0)
+  const latestClipboardFileRequestIdRef = useRef(null)
+  // clipboardSequenceRequestIdRef/latestClipboardSequenceRequestIdRef:
+  // mesma correlação, pro round-trip BASELINE separado (ver
+  // sendClipboardGetSequence) -- disparado no instante do Ctrl+C, antes do
+  // clipboard-get-file (que só sai 400ms depois).
+  const clipboardSequenceRequestIdRef = useRef(0)
+  const latestClipboardSequenceRequestIdRef = useRef(null)
 
   const notifyStatus = useCallback((status) => {
     onStatusChange?.(status)
@@ -167,6 +181,19 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
           else if (msg.type === 'remote-dir-listing' || msg.type === 'remote-dir-error') {
             if (msg.requestId === latestRemoteDirRequestIdRef.current) onRemoteDirListing?.(msg)
           }
+          // clipboard-file-result: resposta a clipboard-get-file (ver
+          // sendClipboardGetFile abaixo) -- fluxo Ctrl+C remoto->local
+          // (LiveSessionWindow.jsx). Mesma descarte-se-abandonado de
+          // remote-dir-listing acima.
+          else if (msg.type === 'clipboard-file-result') {
+            if (msg.requestId === latestClipboardFileRequestIdRef.current) onClipboardFileResult?.(msg)
+          }
+          // clipboard-sequence-result: resposta a clipboard-get-sequence
+          // (ver sendClipboardGetSequence abaixo) -- baseline separado do
+          // clipboard-file-result acima, própria correlação de requestId.
+          else if (msg.type === 'clipboard-sequence-result') {
+            if (msg.requestId === latestClipboardSequenceRequestIdRef.current) onClipboardSequenceResult?.(msg)
+          }
         } catch { /* mensagem de texto nao-JSON, ignora */ }
         return
       }
@@ -196,7 +223,7 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
       setTimeout(() => { if (mountedRef.current) connect() }, delay)
     }
     ws.onerror = () => { ws.close() }
-  }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus, onFileTransferStatus, onSessionInfo, onRemoteDirListing])
+  }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus, onFileTransferStatus, onSessionInfo, onRemoteDirListing, onClipboardFileResult, onClipboardSequenceResult])
 
   useEffect(() => {
     mountedRef.current = true
@@ -283,5 +310,28 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     sendInput({ type: 'list-remote-dir', remoteDir, requestId: remoteDirRequestIdRef.current })
   }, [sendInput])
 
-  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir }
+  // sendClipboardGetFile pergunta ao companion o que tem de ARQUIVO no
+  // clipboard REMOTO agora -- disparado depois de um Ctrl+C dentro da
+  // sessão (ver LiveSessionWindow.jsx), que continua sendo encaminhado
+  // pro remoto normalmente (nunca interceptado, ao contrário do Ctrl+V).
+  // requestId: mesma correlação de sendListRemoteDir acima.
+  const sendClipboardGetFile = useCallback(() => {
+    clipboardFileRequestIdRef.current += 1
+    latestClipboardFileRequestIdRef.current = clipboardFileRequestIdRef.current
+    sendInput({ type: 'clipboard-get-file', requestId: clipboardFileRequestIdRef.current })
+  }, [sendInput])
+
+  // sendClipboardGetSequence pede o número de sequência ATUAL do clipboard
+  // remoto -- round-trip BASELINE, disparado no instante do Ctrl+C (antes
+  // do Explorer da loja processar a cópia), comparado depois contra o
+  // sequence devolvido por clipboard-get-file (achado 🟠 do
+  // code-reviewer: sem isso, um Ctrl+C que não pegou nada baixava e colava
+  // em silêncio um arquivo VELHO que já estava no clipboard remoto).
+  const sendClipboardGetSequence = useCallback(() => {
+    clipboardSequenceRequestIdRef.current += 1
+    latestClipboardSequenceRequestIdRef.current = clipboardSequenceRequestIdRef.current
+    sendInput({ type: 'clipboard-get-sequence', requestId: clipboardSequenceRequestIdRef.current })
+  }, [sendInput])
+
+  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendClipboardGetFile, sendClipboardGetSequence }
 }

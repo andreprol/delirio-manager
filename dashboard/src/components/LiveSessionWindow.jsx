@@ -12,6 +12,23 @@ const VK_RWIN = 92
 // Ctrl (esquerdo) + 'V' — mesmos VKs de EMERGENCY_RELEASE_KEYCODES/onKeyDown.
 const VK_CONTROL = 17
 const VK_V = 86
+// 'C' -- Ctrl+C remoto->local (ver handleCtrlCFromRemote), nunca
+// interceptado/bloqueado (ao contrário de Ctrl+V) -- continua sendo
+// encaminhado normal pro remoto, só dispara um efeito colateral a mais.
+const VK_C = 67
+
+// ctrlCRemoteClipboardDelayMs: espera depois de encaminhar o Ctrl+C antes
+// de perguntar ao companion o que ficou no clipboard remoto -- dar tempo
+// do Explorer da loja processar o comando de cópia (síncrono do lado DELE,
+// a única demora real é o round-trip de rede dos 2 eventos de teclado
+// sintéticos até lá chegarem).
+const ctrlCRemoteClipboardDelayMs = 400
+
+// clipboardDownloadTimeoutMs: se o 'download-done' REAL (onDownloadDone)
+// não chegar dentro desse tempo depois do companion avisar
+// 'file-download-done', desiste e destrava a UI -- rede de segurança, ver
+// clipboardDownloadTimeoutRef.
+const clipboardDownloadTimeoutMs = 30000
 
 // Lista fixa pro botão de emergência "Liberar teclas travadas" — não
 // depende do rastreamento de heldKeysRef (que só sabe o que ESTA janela
@@ -72,7 +89,7 @@ export function LiveSessionWindow() {
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false)
   const [localListing, setLocalListing] = useState(null)
   const [remoteListing, setRemoteListing] = useState(null)
-  const [fileTransferProgress, setFileTransferProgress] = useState(null) // {bytesReceived, bytesTotal} | 'error: ...' | 'done-upload' | 'done-download' | 'baixando pro seu computador...' | null
+  const [fileTransferProgress, setFileTransferProgress] = useState(null) // {bytesReceived, bytesTotal} | 'error: ...' | 'done-upload' | 'done-download' | 'baixando pro seu computador...' | 'copiando arquivo da loja...' | 'pronto pra colar (Ctrl+V) ✓' (+ sufixo opcional "(+N não copiado(s))") | null
   // Guarda se já existe uma transferência em andamento — tanto o upload pro
   // Blob (síncrono do ponto de vista desta função) quanto o download real na
   // máquina remota (assíncrono, só termina quando handleFileTransferStatus
@@ -95,6 +112,55 @@ export function LiveSessionWindow() {
   // o arquivo sempre cairia na pasta Downloads fixa, ignorando a pasta que
   // o operador escolheu navegando no navegador de arquivos.
   const pendingDownloadRef = useRef(null) // {url, targetDir} | null
+  // pendingClipboardDownloadRef: espelho de pendingDownloadRef, mas pro
+  // fluxo "Ctrl+C na loja -> aparece pronto pro Ctrl+V local" (ver
+  // handleCtrlCFromRemote/handleClipboardFileResult abaixo) -- os dois
+  // nunca ficam preenchidos ao mesmo tempo (transferringRef serializa toda
+  // transferência, só 1 por vez); handleFileTransferStatus olha qual dos
+  // dois está preenchido pra decidir qual branch seguir no mesmo evento
+  // 'file-download-done' (o companion não sabe/não precisa saber qual dos
+  // 2 fluxos locais pediu o download).
+  const pendingClipboardDownloadRef = useRef(null) // {fileName} | null
+  // pendingClipboardDownloadNameRef: nome do arquivo cujo download (pra
+  // pasta Downloads, via window.electronAPI.downloadFile) este componente
+  // está esperando terminar DE VERDADE (onDownloadDone, abaixo) antes de
+  // escrever no clipboard local -- filtra o evento certo em meio a
+  // qualquer outro download concorrente de OUTRA feature (DANFE, relatório
+  // etc.), mesmo padrão de filtro-por-filename já usado em
+  // AlohaDANFESearch.jsx/App.jsx.
+  const pendingClipboardDownloadNameRef = useRef(null)
+  // downloadRemoteFileToLocalClipboardRef: downloadRemoteFileToLocalClipboard
+  // só existe depois da chamada de useLiveSession (precisa de
+  // sendFileDownload, devolvido por ela) mas handleClipboardFileResult
+  // (passado PRA DENTRO de useLiveSession, como onClipboardFileResult)
+  // precisa chamá-la -- mesmo padrão de referência cruzada já resolvido
+  // neste arquivo com sessionRef/recordingSecsRef (sincronizado a cada
+  // render, nunca em efeito).
+  const downloadRemoteFileToLocalClipboardRef = useRef(null)
+  // ctrlCBaselineSequenceRef: número de sequência do clipboard remoto
+  // capturado no INSTANTE do Ctrl+C (ver handleCtrlCFromRemote), antes do
+  // Explorer da loja processar a cópia -- comparado contra o sequence que
+  // vem junto da resposta de clipboard-get-file (depois do delay). Se não
+  // mudou, o clipboard remoto não tem nada NOVO (Ctrl+C não pegou nada --
+  // foco errado, nada selecionado) e o path devolvido é só um arquivo
+  // VELHO que já estava lá -- achado 🟠 do code-reviewer: sem isso, esse
+  // arquivo velho era baixado e colado em silêncio, sem o operador notar a
+  // troca.
+  const ctrlCBaselineSequenceRef = useRef(null)
+  // ctrlCExtraFilesRef: quantos arquivos A MAIS vieram junto no Ctrl+C
+  // (clipboardFileResult.extraFiles) -- guardado aqui (não um state
+  // separado) pra entrar na mensagem final de sucesso (onDownloadDone,
+  // abaixo), já que setFileTransferProgress troca de valor várias vezes
+  // no meio do fluxo (um aviso isolado aqui seria sobrescrito na hora).
+  const ctrlCExtraFilesRef = useRef(0)
+  // clipboardDownloadTimeoutRef: rede de segurança do fluxo Ctrl+C -- se o
+  // evento REAL 'download-done' (onDownloadDone, useEffect abaixo) nunca
+  // chegar (ex: Electron reiniciou, bug futuro no path de download),
+  // destrava isTransferring/transferringRef em vez de travar a UI em
+  // "Copiando arquivo da loja..." pra sempre -- achado 🟠 do
+  // code-reviewer, mesma classe de bug já corrigida antes pro guard de
+  // electronAPI.downloadFile ausente.
+  const clipboardDownloadTimeoutRef = useRef(null)
 
   const handleFileTransferStatus = useCallback((msg) => {
     if (msg.type === 'file-transfer-progress' || msg.type === 'file-download-progress') {
@@ -108,20 +174,43 @@ export function LiveSessionWindow() {
       // computador do operador. transferringRef/isTransferring continuam
       // true até o download local terminar (ou falhar).
       const pending = pendingDownloadRef.current
+      const pendingClipboard = pendingClipboardDownloadRef.current
       pendingDownloadRef.current = null
-      // Achado 🔴 ALTO do code-reviewer: `window.electronAPI?.downloadFile(url).then()...`
-      // encadeado a partir do próprio optional chaining — se electronAPI
-      // faltar, a cadeia INTEIRA (incluindo .then/.catch/.finally) vira
-      // `undefined` e NENHUM dos 3 callbacks roda, travando
-      // transferringRef/isTransferring em true pra sempre (UI presa em
-      // "Baixando..." sem erro visível, sem recuperação sem recarregar a
-      // janela). Resto do projeto guarda ANTES de chamar, nunca encadeia a
-      // partir do acesso opcional (App.jsx, AlohaDANFESearch.jsx) — mesmo
-      // padrão aqui.
+      pendingClipboardDownloadRef.current = null
+      // Mesmo guard de electronAPI.downloadFile ausente (achado 🔴 ALTO do
+      // code-reviewer, ver comentário mais abaixo) -- vale pros 2 fluxos.
       if (!window.electronAPI?.downloadFile) {
         setFileTransferProgress('error: recurso de download indisponível nesta janela')
         transferringRef.current = false
         setIsTransferring(false)
+        return
+      }
+      if (pendingClipboard) {
+        // Fluxo Ctrl+C remoto->local: baixa pra Downloads (sem targetDir --
+        // mesmo default de App.jsx/AlohaDANFESearch.jsx) e espera o
+        // 'download-done' REAL (onDownloadDone, abaixo) pra saber o
+        // savePath exato antes de escrever no clipboard -- diferente do
+        // fluxo "← Baixar" abaixo, que só usa esta promise (aproximada) como
+        // sinal de "concluído o bastante".
+        setFileTransferProgress('copiando arquivo da loja...')
+        pendingClipboardDownloadNameRef.current = pendingClipboard.fileName
+        // Rede de segurança: se 'download-done' (evento real, onDownloadDone)
+        // nunca chegar, destrava sozinho em vez de travar a UI pra sempre.
+        clearTimeout(clipboardDownloadTimeoutRef.current)
+        clipboardDownloadTimeoutRef.current = setTimeout(() => {
+          if (pendingClipboardDownloadNameRef.current !== pendingClipboard.fileName) return // já resolveu por outro caminho
+          pendingClipboardDownloadNameRef.current = null
+          setFileTransferProgress('error: tempo esgotado esperando o download terminar')
+          transferringRef.current = false
+          setIsTransferring(false)
+        }, clipboardDownloadTimeoutMs)
+        window.electronAPI.downloadFile(pendingClipboard.url).catch((err) => {
+          clearTimeout(clipboardDownloadTimeoutRef.current)
+          setFileTransferProgress('error: ' + (err?.message || 'falha ao copiar arquivo da loja'))
+          pendingClipboardDownloadNameRef.current = null
+          transferringRef.current = false
+          setIsTransferring(false)
+        })
         return
       }
       setFileTransferProgress('baixando pro seu computador...')
@@ -136,9 +225,38 @@ export function LiveSessionWindow() {
     } else if (msg.type === 'file-transfer-error' || msg.type === 'file-download-error') {
       setFileTransferProgress('error: ' + msg.message)
       pendingDownloadRef.current = null
+      pendingClipboardDownloadRef.current = null
       transferringRef.current = false
       setIsTransferring(false)
     }
+  }, [])
+
+  // handleClipboardSequenceResult: resposta ao round-trip BASELINE (ver
+  // handleCtrlCFromRemote) -- só guarda o número, não dispara nada.
+  const handleClipboardSequenceResult = useCallback((msg) => {
+    ctrlCBaselineSequenceRef.current = msg.sequence
+  }, [])
+
+  // handleClipboardFileResult: resposta a sendClipboardGetFile (ver
+  // handleCtrlCFromRemote abaixo) -- path vazio significa "nada de arquivo
+  // no clipboard remoto agora" (o operador copiou texto, ou nada ainda),
+  // silencioso, não é erro. message preenchido é falha real do Win32 do
+  // lado da loja. sequence igual ao baseline capturado no instante do
+  // Ctrl+C significa "o clipboard remoto não mudou" -- o path devolvido é
+  // só um arquivo VELHO que já estava lá antes, não o que o operador
+  // acabou de tentar copiar -- ignora (achado 🟠 do code-reviewer).
+  // extraFiles > 0 avisa que o operador copiou mais de 1 arquivo (só o 1º
+  // é baixado) -- achado 🟡 do code-reviewer, antes os extras sumiam sem
+  // aviso nenhum.
+  const handleClipboardFileResult = useCallback((msg) => {
+    if (msg.message) {
+      setFileTransferProgress('error: ' + msg.message)
+      return
+    }
+    if (!msg.path) return
+    if (ctrlCBaselineSequenceRef.current != null && msg.sequence === ctrlCBaselineSequenceRef.current) return
+    ctrlCExtraFilesRef.current = msg.extraFiles || 0
+    downloadRemoteFileToLocalClipboardRef.current?.(msg.path)
   }, [])
 
   // handleRemoteDirListing alimenta o painel REMOTO do navegador de
@@ -153,7 +271,7 @@ export function LiveSessionWindow() {
     setRemoteListing({ path: msg.path, entries: msg.entries || [] })
   }, [])
 
-  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir } = useLiveSession({
+  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendClipboardGetFile, sendClipboardGetSequence } = useLiveSession({
     serverUrl: session?.serverUrl,
     sessionId: session?.sessionId,
     dashboardToken: session?.dashboardToken,
@@ -163,6 +281,8 @@ export function LiveSessionWindow() {
     onFileTransferStatus: handleFileTransferStatus,
     onSessionInfo: handleSessionInfo,
     onRemoteDirListing: handleRemoteDirListing,
+    onClipboardFileResult: handleClipboardFileResult,
+    onClipboardSequenceResult: handleClipboardSequenceResult,
   })
 
   // requestLocalDir (painel esquerdo, FileBrowserModal) -- list-local-dir é
@@ -284,6 +404,56 @@ export function LiveSessionWindow() {
     }
   }, [session, status, sendFileDownload])
 
+  // downloadRemoteFileToLocalClipboard: fluxo Ctrl+C remoto->local (ver
+  // handleCtrlCFromRemote abaixo) -- espelho de sendRemoteFileToLocal, só
+  // que baixa pra Downloads (sem pasta escolhida, não passa pelo navegador
+  // dual-pane) e guarda o NOME em pendingClipboardDownloadRef em vez da
+  // pasta -- handleFileTransferStatus decide, ao ver esta ref preenchida,
+  // que o 'file-download-done' é deste fluxo, não do "← Baixar".
+  const downloadRemoteFileToLocalClipboard = useCallback(async (remotePath) => {
+    if (transferringRef.current) return
+    if (status !== 'connected') return
+    transferringRef.current = true
+    setIsTransferring(true)
+    const fileName = remotePath.split(/[\\/]/).pop()
+    setFileTransferProgress({ bytesReceived: 0, bytesTotal: 0 })
+    try {
+      const { uploadUrl, downloadUrl } = await api.live.getFileDownloadUrl(session.sessionId, fileName)
+      pendingClipboardDownloadRef.current = { url: downloadUrl, fileName }
+      sendFileDownload(remotePath, uploadUrl)
+      // transferringRef/isTransferring continuam true daqui até o
+      // clipboard local ser escrito com sucesso (ou falhar) -- ver
+      // handleFileTransferStatus ('file-download-done') e o useEffect de
+      // onDownloadDone mais abaixo.
+    } catch (err) {
+      setFileTransferProgress('error: ' + (err?.message || 'falha ao copiar arquivo da loja'))
+      pendingClipboardDownloadRef.current = null
+      transferringRef.current = false
+      setIsTransferring(false)
+    }
+  }, [session, status, sendFileDownload])
+  downloadRemoteFileToLocalClipboardRef.current = downloadRemoteFileToLocalClipboard
+
+  // handleCtrlCFromRemote: Ctrl+C dentro da sessão (mode normal) já vai
+  // pro Windows da loja normalmente (nunca interceptado, ao contrário do
+  // Ctrl+V -- ver onKeyDown abaixo) -- isto só acrescenta um efeito
+  // colateral: espera um instante (o Explorer da loja processar a cópia,
+  // local lá, não atravessa rede) e pergunta ao companion o que ficou no
+  // clipboard REMOTO. Se for um arquivo, baixa sozinho e deixa pronto pro
+  // operador colar (Ctrl+V) em QUALQUER app local -- espelho exato de
+  // pasteClipboardToRemote (abaixo), só na direção contrária.
+  const handleCtrlCFromRemote = useCallback(() => {
+    if (transferringRef.current) return
+    // Baseline ANTES do delay -- captura o sequence do clipboard remoto
+    // no instante do Ctrl+C, antes do Explorer da loja processar a cópia
+    // (ver handleClipboardSequenceResult/handleClipboardFileResult).
+    sendClipboardGetSequence()
+    setTimeout(() => {
+      if (transferringRef.current) return // uma transferência começou nesse meio-tempo -- não empilha
+      sendClipboardGetFile()
+    }, ctrlCRemoteClipboardDelayMs)
+  }, [sendClipboardGetSequence, sendClipboardGetFile])
+
   // handleDrop só repassa pra sendLocalFileToRemote (mesma lógica do
   // botão) — o guard de mode aqui é a ÚNICA barreira contra um drop em
   // Shadow virar comando: o onDrop/onDragOver no JSX abaixo está no
@@ -369,6 +539,49 @@ export function LiveSessionWindow() {
     if (e.dataTransfer.types?.includes('Files')) {
       e.dataTransfer.dropEffect = 'copy'
     }
+  }, [])
+
+  // Completa o fluxo Ctrl+C remoto->local: 'download-done' é o evento REAL
+  // (savePath exato, ao contrário da promise aproximada de downloadFile()
+  // usada no "← Baixar") -- filtra pelo nome que downloadRemoteFileToLocalClipboard
+  // guardou (pendingClipboardDownloadNameRef), ignorando qualquer OUTRO
+  // download concorrente desta janela (DANFE, relatório etc. não passam
+  // por aqui, mesmo padrão de filtro-por-filename de AlohaDANFESearch.jsx).
+  // Fica montado a sessão inteira (nunca "unsubscribe uma vez só") porque
+  // Ctrl+C pode acontecer várias vezes.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.onDownloadDone(({ state, filename, savePath }) => {
+      if (filename !== pendingClipboardDownloadNameRef.current) return
+      pendingClipboardDownloadNameRef.current = null
+      clearTimeout(clipboardDownloadTimeoutRef.current) // chegou de verdade -- cancela a rede de segurança
+      if (state !== 'completed') {
+        setFileTransferProgress('error: falha ao salvar o arquivo copiado')
+        transferringRef.current = false
+        setIsTransferring(false)
+        return
+      }
+      if (!window.electronAPI?.writeFileToClipboard) {
+        setFileTransferProgress('error: recurso de clipboard indisponível nesta janela')
+        transferringRef.current = false
+        setIsTransferring(false)
+        return
+      }
+      window.electronAPI.writeFileToClipboard(savePath).then(() => {
+        // extraFiles (ver handleClipboardFileResult) entra na mensagem
+        // final -- é só aqui que ela aparece pro operador, já que
+        // fileTransferProgress troca de valor várias vezes no meio do
+        // fluxo.
+        const extra = ctrlCExtraFilesRef.current
+        ctrlCExtraFilesRef.current = 0
+        setFileTransferProgress(extra > 0 ? `pronto pra colar (Ctrl+V) ✓ (+${extra} não copiado${extra > 1 ? 's' : ''})` : 'pronto pra colar (Ctrl+V) ✓')
+      }).catch((err) => {
+        setFileTransferProgress('error: ' + (err?.message || 'falha ao copiar pro clipboard'))
+      }).finally(() => {
+        transferringRef.current = false
+        setIsTransferring(false)
+      })
+    })
+    return unsubscribe
   }, [])
 
   useEffect(() => {
@@ -670,6 +883,17 @@ export function LiveSessionWindow() {
       if ((e.keyCode === VK_LWIN || e.keyCode === VK_RWIN) && visibleNormalCountRef.current !== 1) {
         return
       }
+      // Ctrl+C NÃO é interceptado -- continua encaminhado normal pro
+      // remoto logo abaixo (o Explorer da loja copia de verdade, igual
+      // sempre fez). Isto só ACRESCENTA um efeito colateral: depois do
+      // keydown real ser mandado, pergunta ao companion o que ficou no
+      // clipboard remoto (handleCtrlCFromRemote) -- sem preventDefault,
+      // sem return, sem bloquear nada (ao contrário de Ctrl+V abaixo).
+      // e.repeat: só dispara 1x por tecla segurada, mesmo cuidado de
+      // Ctrl+V (um Ctrl+C mantido não precisa perguntar várias vezes).
+      if (e.ctrlKey && e.keyCode === VK_C && !e.repeat) {
+        handleCtrlCFromRemote()
+      }
       // Ctrl+V intercetado: nunca encaminha o keydown cru de 'V' — isso
       // colaria o clipboard da máquina REMOTA (área de transferência que o
       // Windows da loja já tinha). Em vez disso lê o clipboard LOCAL do
@@ -736,7 +960,7 @@ export function LiveSessionWindow() {
       document.removeEventListener('visibilitychange', onVisibilityChange)
       releaseAllHeldKeys()
     }
-  }, [session?.mode, sendKeyEvent, releaseAllHeldKeys, pasteClipboardToRemote])
+  }, [session?.mode, sendKeyEvent, releaseAllHeldKeys, pasteClipboardToRemote, handleCtrlCFromRemote])
 
   // winkeyhook (processo nativo separado, ver electron/main.js) manda 1
   // evento por combo detectado ANTES do Explorer local processá-lo --
@@ -840,8 +1064,12 @@ export function LiveSessionWindow() {
               <progress value={fileTransferProgress.bytesReceived} max={fileTransferProgress.bytesTotal || 1} />
             )}
             {fileTransferProgress === 'baixando pro seu computador...' && <span style={{ color: '#f59e0b' }}>Baixando pro seu computador...</span>}
+            {fileTransferProgress === 'copiando arquivo da loja...' && <span style={{ color: '#f59e0b' }}>Copiando arquivo da loja...</span>}
             {fileTransferProgress === 'done-upload' && <span style={{ color: '#22c55e' }}>Arquivo enviado ✓</span>}
             {fileTransferProgress === 'done-download' && <span style={{ color: '#22c55e' }}>Arquivo baixado ✓</span>}
+            {typeof fileTransferProgress === 'string' && fileTransferProgress.startsWith('pronto pra colar') && (
+              <span style={{ color: '#22c55e' }}>{fileTransferProgress.replace('pronto pra colar', 'Pronto pra colar')}</span>
+            )}
             {typeof fileTransferProgress === 'string' && fileTransferProgress.startsWith('error') && (
               <span style={{ color: '#ef4444' }}>{fileTransferProgress}</span>
             )}

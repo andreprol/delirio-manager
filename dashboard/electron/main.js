@@ -3,7 +3,7 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, clipboard } = require('electron')
 const path = require('path')
 const fs   = require('fs')
-const { spawn } = require('child_process')
+const { spawn, execFile } = require('child_process')
 const readline = require('readline')
 const { isInsideSensitiveDir } = require('./sensitiveDirGuard')
 const { countVisibleNormalWindows } = require('./liveSessionRegistry')
@@ -485,6 +485,43 @@ app.whenReady().then(() => {
     const result = await dialog.showOpenDialog(senderWin, { properties: ['openDirectory'] })
     if (result.canceled || result.filePaths.length === 0) return null
     return result.filePaths[0]
+  })
+
+  // IPC: escreve um arquivo de verdade no clipboard do Windows (CF_HDROP)
+  // -- fluxo Ctrl+C remoto->local do Acesso Remoto (ver
+  // LiveSessionWindow.jsx): depois de baixar o arquivo copiado na loja,
+  // isto deixa ele pronto pro operador colar (Ctrl+V) em QUALQUER app
+  // local, inclusive fora do Delirio Manager -- o `clipboard` do Electron
+  // (importado acima) só escreve texto/imagem, não arquivo, por isso
+  // reusa winkeyhook.exe num modo one-shot separado do hook persistente
+  // de teclado (ver dashboard/winkeyhook/clipboardwrite.go), via
+  // child_process.execFile (espera terminar, não fica em pé como
+  // startWinKeyHook).
+  ipcMain.handle('clipboard-write-file', (_, filePath) => {
+    // Achado 🟡 do code-reviewer: sem validar, qualquer chamador (bug
+    // futuro no renderer) podia mandar escrever QUALQUER caminho local
+    // acessível no clipboard do operador -- este fluxo só deveria tocar o
+    // que ele MESMO acabou de baixar (sempre em Downloads, ver
+    // downloadRemoteFileToLocalClipboard/handleFileTransferStatus,
+    // LiveSessionWindow.jsx -- nunca passa targetDir).
+    const downloadsDir = path.resolve(app.getPath('downloads'))
+    const resolvedPath = path.resolve(filePath || '')
+    if (resolvedPath !== downloadsDir && !resolvedPath.startsWith(downloadsDir + path.sep)) {
+      return Promise.reject(new Error('Caminho fora da pasta Downloads -- recusado'))
+    }
+    const exePath = winkeyhookExePath()
+    if (!fs.existsSync(exePath)) {
+      return Promise.reject(new Error('winkeyhook.exe não encontrado, não dá pra escrever no clipboard'))
+    }
+    return new Promise((resolve, reject) => {
+      execFile(exePath, ['--write-clipboard-file', filePath], { windowsHide: true }, (err, _stdout, stderr) => {
+        if (err) {
+          reject(new Error(stderr?.trim() || err.message))
+          return
+        }
+        resolve(true)
+      })
+    })
   })
 
   // listWindowsDrives enumera as unidades existentes (C:\, D:\, etc.) --

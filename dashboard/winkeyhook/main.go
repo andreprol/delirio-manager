@@ -17,6 +17,13 @@
 // morre (TerminateProcess ou saída normal) quando a janela perde o foco --
 // o Windows desinstala o hook automaticamente quando o processo que o
 // instalou termina, não precisa de handshake de shutdown.
+//
+// Modo adicional (one-shot, ver clipboardwrite.go): chamado com
+// --write-clipboard-file <caminho>, escreve esse arquivo no clipboard do
+// Windows (CF_HDROP) e sai na hora -- não instala hook nenhum nesse caso.
+// Usado pelo fluxo Ctrl+C remoto->local do Acesso Remoto (copiar um
+// arquivo da loja deixa ele pronto pro operador colar, Ctrl+V, em
+// QUALQUER app local).
 package main
 
 import (
@@ -114,6 +121,22 @@ func keyboardProc(nCode, wParam, lParam uintptr) uintptr {
 }
 
 func main() {
+	// Modo one-shot "escreve este arquivo no clipboard do Windows" --
+	// disparado pelo Electron (dashboard/electron/main.js, IPC
+	// clipboard-write-file) via child_process.execFile, SEPARADO do
+	// processo persistente do hook de teclado abaixo: sobe, escreve, sai.
+	// Reusa o MESMO binário (nada a ver com teclado) só porque já é o
+	// único lugar deste projeto com um 2º binário Go nativo standalone na
+	// máquina do operador -- mais barato que criar um 3º módulo só pra
+	// isto. Ver clipboardwrite.go.
+	if filePath, ok := writeClipboardFileArg(os.Args[1:]); ok {
+		if err := writeClipboardFile(filePath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// SetWindowsHookEx(WH_KEYBOARD_LL) entrega callbacks só pra thread que
 	// instalou o hook, via o loop de mensagens DESSA MESMA thread -- sem
 	// travar a goroutine numa OS thread fixa, o scheduler do Go poderia

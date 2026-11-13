@@ -578,4 +578,113 @@ describe('useLiveSession', () => {
     ws._message(JSON.stringify(listingCerto))
     expect(onRemoteDirListing).toHaveBeenCalledWith(listingCerto)
   })
+
+  // sendClipboardGetFile/clipboard-file-result: fluxo Ctrl+C remoto->local
+  // (LiveSessionWindow.jsx) -- mesmo espelho de requestId crescente/
+  // correlação/descarte de pedido abandonado já testado acima pra
+  // sendListRemoteDir/remote-dir-listing.
+  it('sendClipboardGetFile manda type clipboard-get-file com requestId crescente', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => { result.current.sendClipboardGetFile() })
+    expect(ws.sent).toContain(JSON.stringify({ type: 'clipboard-get-file', requestId: 1 }))
+
+    act(() => { result.current.sendClipboardGetFile() })
+    expect(ws.sent).toContain(JSON.stringify({ type: 'clipboard-get-file', requestId: 2 }))
+  })
+
+  it('sendClipboardGetFile não manda nada em mode shadow', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'shadow', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    act(() => { ws._open() })
+
+    act(() => { result.current.sendClipboardGetFile() })
+
+    expect(ws.sent).toHaveLength(0)
+  })
+
+  it('mensagem clipboard-file-result com requestId do último pedido chama onClipboardFileResult, nunca onFileTransferStatus/onRemoteDirListing', () => {
+    const canvasRef = makeCanvasRef()
+    const onClipboardFileResult = vi.fn()
+    const onFileTransferStatus = vi.fn()
+    const onRemoteDirListing = vi.fn()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef, onClipboardFileResult, onFileTransferStatus, onRemoteDirListing,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => { result.current.sendClipboardGetFile() }) // requestId=1
+    const resultMsg = { type: 'clipboard-file-result', path: 'C:\\Users\\Loja\\Desktop\\nota.txt', requestId: 1 }
+    ws._message(JSON.stringify(resultMsg))
+
+    expect(onClipboardFileResult).toHaveBeenCalledWith(resultMsg)
+    expect(onFileTransferStatus).not.toHaveBeenCalled()
+    expect(onRemoteDirListing).not.toHaveBeenCalled()
+  })
+
+  it('resposta de um clipboard-get-file abandonado (requestId antigo) é descartada', () => {
+    const canvasRef = makeCanvasRef()
+    const onClipboardFileResult = vi.fn()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef, onClipboardFileResult,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => { result.current.sendClipboardGetFile() }) // requestId=1 (ex: 1º Ctrl+C)
+    act(() => { result.current.sendClipboardGetFile() }) // requestId=2 (2º Ctrl+C rápido) -- abandona o 1º
+
+    ws._message(JSON.stringify({ type: 'clipboard-file-result', path: 'C:\\arquivo-velho.txt', requestId: 1 }))
+    expect(onClipboardFileResult).not.toHaveBeenCalled()
+
+    const resultCerto = { type: 'clipboard-file-result', path: 'C:\\arquivo-novo.txt', requestId: 2 }
+    ws._message(JSON.stringify(resultCerto))
+    expect(onClipboardFileResult).toHaveBeenCalledWith(resultCerto)
+  })
+
+  // sendClipboardGetSequence/clipboard-sequence-result: round-trip
+  // BASELINE separado (ver LiveSessionWindow.jsx, handleCtrlCFromRemote) --
+  // mesmo espelho de correlação por requestId já testado acima.
+  it('sendClipboardGetSequence manda type clipboard-get-sequence com requestId crescente, próprio de clipboard-get-file', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => { result.current.sendClipboardGetFile() }) // requestId=1 (próprio de clipboard-get-file)
+    act(() => { result.current.sendClipboardGetSequence() }) // requestId=1 (próprio de clipboard-get-sequence, contador separado)
+
+    expect(ws.sent).toContain(JSON.stringify({ type: 'clipboard-get-file', requestId: 1 }))
+    expect(ws.sent).toContain(JSON.stringify({ type: 'clipboard-get-sequence', requestId: 1 }))
+  })
+
+  it('mensagem clipboard-sequence-result chama onClipboardSequenceResult, nunca onClipboardFileResult', () => {
+    const canvasRef = makeCanvasRef()
+    const onClipboardSequenceResult = vi.fn()
+    const onClipboardFileResult = vi.fn()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef, onClipboardSequenceResult, onClipboardFileResult,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => { result.current.sendClipboardGetSequence() }) // requestId=1
+    const resultMsg = { type: 'clipboard-sequence-result', sequence: 42, requestId: 1 }
+    ws._message(JSON.stringify(resultMsg))
+
+    expect(onClipboardSequenceResult).toHaveBeenCalledWith(resultMsg)
+    expect(onClipboardFileResult).not.toHaveBeenCalled()
+  })
 })
