@@ -39,6 +39,19 @@ const CLOSE_CODES = {
   COMPANION_LOST: 4005,
 };
 
+// LIVE_SESSION_MSG: tipos de mensagem de TEXTO (não close code — a sessão
+// continua viva, só avisa) mandados pro dashboard durante a folga de
+// reconexão do companion (companionLostGraceMs). Achado 🟡 do code-reviewer:
+// mesmo risco de CLOSE_CODES acima (literais soltos, fácil mudar um lado e
+// esquecer o outro) — useLiveSession.js (dashboard/src/hooks) mantém sua
+// PRÓPRIA cópia dos valores literais, sem vínculo automático entre os dois
+// pacotes, só estes comentários e os testes de cada lado que afirmam os
+// valores exatos.
+const LIVE_SESSION_MSG = {
+  COMPANION_RECONNECTING: 'companion-reconnecting',
+  COMPANION_RECONNECTED: 'companion-reconnected',
+};
+
 const sessions = new Map();
 
 // dashboardUnlockGraceMs é o tempo que o relay espera, depois do socket do
@@ -56,6 +69,29 @@ let dashboardUnlockGraceMs = 5000;
 
 function setDashboardUnlockGraceMsForTests(ms) {
   dashboardUnlockGraceMs = ms;
+}
+
+// companionLostGraceMs é o tempo que o relay espera, depois do socket do
+// companion cair de forma INESPERADA, antes de encerrar a sessão de vez —
+// achado real em produção (13/11/2026): antes, QUALQUER queda do companion
+// (blip de Wi-Fi da loja, NAT instável) matava a sessão na hora, e o
+// dashboard (TERMINAL_CLOSE_CODES, useLiveSession.js) corretamente desistia
+// de reconectar, já que reconectar o lado dashboard sozinho não adianta nada
+// sem um companion do outro lado. Com a graça, o companion (que agora tenta
+// reconectar sozinho com backoff, ver runLiveSessionWithReconnect em
+// agent/livesession_windows.go) tem uma janela real pra voltar antes da
+// sessão morrer de vez — sem precisar fechar/reabrir a janela manualmente
+// no dashboard pra toda queda de rede transitória. Achado 🟠 do
+// code-reviewer: a soma REAL do backoff do agent não é
+// liveSessionReconnectMaxDelay×tentativas — é exponencial até o teto, então
+// 1+2+4+8+8+8 = 31s (initial=1s, max=8s, 6 tentativas, ver
+// agent/livesession_windows.go). Precisa folga de verdade acima disso, não
+// só acima do delay máximo de UMA tentativa. `let`, não `const`, só pra
+// setCompanionLostGraceMsForTests poder encurtar.
+let companionLostGraceMs = 40000;
+
+function setCompanionLostGraceMsForTests(ms) {
+  companionLostGraceMs = ms;
 }
 
 // cancelPendingUnlock cancela o unlock agendado por scheduleUnlockOnDashboardDisconnect,
@@ -82,6 +118,35 @@ function scheduleUnlockOnDashboardDisconnect(session, sessionId) {
   }, dashboardUnlockGraceMs);
 }
 
+// cancelPendingCompanionLoss cancela o timer agendado por
+// scheduleSessionEndOnCompanionLoss, se houver — chamada quando o companion
+// reconecta a tempo (attachCompanionSocket) ou quando a sessão é encerrada
+// de vez por qualquer outro motivo (unregisterSession), mesmo padrão de
+// cancelPendingUnlock acima pro lado do dashboard.
+function cancelPendingCompanionLoss(session) {
+  if (session.pendingCompanionLossTimer) {
+    clearTimeout(session.pendingCompanionLossTimer);
+    session.pendingCompanionLossTimer = null;
+  }
+}
+
+// scheduleSessionEndOnCompanionLoss agenda o encerramento de vez da sessão
+// (em vez de matar na hora) — dá a folga de companionLostGraceMs pro
+// companion reconectar sozinho (runLiveSessionWithReconnect, agent) e
+// cancelar via attachCompanionSocket. Só mata a sessão de verdade
+// (COMPANION_LOST) se o companion não voltar dentro da janela.
+function scheduleSessionEndOnCompanionLoss(session, sessionId) {
+  cancelPendingCompanionLoss(session);
+  session.pendingCompanionLossTimer = setTimeout(() => {
+    session.pendingCompanionLossTimer = null;
+    logger.warn('[liveSessionRelay] companion não reconectou a tempo, encerrando sessão', { sessionId });
+    unregisterSession(sessionId, {
+      code: CLOSE_CODES.COMPANION_LOST,
+      reason: 'companion não reconectou a tempo',
+    });
+  }, companionLostGraceMs);
+}
+
 function registerSession(sessionId, { machineId, mode, companionToken, dashboardToken }) {
   if (sessions.has(sessionId)) {
     throw new Error(
@@ -99,6 +164,7 @@ function registerSession(sessionId, { machineId, mode, companionToken, dashboard
     companionWs: null,
     dashboardWs: null,
     pendingUnlockTimer: null,
+    pendingCompanionLossTimer: null,
   });
 }
 
@@ -118,6 +184,7 @@ function unregisterSession(sessionId, { code = CLOSE_CODES.SESSION_ENDED, reason
   const session = sessions.get(sessionId);
   if (session) {
     cancelPendingUnlock(session);
+    cancelPendingCompanionLoss(session);
     safeClose(session.dashboardWs, code, reason);
     safeClose(session.companionWs, code, reason);
   }
@@ -141,7 +208,22 @@ function attachCompanionSocket(sessionId, ws) {
   const session = sessions.get(sessionId);
   if (!session) return;
   if (session.companionWs && session.companionWs !== ws) closeStale(session.companionWs);
+  // wasReconnecting checado ANTES de cancelPendingCompanionLoss limpar o
+  // timer — é o único jeito de diferenciar "companion voltou depois de uma
+  // queda" (avisa o dashboard) de "primeiro attach da sessão, nunca caiu"
+  // (nada pra avisar, pendingCompanionLossTimer nunca existiu).
+  const wasReconnecting = !!session.pendingCompanionLossTimer;
+  cancelPendingCompanionLoss(session);
   session.companionWs = ws;
+  if (wasReconnecting) {
+    logger.info('[liveSessionRelay] companion reconectou a tempo', { sessionId });
+    safeSend(session.dashboardWs, JSON.stringify({ type: LIVE_SESSION_MSG.COMPANION_RECONNECTED }));
+  }
+}
+
+function detachCompanionSocket(sessionId) {
+  const session = sessions.get(sessionId);
+  if (session) session.companionWs = null;
 }
 
 function attachDashboardSocket(sessionId, ws) {
@@ -150,6 +232,18 @@ function attachDashboardSocket(sessionId, ws) {
   if (session.dashboardWs && session.dashboardWs !== ws) closeStale(session.dashboardWs);
   cancelPendingUnlock(session);
   session.dashboardWs = ws;
+  // Achado 🔴 CRÍTICO do code-reviewer: 'companion-reconnecting' só era
+  // mandado 1x, pro socket dashboard ANTIGO, no momento em que o companion
+  // caiu (ver close handler de wireLiveSocket). Se o PRÓPRIO socket
+  // dashboard↔servidor cair e reconectar (useLiveSession.js já reconecta
+  // infinitamente desde 11/11/2026, cenário normal) ENQUANTO a folga do
+  // companion ainda está pendente, o dashboard novo nunca recebe esse
+  // aviso — e seu ws.onopen manda 'connected' incondicionalmente. A UI
+  // ficava "Conectado" com o frame congelado até a sessão morrer de vez,
+  // reproduzindo o exato bug que esta feature existe pra resolver.
+  if (session.pendingCompanionLossTimer) {
+    safeSend(ws, JSON.stringify({ type: LIVE_SESSION_MSG.COMPANION_RECONNECTING }));
+  }
 }
 
 function detachDashboardSocket(sessionId) {
@@ -291,16 +385,26 @@ function wireLiveSocket(sessionId, role, ws) {
       // já teria apagado a sessão antes deste close rodar, fazendo
       // isCurrentSocket devolver false acima. Então todo close de companion
       // que chega aqui é uma queda INESPERADA (rede, ou a race do safeConn
-      // corrigida em agent/wsconn_windows.go) — sem encerrar a sessão de vez
-      // e avisar o dashboard, ele ficava "Conectado" pra sempre sem nunca
-      // mais receber frame nenhum.
-      logger.warn('[liveSessionRelay] companion desconectou inesperadamente, encerrando sessão', {
+      // corrigida em agent/wsconn_windows.go).
+      //
+      // Achado real (13/11/2026): matar a sessão NA HORA aqui (comportamento
+      // antigo) não dava nenhuma chance pro companion reconectar sozinho
+      // (runLiveSessionWithReconnect, agent/livesession_windows.go) — toda
+      // queda de rede transitória (Wi-Fi/NAT da loja) exigia fechar e reabrir
+      // a janela manualmente no dashboard. Agora só desanexa o socket morto,
+      // avisa o dashboard (pra não ficar com a tela congelada sem explicação)
+      // e agenda o fim de vez pra daqui a companionLostGraceMs — tempo real
+      // pro companion voltar via attachCompanionSocket, que cancela este
+      // timer e avisa 'companion-reconnected'.
+      logger.warn('[liveSessionRelay] companion desconectou inesperadamente, aguardando reconexão', {
         sessionId, code, reason: reasonBuf?.toString(),
       });
-      unregisterSession(sessionId, {
-        code: CLOSE_CODES.COMPANION_LOST,
-        reason: 'companion desconectou inesperadamente',
-      });
+      const session = getSession(sessionId);
+      if (session) {
+        detachCompanionSocket(sessionId);
+        safeSend(session.dashboardWs, JSON.stringify({ type: LIVE_SESSION_MSG.COMPANION_RECONNECTING }));
+        scheduleSessionEndOnCompanionLoss(session, sessionId);
+      }
       return;
     }
     if (role === 'dashboard') {
@@ -368,7 +472,8 @@ function initLiveRelay() {
 module.exports = {
   registerSession, getSession, unregisterSession, routeMessage,
   attachCompanionSocket, attachDashboardSocket,
-  detachDashboardSocket,
+  detachDashboardSocket, detachCompanionSocket,
   initLiveRelay,
   setDashboardUnlockGraceMsForTests,
+  setCompanionLostGraceMsForTests,
 };

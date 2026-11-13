@@ -216,7 +216,7 @@ describe('initLiveRelay — conexão real', () => {
   const http = require('http');
   const WebSocket = require('ws');
   const { WebSocketServer } = require('ws');
-  const { registerSession, initLiveRelay, unregisterSession, getSession, setDashboardUnlockGraceMsForTests } = require('./liveSessionRelay');
+  const { registerSession, initLiveRelay, unregisterSession, getSession, setDashboardUnlockGraceMsForTests, setCompanionLostGraceMsForTests } = require('./liveSessionRelay');
   const { createUpgradeRouter } = require('./upgradeRouter');
 
   let server;
@@ -334,15 +334,111 @@ describe('initLiveRelay — conexão real', () => {
     });
   });
 
-  // Bug real achado em produção (12/11/2026): o companion podia cair com a
-  // sessão ainda registrada (ex: a race do safeConn em
-  // agent/wsconn_windows.go, ou qualquer outra queda de rede) sem NUNCA
-  // avisar o dashboard — ele ficava "Conectado" pra sempre, sem receber
-  // mais nenhum frame, sem erro nenhum na tela. Diferente de um stop
-  // explícito (POST /stop → unregisterSession, testado acima com o código
-  // 4004), esta queda usa o código 4005 — útil pra distinguir os dois casos
-  // num diagnóstico futuro, mesmo que a UI trate ambos como terminal.
-  it('companion desconectar sem stop explícito encerra a sessão e avisa o dashboard com 4005', (done) => {
+  // Achado real em produção (13/11/2026): matar a sessão NA HORA quando o
+  // companion caía (comportamento antigo, 1 só evento 'close' com 4005) não
+  // dava nenhuma chance de reconexão — toda queda de rede transitória
+  // exigia fechar/reabrir a janela manualmente no dashboard. Agora: 1) o
+  // dashboard recebe um AVISO (texto, socket continua aberto) em vez de ser
+  // desconectado na hora; 2) só depois de companionLostGraceMs sem o
+  // companion voltar é que a sessão morre de vez, com 4005 — mesmo código
+  // de antes, só adiado. setCompanionLostGraceMsForTests encurta pra não
+  // deixar o teste lento.
+  it('companion cair sem stop explícito avisa o dashboard e só encerra (4005) depois da folga, se não reconectar', (done) => {
+    setCompanionLostGraceMsForTests(20);
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'shadow', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
+
+    const companionWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
+    );
+    let dashboardWs;
+    let sawReconnectingNotice = false;
+
+    companionWs.on('open', () => {
+      dashboardWs = new WebSocket(
+        `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+      );
+      dashboardWs.on('open', () => {
+        // Companion cai sem ninguém pedir stop — nunca chama unregisterSession
+        // por fora, só o próprio close deste socket.
+        companionWs.close();
+      });
+      dashboardWs.on('message', (data) => {
+        expect(JSON.parse(data.toString())).toEqual({ type: 'companion-reconnecting' });
+        sawReconnectingNotice = true;
+      });
+      dashboardWs.on('close', (code) => {
+        try {
+          expect(sawReconnectingNotice).toBe(true);
+          expect(code).toBe(4005);
+          expect(getSession('s-real')).toBeUndefined();
+          done();
+        } catch (err) {
+          done(err);
+        } finally {
+          setCompanionLostGraceMsForTests(20000);
+        }
+      });
+    });
+  });
+
+  // Companion reconecta sozinho (runLiveSessionWithReconnect, agent) DENTRO
+  // da folga: a sessão sobrevive, o dashboard é avisado que voltou (em vez
+  // de ser desconectado), e volta a receber frame normalmente.
+  it('companion reconectar dentro da folga avisa o dashboard e a sessão sobrevive (sem 4005)', (done) => {
+    setCompanionLostGraceMsForTests(300);
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'shadow', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
+
+    const connectCompanion = () => new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
+    );
+
+    const messages = [];
+    let secondCompanionWs;
+    const firstCompanionWs = connectCompanion();
+    const cleanupAndFinish = (fn) => {
+      setCompanionLostGraceMsForTests(20000);
+      dashboardWs.removeAllListeners('close'); // evita o 'close' de limpeza abaixo disparar o done() de erro
+      dashboardWs.close();
+      secondCompanionWs?.close();
+      fn();
+    };
+
+    const dashboardWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+    );
+    dashboardWs.on('open', () => firstCompanionWs.close()); // queda inesperada
+    dashboardWs.on('close', () => done(new Error('dashboard não deveria ser desconectado — companion reconectou dentro da folga')));
+    dashboardWs.on('message', (data) => {
+      messages.push(JSON.parse(data.toString()));
+      if (messages.length === 1) {
+        expect(messages[0]).toEqual({ type: 'companion-reconnecting' });
+        // Reconecta ANTES da folga de 300ms expirar.
+        secondCompanionWs = connectCompanion();
+        secondCompanionWs.on('open', () => secondCompanionWs.send(JSON.stringify({ type: 'frame-pos-reconexao' })));
+        return;
+      }
+      if (messages.length < 3) return; // ainda falta o frame pós-reconexão
+      try {
+        expect(messages[1]).toEqual({ type: 'companion-reconnected' });
+        expect(messages[2]).toEqual({ type: 'frame-pos-reconexao' });
+        expect(getSession('s-real')).toBeDefined();
+        cleanupAndFinish(done);
+      } catch (err) {
+        cleanupAndFinish(() => done(err));
+      }
+    });
+  });
+
+  // Stop explícito (POST /stop → unregisterSession) chegando DURANTE a
+  // folga de reconexão não deixa um timer pendente disparando depois da
+  // sessão já ter sido apagada (unregisterSession cancela
+  // pendingCompanionLossTimer, mesmo padrão de pendingUnlockTimer).
+  it('stop explícito durante a folga de reconexão do companion cancela o timer pendente', (done) => {
+    setCompanionLostGraceMsForTests(100);
     registerSession('s-real', {
       machineId: 'm1', mode: 'shadow', companionToken: 'tok-123', dashboardToken: 'dash-123',
     });
@@ -356,19 +452,75 @@ describe('initLiveRelay — conexão real', () => {
       dashboardWs = new WebSocket(
         `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
       );
-      dashboardWs.on('open', () => {
-        // Companion cai sem ninguém pedir stop — nunca chama unregisterSession
-        // por fora, só o próprio close deste socket.
-        companionWs.close();
-      });
+      dashboardWs.on('open', () => companionWs.close());
       dashboardWs.on('close', (code) => {
+        setCompanionLostGraceMsForTests(20000);
         try {
-          expect(code).toBe(4005);
-          expect(getSession('s-real')).toBeUndefined();
+          // 4004 (SESSION_ENDED, do unregisterSession explícito abaixo) —
+          // NUNCA 4005: se o timer da folga não tivesse sido cancelado, ele
+          // dispararia depois (100ms) tentando apagar uma sessão que já não
+          // existe mais, sem causar erro visível, mas é exatamente o
+          // vazamento que cancelPendingCompanionLoss existe pra evitar.
+          expect(code).toBe(4004);
           done();
         } catch (err) {
           done(err);
         }
+      });
+      dashboardWs.on('message', () => {
+        // Chegou o aviso 'companion-reconnecting' -- agora simula o stop
+        // explícito (POST /stop) chegando ENQUANTO a folga ainda corre.
+        unregisterSession('s-real');
+      });
+    });
+  });
+
+  // Achado 🔴 CRÍTICO do code-reviewer (13/11/2026): 'companion-reconnecting'
+  // só era mandado 1x, pro socket dashboard ANTIGO, no momento exato em que
+  // o companion caiu -- se o PRÓPRIO socket dashboard↔servidor cair e
+  // reconectar (useLiveSession.js reconecta sozinho desde 11/11/2026,
+  // cenário normal de blip de rede do OPERADOR) ENQUANTO a folga do
+  // companion ainda está pendente, o dashboard NOVO nunca recebia esse
+  // aviso -- e seu próprio onopen mandava 'connected' incondicionalmente,
+  // deixando a UI presa em "Conectado" com o frame congelado até a sessão
+  // morrer de vez. Fix: attachDashboardSocket reenvia o aviso se
+  // pendingCompanionLossTimer ainda existir.
+  it('dashboard reconectar DURANTE a folga do companion recebe o aviso companion-reconnecting de novo', (done) => {
+    setCompanionLostGraceMsForTests(500);
+    registerSession('s-real', {
+      machineId: 'm1', mode: 'shadow', companionToken: 'tok-123', dashboardToken: 'dash-123',
+    });
+
+    const companionWs = new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=companion&token=tok-123`
+    );
+    let firstDashboardWs;
+    let secondDashboardWs;
+
+    const connectDashboard = () => new WebSocket(
+      `ws://localhost:${port}/live?sessionId=s-real&role=dashboard&token=dash-123`
+    );
+
+    companionWs.on('open', () => {
+      firstDashboardWs = connectDashboard();
+      firstDashboardWs.on('open', () => companionWs.close()); // queda inesperada do companion
+      firstDashboardWs.on('message', () => {
+        // Chegou o 1º aviso -- agora o PRÓPRIO dashboard cai (blip do
+        // operador, nada a ver com o companion) e reconecta, ainda DENTRO
+        // da folga de 500ms.
+        firstDashboardWs.close();
+        secondDashboardWs = connectDashboard();
+        secondDashboardWs.on('message', (data) => {
+          try {
+            expect(JSON.parse(data.toString())).toEqual({ type: 'companion-reconnecting' });
+            done();
+          } catch (err) {
+            done(err);
+          } finally {
+            setCompanionLostGraceMsForTests(20000);
+            secondDashboardWs.close();
+          }
+        });
       });
     });
   });
