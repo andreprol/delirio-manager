@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.9.8" // minor: browse-remote-folder -- companion abre o dialog nativo "Procurar pasta" do Windows na tela interativa da loja, pra o botao "📂" do painel remoto do navegador de arquivos (antes so focava o campo de texto, sem dialog nenhum)
+	Version            = "1.9.9" // fix: browse-remote-folder forca o dialog "Procurar pasta" pra frente (SetForegroundWindow+SetWindowPos topmost no BFFM_INITIALIZED) -- em 1.9.8 o dialog nascia atras de qualquer janela ja em primeiro plano na tela remota, invisivel pro operador, companion ficava preso esperando um clique que nunca chegava
 )
 
 func main() {
