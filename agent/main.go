@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.9.7" // minor: clipboard-get-file -- companion le o clipboard remoto (CF_HDROP) sob pedido, usado pelo Ctrl+C remoto->local (copiar arquivo da loja e deixar pronto pro Ctrl+V local)
+	Version            = "1.9.8" // minor: browse-remote-folder -- companion abre o dialog nativo "Procurar pasta" do Windows na tela interativa da loja, pra o botao "📂" do painel remoto do navegador de arquivos (antes so focava o campo de texto, sem dialog nenhum)
 )
 
 func main() {

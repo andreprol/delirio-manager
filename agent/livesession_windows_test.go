@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -98,16 +99,37 @@ func TestIsLiveSessionActive(t *testing.T) {
 // fakeFrameWriter implementa frameWriter sem WebSocket real — permite
 // testar a lógica de contagem de falhas/throttle de log/recuperação de
 // sendLiveSessionFrame (a parte com estado desta função) isoladamente.
+//
+// mu: achado 🟡 do code-reviewer (14/11/2026) -- testes de função que roda
+// numa goroutine própria via safeGo (ex: TestApplyBrowseRemoteFolderSuccess,
+// folderpicker_windows_test.go) fazem polling de writes/lastData enquanto
+// a goroutine escreve neles -- data race real sob `go test -race` sem
+// proteção (diferente dos usos SÍNCRONOS deste helper no resto do
+// pacote, que nunca correm risco porque não há concorrência ali). Writes
+// via write()/snapshot() abaixo, nunca campo cru direto, pra cobrir os 2
+// lados.
 type fakeFrameWriter struct {
+	mu       sync.Mutex
 	writeErr error
 	writes   int
 	lastData []byte
 }
 
 func (f *fakeFrameWriter) WriteMessageWithDeadline(messageType int, data []byte, deadline time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.writes++
 	f.lastData = data
 	return f.writeErr
+}
+
+// snapshot devolve uma cópia consistente de writes/lastData -- único jeito
+// seguro de ler esses campos quando WriteMessageWithDeadline pode estar
+// rodando numa goroutine concorrente (ver comentário do struct acima).
+func (f *fakeFrameWriter) snapshot() (int, []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.writes, f.lastData
 }
 
 // fakeMessageReader implementa messageReader sem WebSocket real — devolve

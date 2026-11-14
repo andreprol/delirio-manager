@@ -248,6 +248,38 @@ func TestDispatchLiveSessionInputListRemoteDir(t *testing.T) {
 	}
 }
 
+// TestDispatchLiveSessionInputBrowseRemoteFolder cobre o case
+// "browse-remote-folder" do dispatch -- delega pra
+// applyBrowseRemoteFolderFn (indireção mockável), mesmo padrão de
+// TestDispatchLiveSessionInputListRemoteDir acima. Passa por 2 níveis de
+// switch (dispatchSessionControlInput → default → dispatchFileOperationsInput)
+// desde a extração que resolveu o estouro de complexidade ciclomática
+// (cyclop) ao adicionar este case -- este teste prova que a delegação pelo
+// `default` continua chegando no tipo certo.
+func TestDispatchLiveSessionInputBrowseRemoteFolder(t *testing.T) {
+	original := applyBrowseRemoteFolderFn
+	defer func() { applyBrowseRemoteFolderFn = original }()
+
+	var gotMsg inputMessage
+	var gotSession string
+	called := false
+	applyBrowseRemoteFolderFn = func(msg inputMessage, sessionID string, w frameWriter) {
+		called = true
+		gotMsg = msg
+		gotSession = sessionID
+	}
+
+	msg := inputMessage{Type: "browse-remote-folder", RequestID: 9}
+	dispatchLiveSessionInput(msg, "session-1", nil)
+
+	if !called {
+		t.Fatal("esperava applyBrowseRemoteFolderFn chamado")
+	}
+	if gotMsg.RequestID != 9 || gotSession != "session-1" {
+		t.Errorf("msg/sessionID incorretos: %+v / %s", gotMsg, gotSession)
+	}
+}
+
 // TestInjectKeyboardInvalidKeyCode cobre o fail-safe de keyCode=0 (campo
 // omitido/ausente na mensagem JSON, já que KeyCode usa omitempty) — evita
 // mandar SendInput com VK inválido.

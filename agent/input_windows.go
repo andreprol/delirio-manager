@@ -18,7 +18,7 @@ import (
 // server). Tipos: "mousemove", "mousedown", "mouseup", "keydown", "keyup",
 // "lock-local-input", "unlock-local-input", "clipboard-paste",
 // "clipboard-get-file", "clipboard-get-sequence", "file-transfer",
-// "file-download", "list-remote-dir".
+// "file-download", "list-remote-dir", "browse-remote-folder".
 type inputMessage struct {
 	Type        string `json:"type"`
 	X           int32  `json:"x,omitempty"`
@@ -121,15 +121,16 @@ func dispatchLiveSessionInput(msg inputMessage, sessionID string, w frameWriter)
 	}
 }
 
-// dispatchSessionControlInput cobre os tipos de mensagem "de sessão"
-// (lock/unlock de input local, clipboard-paste, clipboard-get-file,
-// clipboard-get-sequence, file-transfer) — extraído
-// do switch de dispatchLiveSessionInput só pra manter a complexidade
-// ciclomática de cada função dentro do limite do linter (cyclop, max 10),
-// depois que adicionar o case "file-transfer" ali estourou o limite. w é
-// repassado só pro case "file-transfer" (applyFileTransferFn), que precisa
-// escrever progresso de volta na conexão — os demais cases não precisam
-// dele. O default aqui é o mesmo "tipo não suportado" de antes, só movido.
+// dispatchSessionControlInput cobre lock/unlock de input local e os 3 tipos
+// de clipboard — extraído do switch de dispatchLiveSessionInput só pra
+// manter a complexidade ciclomática de cada função dentro do limite do
+// linter (cyclop, max 10). Tipos de operação de ARQUIVO (file-transfer/
+// file-download/list-remote-dir/browse-remote-folder) foram pra
+// dispatchFileOperationsInput — adicionar "browse-remote-folder" aqui
+// estourava o limite de novo (11), mesmo motivo que já tinha estourado com
+// "file-transfer" antes. O default delega pra lá em vez de logar "não
+// suportado" direto, então o aviso real só sai se NENHuma das 2 funções
+// reconhecer o tipo.
 func dispatchSessionControlInput(msg inputMessage, sessionID string, w frameWriter) {
 	switch msg.Type {
 	case "lock-local-input":
@@ -142,12 +143,24 @@ func dispatchSessionControlInput(msg inputMessage, sessionID string, w frameWrit
 		applyClipboardGetFile(msg, w)
 	case "clipboard-get-sequence":
 		applyClipboardGetSequence(msg, w)
+	default:
+		dispatchFileOperationsInput(msg, sessionID, w)
+	}
+}
+
+// dispatchFileOperationsInput cobre as operações de ARQUIVO do navegador de
+// arquivos dual-pane (upload/download/listagem/seletor nativo de pasta) —
+// ver comentário de dispatchSessionControlInput pro porquê da extração.
+func dispatchFileOperationsInput(msg inputMessage, sessionID string, w frameWriter) {
+	switch msg.Type {
 	case "file-transfer":
 		applyFileTransferFn(msg, sessionID, w)
 	case "file-download":
 		applyFileDownloadFn(msg, sessionID, w)
 	case "list-remote-dir":
 		applyListRemoteDirFn(msg, sessionID, w)
+	case "browse-remote-folder":
+		applyBrowseRemoteFolderFn(msg, sessionID, w)
 	default:
 		logWarn(fmt.Sprintf("companion: tipo de input não suportado ainda: %s", msg.Type))
 	}
