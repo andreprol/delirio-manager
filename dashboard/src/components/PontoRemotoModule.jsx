@@ -115,7 +115,7 @@ export function PontoRemotoModule({ onClose }) {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: '#0f0f19f0', zIndex: 9999, display: 'flex', flexDirection: 'column', fontFamily: 'monospace', color: '#e5e7eb' }}>
+    <div style={{ position: 'fixed', inset: 0, background: '#0f0f19', zIndex: 9999, display: 'flex', flexDirection: 'column', fontFamily: 'monospace', color: '#e5e7eb' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 24px', borderBottom: '1px solid #1e1e30' }}>
         <div>🕐 Ponto Remoto — Funcionários e espelho de ponto</div>
         <button className="btn btn-secondary" onClick={onClose}>Fechar</button>
