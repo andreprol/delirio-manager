@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog, clipboard } = require('elect
 const path = require('path')
 const fs   = require('fs')
 const { spawn, execFile } = require('child_process')
+const { StringDecoder } = require('string_decoder')
 const readline = require('readline')
 const { isInsideSensitiveDir } = require('./sensitiveDirGuard')
 const { countVisibleNormalWindows } = require('./liveSessionRegistry')
@@ -576,6 +577,8 @@ app.whenReady().then(() => {
   const RELEASE_AUTO_SCRIPT = 'F:\\RichClub\\agent\\release-auto.ps1'
   let releaseAutoRunning = false
 
+  const RELEASE_AUTO_TIMEOUT_MS = 5 * 60 * 1000 // build+publish+broadcast nunca deveria passar disso
+
   ipcMain.handle('agent-release-auto:run', (event) => {
     if (releaseAutoRunning) {
       return Promise.reject(new Error('Ja tem um release em andamento -- espera terminar.'))
@@ -590,17 +593,40 @@ app.whenReady().then(() => {
         ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', RELEASE_AUTO_SCRIPT],
         { windowsHide: true })
       let tail = ''
-      const onData = (d) => {
-        const text = d.toString()
+      // StringDecoder em vez de Buffer.toString() direto: um caractere
+      // UTF-8 multibyte (acento, emoji) cortado na borda de dois chunks
+      // viraria "�" no log exibido ao usuário.
+      const outDecoder = new StringDecoder('utf8')
+      const errDecoder = new StringDecoder('utf8')
+      const onData = (decoder) => (chunk) => {
+        const text = decoder.write(chunk)
         tail = (tail + text).slice(-2000)
-        senderWin?.webContents.send('agent-release-auto:progress', text)
+        // Janela pode ter sido fechada enquanto o processo ainda roda --
+        // sem o isDestroyed() aqui, o .send() lanca excecao SINCRONA dentro
+        // do callback de 'data' da stream (fora de qualquer try/catch desta
+        // Promise), capaz de derrubar o processo principal do Electron
+        // inteiro (todas as janelas, não só a fechada).
+        if (senderWin && !senderWin.isDestroyed()) {
+          senderWin.webContents.send('agent-release-auto:progress', text)
+        }
       }
-      proc.stdout.on('data', onData)
-      proc.stderr.on('data', onData)
-      proc.on('error', (err) => { releaseAutoRunning = false; reject(err) })
-      proc.on('close', (code) => {
+      proc.stdout.on('data', onData(outDecoder))
+      proc.stderr.on('data', onData(errDecoder))
+
+      const timeout = setTimeout(() => {
+        proc.kill()
+      }, RELEASE_AUTO_TIMEOUT_MS)
+
+      proc.on('error', (err) => {
+        clearTimeout(timeout)
+        releaseAutoRunning = false
+        reject(err)
+      })
+      proc.on('close', (code, signal) => {
+        clearTimeout(timeout)
         releaseAutoRunning = false
         if (code === 0) resolve({ ok: true })
+        else if (signal) reject(new Error(`release-auto.ps1 nao terminou em ${RELEASE_AUTO_TIMEOUT_MS / 1000}s, processo encerrado (${signal}):\n${tail}`))
         else reject(new Error(`release-auto.ps1 saiu com codigo ${code}:\n${tail}`))
       })
     })
