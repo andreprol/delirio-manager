@@ -65,7 +65,7 @@ function parentWindowsPath(p) {
   return trimmed.slice(0, idx)
 }
 
-function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, onBrowse }) {
+function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, onBrowse, onGoToPath }) {
   const path = listing?.path || ''
   const entries = listing?.entries || []
   const error = listing?.error || listing?.message
@@ -78,12 +78,32 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, on
             Windows -- pedido do André, "mais parecido com o que já há no
             mercado" (FileZilla etc. têm um atalho assim pro lado local).
             Não existe equivalente pro painel remoto -- sem Explorer rodando
-            DENTRO da sessão remota pra loja clicar, a navegação de lá
-            continua só por breadcrumb + duplo-clique. */}
+            DENTRO da sessão remota pra loja clicar. onGoToPath (abaixo) é o
+            substituto: digitar/colar um caminho e dar Enter navega direto
+            pra lá, sem precisar clicar pasta por pasta -- listRemoteDir
+            (agent/filetransfer_windows.go) já aceita QUALQUER caminho
+            absoluto, não só os alcançados por navegação, então não precisa
+            de nada novo do lado do agent/servidor. */}
         {onBrowse && (
           <button className="btn btn-secondary" onClick={onBrowse} title="Procurar pasta..." style={{ padding: '2px 8px' }}>📂</button>
         )}
-        <span style={{ fontSize: 12, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{path}</span>
+        {onGoToPath ? (
+          <input
+            key={path}
+            data-testid={`${testId}-path-input`}
+            defaultValue={path}
+            className="form-input"
+            title="Digite ou cole um caminho e aperte Enter pra ir direto"
+            style={{ flex: 1, minWidth: 0, fontSize: 12, padding: '2px 6px', marginBottom: 0 }}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return
+              const typed = e.target.value.trim()
+              if (typed) onGoToPath(typed)
+            }}
+          />
+        ) : (
+          <span style={{ fontSize: 12, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{path}</span>
+        )}
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 4 }}>
         {error && <div style={{ color: '#ef4444', padding: 8 }}>error: {error}</div>}
@@ -133,10 +153,18 @@ export function FileBrowserModal({
     requestLocalDir(joinWindowsPath(localPath, entry.name))
   }, [localPath, requestLocalDir])
 
-  const navigateRemote = useCallback((entry) => {
+  // goRemoteTo: achado 🟡 do code-reviewer (14/11/2026) -- navigateRemote/
+  // goUpRemote/goToRemotePath só calculam o path de formas diferentes, mas
+  // repetiam o mesmo par "limpar seleção + requestRemoteDir" 3x. Único
+  // lugar que entende "navegar no painel remoto" de verdade.
+  const goRemoteTo = useCallback((path) => {
     setSelectedRemote(null)
-    requestRemoteDir(joinWindowsPath(remotePath, entry.name))
-  }, [remotePath, requestRemoteDir])
+    requestRemoteDir(path)
+  }, [requestRemoteDir])
+
+  const navigateRemote = useCallback((entry) => {
+    goRemoteTo(joinWindowsPath(remotePath, entry.name))
+  }, [remotePath, goRemoteTo])
 
   // goUpLocal/goUpRemote TAMBÉM limpam a seleção -- achado 🟠 do
   // code-reviewer: "⬆" navegava sem limpar, e canSend/canDownload só
@@ -150,9 +178,8 @@ export function FileBrowserModal({
   }, [localPath, requestLocalDir])
 
   const goUpRemote = useCallback(() => {
-    setSelectedRemote(null)
-    requestRemoteDir(parentWindowsPath(remotePath))
-  }, [remotePath, requestRemoteDir])
+    goRemoteTo(parentWindowsPath(remotePath))
+  }, [remotePath, goRemoteTo])
 
   // handleBrowseLocal: onBrowseLocal (prop) é só "pergunta ao SO por uma
   // pasta" (window.electronAPI.pickLocalFolder, em LiveSessionWindow.jsx)
@@ -222,6 +249,7 @@ export function FileBrowserModal({
             onSelect={(e) => !e.isDir && setSelectedRemote(e.name)}
             onNavigate={navigateRemote}
             onUp={goUpRemote}
+            onGoToPath={goRemoteTo}
           />
         </div>
       </div>

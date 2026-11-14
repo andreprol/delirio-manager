@@ -201,4 +201,66 @@ describe('FileBrowserModal', () => {
     fireEvent.click(screen.getByText('Fechar'))
     expect(props.onClose).toHaveBeenCalled()
   })
+
+  // Painel remoto não tem "📂 Procurar pasta..." nativo (não existe
+  // Explorer rodando dentro da sessão remota pra abrir um dialog) -- o
+  // campo de caminho editável é o substituto, pedido do André (item de
+  // pendência do Acesso Remoto, 13/11/2026).
+  it('painel remoto mostra o caminho como campo editável; painel local continua só leitura (tem o "📂" nativo)', () => {
+    const props = makeProps()
+    render(<FileBrowserModal {...props} />)
+    expect(screen.getByTestId('remote-pane-path-input')).toHaveValue('C:\\Users\\Loja\\Desktop')
+    expect(screen.queryByTestId('local-pane-path-input')).not.toBeInTheDocument()
+  })
+
+  it('digitar um caminho no painel remoto e apertar Enter navega direto pra lá (sem precisar clicar pasta por pasta)', () => {
+    const props = makeProps()
+    render(<FileBrowserModal {...props} />)
+    const input = screen.getByTestId('remote-pane-path-input')
+    fireEvent.change(input, { target: { value: 'C:\\Windows\\System32' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(props.requestRemoteDir).toHaveBeenCalledWith('C:\\Windows\\System32')
+  })
+
+  it('tecla diferente de Enter no campo de caminho não navega', () => {
+    const props = makeProps()
+    render(<FileBrowserModal {...props} />)
+    const input = screen.getByTestId('remote-pane-path-input')
+    props.requestRemoteDir.mockClear() // limpa a chamada do mount
+    fireEvent.change(input, { target: { value: 'C:\\Windows' } })
+    fireEvent.keyDown(input, { key: 'a' })
+    expect(props.requestRemoteDir).not.toHaveBeenCalled()
+  })
+
+  it('campo de caminho vazio (ou só espaço) no Enter não navega', () => {
+    const props = makeProps()
+    render(<FileBrowserModal {...props} />)
+    const input = screen.getByTestId('remote-pane-path-input')
+    props.requestRemoteDir.mockClear()
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(props.requestRemoteDir).not.toHaveBeenCalled()
+  })
+
+  // Mesmo cuidado de goUpRemote/navigateRemote (achado 🟠 original do
+  // code-reviewer): navegar por caminho digitado também precisa limpar a
+  // seleção, senão a pasta de destino podia ter um arquivo de mesmo nome e
+  // "← Baixar" mandaria o arquivo errado.
+  it('navegar por caminho digitado limpa a seleção remota -- "← Baixar" volta a ficar desabilitado', () => {
+    const props = makeProps({
+      remoteListing: { path: 'C:\\Users\\Loja\\Desktop', entries: [{ name: 'a.txt', isDir: false, size: 1 }] },
+    })
+    const { rerender } = render(<FileBrowserModal {...props} />)
+
+    fireEvent.click(screen.getByTestId('remote-pane-entry-a.txt'))
+    expect(screen.getByText('← Baixar')).not.toBeDisabled()
+
+    const input = screen.getByTestId('remote-pane-path-input')
+    fireEvent.change(input, { target: { value: 'C:\\Windows' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // Simula a resposta da navegação chegando: pasta nova TAMBÉM tem "a.txt".
+    rerender(<FileBrowserModal {...props} remoteListing={{ path: 'C:\\Windows', entries: [{ name: 'a.txt', isDir: false, size: 2 }] }} />)
+
+    expect(screen.getByText('← Baixar')).toBeDisabled()
+  })
 })
