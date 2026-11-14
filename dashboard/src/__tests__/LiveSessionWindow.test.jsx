@@ -1024,6 +1024,67 @@ describe('LiveSessionWindow', () => {
     expect(api.live.getFileDownloadUrl).toHaveBeenCalledTimes(2)
   })
 
+  // 🔴 bug real encontrado AO VIVO numa loja de verdade (14/11/2026):
+  // digitar no campo de caminho do FileBrowserModal (local) também
+  // disparava sendKeyEvent pro REMOTO -- cada tecla comum ia pra onde quer
+  // que estivesse o foco na máquina da loja (ex: um campo de login de um
+  // app travado lá), e Ctrl+V especificamente era interceptado e virava
+  // paste no clipboard REMOTO em vez de colar no campo local. fileBrowserOpen
+  // suspende TODO o encaminhamento (onKeyDown/onKeyUp/winkeyhook) enquanto
+  // o modal (que cobre a tela inteira) está aberto.
+  it('FileBrowserModal aberto: tecla comum digitada NÃO é encaminhada pro remoto', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    fireEvent.keyDown(window, { keyCode: 65 })
+    fireEvent.keyUp(window, { keyCode: 65 })
+
+    expect(sendKeyEventMock).not.toHaveBeenCalled()
+  })
+
+  it('FileBrowserModal aberto: Ctrl+V não vira paste no clipboard remoto (cola no campo local de verdade)', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    await act(async () => {
+      fireEvent.keyDown(window, { keyCode: 86, ctrlKey: true })
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.readClipboardText).not.toHaveBeenCalled()
+    expect(sendClipboardPasteMock).not.toHaveBeenCalled()
+  })
+
+  it('FileBrowserModal aberto: combo Win do winkeyhook (win-tap, win+r etc.) não é encaminhado', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    act(() => { window.electronAPI.__fireWinKeyCombo('win-tap') })
+
+    expect(sendKeyEventMock).not.toHaveBeenCalled()
+  })
+
+  it('Fechar o FileBrowserModal retoma o encaminhamento normal de teclado', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    fireEvent.click(screen.getByText('Fechar'))
+
+    fireEvent.keyDown(window, { keyCode: 65 })
+    fireEvent.keyUp(window, { keyCode: 65 })
+
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 65)
+    expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 65)
+  })
+
   it('mode shadow: botão "Transferir arquivo..." não aparece (não há controle remoto)', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
@@ -1090,6 +1151,33 @@ describe('LiveSessionWindow', () => {
     // drop/Ctrl+V não passam pelo navegador de arquivos, então dependem
     // deste fallback (ver defaultDestDir em LiveSessionWindow.jsx).
     expect(sendFileTransferMock).toHaveBeenCalledWith(expect.any(String), 'driver.exe', 'C:\\Users\\Loja\\Desktop')
+  })
+
+  // 🟠 bug real achado pelo code-reviewer (14/11/2026), mesma classe do fix
+  // de teclado acima: o FileBrowserModal é filho da MESMA div dropzone
+  // (onDrop/onDragOver ficam na raiz, sem condicional por fileBrowserOpen),
+  // então um drop sobre o modal aberto borbulhava até handleDrop e subia um
+  // arquivo de verdade pro Desktop da LOJA (defaultDestDir), ignorando a
+  // pasta navegada no painel remoto e contradizendo "nada é encaminhado
+  // pro remoto enquanto o modal está aberto".
+  it('FileBrowserModal aberto: soltar arquivo na janela NÃO sobe nada pro remoto', async () => {
+    window.electronAPI.getPathForFile = vi.fn().mockResolvedValue('C:\\Users\\Andre\\Downloads\\driver.exe')
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    act(() => { lastUseLiveSessionArgs.onSessionInfo({ remoteUser: 'Loja' }) })
+    await openFileBrowserAndWaitListings()
+
+    const dropZone = screen.getByTestId('live-session-dropzone')
+    const file = new File(['conteudo'], 'driver.exe', { type: 'application/octet-stream' })
+    await act(async () => {
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.electronAPI.getPathForFile).not.toHaveBeenCalled()
+    expect(sendFileTransferMock).not.toHaveBeenCalled()
   })
 
   // Antes desta sessão, destino sem resposta nenhuma (nem navegado, nem

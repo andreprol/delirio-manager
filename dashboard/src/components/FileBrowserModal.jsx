@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 // FileBrowserModal: navegador de arquivos dual-pane (estilo FileZilla) —
 // substitui os campos de caminho digitado por navegação visual. Painel
@@ -69,6 +69,7 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, on
   const path = listing?.path || ''
   const entries = listing?.entries || []
   const error = listing?.error || listing?.message
+  const pathInputRef = useRef(null)
   return (
     <div data-testid={testId} style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, border: '1px solid #1e1e30', borderRadius: 6 }}>
       <div style={{ padding: '6px 10px', borderBottom: '1px solid #1e1e30', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -76,19 +77,32 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, on
         <button className="btn btn-secondary" onClick={onUp} disabled={path === THIS_PC} title="Subir um nível" style={{ padding: '2px 8px' }}>⬆</button>
         {/* onBrowse (só no painel LOCAL): abre o seletor de pasta NATIVO do
             Windows -- pedido do André, "mais parecido com o que já há no
-            mercado" (FileZilla etc. têm um atalho assim pro lado local).
-            Não existe equivalente pro painel remoto -- sem Explorer rodando
-            DENTRO da sessão remota pra loja clicar. onGoToPath (abaixo) é o
-            substituto: digitar/colar um caminho e dar Enter navega direto
-            pra lá, sem precisar clicar pasta por pasta -- listRemoteDir
-            (agent/filetransfer_windows.go) já aceita QUALQUER caminho
-            absoluto, não só os alcançados por navegação, então não precisa
-            de nada novo do lado do agent/servidor. */}
+            mercado" (FileZilla etc. têm um atalho assim pro lado local). */}
         {onBrowse && (
           <button className="btn btn-secondary" onClick={onBrowse} title="Procurar pasta..." style={{ padding: '2px 8px' }}>📂</button>
         )}
+        {/* onGoToPath (só no painel REMOTO): mesmo ícone "📂" do local, pra
+            não ficar faltando o botão de um lado só (achado do André,
+            14/11/2026 -- "a pasta só existia no local, quero essa opção na
+            máquina remota também", comparando print a print) -- mas sem
+            fingir abrir um dialog nativo de verdade, que não existe (não
+            há Explorer rodando DENTRO da sessão remota pra loja clicar).
+            O clique só foca+seleciona o campo de caminho ao lado, pronto
+            pra digitar/colar por cima -- mesmo destino funcional
+            (listRemoteDir já aceita qualquer caminho absoluto, sem
+            precisar de nada novo do lado do agent/servidor), só muda COMO
+            o operador chega no campo. */}
+        {onGoToPath && (
+          <button
+            className="btn btn-secondary"
+            onClick={() => { pathInputRef.current?.focus(); pathInputRef.current?.select() }}
+            title="Digitar caminho..."
+            style={{ padding: '2px 8px' }}
+          >📂</button>
+        )}
         {onGoToPath ? (
           <input
+            ref={pathInputRef}
             key={path}
             data-testid={`${testId}-path-input`}
             defaultValue={path}

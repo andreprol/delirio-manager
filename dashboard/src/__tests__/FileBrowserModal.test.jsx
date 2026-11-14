@@ -213,6 +213,21 @@ describe('FileBrowserModal', () => {
     expect(screen.queryByTestId('local-pane-path-input')).not.toBeInTheDocument()
   })
 
+  // André comparou print a print: o ícone "📂" só aparecia no painel local,
+  // faltando no remoto (14/11/2026) -- os 2 painéis precisam do MESMO
+  // ícone, mesmo sem dialog nativo de verdade do lado remoto.
+  it('painel remoto também tem o botão "📂" (clicar foca e seleciona o campo de caminho, pronto pra digitar/colar)', () => {
+    const props = makeProps({ onBrowseLocal: vi.fn() })
+    render(<FileBrowserModal {...props} />)
+    // Local tem "Procurar pasta..." (dialog nativo) + remoto tem "Digitar
+    // caminho..." (foca o input) -- os 2 têm o MESMO ícone "📂" visível.
+    expect(screen.getAllByText('📂')).toHaveLength(2)
+
+    const input = screen.getByTestId('remote-pane-path-input')
+    fireEvent.click(screen.getByTitle('Digitar caminho...'))
+    expect(input).toHaveFocus()
+  })
+
   it('digitar um caminho no painel remoto e apertar Enter navega direto pra lá (sem precisar clicar pasta por pasta)', () => {
     const props = makeProps()
     render(<FileBrowserModal {...props} />)

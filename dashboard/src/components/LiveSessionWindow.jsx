@@ -103,6 +103,18 @@ export function LiveSessionWindow() {
   // {path, entries}|{path, error} de cada painel, alimentados pelas
   // respostas de list-local-dir (IPC)/list-remote-dir (WS).
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false)
+  // fileBrowserOpenRef: lido DENTRO dos listeners globais de teclado
+  // (onKeyDown/onKeyUp/winkeyhook, abaixo) pra suspender o encaminhamento
+  // pro remoto enquanto o FileBrowserModal (overlay local, cobre a tela
+  // inteira) está aberto -- mesmo padrão de statusRef/sessionRef acima.
+  // Achado real (14/11/2026, ao vivo numa loja de verdade): sem isso, Ctrl+V
+  // digitado no campo de caminho do modal era interceptado pelo bloco de
+  // Ctrl+V abaixo (preventDefault + paste no clipboard REMOTO) em vez de
+  // colar no campo LOCAL, e toda tecla comum digitada no modal também era
+  // injetada de verdade na máquina da loja (ex: landed no campo de login de
+  // um app travado lá).
+  const fileBrowserOpenRef = useRef(false)
+  fileBrowserOpenRef.current = fileBrowserOpen
   const [localListing, setLocalListing] = useState(null)
   const [remoteListing, setRemoteListing] = useState(null)
   const [fileTransferProgress, setFileTransferProgress] = useState(null) // {bytesReceived, bytesTotal} | 'error: ...' | 'done-upload' | 'done-download' | 'baixando pro seu computador...' | 'copiando arquivo da loja...' | 'pronto pra colar (Ctrl+V) ✓' (+ sufixo opcional "(+N não copiado(s))") | null
@@ -488,6 +500,14 @@ export function LiveSessionWindow() {
   // preload.js) é a ponte suportada pra pegar o caminho local real.
   const handleDrop = useCallback(async (e) => {
     e.preventDefault()
+    // FileBrowserModal aberto: achado 🟠 do code-reviewer (14/11/2026) --
+    // o modal é filho desta mesma div dropzone (ver JSX abaixo), então um
+    // drop sobre ele borbulha e cairia aqui mesmo assim, subindo um
+    // arquivo de verdade pra defaultDestDir (Desktop da LOJA) ignorando a
+    // pasta navegada no painel remoto -- mesma classe de vazamento que o
+    // guard de teclado (fileBrowserOpenRef) já corrige pra onKeyDown/
+    // onKeyUp/onWinKeyCombo.
+    if (fileBrowserOpenRef.current) return
     if (session?.mode !== 'normal') return
     const file = e.dataTransfer.files?.[0]
     if (!file) return
@@ -906,6 +926,12 @@ export function LiveSessionWindow() {
   useEffect(() => {
     if (session?.mode !== 'normal') return
     function onKeyDown(e) {
+      // FileBrowserModal aberto: nenhuma tecla é interceptada nem
+      // encaminhada -- o operador está digitando num campo LOCAL (ex: o
+      // caminho do painel remoto), não controlando a sessão ao vivo. Sai
+      // ANTES de qualquer outro guard/interceptação (Win, Ctrl+V etc.)
+      // pra nunca disputar o evento com o comportamento nativo do input.
+      if (fileBrowserOpenRef.current) return
       if ((e.keyCode === VK_LWIN || e.keyCode === VK_RWIN) && visibleNormalCountRef.current !== 1) {
         return
       }
@@ -960,6 +986,8 @@ export function LiveSessionWindow() {
       sendKeyEvent('keydown', e.keyCode)
     }
     function onKeyUp(e) {
+      // Mesmo guard do onKeyDown -- ver comentário lá.
+      if (fileBrowserOpenRef.current) return
       if ((e.keyCode === VK_LWIN || e.keyCode === VK_RWIN) && !heldKeysRef.current.has(e.keyCode)) {
         return
       }
@@ -999,6 +1027,11 @@ export function LiveSessionWindow() {
   useEffect(() => {
     if (session?.mode !== 'normal') return
     const unsubscribe = window.electronAPI?.onWinKeyCombo((combo) => {
+      // Mesmo guard do onKeyDown/onKeyUp acima -- FileBrowserModal aberto
+      // cobre a tela inteira, nenhum combo Win faz sentido ir pro remoto
+      // nesse momento (e o hook roda em NÍVEL DE SO, nem passa pelo
+      // onKeyDown local pra ser pego por ele).
+      if (fileBrowserOpenRef.current) return
       if (combo === 'win-tap') {
         sendKeyEvent('keydown', VK_LWIN)
         sendKeyEvent('keyup', VK_LWIN)
