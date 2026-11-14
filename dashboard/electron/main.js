@@ -568,6 +568,44 @@ app.whenReady().then(() => {
     })
   })
 
+  // Release automático do AGENT (build + /api/update/publish + /broadcast
+  // via agent/release-auto.ps1) -- botão "🚀 Release Agent", App.jsx. So
+  // funciona nesta maquina (precisa do repo + toolchain Go instalados),
+  // por isso caminho absoluto fixo em vez de relativo a __dirname (que
+  // aponta pro app.asar quando empacotado, não pro repo fonte).
+  const RELEASE_AUTO_SCRIPT = 'F:\\RichClub\\agent\\release-auto.ps1'
+  let releaseAutoRunning = false
+
+  ipcMain.handle('agent-release-auto:run', (event) => {
+    if (releaseAutoRunning) {
+      return Promise.reject(new Error('Ja tem um release em andamento -- espera terminar.'))
+    }
+    if (!fs.existsSync(RELEASE_AUTO_SCRIPT)) {
+      return Promise.reject(new Error(`Script nao encontrado em ${RELEASE_AUTO_SCRIPT} -- esse botao so funciona na maquina com o repo clonado.`))
+    }
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    releaseAutoRunning = true
+    return new Promise((resolve, reject) => {
+      const proc = spawn('powershell.exe',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', RELEASE_AUTO_SCRIPT],
+        { windowsHide: true })
+      let tail = ''
+      const onData = (d) => {
+        const text = d.toString()
+        tail = (tail + text).slice(-2000)
+        senderWin?.webContents.send('agent-release-auto:progress', text)
+      }
+      proc.stdout.on('data', onData)
+      proc.stderr.on('data', onData)
+      proc.on('error', (err) => { releaseAutoRunning = false; reject(err) })
+      proc.on('close', (code) => {
+        releaseAutoRunning = false
+        if (code === 0) resolve({ ok: true })
+        else reject(new Error(`release-auto.ps1 saiu com codigo ${code}:\n${tail}`))
+      })
+    })
+  })
+
   // listWindowsDrives enumera as unidades existentes (C:\, D:\, etc.) --
   // usado quando list-local-dir recebe THIS_PC_SENTINEL em vez de um
   // caminho de verdade. fs.access (não readdir) só confirma existência,

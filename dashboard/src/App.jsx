@@ -51,6 +51,13 @@ export default function App() {
   const [updateStatus,    setUpdateStatus]    = useState(null) // null | 'checking' | 'downloading' | 'up-to-date' | 'error'
   const [downloadPct,     setDownloadPct]     = useState(0)
 
+  // Release automático do agent (build + publish + broadcast pra frota) --
+  // botão separado do "Verificar update" (self-update do proprio Dashboard,
+  // rotina) de proposito: essa acao e rara e afeta ~130 maquinas de loja,
+  // nao deve disparar sozinha junto de um clique habitual.
+  const [releaseAutoStatus, setReleaseAutoStatus] = useState(null) // null | 'running' | 'done' | 'error'
+  const [releaseAutoLog,    setReleaseAutoLog]    = useState('')
+
   const {
     machines, groupMap, groupsList,
     connected, wsConnected, lastUpdate, alerts,
@@ -143,6 +150,11 @@ export default function App() {
         setDownloadPct(0)
       }))
     }
+    if (window.electronAPI?.onAgentReleaseAutoProgress) {
+      cleanups.push(window.electronAPI.onAgentReleaseAutoProgress((text) => {
+        setReleaseAutoLog(l => (l + text).slice(-4000))
+      }))
+    }
     return () => cleanups.forEach(fn => fn?.())
   }, [])
 
@@ -151,6 +163,20 @@ export default function App() {
     setUpdateStatus('checking')
     await window.electronAPI.checkForUpdates()
     // resultado chega via eventos: update-not-available, update-downloaded, ou update-error
+  }
+
+  async function handleReleaseAutoAgent() {
+    if (!window.electronAPI?.runAgentReleaseAuto) return
+    if (!window.confirm('Publicar a versao atual do agent e atualizar TODAS as maquinas online agora?')) return
+    setReleaseAutoLog('')
+    setReleaseAutoStatus('running')
+    try {
+      await window.electronAPI.runAgentReleaseAuto()
+      setReleaseAutoStatus('done')
+    } catch (err) {
+      setReleaseAutoLog(l => `${l}\nERRO: ${err.message}`)
+      setReleaseAutoStatus('error')
+    }
   }
 
   const [newGroupName,      setNewGroupName]      = useState('')
@@ -466,8 +492,16 @@ export default function App() {
             <button className="pill-btn" onClick={refresh} title="Atualizar">
               ↻
             </button>
-            <button className="pill-btn" onClick={() => setShowUpdate(true)} title="Publicar nova versao do agente">
+            <button className="pill-btn" onClick={() => setShowUpdate(true)} title="Publicar nova versao do agente (manual: escolher arquivo e versao)">
               ⬆
+            </button>
+            <button
+              className="pill-btn"
+              onClick={handleReleaseAutoAgent}
+              disabled={releaseAutoStatus === 'running'}
+              title="Release automatico do agent: builda, publica e atualiza todas as maquinas online -- sem escolher arquivo nem digitar versao"
+            >
+              {releaseAutoStatus === 'running' ? '⏳ Publicando...' : '🚀 Release Agent'}
             </button>
             <button
               className="pill-btn"
@@ -629,6 +663,38 @@ export default function App() {
 
       {/* Modal de atualizacao de agentes */}
       {showUpdate && <UpdatePanel onClose={() => setShowUpdate(false)} />}
+
+      {/* Modal do release automatico do agent -- streaming do stdout/stderr
+          do release-auto.ps1 (main.js: agent-release-auto:run) */}
+      {releaseAutoStatus && (
+        <div
+          className="modal-overlay"
+          onClick={() => { if (releaseAutoStatus !== 'running') setReleaseAutoStatus(null) }}
+        >
+          <div className="modal" style={{ width: 520 }} onClick={e => e.stopPropagation()}>
+            <h2 className="modal-title">🚀 Release Automático do Agent</h2>
+            <pre style={{
+              background: 'var(--bg-3)',
+              color: 'var(--text)',
+              padding: 10,
+              borderRadius: 'var(--radius)',
+              maxHeight: 300,
+              overflowY: 'auto',
+              fontSize: 11,
+              whiteSpace: 'pre-wrap',
+            }}>
+              {releaseAutoLog || 'Iniciando...'}
+            </pre>
+            {releaseAutoStatus === 'done'  && <div className="test-result ok"  style={{ marginTop: 10 }}>Release concluído — máquinas online já estão atualizando.</div>}
+            {releaseAutoStatus === 'error' && <div className="test-result err" style={{ marginTop: 10 }}>Falhou — ver log acima.</div>}
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button className="btn btn-secondary" disabled={releaseAutoStatus === 'running'} onClick={() => setReleaseAutoStatus(null)}>
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal de configuracoes */}
       {showSettings && (

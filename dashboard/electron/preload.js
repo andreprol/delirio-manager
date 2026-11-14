@@ -117,4 +117,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // breaking changes oficiais) — webUtils.getPathForFile é a ponte
   // suportada pra obter o caminho local real a partir do File arrastado.
   getPathForFile: (file) => webUtils.getPathForFile(file),
+
+  // Release automático do agent (build + publish + broadcast pra frota) --
+  // botão "🚀 Release Agent", App.jsx. Ver main.js (agent-release-auto:run).
+  runAgentReleaseAuto: () => ipcRenderer.invoke('agent-release-auto:run'),
+  onAgentReleaseAutoProgress: (cb) => {
+    const handler = (_, text) => cb(text)
+    ipcRenderer.on('agent-release-auto:progress', handler)
+    return () => ipcRenderer.removeListener('agent-release-auto:progress', handler)
+  },
 })
