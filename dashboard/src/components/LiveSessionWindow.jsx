@@ -117,6 +117,12 @@ export function LiveSessionWindow() {
   fileBrowserOpenRef.current = fileBrowserOpen
   const [localListing, setLocalListing] = useState(null)
   const [remoteListing, setRemoteListing] = useState(null)
+  // browsingRemote: true entre o clique no "📂" do painel remoto e a
+  // resposta do dialog nativo (ver handleBrowseRemote/
+  // handleRemoteFolderPickResult abaixo) -- desabilita o botão nesse
+  // meio-tempo (o dialog já está aberto na tela remota, um 2º clique só
+  // confundiria, abrindo outro dialog por cima).
+  const [browsingRemote, setBrowsingRemote] = useState(false)
   const [fileTransferProgress, setFileTransferProgress] = useState(null) // {bytesReceived, bytesTotal} | 'error: ...' | 'done-upload' | 'done-download' | 'baixando pro seu computador...' | 'copiando arquivo da loja...' | 'pronto pra colar (Ctrl+V) ✓' (+ sufixo opcional "(+N não copiado(s))") | null
   // Guarda se já existe uma transferência em andamento — tanto o upload pro
   // Blob (síncrono do ponto de vista desta função) quanto o download real na
@@ -171,6 +177,17 @@ export function LiveSessionWindow() {
   // neste arquivo com sessionRef/recordingSecsRef (sincronizado a cada
   // render, nunca em efeito).
   const downloadRemoteFileToLocalClipboardRef = useRef(null)
+  // sendListRemoteDirRef: mesmo padrão de referência cruzada da ref acima
+  // -- handleRemoteFolderPickResult (passado PRA DENTRO de useLiveSession,
+  // como onRemoteFolderPickResult) precisa navegar pro caminho escolhido
+  // no dialog nativo, mas sendListRemoteDir só existe DEPOIS da chamada de
+  // useLiveSession.
+  const sendListRemoteDirRef = useRef(null)
+  // browsingRemoteTimeoutRef: rede de segurança do botão "📂" do painel
+  // remoto (ver handleBrowseRemote abaixo) -- se o companion nunca
+  // responder (sessão caiu, versão antiga do agent sem suporte ainda),
+  // destrava o botão sozinho em vez de ficar "⏳" pra sempre.
+  const browsingRemoteTimeoutRef = useRef(null)
   // ctrlCBaselineSequenceRef: número de sequência do clipboard remoto
   // capturado no INSTANTE do Ctrl+C (ver handleCtrlCFromRemote), antes do
   // Explorer da loja processar a cópia -- comparado contra o sequence que
@@ -305,7 +322,32 @@ export function LiveSessionWindow() {
     setRemoteListing({ path: msg.path, entries: msg.entries || [] })
   }, [])
 
-  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendClipboardGetFile, sendClipboardGetSequence } = useLiveSession({
+  // handleRemoteFolderPickResult: resposta a browse-remote-folder (dialog
+  // nativo "Procurar pasta" aberto NA TELA remota, ver
+  // agent/folderpicker_windows.go) -- "picked" navega pro caminho
+  // escolhido (mesmo mecanismo de qualquer navegação do painel remoto,
+  // via sendListRemoteDirRef), "cancelled" não faz nada (operador desistiu
+  // do dialog, fica onde já estava -- mesmo comportamento do "📂" local),
+  // "error" mostra no PAINEL REMOTO (não no rodapé/toolbar, que fica
+  // escondido atrás do FileBrowserModal full-screen enquanto ele está
+  // aberto) reusando o mesmo campo `error` que uma navegação com falha já
+  // usa.
+  const handleRemoteFolderPickResult = useCallback((msg) => {
+    if (browsingRemoteTimeoutRef.current) {
+      clearTimeout(browsingRemoteTimeoutRef.current)
+      browsingRemoteTimeoutRef.current = null
+    }
+    setBrowsingRemote(false)
+    if (msg.type === 'remote-folder-pick-error') {
+      setRemoteListing((prev) => ({ path: prev?.path || '', error: msg.message || 'falha ao abrir o seletor de pasta remoto' }))
+      return
+    }
+    if (msg.type === 'remote-folder-picked') {
+      sendListRemoteDirRef.current?.(msg.path)
+    }
+  }, [])
+
+  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendBrowseRemoteFolder, abandonBrowseRemoteFolder, sendClipboardGetFile, sendClipboardGetSequence } = useLiveSession({
     serverUrl: session?.serverUrl,
     sessionId: session?.sessionId,
     dashboardToken: session?.dashboardToken,
@@ -317,7 +359,9 @@ export function LiveSessionWindow() {
     onRemoteDirListing: handleRemoteDirListing,
     onClipboardFileResult: handleClipboardFileResult,
     onClipboardSequenceResult: handleClipboardSequenceResult,
+    onRemoteFolderPickResult: handleRemoteFolderPickResult,
   })
+  sendListRemoteDirRef.current = sendListRemoteDir
 
   // requestLocalDir (painel esquerdo, FileBrowserModal) -- list-local-dir é
   // puro IPC (Electron, sem round-trip de rede), por isso não passa pelo
@@ -328,6 +372,41 @@ export function LiveSessionWindow() {
     }).catch((err) => {
       setLocalListing({ path: dirPath, error: err?.message || 'falha ao listar pasta local' })
     })
+  }, [])
+
+  // handleBrowseRemote (painel direito, FileBrowserModal, botão "📂") --
+  // dispara o dialog nativo "Procurar pasta" NA TELA remota, equivalente
+  // de verdade ao "📂 Procurar pasta..." do painel local (pedido do André,
+  // 14/11/2026 -- o botão remoto antes só focava o campo de texto, "sem
+  // função" de verdade). browsingRemoteTimeoutMs: escolher pasta é ação
+  // humana, pode demorar bastante -- generoso de propósito, só existe pra
+  // não deixar o botão "⏳" PRA SEMPRE se o companion nunca responder
+  // (sessão caiu, agent antigo sem suporte ao comando ainda).
+  const browsingRemoteTimeoutMs = 2 * 60 * 1000
+  const handleBrowseRemote = useCallback(() => {
+    if (browsingRemote) return
+    setBrowsingRemote(true)
+    sendBrowseRemoteFolder()
+    browsingRemoteTimeoutRef.current = setTimeout(() => {
+      browsingRemoteTimeoutRef.current = null
+      setBrowsingRemote(false)
+      // abandonBrowseRemoteFolder: achado 🟠 do code-reviewer -- sem isso,
+      // uma resposta REAL chegando bem depois do timeout (operador demorou
+      // mais de 2min escolhendo a pasta) ainda bateria o requestId e
+      // navegaria o painel remoto sozinho, bem depois do operador já ter
+      // visto "não respondeu a tempo".
+      abandonBrowseRemoteFolder()
+      setRemoteListing((prev) => ({ path: prev?.path || '', error: 'seletor de pasta remoto não respondeu a tempo' }))
+    }, browsingRemoteTimeoutMs)
+  }, [browsingRemote, sendBrowseRemoteFolder, abandonBrowseRemoteFolder])
+
+  // Desarma o timeout acima se a janela fechar/desmontar no meio da
+  // espera -- mesma cautela de releaseAllHeldKeys/stopRecordingIfActive
+  // (outros efeitos deste arquivo que limpam timers pendentes no cleanup).
+  useEffect(() => {
+    return () => {
+      if (browsingRemoteTimeoutRef.current) clearTimeout(browsingRemoteTimeoutRef.current)
+    }
   }, [])
 
   // Enquanto remoteUser ainda não chegou (session-info é mandado 1x, pode
@@ -1144,6 +1223,8 @@ export function LiveSessionWindow() {
           isTransferring={isTransferring}
           onClose={() => setFileBrowserOpen(false)}
           onBrowseLocal={() => window.electronAPI?.pickLocalFolder()}
+          onBrowseRemote={handleBrowseRemote}
+          browsingRemote={browsingRemote}
           onSendToRemote={(localFullPath, fileName, destDir) => {
             sendLocalFileToRemote(localFullPath, fileName, destDir)
             setFileBrowserOpen(false)

@@ -60,7 +60,7 @@ const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004, 4005])
 // isso sendInput também recusa (defesa em profundidade, mesmo princípio do
 // relay no servidor — liveSessionRelay.routeMessage nunca repassa input em
 // Shadow mesmo que o dashboard mande por engano/bug).
-export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange, onFileTransferStatus, onSessionInfo, onRemoteDirListing, onClipboardFileResult, onClipboardSequenceResult }) {
+export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, canvasRef, onStatusChange, onFileTransferStatus, onSessionInfo, onRemoteDirListing, onClipboardFileResult, onClipboardSequenceResult, onRemoteFolderPickResult }) {
   const wsRef = useRef(null)
   const reconnectAttemptsRef = useRef(0)
   const frameSizeRef = useRef({ width: 0, height: 0 })
@@ -90,6 +90,13 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
   // clipboard-get-file (que só sai 400ms depois).
   const clipboardSequenceRequestIdRef = useRef(0)
   const latestClipboardSequenceRequestIdRef = useRef(null)
+  // browseFolderRequestIdRef/latestBrowseFolderRequestIdRef: mesma
+  // correlação de remoteDirRequestIdRef acima -- um 2º clique no botão
+  // "📂" (ex: cancelou o dialog anterior sem querer, clicou de novo) não
+  // pode deixar a resposta do pedido ABANDONADO navegar pra um caminho
+  // que o operador já não está mais esperando.
+  const browseFolderRequestIdRef = useRef(0)
+  const latestBrowseFolderRequestIdRef = useRef(null)
 
   const notifyStatus = useCallback((status) => {
     onStatusChange?.(status)
@@ -181,6 +188,14 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
           else if (msg.type === 'remote-dir-listing' || msg.type === 'remote-dir-error') {
             if (msg.requestId === latestRemoteDirRequestIdRef.current) onRemoteDirListing?.(msg)
           }
+          // remote-folder-picked/-cancelled/-error: resposta a
+          // browse-remote-folder (ver sendBrowseRemoteFolder abaixo) --
+          // dialog nativo "Procurar pasta" aberto NA TELA remota (ver
+          // agent/folderpicker_windows.go). Mesmo descarte-se-abandonado
+          // de remote-dir-listing acima.
+          else if (msg.type === 'remote-folder-picked' || msg.type === 'remote-folder-pick-cancelled' || msg.type === 'remote-folder-pick-error') {
+            if (msg.requestId === latestBrowseFolderRequestIdRef.current) onRemoteFolderPickResult?.(msg)
+          }
           // clipboard-file-result: resposta a clipboard-get-file (ver
           // sendClipboardGetFile abaixo) -- fluxo Ctrl+C remoto->local
           // (LiveSessionWindow.jsx). Mesma descarte-se-abandonado de
@@ -223,7 +238,7 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
       setTimeout(() => { if (mountedRef.current) connect() }, delay)
     }
     ws.onerror = () => { ws.close() }
-  }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus, onFileTransferStatus, onSessionInfo, onRemoteDirListing, onClipboardFileResult, onClipboardSequenceResult])
+  }, [serverUrl, sessionId, dashboardToken, drawFrame, notifyStatus, onFileTransferStatus, onSessionInfo, onRemoteDirListing, onClipboardFileResult, onClipboardSequenceResult, onRemoteFolderPickResult])
 
   useEffect(() => {
     mountedRef.current = true
@@ -310,6 +325,32 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     sendInput({ type: 'list-remote-dir', remoteDir, requestId: remoteDirRequestIdRef.current })
   }, [sendInput])
 
+  // sendBrowseRemoteFolder pede pro companion abrir o dialog nativo
+  // "Procurar pasta" do Windows NA TELA remota -- mesma sessão que o
+  // companion já captura/injeta input, então o dialog aparece no vídeo e é
+  // clicável pelo mesmo controle remoto que já existe (ver
+  // agent/folderpicker_windows.go). requestId: mesma correlação de
+  // sendListRemoteDir acima.
+  const sendBrowseRemoteFolder = useCallback(() => {
+    browseFolderRequestIdRef.current += 1
+    latestBrowseFolderRequestIdRef.current = browseFolderRequestIdRef.current
+    sendInput({ type: 'browse-remote-folder', requestId: browseFolderRequestIdRef.current })
+  }, [sendInput])
+
+  // abandonBrowseRemoteFolder: desarma a correlação do ÚLTIMO pedido de
+  // browse-remote-folder sem mandar nada novo -- achado 🟠 do
+  // code-reviewer (14/11/2026): o timeout de segurança do dashboard
+  // (LiveSessionWindow.jsx, browsingRemoteTimeoutMs) destravava a UI e
+  // mostrava erro, mas sem isto o requestId continuava "válido" — se a
+  // resposta REAL do dialog chegasse bem depois (operador demorou mais de
+  // 2min escolhendo a pasta), ela ainda batia e navegava o painel remoto
+  // sozinho, horas depois do operador já ter visto "não respondeu a
+  // tempo". Mesmo efeito de um 2º sendBrowseRemoteFolder "abandonar" o
+  // pedido anterior, só que sem mandar mensagem nova nenhuma.
+  const abandonBrowseRemoteFolder = useCallback(() => {
+    latestBrowseFolderRequestIdRef.current = null
+  }, [])
+
   // sendClipboardGetFile pergunta ao companion o que tem de ARQUIVO no
   // clipboard REMOTO agora -- disparado depois de um Ctrl+C dentro da
   // sessão (ver LiveSessionWindow.jsx), que continua sendo encaminhado
@@ -333,5 +374,5 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     sendInput({ type: 'clipboard-get-sequence', requestId: clipboardSequenceRequestIdRef.current })
   }, [sendInput])
 
-  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendClipboardGetFile, sendClipboardGetSequence }
+  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendBrowseRemoteFolder, abandonBrowseRemoteFolder, sendClipboardGetFile, sendClipboardGetSequence }
 }

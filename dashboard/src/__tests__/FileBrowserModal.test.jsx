@@ -213,18 +213,48 @@ describe('FileBrowserModal', () => {
     expect(screen.queryByTestId('local-pane-path-input')).not.toBeInTheDocument()
   })
 
-  // André comparou print a print: o ícone "📂" só aparecia no painel local,
-  // faltando no remoto (14/11/2026) -- os 2 painéis precisam do MESMO
-  // ícone, mesmo sem dialog nativo de verdade do lado remoto.
-  it('painel remoto também tem o botão "📂" (clicar foca e seleciona o campo de caminho, pronto pra digitar/colar)', () => {
-    const props = makeProps({ onBrowseLocal: vi.fn() })
+  // André comparou print a print, 2 vezes: 1ª tentativa (campo editável,
+  // botão só focava) foi rejeitada -- "o botão está sem função". 2ª
+  // tentativa (14/11/2026): o botão remoto chama onBrowseRemote, que abre
+  // o dialog nativo "Procurar pasta" DE VERDADE na tela remota (ver
+  // agent/folderpicker_windows.go) -- mesmo ícone "📂", mesmo título, que
+  // o painel local.
+  it('painel remoto também tem o botão "📂"; clicar chama onBrowseRemote (abre o dialog nativo na tela remota)', () => {
+    const onBrowseRemote = vi.fn()
+    const props = makeProps({ onBrowseLocal: vi.fn(), onBrowseRemote })
     render(<FileBrowserModal {...props} />)
-    // Local tem "Procurar pasta..." (dialog nativo) + remoto tem "Digitar
-    // caminho..." (foca o input) -- os 2 têm o MESMO ícone "📂" visível.
     expect(screen.getAllByText('📂')).toHaveLength(2)
+    expect(screen.getAllByTitle('Procurar pasta...')).toHaveLength(2)
 
     const input = screen.getByTestId('remote-pane-path-input')
-    fireEvent.click(screen.getByTitle('Digitar caminho...'))
+    fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1]) // painel remoto
+    expect(onBrowseRemote).toHaveBeenCalledTimes(1)
+    expect(input).not.toHaveFocus() // dialog real -- não é mais "focar o campo"
+  })
+
+  // browsingRemote=true: dialog já está aberto na tela remota, esperando o
+  // operador escolher -- botão vira "⏳" e desabilita (2º clique só
+  // confundiria, abrindo outro dialog por cima).
+  it('browsingRemote=true desabilita o botão "📂" remoto e mostra "⏳"', () => {
+    const onBrowseRemote = vi.fn()
+    const props = makeProps({ onBrowseRemote, browsingRemote: true })
+    render(<FileBrowserModal {...props} />)
+
+    const button = screen.getByTitle('Aguardando seleção na tela remota...')
+    expect(button).toBeDisabled()
+    expect(button).toHaveTextContent('⏳')
+    fireEvent.click(button)
+    expect(onBrowseRemote).not.toHaveBeenCalled()
+  })
+
+  // Sem onBrowseRemote (defensivo -- não deveria acontecer em uso real,
+  // LiveSessionWindow.jsx sempre passa as 2 props juntas): cai no
+  // comportamento antigo (foca+seleciona o campo), nunca quebra o botão.
+  it('sem onBrowseRemote, clicar no "📂" remoto cai no fallback (foca e seleciona o campo de caminho)', () => {
+    const props = makeProps()
+    render(<FileBrowserModal {...props} />)
+    const input = screen.getByTestId('remote-pane-path-input')
+    fireEvent.click(screen.getAllByTitle('Procurar pasta...')[0]) // só o remoto tem esse botão aqui (sem onBrowseLocal)
     expect(input).toHaveFocus()
   })
 

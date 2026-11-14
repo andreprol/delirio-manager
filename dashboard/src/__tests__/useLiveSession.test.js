@@ -579,6 +579,115 @@ describe('useLiveSession', () => {
     expect(onRemoteDirListing).toHaveBeenCalledWith(listingCerto)
   })
 
+  // sendBrowseRemoteFolder/remote-folder-picked/-cancelled/-error: dialog
+  // nativo "Procurar pasta" aberto NA TELA remota (ver
+  // agent/folderpicker_windows.go) -- mesmo espelho de requestId
+  // crescente/correlação/descarte de pedido abandonado já testado acima
+  // pra sendListRemoteDir.
+  it('sendBrowseRemoteFolder manda type browse-remote-folder com requestId crescente', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => { result.current.sendBrowseRemoteFolder() })
+    expect(ws.sent).toContain(JSON.stringify({ type: 'browse-remote-folder', requestId: 1 }))
+
+    act(() => { result.current.sendBrowseRemoteFolder() })
+    expect(ws.sent).toContain(JSON.stringify({ type: 'browse-remote-folder', requestId: 2 }))
+  })
+
+  it('sendBrowseRemoteFolder não manda nada em mode shadow', () => {
+    const canvasRef = makeCanvasRef()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'shadow', canvasRef,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    act(() => { ws._open() })
+
+    act(() => { result.current.sendBrowseRemoteFolder() })
+
+    expect(ws.sent).toHaveLength(0)
+  })
+
+  it.each(['remote-folder-picked', 'remote-folder-pick-cancelled', 'remote-folder-pick-error'])(
+    'mensagem %s com requestId do último pedido chama onRemoteFolderPickResult, nunca onFileTransferStatus/onRemoteDirListing',
+    (type) => {
+      const canvasRef = makeCanvasRef()
+      const onRemoteFolderPickResult = vi.fn()
+      const onFileTransferStatus = vi.fn()
+      const onRemoteDirListing = vi.fn()
+      const { result } = renderHook(() => useLiveSession({
+        serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+        mode: 'normal', canvasRef, onRemoteFolderPickResult, onFileTransferStatus, onRemoteDirListing,
+      }))
+      const ws = FakeWebSocket.instances[0]
+      ws._open()
+      act(() => { result.current.sendBrowseRemoteFolder() }) // requestId=1
+      const msg = { type, path: 'C:\\Users\\Loja\\Documents', requestId: 1 }
+      ws._message(JSON.stringify(msg))
+
+      expect(onRemoteFolderPickResult).toHaveBeenCalledWith(msg)
+      expect(onFileTransferStatus).not.toHaveBeenCalled()
+      expect(onRemoteDirListing).not.toHaveBeenCalled()
+    },
+  )
+
+  // Mesmo achado 🟡 do code-reviewer de list-remote-dir acima -- 2 cliques
+  // seguidos no botão "📂" (ex: fechou o 1º dialog sem querer, clicou de
+  // novo) não pode deixar a resposta do pedido ABANDONADO navegar pra um
+  // caminho que o operador já não está mais esperando.
+  it('resposta de um browse-remote-folder abandonado (requestId antigo) é descartada', () => {
+    const canvasRef = makeCanvasRef()
+    const onRemoteFolderPickResult = vi.fn()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef, onRemoteFolderPickResult,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => { result.current.sendBrowseRemoteFolder() }) // requestId=1
+    act(() => { result.current.sendBrowseRemoteFolder() }) // requestId=2 -- abandona o 1º
+
+    ws._message(JSON.stringify({ type: 'remote-folder-picked', path: 'C:\\pedido-velho', requestId: 1 }))
+    expect(onRemoteFolderPickResult).not.toHaveBeenCalled()
+
+    const resultCerto = { type: 'remote-folder-picked', path: 'C:\\pedido-novo', requestId: 2 }
+    ws._message(JSON.stringify(resultCerto))
+    expect(onRemoteFolderPickResult).toHaveBeenCalledWith(resultCerto)
+  })
+
+  // Achado 🟠 do code-reviewer (14/11/2026): o timeout de segurança do
+  // dashboard (LiveSessionWindow.jsx, browsingRemoteTimeoutMs) chama
+  // abandonBrowseRemoteFolder() quando o companion nunca responde a
+  // tempo -- sem isto, uma resposta REAL chegando bem depois (operador
+  // demorou mais de 2min escolhendo a pasta) ainda bateria o requestId e
+  // navegaria o painel remoto sozinho, bem depois do operador já ter
+  // visto "não respondeu a tempo".
+  it('abandonBrowseRemoteFolder descarta a resposta real que chegar depois do timeout ter desistido', () => {
+    const canvasRef = makeCanvasRef()
+    const onRemoteFolderPickResult = vi.fn()
+    const { result } = renderHook(() => useLiveSession({
+      serverUrl: 'https://servidor.example.com', sessionId: 's1', dashboardToken: 'tok',
+      mode: 'normal', canvasRef, onRemoteFolderPickResult,
+    }))
+    const ws = FakeWebSocket.instances[0]
+    ws._open()
+    act(() => { result.current.sendBrowseRemoteFolder() }) // requestId=1
+
+    // Timeout do dashboard dispara ANTES do operador terminar de escolher
+    // a pasta -- desarma a correlação, sem mandar nada novo.
+    act(() => { result.current.abandonBrowseRemoteFolder() })
+
+    // A resposta real chega só agora, com o MESMO requestId=1 de antes --
+    // tem que ser descartada, não navegar o painel remoto sozinho.
+    ws._message(JSON.stringify({ type: 'remote-folder-picked', path: 'C:\\tarde-demais', requestId: 1 }))
+    expect(onRemoteFolderPickResult).not.toHaveBeenCalled()
+  })
+
   // sendClipboardGetFile/clipboard-file-result: fluxo Ctrl+C remoto->local
   // (LiveSessionWindow.jsx) -- mesmo espelho de requestId crescente/
   // correlação/descarte de pedido abandonado já testado acima pra

@@ -65,7 +65,12 @@ function parentWindowsPath(p) {
   return trimmed.slice(0, idx)
 }
 
-function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, onBrowse, onGoToPath }) {
+// remoteBrowse agrupa as 3 props que só existem no painel REMOTO (campo de
+// caminho editável + botão de dialog nativo) -- achado 🟡 do
+// code-reviewer (14/11/2026): Pane tinha crescido pra 11 props soltas,
+// piorado por este diff. Só o painel remoto passa este objeto.
+function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, onBrowse, remoteBrowse }) {
+  const { onGoToPath, onBrowseRemote, browsingRemote } = remoteBrowse || {}
   const path = listing?.path || ''
   const entries = listing?.entries || []
   const error = listing?.error || listing?.message
@@ -81,24 +86,26 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, on
         {onBrowse && (
           <button className="btn btn-secondary" onClick={onBrowse} title="Procurar pasta..." style={{ padding: '2px 8px' }}>📂</button>
         )}
-        {/* onGoToPath (só no painel REMOTO): mesmo ícone "📂" do local, pra
-            não ficar faltando o botão de um lado só (achado do André,
-            14/11/2026 -- "a pasta só existia no local, quero essa opção na
-            máquina remota também", comparando print a print) -- mas sem
-            fingir abrir um dialog nativo de verdade, que não existe (não
-            há Explorer rodando DENTRO da sessão remota pra loja clicar).
-            O clique só foca+seleciona o campo de caminho ao lado, pronto
-            pra digitar/colar por cima -- mesmo destino funcional
-            (listRemoteDir já aceita qualquer caminho absoluto, sem
-            precisar de nada novo do lado do agent/servidor), só muda COMO
-            o operador chega no campo. */}
+        {/* onBrowseRemote (só no painel REMOTO): mesmo ícone "📂" do local,
+            e desta vez abrindo um dialog NATIVO de verdade -- 2ª tentativa
+            depois do André rejeitar a 1ª (14/11/2026): "o botão está sem
+            função" (a 1ª versão só focava o campo de texto). O dialog
+            nativo "Procurar pasta" do Windows abre NA TELA remota
+            (agent/folderpicker_windows.go) -- aparece no vídeo da sessão
+            ao vivo e é clicável pelo mesmo mouse/teclado injetado que já
+            controla o resto da sessão Normal, então é a mesma experiência
+            de verdade do lado local, só numa tela diferente. Fallback
+            (foca+seleciona o campo, sem dialog) só se onBrowseRemote não
+            vier -- nunca deveria acontecer em uso real, onde
+            LiveSessionWindow.jsx sempre passa as 2 props juntas. */}
         {onGoToPath && (
           <button
             className="btn btn-secondary"
-            onClick={() => { pathInputRef.current?.focus(); pathInputRef.current?.select() }}
-            title="Digitar caminho..."
+            onClick={onBrowseRemote || (() => { pathInputRef.current?.focus(); pathInputRef.current?.select() })}
+            disabled={!!browsingRemote}
+            title={browsingRemote ? 'Aguardando seleção na tela remota...' : 'Procurar pasta...'}
             style={{ padding: '2px 8px' }}
-          >📂</button>
+          >{browsingRemote ? '⏳' : '📂'}</button>
         )}
         {onGoToPath ? (
           <input
@@ -146,6 +153,7 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, on
 export function FileBrowserModal({
   localListing, remoteListing, requestLocalDir, requestRemoteDir,
   onSendToRemote, onSendToLocal, isTransferring, onClose, onBrowseLocal,
+  onBrowseRemote, browsingRemote,
 }) {
   const [selectedLocal, setSelectedLocal] = useState(null)
   const [selectedRemote, setSelectedRemote] = useState(null)
@@ -263,7 +271,7 @@ export function FileBrowserModal({
             onSelect={(e) => !e.isDir && setSelectedRemote(e.name)}
             onNavigate={navigateRemote}
             onUp={goUpRemote}
-            onGoToPath={goRemoteTo}
+            remoteBrowse={{ onGoToPath: goRemoteTo, onBrowseRemote, browsingRemote }}
           />
         </div>
       </div>

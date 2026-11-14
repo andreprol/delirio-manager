@@ -9,6 +9,8 @@ const sendClipboardPasteMock = vi.fn()
 const sendFileTransferMock = vi.fn()
 const sendFileDownloadMock = vi.fn()
 const sendListRemoteDirMock = vi.fn()
+const sendBrowseRemoteFolderMock = vi.fn()
+const abandonBrowseRemoteFolderMock = vi.fn()
 const sendClipboardGetFileMock = vi.fn()
 const sendClipboardGetSequenceMock = vi.fn()
 let lastUseLiveSessionArgs = null
@@ -24,6 +26,8 @@ vi.mock('../hooks/useLiveSession', () => ({
       sendFileTransfer: sendFileTransferMock,
       sendFileDownload: sendFileDownloadMock,
       sendListRemoteDir: sendListRemoteDirMock,
+      sendBrowseRemoteFolder: sendBrowseRemoteFolderMock,
+      abandonBrowseRemoteFolder: abandonBrowseRemoteFolderMock,
       sendClipboardGetFile: sendClipboardGetFileMock,
       sendClipboardGetSequence: sendClipboardGetSequenceMock,
     }
@@ -1083,6 +1087,95 @@ describe('LiveSessionWindow', () => {
 
     expect(sendKeyEventMock).toHaveBeenCalledWith('keydown', 65)
     expect(sendKeyEventMock).toHaveBeenCalledWith('keyup', 65)
+  })
+
+  // Botão "📂" do painel remoto (dialog nativo "Procurar pasta" DE
+  // VERDADE, aberto na tela remota -- ver agent/folderpicker_windows.go).
+  // 2ª tentativa depois do André rejeitar a 1ª (14/11/2026, "o botão está
+  // sem função").
+  it('clicar no "📂" do painel remoto chama sendBrowseRemoteFolder', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1]) // [0]=local, [1]=remoto
+
+    expect(sendBrowseRemoteFolderMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('remote-folder-picked navega pro caminho escolhido (chama sendListRemoteDir)', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    act(() => {
+      lastUseLiveSessionArgs.onRemoteFolderPickResult({ type: 'remote-folder-picked', path: 'C:\\Users\\Loja\\Documents', requestId: 1 })
+    })
+
+    expect(sendListRemoteDirMock).toHaveBeenCalledWith('C:\\Users\\Loja\\Documents')
+  })
+
+  // remote-folder-pick-cancelled: operador fechou/cancelou o dialog --
+  // não é erro, fica onde já estava (mesmo comportamento do "📂" local).
+  it('remote-folder-pick-cancelled não navega nem mostra erro', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+    sendListRemoteDirMock.mockClear() // limpa a chamada do mount (requestRemoteDir(''))
+
+    act(() => {
+      lastUseLiveSessionArgs.onRemoteFolderPickResult({ type: 'remote-folder-pick-cancelled', requestId: 1 })
+    })
+
+    expect(sendListRemoteDirMock).not.toHaveBeenCalled()
+    expect(screen.queryByText(/error:/i)).not.toBeInTheDocument()
+  })
+
+  // remote-folder-pick-error: mostra no PAINEL REMOTO (não no rodapé, que
+  // fica escondido atrás do FileBrowserModal full-screen enquanto ele
+  // está aberto).
+  it('remote-folder-pick-error mostra a mensagem no painel remoto do navegador de arquivos', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+    sendListRemoteDirMock.mockClear() // limpa a chamada do mount (requestRemoteDir(''))
+
+    act(() => {
+      lastUseLiveSessionArgs.onRemoteFolderPickResult({ type: 'remote-folder-pick-error', message: 'falha no dialog', requestId: 1 })
+    })
+
+    expect(sendListRemoteDirMock).not.toHaveBeenCalled()
+    expect(screen.getByText(/falha no dialog/i)).toBeInTheDocument()
+  })
+
+  // Rede de segurança: companion nunca responde (sessão caiu, agent
+  // antigo sem suporte ao comando) -- botão não pode ficar "⏳" pra
+  // sempre.
+  it('browse-remote-folder sem resposta destrava sozinho depois do timeout', async () => {
+    vi.useFakeTimers()
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    act(() => {
+      fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1])
+    })
+    expect(screen.getByTitle('Aguardando seleção na tela remota...')).toBeDisabled()
+
+    act(() => { vi.advanceTimersByTime(2 * 60 * 1000) })
+
+    expect(screen.getByText(/não respondeu a tempo/i)).toBeInTheDocument()
+    expect(screen.getAllByTitle('Procurar pasta...')[1]).not.toBeDisabled()
+    // Achado 🟠 do code-reviewer: o timeout tem que desarmar a correlação
+    // de requestId (abandonBrowseRemoteFolder) -- senão uma resposta real
+    // chegando depois ainda navegaria o painel remoto sozinho.
+    expect(abandonBrowseRemoteFolderMock).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
   })
 
   it('mode shadow: botão "Transferir arquivo..." não aparece (não há controle remoto)', () => {
