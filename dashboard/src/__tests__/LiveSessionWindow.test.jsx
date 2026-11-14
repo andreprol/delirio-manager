@@ -328,6 +328,25 @@ describe('LiveSessionWindow', () => {
     ])
   })
 
+  // Win+Shift+S (recorte de tela) precisa do modificador Shift explícito
+  // na sequência sintética -- diferente de win+r/e/d acima, que mandam só
+  // Win+1 tecla.
+  it('mode normal: winkeyhook "win+shift+s" manda Win+Shift+S completo pro remoto', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { window.electronAPI.__fireWinKeyCombo('win+shift+s') })
+
+    expect(sendKeyEventMock.mock.calls).toEqual([
+      ['keydown', 91],
+      ['keydown', 16],
+      ['keydown', 83],
+      ['keyup', 83],
+      ['keyup', 16],
+      ['keyup', 91],
+    ])
+  })
+
   it('mode shadow: winkeyhook nunca é escutado (sem controle remoto pra travar)', () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'shadow', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })

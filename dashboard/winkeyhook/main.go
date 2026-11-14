@@ -4,16 +4,18 @@
 // vivo em modo Normal está em foco (ver dashboard/electron/main.js).
 //
 // Instala um hook de teclado de baixo nível (WH_KEYBOARD_LL) pra
-// interceptar a tecla Windows e os combos Win+R/E/D ANTES do Explorer (ou
-// qualquer outro app local) processá-los -- é por isso que precisa ser um
-// hook de verdade, não só RegisterHotKey/globalShortcut do Electron:
-// testado ao vivo (12/11/2026) que o Windows já reserva Win+R/Win+L pra
-// si mesmo, recusando RegisterHotKey pra essas combinações. Um hook de
-// baixo nível roda ANTES dessa reserva ser consultada.
+// interceptar a tecla Windows e os combos Win+R/E/D/Shift+S ANTES do
+// Explorer (ou qualquer outro app local) processá-los -- é por isso que
+// precisa ser um hook de verdade, não só RegisterHotKey/globalShortcut do
+// Electron: testado ao vivo (12/11/2026) que o Windows já reserva
+// Win+R/Win+L pra si mesmo, recusando RegisterHotKey pra essas
+// combinações. Um hook de baixo nível roda ANTES dessa reserva ser
+// consultada.
 //
 // Protocolo com o processo pai (Electron, via stdout): 1 linha "ready"
 // quando o hook está instalado, depois 1 linha por evento relevante
-// ("win-tap", "win+r", "win+e", "win+d" -- ver hookstate.go). Processo
+// ("win-tap", "win+r", "win+e", "win+d", "win+shift+s" -- ver
+// hookstate.go). Processo
 // morre (TerminateProcess ou saída normal) quando a janela perde o foco --
 // o Windows desinstala o hook automaticamente quando o processo que o
 // instalou termina, não precisa de handshake de shutdown.

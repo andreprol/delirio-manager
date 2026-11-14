@@ -216,6 +216,110 @@ func TestHookStateComboKeyAutoRepeatDoesNotReReport(t *testing.T) {
 	}
 }
 
+// TestHookStateWinShiftS: Win+Shift+S (recorte de tela) -- pedido do André,
+// item de pendência do Acesso Remoto (13/11/2026). Shift precisa ser
+// rastreado à parte do slot comboKeyDown (ver lShiftDown/rShiftDown) pra
+// não perder o modificador assim que S é pressionado.
+func TestHookStateWinShiftS(t *testing.T) {
+	var s HookState
+	const vkS = 0x53
+
+	s.Handle(vkLWin, false) // Win down
+
+	suppress, event := s.Handle(vkLShift, false) // Shift down
+	if !suppress || event != "" {
+		t.Fatalf("keydown Shift: got (%v, %q), want (true, \"\")", suppress, event)
+	}
+
+	suppress, event = s.Handle(vkS, false) // S down -- aqui sai o evento
+	if !suppress || event != "win+shift+s" {
+		t.Fatalf("keydown S com Shift: got (%v, %q), want (true, \"win+shift+s\")", suppress, event)
+	}
+
+	suppress, event = s.Handle(vkS, true) // S up
+	if !suppress || event != "" {
+		t.Fatalf("keyup S: got (%v, %q), want (true, \"\")", suppress, event)
+	}
+
+	suppress, event = s.Handle(vkLShift, true) // Shift up
+	if !suppress || event != "" {
+		t.Fatalf("keyup Shift: got (%v, %q), want (true, \"\")", suppress, event)
+	}
+
+	// Win solto por último não deve reportar "win-tap" -- um combo real
+	// (com Shift) já disparou.
+	suppress, event = s.Handle(vkLWin, true)
+	if !suppress || event != "" {
+		t.Fatalf("keyup Win após Win+Shift+S: got (%v, %q), want (true, \"\")", suppress, event)
+	}
+}
+
+// TestHookStateWinShiftSTwiceInARow: a mesma combinação precisa voltar a
+// funcionar numa 2ª vez -- mesmo gap de teste que achou o bug real de
+// comboKeyDown preso (ver TestHookStateRepeatComboAfterWinReleasedFirst),
+// agora aplicado ao par lShiftDown/comboKeyDown.
+func TestHookStateWinShiftSTwiceInARow(t *testing.T) {
+	var s HookState
+	const vkS = 0x53
+
+	pressAndRelease := func(n int) {
+		s.Handle(vkLWin, false)
+		s.Handle(vkLShift, false)
+		_, event := s.Handle(vkS, false)
+		if event != "win+shift+s" {
+			t.Fatalf("%dª vez: event = %q, want win+shift+s", n, event)
+		}
+		s.Handle(vkS, true)
+		s.Handle(vkLShift, true)
+		s.Handle(vkLWin, true)
+	}
+
+	pressAndRelease(1)
+	pressAndRelease(2)
+}
+
+// TestHookStateWinSWithoutShiftStillUnsupportedAfterShiftCombo: Win+S
+// sozinho (sem Shift) continua sem efeito mesmo depois de Win+Shift+S já
+// ter disparado antes na mesma sessão do hook -- lShiftDown não pode vazar
+// de uma combinação pra outra.
+func TestHookStateWinSWithoutShiftStillUnsupportedAfterShiftCombo(t *testing.T) {
+	var s HookState
+	const vkS = 0x53
+
+	s.Handle(vkLWin, false)
+	s.Handle(vkLShift, false)
+	s.Handle(vkS, false)
+	s.Handle(vkS, true)
+	s.Handle(vkLShift, true)
+	s.Handle(vkLWin, true)
+
+	s.Handle(vkLWin, false)
+	suppress, event := s.Handle(vkS, false)
+	if !suppress || event != "" {
+		t.Fatalf("Win+S sem Shift (após Win+Shift+S anterior): got (%v, %q), want (true, \"\") -- shiftDown vazou?", suppress, event)
+	}
+}
+
+// TestHookStateBothShiftsHeldReleaseOneKeepsOtherTracked: bug real achado
+// pelo code-reviewer (14/11/2026, com teste de repro) -- um bool único
+// setado por QUALQUER vk de Shift zerava mesmo com o OUTRO lado ainda
+// fisicamente pressionado (LShift down, RShift down, LShift up -> perdia
+// o combo). lShiftDown/rShiftDown resolvem rastreando os 2 lados à parte.
+func TestHookStateBothShiftsHeldReleaseOneKeepsOtherTracked(t *testing.T) {
+	var s HookState
+	const vkS = 0x53
+
+	s.Handle(vkLWin, false)   // Win down
+	s.Handle(vkLShift, false) // LShift down
+	s.Handle(vkRShift, false) // RShift down (segurando os 2)
+	s.Handle(vkLShift, true)  // solta só o LShift
+
+	suppress, event := s.Handle(vkS, false) // S down -- RShift ainda pressionado
+	if !suppress || event != "win+shift+s" {
+		t.Fatalf("keydown S com RShift ainda pressionado: got (%v, %q), want (true, \"win+shift+s\") -- shiftActive() não deveria zerar só porque LShift soltou", suppress, event)
+	}
+}
+
 // TestHookStateRWinSameAsLWin: VK_RWIN (Win direito) segue exatamente a
 // mesma lógica que VK_LWIN -- o projeto já trata os dois como
 // intercambiáveis em todo lugar (ver LiveSessionWindow.jsx).

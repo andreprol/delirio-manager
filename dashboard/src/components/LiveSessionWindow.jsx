@@ -37,11 +37,27 @@ const clipboardDownloadTimeoutMs = 30000
 // sessão atual ou por um caminho que o rastreamento não previu.
 const EMERGENCY_RELEASE_KEYCODES = [91, 92, 17, 162, 163, 18, 164, 165, 16, 160, 161]
 
-// WIN_COMBO_VK traduz os eventos que o winkeyhook manda ("win+r" etc, ver
-// electron/main.js) pro keyCode da tecla que acompanha Win -- mesmos
-// valores que o VK_* do Win32 e o keyCode que o navegador usa pra letras
-// (82='R', 69='E', 68='D'), sem precisar de tradução adicional.
-const WIN_COMBO_VK = { 'win+r': 82, 'win+e': 69, 'win+d': 68 }
+// VK_SHIFT (genérico, 0x10) -- usado só pra SINTETIZAR o modificador no
+// combo abaixo (SendInput do lado do agent aceita o VK genérico numa
+// injeção sintética; é diferente do lado winkeyhook, que vê o VK já
+// distinguido por lado no hook de baixo nível, ver winkeyhook/hookstate.go).
+const VK_SHIFT = 16
+const VK_S = 83
+
+// WIN_COMBO_KEYS traduz os eventos que o winkeyhook manda ("win+r" etc, ver
+// electron/main.js) pra sequência de keyCodes que acompanham Win, na ordem
+// em que descem (e sobem na ordem inversa) -- mesmos valores que o VK_* do
+// Win32 e o keyCode que o navegador usa pra letras (82='R', 69='E', 68='D'),
+// sem precisar de tradução adicional. 'win+shift+s' precisa do modificador
+// Shift explícito na sequência (recorte de tela, Ferramenta de Captura) --
+// winkeyhook já rastreia Shift à parte pra reportar esse nome (ver
+// hookstate.go, supportedShiftCombos).
+const WIN_COMBO_KEYS = {
+  'win+r': [82],
+  'win+e': [69],
+  'win+d': [68],
+  'win+shift+s': [VK_SHIFT, VK_S],
+}
 
 export function LiveSessionWindow() {
   const [session, setSession] = useState(null) // { sessionId, machineId, mode, dashboardToken, serverUrl }
@@ -988,11 +1004,11 @@ export function LiveSessionWindow() {
         sendKeyEvent('keyup', VK_LWIN)
         return
       }
-      const vk = WIN_COMBO_VK[combo]
-      if (!vk) return
+      const keys = WIN_COMBO_KEYS[combo]
+      if (!keys) return
       sendKeyEvent('keydown', VK_LWIN)
-      sendKeyEvent('keydown', vk)
-      sendKeyEvent('keyup', vk)
+      keys.forEach((vk) => sendKeyEvent('keydown', vk))
+      for (let i = keys.length - 1; i >= 0; i--) sendKeyEvent('keyup', keys[i])
       sendKeyEvent('keyup', VK_LWIN)
     })
     return unsubscribe

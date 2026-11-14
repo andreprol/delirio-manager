@@ -7,7 +7,20 @@ package main
 const (
 	vkLWin = 0x5B
 	vkRWin = 0x5C
+
+	// vkShift/vkLShift/vkRShift: mesmo trio que EMERGENCY_RELEASE_KEYCODES
+	// já trata como "é a tecla Shift" em LiveSessionWindow.jsx -- um hook
+	// de baixo nível (WH_KEYBOARD_LL) entrega o VK já distinguido por
+	// lado (0xA0/0xA1), nunca o genérico 0x10 que as APIs de mensagem
+	// (WM_KEYDOWN) sintetizam; mantemos 0x10 só como fallback defensivo.
+	vkShift  = 0x10
+	vkLShift = 0xA0
+	vkRShift = 0xA1
 )
+
+func isShiftKey(vk uint32) bool {
+	return vk == vkShift || vk == vkLShift || vk == vkRShift
+}
 
 // supportedCombos: so estas combinacoes Win+<tecla> sao interceptadas e
 // repassadas pro processo pai (ver main.go) -- qualquer outro Win+<tecla>
@@ -27,6 +40,16 @@ var supportedCombos = map[uint32]string{
 	0x44: "win+d", // VK_D
 }
 
+// supportedShiftCombos: combos Win+Shift+<tecla> -- precisam da tecla Shift
+// rastreada à parte (ver HookState.shiftActive) porque o slot comboKeyDown só
+// guarda UMA tecla de ação por vez; Shift em si nunca ocupa esse slot (ver
+// Handle). Hoje só Win+Shift+S (recorte de tela, Ferramenta de Captura),
+// pedido explícito do André (item de pendência do Acesso Remoto, 13/11/2026)
+// -- Win+S sozinho (sem Shift) continua não suportado de propósito.
+var supportedShiftCombos = map[uint32]string{
+	0x53: "win+shift+s", // VK_S
+}
+
 // HookState e a logica PURA de decisao do hook de baixo nivel -- testavel
 // sem SetWindowsHookEx real (ver main.go, que so chama Handle a partir do
 // callback de verdade). Decide, pra cada evento de tecla que o hook ve
@@ -43,6 +66,23 @@ type HookState struct {
 	winDown      bool
 	comboFired   bool
 	comboKeyDown uint32 // VK da tecla de combo atualmente pressionada; 0 = nenhuma
+	// lShiftDown/rShiftDown: lados RASTREADOS SEPARADOS -- achado real do
+	// code-reviewer (14/11/2026, com teste de repro): um bool único
+	// `shiftDown` setado por QUALQUER vk de Shift (`s.shiftDown =
+	// !isKeyUp`) ficava "clobbered" se o operador segurasse os dois Shifts
+	// e soltasse só um (ex: LShift down, RShift down, LShift up -> bool
+	// único virava false mesmo com RShift ainda fisicamente pressionado),
+	// perdendo o combo bem no meio do Win+Shift+S. shiftActive() abaixo é
+	// o OR dos dois lados.
+	lShiftDown bool
+	rShiftDown bool
+}
+
+// shiftActive reporta se Shift (qualquer lado) está pressionado agora --
+// único ponto que a tecla de ação consulta pra escolher entre
+// supportedCombos/supportedShiftCombos.
+func (s *HookState) shiftActive() bool {
+	return s.lShiftDown || s.rShiftDown
 }
 
 // Handle processa 1 evento de tecla (vk, isKeyUp) e devolve se deve
@@ -72,6 +112,15 @@ func (s *HookState) Handle(vk uint32, isKeyUp bool) (suppress bool, event string
 			}
 			s.winDown = false
 			s.comboFired = false
+			// lShiftDown/rShiftDown zeram aqui mesmo (diferente de
+			// comboKeyDown abaixo) -- não existe cenário análogo ao bug de
+			// 13/11 pra Shift: Shift nunca é "a" tecla reportada (só
+			// modifica qual nome sai de supportedShiftCombos), então deixar
+			// o keyup real dela escapar pro Windows depois de Win solto
+			// primeiro é inofensivo (nenhuma combinação foi suprimida
+			// esperando esse keyup específico).
+			s.lShiftDown = false
+			s.rShiftDown = false
 			// NÃO zera s.comboKeyDown aqui -- achado 🔴 CRÍTICO do code-reviewer
 			// (13/11/2026): zerar cedo faz o keyup da tecla do combo, quando
 			// ainda chega depois (Win solto ANTES da tecla do combo -- ordem
@@ -108,6 +157,22 @@ func (s *HookState) Handle(vk uint32, isKeyUp bool) (suppress bool, event string
 	// "S" digitado em algum app, sem o modificador Win nunca ter existido
 	// do ponto de vista do SO).
 	s.comboFired = true
+
+	// Shift é só o MODIFICADOR do combo, nunca "a" tecla de ação -- não
+	// ocupa o slot comboKeyDown (que guarda só 1 tecla por vez), senão um
+	// Win+Shift+S perderia o rastreamento de Shift assim que S fosse
+	// pressionado (S tomaria o slot). Nenhum evento é reportado aqui por
+	// conta própria -- só muda qual mapa (supportedShiftCombos vs.
+	// supportedCombos) a tecla de ação abaixo vai consultar.
+	if isShiftKey(vk) {
+		if vk == vkRShift {
+			s.rShiftDown = !isKeyUp
+		} else { // vkLShift ou vkShift genérico (fallback, ver const) -- lado esquerdo
+			s.lShiftDown = !isKeyUp
+		}
+		return true, ""
+	}
+
 	if isKeyUp {
 		if s.comboKeyDown == vk {
 			s.comboKeyDown = 0
@@ -118,7 +183,11 @@ func (s *HookState) Handle(vk uint32, isKeyUp bool) (suppress bool, event string
 		return true, "" // repeat da tecla do combo -- já reportado na borda de subida
 	}
 	s.comboKeyDown = vk
-	if name, ok := supportedCombos[vk]; ok {
+	combos := supportedCombos
+	if s.shiftActive() {
+		combos = supportedShiftCombos
+	}
+	if name, ok := combos[vk]; ok {
 		return true, name
 	}
 	return true, ""
