@@ -194,6 +194,23 @@ export function FileBrowserModal({
   // recoverFromBrowseRemote em LiveSessionWindow.jsx) resolve os dois.
   useEffect(() => {
     if (!preserveListing) {
+      // setSelectedLocal(null)/setSelectedRemote(null): achado 🟠 do
+      // code-reviewer -- selectedLocal/selectedRemote agora vivem no PAI
+      // (LiveSessionWindow.jsx) e sobrevivem ao desmonte deste modal, mas
+      // só requestLocalDir/requestRemoteDir eram resetados aqui -- fechar
+      // manualmente ("Fechar", ou depois de um "Enviar →"/"← Baixar" que
+      // só limpa a seleção do lado que acabou de transferir) e reabrir
+      // pela toolbar busca o Desktop de novo mas MANTINHA a seleção
+      // antiga -- se o Desktop tivesse um arquivo de MESMO NOME da
+      // seleção antiga, "Enviar →"/"← Baixar" chegava habilitado sem o
+      // operador ter clicado em nada na listagem nova (mesma classe do
+      // achado já corrigido em handleRemoteFolderPickResult, só que por
+      // este caminho em vez do round-trip do dialog nativo). Todo outro
+      // ponto que troca a listagem (navigateLocal/goUpLocal/
+      // handleBrowseLocal/goRemoteTo/navigateRemote, acima) já limpa a
+      // seleção -- este mount era a única exceção.
+      setSelectedLocal(null)
+      setSelectedRemote(null)
       requestLocalDir('')
       requestRemoteDir('')
     }

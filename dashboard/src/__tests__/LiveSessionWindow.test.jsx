@@ -1263,6 +1263,34 @@ describe('LiveSessionWindow', () => {
     expect(sendListRemoteDirMock).toHaveBeenCalledWith('')
   })
 
+  // Achado 🟠 do code-reviewer, rodada seguinte (mesma classe do achado de
+  // handleRemoteFolderPickResult, mas por OUTRO caminho): fechar
+  // manualmente ("Fechar") e reabrir pela toolbar busca o default de novo
+  // (teste acima), mas o mount effect só resetava localListing/
+  // remoteListing -- NÃO a seleção, que agora vive no PAI e sobrevive ao
+  // desmonte. Se a listagem nova (mesmo que ainda não tenha respondido de
+  // verdade, como neste teste) tiver um arquivo de MESMO NOME da seleção
+  // antiga, "← Baixar" chegava habilitado sem o operador clicar em nada.
+  it('fechar com uma seleção e reabrir manualmente LIMPA a seleção -- "← Baixar" não fica habilitado à toa', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings() // entries remotas: [relatorio.pdf]
+
+    fireEvent.click(screen.getByTestId('remote-pane-entry-relatorio.pdf'))
+    expect(screen.getByText('← Baixar')).not.toBeDisabled()
+
+    fireEvent.click(screen.getByText('Fechar'))
+    expect(screen.queryByTestId('file-browser-modal')).not.toBeInTheDocument()
+
+    act(() => {
+      fireEvent.click(screen.getByText('📁 Transferir arquivo...'))
+    })
+
+    expect(screen.getByTestId('file-browser-modal')).toBeInTheDocument()
+    expect(screen.getByText('← Baixar')).toBeDisabled()
+  })
+
   it('remote-folder-picked navega pro caminho escolhido (chama sendListRemoteDir)', async () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
