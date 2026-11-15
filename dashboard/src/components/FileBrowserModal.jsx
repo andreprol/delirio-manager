@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useEffect, useCallback, useRef } from 'react'
 
 // FileBrowserModal: navegador de arquivos dual-pane (estilo FileZilla) —
 // substitui os campos de caminho digitado por navegação visual. Painel
@@ -166,17 +166,37 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, on
 export function FileBrowserModal({
   localListing, remoteListing, requestLocalDir, requestRemoteDir,
   onSendToRemote, onSendToLocal, isTransferring, onClose, onBrowseLocal,
-  onBrowseRemote, browsingRemote, remoteConnected,
+  onBrowseRemote, browsingRemote, remoteConnected, preserveListing,
+  selectedLocal, setSelectedLocal, selectedRemote, setSelectedRemote,
 }) {
-  const [selectedLocal, setSelectedLocal] = useState(null)
-  const [selectedRemote, setSelectedRemote] = useState(null)
+  // selectedLocal/selectedRemote/preserveListing: achados 🟠+🟡 do
+  // code-reviewer (14/11/2026) -- subidos pro PAI (LiveSessionWindow.jsx,
+  // junto de localListing/remoteListing) em vez de useState aqui, pelo
+  // mesmo motivo: este modal é desmontado/remontado no round-trip do
+  // dialog nativo remoto (ver handleBrowseRemote lá), e qualquer estado
+  // que vivesse só AQUI desaparecia nesse meio-tempo sem aviso.
 
-  // Abre os 2 painéis no default (Desktop de cada lado) assim que a janela
-  // monta — dir vazio é o contrato combinado com Electron/companion pra
-  // "sem preferência, abra no default".
+  // Abre os 2 painéis no default (Desktop de cada lado) na 1ª vez que a
+  // janela monta — dir vazio é o contrato combinado com Electron/companion
+  // pra "sem preferência, abra no default".
+  //
+  // preserveListing: achado 🟡 do code-reviewer -- a versão anterior deste
+  // fix usava "já existe uma listagem" (nullness de localListing/
+  // remoteListing) como proxy pra "este remonte é o round-trip do dialog
+  // remoto, não abrir manual". Proxy frágil: (1) reabrir MANUALMENTE pela
+  // toolbar depois de fechar também passava a resumir a última pasta em
+  // vez do default, mudança de comportamento não pedida; (2)
+  // requestLocalDir/requestRemoteDir são assíncronos -- numa rede lenta o
+  // fetch do 1º open podia ainda não ter respondido quando o round-trip do
+  // picker terminasse, disparando um requestRemoteDir('') extra que corre
+  // contra a navegação pro caminho ESCOLHIDO já em voo. Prop explícita
+  // (setada só nos caminhos que precisam preservar, ver
+  // recoverFromBrowseRemote em LiveSessionWindow.jsx) resolve os dois.
   useEffect(() => {
-    requestLocalDir('')
-    requestRemoteDir('')
+    if (!preserveListing) {
+      requestLocalDir('')
+      requestRemoteDir('')
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

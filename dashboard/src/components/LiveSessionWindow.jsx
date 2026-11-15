@@ -117,6 +117,44 @@ export function LiveSessionWindow() {
   fileBrowserOpenRef.current = fileBrowserOpen
   const [localListing, setLocalListing] = useState(null)
   const [remoteListing, setRemoteListing] = useState(null)
+  // selectedLocalFile/selectedRemoteFile: achado 🟠 do code-reviewer
+  // (14/11/2026) -- viviam como useState DENTRO do FileBrowserModal, então
+  // desapareciam silenciosamente em TODO desmonte/remonte (o mesmo
+  // round-trip do dialog nativo remoto que o fix de localListing/
+  // remoteListing acima já precisou considerar). Cenário real: operador
+  // seleciona um arquivo local pra enviar, clica "📂" remoto pra escolher a
+  // pasta de destino, o modal fecha/reabre, e a seleção local sumia sem
+  // aviso nenhum -- só "Enviar →" voltava a ficar desabilitado, o operador
+  // precisava notar e selecionar nome de novo. Subido pro PAI (aqui, junto
+  // de localListing/remoteListing) pelo mesmo motivo: sobrevive ao
+  // desmonte do modal.
+  const [selectedLocalFile, setSelectedLocalFile] = useState(null)
+  const [selectedRemoteFile, setSelectedRemoteFile] = useState(null)
+  // preserveListingOnReopenRef: achado 🟡 do code-reviewer -- usar "já
+  // existe uma listagem" (nullness) como proxy pra "este remonte é o
+  // round-trip do dialog remoto, não abrir manual" tinha 2 problemas: (1)
+  // reabrir MANUALMENTE pelo botão "📁 Transferir arquivo..." da toolbar
+  // depois de fechar com "Fechar" passava a também resumir a última pasta
+  // em vez de voltar ao default -- mudança de comportamento não pedida; (2)
+  // requestLocalDir/requestRemoteDir são assíncronos, então numa rede
+  // lenta o fetch do 1º open podia ainda não ter respondido (listing ainda
+  // null) quando o round-trip do picker terminasse, disparando um
+  // requestRemoteDir('') extra que corre contra a navegação pro caminho
+  // ESCOLHIDO já em voo -- reintroduzindo o bug original dependendo de qual
+  // responde por último. Sinalização explícita (este ref, setado só nos
+  // caminhos que precisam preservar) elimina os dois problemas de uma vez.
+  const preserveListingOnReopenRef = useRef(false)
+  // openFileBrowser: achado 🟡 do code-reviewer -- antes cada call site que
+  // ABRE o modal setava preserveListingOnReopenRef E chamava
+  // setFileBrowserOpen(true) por conta própria, sem nenhuma garantia de
+  // ficarem sempre juntos -- esse mesmo padrão espalhado (responsabilidade
+  // duplicada por call site) é a mesma classe de risco que deixou passar o
+  // achado 🟠 de handleRemoteFolderPickResult (navegar sem limpar a seleção
+  // remota antiga, abaixo). Único lugar que abre o modal de verdade.
+  const openFileBrowser = useCallback((preserve) => {
+    preserveListingOnReopenRef.current = preserve
+    setFileBrowserOpen(true)
+  }, [])
   // browsingRemote: true entre o clique no "📂" do painel remoto e a
   // resposta do dialog nativo (ver handleBrowseRemote/
   // handleRemoteFolderPickResult abaixo) -- desabilita o botão nesse
@@ -338,11 +376,16 @@ export function LiveSessionWindow() {
       browsingRemoteTimeoutRef.current = null
     }
     setBrowsingRemote(false)
-    setFileBrowserOpen(true)
+    // openFileBrowser(true): todo reabrir depois do round-trip do dialog
+    // remoto passa por aqui (picked/cancelled/error/timeout/watcher de
+    // desconexão) -- preserva a listagem (ver preserveListing em
+    // FileBrowserModal.jsx), diferente de abrir manualmente pela toolbar
+    // (openFileBrowser(false), abaixo).
+    openFileBrowser(true)
     if (errorMessage) {
       setRemoteListing((prev) => ({ path: prev?.path || '', error: errorMessage }))
     }
-  }, [])
+  }, [openFileBrowser])
 
   // handleRemoteFolderPickResult: resposta a browse-remote-folder (dialog
   // nativo "Procurar pasta" aberto NA TELA remota, ver
@@ -366,6 +409,19 @@ export function LiveSessionWindow() {
     }
     recoverFromBrowseRemote(null)
     if (msg.type === 'remote-folder-picked') {
+      // setSelectedRemoteFile(null): achado 🟠 do code-reviewer -- este é
+      // o único caminho de navegação do painel remoto que NÃO passava por
+      // goRemoteTo (FileBrowserModal.jsx), o único lugar que já limpa a
+      // seleção antes de navegar (mesmo motivo de goUpRemote/
+      // navigateRemote/Enter no campo: "← Baixar" só checa a STRING
+      // selecionada, não se ela existe na listagem atual). Com
+      // selectedRemoteFile agora sobrevivendo ao desmonte do modal (o
+      // propósito deste fix), uma seleção remota feita ANTES de clicar
+      // "📂" ficava pendente -- se a pasta escolhida no dialog nativo
+      // tivesse um arquivo de MESMO NOME, "← Baixar" chegava habilitado
+      // sem o operador ter clicado em nada na listagem nova, baixando o
+      // arquivo da pasta ERRADA em silêncio.
+      setSelectedRemoteFile(null)
       sendListRemoteDirRef.current?.(msg.path)
     }
   }, [recoverFromBrowseRemote])
@@ -1257,7 +1313,7 @@ export function LiveSessionWindow() {
           <div className="file-transfer-controls" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <button
               className="btn btn-secondary"
-              onClick={() => setFileBrowserOpen(true)}
+              onClick={() => openFileBrowser(false)}
               disabled={ending || isTransferring || browsingRemote || status !== 'connected'}
               title={
                 isTransferring ? 'Já existe uma transferência em andamento'
@@ -1295,11 +1351,23 @@ export function LiveSessionWindow() {
           requestLocalDir={requestLocalDir}
           requestRemoteDir={sendListRemoteDir}
           isTransferring={isTransferring}
-          onClose={() => setFileBrowserOpen(false)}
+          onClose={() => {
+            // false: defensivo, pra uma reabertura manual futura (via
+            // openFileBrowser) nunca herdar um "true" de um round-trip
+            // anterior esquecido -- openFileBrowser(false) já cobre o
+            // caminho normal, isto é só a rede de segurança.
+            preserveListingOnReopenRef.current = false
+            setFileBrowserOpen(false)
+          }}
           onBrowseLocal={() => window.electronAPI?.pickLocalFolder()}
           onBrowseRemote={handleBrowseRemote}
           browsingRemote={browsingRemote}
           remoteConnected={status === 'connected'}
+          preserveListing={preserveListingOnReopenRef.current}
+          selectedLocal={selectedLocalFile}
+          setSelectedLocal={setSelectedLocalFile}
+          selectedRemote={selectedRemoteFile}
+          setSelectedRemote={setSelectedRemoteFile}
           onSendToRemote={(localFullPath, fileName, destDir) => {
             sendLocalFileToRemote(localFullPath, fileName, destDir)
             setFileBrowserOpen(false)

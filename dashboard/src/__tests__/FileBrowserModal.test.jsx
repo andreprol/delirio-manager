@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { FileBrowserModal } from '../components/FileBrowserModal'
@@ -16,10 +17,65 @@ function makeProps(overrides = {}) {
   }
 }
 
+// Harness: selectedLocal/selectedRemote viraram props controladas (achado
+// 🟠 do code-reviewer, 14/11/2026 -- subidas pro componente PAI de verdade
+// em produção, LiveSessionWindow.jsx, pra sobreviver ao desmonte/remonte
+// deste modal no round-trip do dialog nativo remoto). Este harness só
+// reproduz esse mesmo papel de "pai com estado" nos testes, pra todo o
+// resto do arquivo continuar testando clique→seleciona→habilita sem
+// precisar saber da mudança.
+function Harness(props) {
+  const [selectedLocal, setSelectedLocal] = useState(null)
+  const [selectedRemote, setSelectedRemote] = useState(null)
+  return (
+    <FileBrowserModal
+      {...props}
+      selectedLocal={selectedLocal}
+      setSelectedLocal={setSelectedLocal}
+      selectedRemote={selectedRemote}
+      setSelectedRemote={setSelectedRemote}
+    />
+  )
+}
+
 describe('FileBrowserModal', () => {
-  it('pede as 2 listagens (local e remota) assim que monta, com diretório vazio (default)', () => {
-    const props = makeProps()
-    render(<FileBrowserModal {...props} />)
+  it('pede as 2 listagens (local e remota) assim que monta sem preserveListing, com diretório vazio (default)', () => {
+    const props = makeProps({ localListing: null, remoteListing: null })
+    render(<Harness {...props} />)
+    expect(props.requestLocalDir).toHaveBeenCalledWith('')
+    expect(props.requestRemoteDir).toHaveBeenCalledWith('')
+  })
+
+  // Achado AO VIVO real (14/11/2026): LiveSessionWindow.jsx DESMONTA este
+  // modal (fecha, esconde o vídeo da sessão enquanto o dialog nativo
+  // remoto espera o operador) e REMONTA (reabre) quando a resposta chega
+  // -- localListing/remoteListing (props, vivem no PAI) sobrevivem ao
+  // desmonte, mas o efeito de mount deste componente chamava
+  // requestLocalDir('')/requestRemoteDir('') incondicionalmente de novo a
+  // cada remonte, sobrescrevendo de volta pro default a navegação que
+  // acabara de chegar (ex: pro caminho escolhido no dialog) -- a pasta
+  // nunca "fixava". preserveListing=true (setado só por
+  // recoverFromBrowseRemote, LiveSessionWindow.jsx) é o sinal explícito de
+  // que ESTE remonte é o round-trip do picker -- o mount não deve refazer
+  // a busca.
+  it('preserveListing=true: NÃO pede as listagens de novo ao montar (remonte do round-trip do dialog remoto)', () => {
+    const props = makeProps({ preserveListing: true })
+    render(<Harness {...props} />)
+    expect(props.requestLocalDir).not.toHaveBeenCalled()
+    expect(props.requestRemoteDir).not.toHaveBeenCalled()
+  })
+
+  // 2º achado 🟡 do code-reviewer, mesma rodada: usar "já existe uma
+  // listagem" (nullness) como proxy quebrava a reabertura MANUAL pela
+  // toolbar depois de fechar -- também passaria a resumir a última pasta
+  // em vez do default, mudança de comportamento não pedida. preserveListing
+  // explícito (false nesse caminho, ver o botão da toolbar em
+  // LiveSessionWindow.jsx) corrige: mesmo com listagem já populada (como
+  // numa reabertura de verdade), sem preserveListing o mount busca o
+  // default de novo -- igual sempre foi.
+  it('preserveListing=false (abertura manual) pede o default de novo mesmo já existindo uma listagem', () => {
+    const props = makeProps({ preserveListing: false }) // localListing/remoteListing já preenchidos por makeProps()
+    render(<Harness {...props} />)
     expect(props.requestLocalDir).toHaveBeenCalledWith('')
     expect(props.requestRemoteDir).toHaveBeenCalledWith('')
   })
@@ -31,7 +87,7 @@ describe('FileBrowserModal', () => {
         entries: [{ name: 'Projetos', isDir: true, size: 0 }, { name: 'nota.txt', isDir: false, size: 1024 }],
       },
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     expect(screen.getByTestId('local-pane-entry-Projetos')).toBeInTheDocument()
     expect(screen.getByTestId('local-pane-entry-nota.txt')).toHaveTextContent('1.0 KB')
   })
@@ -40,7 +96,7 @@ describe('FileBrowserModal', () => {
     const props = makeProps({
       localListing: { path: 'C:\\x', entries: [{ name: 'Projetos', isDir: true, size: 0 }] },
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     fireEvent.click(screen.getByTestId('local-pane-entry-Projetos'))
     expect(screen.getByText('Enviar →')).toBeDisabled()
   })
@@ -49,7 +105,7 @@ describe('FileBrowserModal', () => {
     const props = makeProps({
       localListing: { path: 'C:\\Users\\Andre\\Desktop', entries: [{ name: 'Projetos', isDir: true, size: 0 }] },
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     fireEvent.doubleClick(screen.getByTestId('local-pane-entry-Projetos'))
     expect(props.requestLocalDir).toHaveBeenCalledWith('C:\\Users\\Andre\\Desktop\\Projetos')
   })
@@ -58,7 +114,7 @@ describe('FileBrowserModal', () => {
     const props = makeProps({
       remoteListing: { path: 'C:\\Users\\Loja\\Desktop', entries: [{ name: 'nota.txt', isDir: false, size: 10 }] },
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     props.requestRemoteDir.mockClear() // limpa a chamada do mount
     fireEvent.doubleClick(screen.getByTestId('remote-pane-entry-nota.txt'))
     expect(props.requestRemoteDir).not.toHaveBeenCalled()
@@ -69,7 +125,7 @@ describe('FileBrowserModal', () => {
       localListing: { path: 'C:\\Users\\Andre\\Desktop\\Projetos', entries: [] },
       remoteListing: { path: 'C:\\', entries: [] },
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     const upButtons = screen.getAllByTitle('Subir um nível')
     fireEvent.click(upButtons[0]) // painel local
     expect(props.requestLocalDir).toHaveBeenCalledWith('C:\\Users\\Andre\\Desktop')
@@ -82,7 +138,7 @@ describe('FileBrowserModal', () => {
       localListing: { path: '\\\\servidor\\share\\pasta', entries: [] },
       remoteListing: { path: '\\\\servidor\\share', entries: [] },
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     const upButtons = screen.getAllByTitle('Subir um nível')
     fireEvent.click(upButtons[0]) // sobe de \\servidor\share\pasta -- pára na raiz do compartilhamento
     expect(props.requestLocalDir).toHaveBeenCalledWith('\\\\servidor\\share')
@@ -97,7 +153,7 @@ describe('FileBrowserModal', () => {
   // listagem da raiz da unidade por completo.
   it('botão "⬆" numa pasta de topo (ex: "C:\\Users") pára na raiz da unidade, não pula pra "Este Computador"', () => {
     const props = makeProps({ remoteListing: { path: 'C:\\Users', entries: [] } })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     fireEvent.click(screen.getAllByTitle('Subir um nível')[1])
     expect(props.requestRemoteDir).toHaveBeenCalledWith('C:\\')
   })
@@ -107,7 +163,7 @@ describe('FileBrowserModal', () => {
   // unidades (C:, D:, etc.), não só a árvore do Desktop.
   it('no topo ("Este Computador"), botão "⬆" fica desabilitado', () => {
     const props = makeProps({ localListing: { path: 'Este Computador', entries: [] } })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     expect(screen.getAllByTitle('Subir um nível')[0]).toBeDisabled()
   })
 
@@ -115,7 +171,7 @@ describe('FileBrowserModal', () => {
     const props = makeProps({
       remoteListing: { path: 'Este Computador', entries: [{ name: 'D:\\', isDir: true, size: 0 }] },
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     fireEvent.doubleClick(screen.getByTestId('remote-pane-entry-D:\\'))
     expect(props.requestRemoteDir).toHaveBeenCalledWith('D:\\')
   })
@@ -129,14 +185,14 @@ describe('FileBrowserModal', () => {
     const props = makeProps({
       localListing: { path: 'C:\\Users\\Andre\\Desktop\\Projetos', entries: [{ name: 'a.txt', isDir: false, size: 1 }] },
     })
-    const { rerender } = render(<FileBrowserModal {...props} />)
+    const { rerender } = render(<Harness {...props} />)
 
     fireEvent.click(screen.getByTestId('local-pane-entry-a.txt'))
     expect(screen.getByText('Enviar →')).not.toBeDisabled()
 
     fireEvent.click(screen.getAllByTitle('Subir um nível')[0]) // painel local
     // Simula a resposta da navegação chegando: pasta-pai TAMBÉM tem "a.txt".
-    rerender(<FileBrowserModal {...props} localListing={{ path: 'C:\\Users\\Andre\\Desktop', entries: [{ name: 'a.txt', isDir: false, size: 2 }] }} />)
+    rerender(<Harness {...props} localListing={{ path: 'C:\\Users\\Andre\\Desktop', entries: [{ name: 'a.txt', isDir: false, size: 2 }] }} />)
 
     expect(screen.getByText('Enviar →')).toBeDisabled()
   })
@@ -146,7 +202,7 @@ describe('FileBrowserModal', () => {
       localListing: { path: 'C:\\Users\\Andre\\Desktop', entries: [{ name: 'instalador.exe', isDir: false, size: 8 }] },
       remoteListing: { path: 'C:\\Users\\Loja\\Desktop', entries: [] },
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     expect(screen.getByText('Enviar →')).toBeDisabled()
 
     fireEvent.click(screen.getByTestId('local-pane-entry-instalador.exe'))
@@ -160,7 +216,7 @@ describe('FileBrowserModal', () => {
     const props = makeProps({
       remoteListing: { path: 'C:\\Users\\Loja\\Desktop', entries: [{ name: 'relatorio.pdf', isDir: false, size: 2048 }] },
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     expect(screen.getByText('← Baixar')).toBeDisabled()
 
     fireEvent.click(screen.getByTestId('remote-pane-entry-relatorio.pdf'))
@@ -179,7 +235,7 @@ describe('FileBrowserModal', () => {
       remoteListing: { path: 'C:\\y', entries: [{ name: 'b.txt', isDir: false, size: 1 }] },
       isTransferring: true,
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     fireEvent.click(screen.getByTestId('local-pane-entry-a.txt'))
     fireEvent.click(screen.getByTestId('remote-pane-entry-b.txt'))
     expect(screen.getByText('Enviar →')).toBeDisabled()
@@ -190,14 +246,14 @@ describe('FileBrowserModal', () => {
     const props = makeProps({
       remoteListing: { path: 'C:\\Windows\\System32\\config', error: 'acesso negado' },
     })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     expect(screen.getByText(/acesso negado/i)).toBeInTheDocument()
     expect(screen.getByText('← Baixar')).toBeDisabled()
   })
 
   it('botão "Fechar" chama onClose', () => {
     const props = makeProps()
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     fireEvent.click(screen.getByText('Fechar'))
     expect(props.onClose).toHaveBeenCalled()
   })
@@ -208,7 +264,7 @@ describe('FileBrowserModal', () => {
   // pendência do Acesso Remoto, 13/11/2026).
   it('painel remoto mostra o caminho como campo editável; painel local continua só leitura (tem o "📂" nativo)', () => {
     const props = makeProps()
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     expect(screen.getByTestId('remote-pane-path-input')).toHaveValue('C:\\Users\\Loja\\Desktop')
     expect(screen.queryByTestId('local-pane-path-input')).not.toBeInTheDocument()
   })
@@ -222,7 +278,7 @@ describe('FileBrowserModal', () => {
   it('painel remoto também tem o botão "📂"; clicar chama onBrowseRemote (abre o dialog nativo na tela remota)', () => {
     const onBrowseRemote = vi.fn()
     const props = makeProps({ onBrowseLocal: vi.fn(), onBrowseRemote })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     expect(screen.getAllByText('📂')).toHaveLength(2)
     expect(screen.getAllByTitle('Procurar pasta...')).toHaveLength(2)
 
@@ -238,7 +294,7 @@ describe('FileBrowserModal', () => {
   it('browsingRemote=true desabilita o botão "📂" remoto e mostra "⏳"', () => {
     const onBrowseRemote = vi.fn()
     const props = makeProps({ onBrowseRemote, browsingRemote: true })
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
 
     const button = screen.getByTitle('Aguardando seleção na tela remota...')
     expect(button).toBeDisabled()
@@ -252,7 +308,7 @@ describe('FileBrowserModal', () => {
   // comportamento antigo (foca+seleciona o campo), nunca quebra o botão.
   it('sem onBrowseRemote, clicar no "📂" remoto cai no fallback (foca e seleciona o campo de caminho)', () => {
     const props = makeProps()
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     const input = screen.getByTestId('remote-pane-path-input')
     fireEvent.click(screen.getAllByTitle('Procurar pasta...')[0]) // só o remoto tem esse botão aqui (sem onBrowseLocal)
     expect(input).toHaveFocus()
@@ -260,7 +316,7 @@ describe('FileBrowserModal', () => {
 
   it('digitar um caminho no painel remoto e apertar Enter navega direto pra lá (sem precisar clicar pasta por pasta)', () => {
     const props = makeProps()
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     const input = screen.getByTestId('remote-pane-path-input')
     fireEvent.change(input, { target: { value: 'C:\\Windows\\System32' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -269,7 +325,7 @@ describe('FileBrowserModal', () => {
 
   it('tecla diferente de Enter no campo de caminho não navega', () => {
     const props = makeProps()
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     const input = screen.getByTestId('remote-pane-path-input')
     props.requestRemoteDir.mockClear() // limpa a chamada do mount
     fireEvent.change(input, { target: { value: 'C:\\Windows' } })
@@ -279,7 +335,7 @@ describe('FileBrowserModal', () => {
 
   it('campo de caminho vazio (ou só espaço) no Enter não navega', () => {
     const props = makeProps()
-    render(<FileBrowserModal {...props} />)
+    render(<Harness {...props} />)
     const input = screen.getByTestId('remote-pane-path-input')
     props.requestRemoteDir.mockClear()
     fireEvent.change(input, { target: { value: '   ' } })
@@ -295,7 +351,7 @@ describe('FileBrowserModal', () => {
     const props = makeProps({
       remoteListing: { path: 'C:\\Users\\Loja\\Desktop', entries: [{ name: 'a.txt', isDir: false, size: 1 }] },
     })
-    const { rerender } = render(<FileBrowserModal {...props} />)
+    const { rerender } = render(<Harness {...props} />)
 
     fireEvent.click(screen.getByTestId('remote-pane-entry-a.txt'))
     expect(screen.getByText('← Baixar')).not.toBeDisabled()
@@ -304,7 +360,7 @@ describe('FileBrowserModal', () => {
     fireEvent.change(input, { target: { value: 'C:\\Windows' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     // Simula a resposta da navegação chegando: pasta nova TAMBÉM tem "a.txt".
-    rerender(<FileBrowserModal {...props} remoteListing={{ path: 'C:\\Windows', entries: [{ name: 'a.txt', isDir: false, size: 2 }] }} />)
+    rerender(<Harness {...props} remoteListing={{ path: 'C:\\Windows', entries: [{ name: 'a.txt', isDir: false, size: 2 }] }} />)
 
     expect(screen.getByText('← Baixar')).toBeDisabled()
   })

@@ -1150,7 +1150,117 @@ describe('LiveSessionWindow', () => {
     })
 
     expect(screen.getByTestId('file-browser-modal')).toBeInTheDocument()
-    expect(sendListRemoteDirMock).toHaveBeenCalledWith('C:\\Users\\Loja\\Documents')
+    // toHaveBeenLastCalledWith (não só toHaveBeenCalledWith): achado AO
+    // VIVO real (14/11/2026, André testando) -- a pasta escolhida nunca
+    // "fixava", o painel remoto sempre voltava pro Desktop. Causa: fechar
+    // o modal DESMONTA <FileBrowserModal>, reabrir REMONTA -- e o efeito
+    // de mount (abaixo) chamava requestRemoteDir('') incondicionalmente
+    // de novo, sobrescrevendo de volta pro default LOGO DEPOIS desta
+    // navegação pro caminho escolhido. toHaveBeenCalledWith sozinho não
+    // pega isso (só confirma que foi chamado alguma vez, não que foi a
+    // chamada FINAL) -- é exatamente por isso que esse bug real escapou
+    // da rodada de testes anterior.
+    expect(sendListRemoteDirMock).toHaveBeenLastCalledWith('C:\\Users\\Loja\\Documents')
+  })
+
+  // Achado 🟠 do code-reviewer, mesma rodada: selectedLocal/selectedRemote
+  // viviam como useState DENTRO do FileBrowserModal -- desapareciam
+  // silenciosamente em TODO desmonte/remonte, inclusive este exato
+  // round-trip. Cenário real: operador seleciona um arquivo local pra
+  // enviar, clica "📂" remoto pra escolher a pasta de destino, o dialog
+  // fecha/reabre, e a seleção local sumia sem aviso -- só "Enviar →"
+  // voltava a ficar desabilitado. Subidas pro PAI (LiveSessionWindow.jsx),
+  // sobrevivem ao desmonte.
+  it('seleção local sobrevive ao round-trip do dialog remoto -- fechar/reabrir não perde o arquivo selecionado', async () => {
+    window.electronAPI.listLocalDir = vi.fn().mockResolvedValue({
+      path: 'C:\\Users\\Andre\\Desktop',
+      entries: [{ name: 'instalador.exe', isDir: false, size: 8 }],
+    })
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    fireEvent.click(screen.getByTestId('local-pane-entry-instalador.exe'))
+    expect(screen.getByText('Enviar →')).not.toBeDisabled()
+
+    act(() => {
+      fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1])
+    })
+    expect(screen.queryByTestId('file-browser-modal')).not.toBeInTheDocument()
+
+    act(() => {
+      lastUseLiveSessionArgs.onRemoteFolderPickResult({ type: 'remote-folder-picked', path: 'C:\\Users\\Loja\\Documents', requestId: 1 })
+    })
+
+    expect(screen.getByTestId('file-browser-modal')).toBeInTheDocument()
+    expect(screen.getByText('Enviar →')).not.toBeDisabled()
+  })
+
+  // Achado 🟠 do code-reviewer, rodada seguinte (o fix acima resolveu a
+  // seleção LOCAL sobreviver -- mas a seleção REMOTA sobrevivendo é
+  // justamente o risco, não o objetivo): diferente de goUpRemote/
+  // navigateRemote/Enter no campo (que sempre passam por goRemoteTo,
+  // FileBrowserModal.jsx, o único lugar que já limpa a seleção antes de
+  // navegar), handleRemoteFolderPickResult navegava DIRETO via
+  // sendListRemoteDirRef, pulando essa limpeza. Com a seleção agora
+  // sobrevivendo ao desmonte (propósito do fix acima), uma seleção remota
+  // feita ANTES de clicar "📂" ficava pendente -- se a pasta ESCOLHIDA no
+  // dialog nativo tivesse um arquivo de MESMO NOME, "← Baixar" chegava
+  // habilitado sem o operador ter clicado em nada na listagem nova,
+  // baixando o arquivo da pasta ERRADA em silêncio.
+  it('escolher uma pasta no dialog remoto LIMPA a seleção remota antiga -- "← Baixar" não fica habilitado à toa mesmo com arquivo de mesmo nome na pasta nova', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings() // entries remotas: [relatorio.pdf]
+
+    fireEvent.click(screen.getByTestId('remote-pane-entry-relatorio.pdf'))
+    expect(screen.getByText('← Baixar')).not.toBeDisabled()
+
+    act(() => {
+      fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1])
+    })
+    expect(screen.queryByTestId('file-browser-modal')).not.toBeInTheDocument()
+
+    act(() => {
+      // Simula a pasta ESCOLHIDA tendo um arquivo de mesmo nome
+      // ("relatorio.pdf") -- remoteListing nem precisa mudar de verdade
+      // pro teste provar o ponto: picked navega, mas a listagem em si só
+      // atualiza quando a resposta de list-remote-dir chegar depois.
+      lastUseLiveSessionArgs.onRemoteFolderPickResult({ type: 'remote-folder-picked', path: 'C:\\Users\\Loja\\Documents', requestId: 1 })
+    })
+
+    expect(screen.getByTestId('file-browser-modal')).toBeInTheDocument()
+    expect(screen.getByText('← Baixar')).toBeDisabled()
+  })
+
+  // Achado 🟡 do code-reviewer, mesma rodada: usar "já existe listagem"
+  // (nullness) como sinal de "não busca o default de novo" também afetava
+  // a reabertura MANUAL pela toolbar (depois de "Fechar") -- passaria a
+  // resumir a última pasta em vez do default, mudança de comportamento
+  // não pedida no escopo do fix do dialog remoto. preserveListing
+  // explícito (false neste caminho) garante que abrir manualmente sempre
+  // busca o default de novo, como sempre foi.
+  it('reabrir manualmente pela toolbar (depois de "Fechar") busca o default de novo, mesmo já tendo navegado antes', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    const input = screen.getByTestId('remote-pane-path-input')
+    fireEvent.change(input, { target: { value: 'C:\\Outra' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    sendListRemoteDirMock.mockClear()
+
+    fireEvent.click(screen.getByText('Fechar'))
+    expect(screen.queryByTestId('file-browser-modal')).not.toBeInTheDocument()
+
+    act(() => {
+      fireEvent.click(screen.getByText('📁 Transferir arquivo...'))
+    })
+
+    expect(sendListRemoteDirMock).toHaveBeenCalledWith('')
   })
 
   it('remote-folder-picked navega pro caminho escolhido (chama sendListRemoteDir)', async () => {
