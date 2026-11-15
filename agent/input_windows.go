@@ -107,15 +107,15 @@ func handleLiveSessionInput(data []byte, mode string, sessionID string, w frameW
 func dispatchLiveSessionInput(msg inputMessage, sessionID string, w frameWriter) {
 	switch msg.Type {
 	case "mousemove":
-		applyMouseMove(msg)
+		applyMouseMove(sessionID, msg)
 	case "mousedown":
-		applyMouseButton(msg, true)
+		applyMouseButton(sessionID, msg, true)
 	case "mouseup":
-		applyMouseButton(msg, false)
+		applyMouseButton(sessionID, msg, false)
 	case "keydown":
-		applyKeyboardInput(msg, true)
+		applyKeyboardInput(sessionID, msg, true)
 	case "keyup":
-		applyKeyboardInput(msg, false)
+		applyKeyboardInput(sessionID, msg, false)
 	default:
 		dispatchSessionControlInput(msg, sessionID, w)
 	}
@@ -170,8 +170,17 @@ func dispatchFileOperationsInput(msg inputMessage, sessionID string, w frameWrit
 // switch de dispatchLiveSessionInput só pra reduzir a complexidade
 // ciclomática da função (linter cyclop, max 10 por função), mesmo padrão
 // já usado por applyLocalInputLock.
-func applyMouseMove(msg inputMessage) {
-	if err := injectMouseMoveFn(msg.X, msg.Y); err != nil {
+// withActiveDesktopIfSessionZero (sessiondesktop_windows.go): no-op fora do
+// modo session-zero (companion normal, zero mudança de comportamento); em
+// modo session-zero (serviço capturando/injetando direto, sem companion),
+// reanexa a thread chamadora à desktop ativa ANTES do SendInput real --
+// sem isso, o input injetado pelo SERVIÇO (que não nasce dentro de
+// nenhuma desktop de usuário, diferente do companion) iria pra uma
+// desktop desconectada/errada, silenciosamente sem efeito nenhum na tela
+// que o operador está vendo.
+func applyMouseMove(sessionID string, msg inputMessage) {
+	err := withActiveDesktopIfSessionZero(sessionID, func() error { return injectMouseMoveFn(msg.X, msg.Y) })
+	if err != nil {
 		logWarn(fmt.Sprintf("companion: falha ao injetar mousemove: %v", err))
 	}
 }
@@ -179,8 +188,9 @@ func applyMouseMove(msg inputMessage) {
 // applyMouseButton chama injectMouseButtonFn e loga o resultado — mesmo
 // motivo de applyMouseMove (mousedown quando down=true, mouseup quando
 // down=false).
-func applyMouseButton(msg inputMessage, down bool) {
-	if err := injectMouseButtonFn(msg.Button, down); err != nil {
+func applyMouseButton(sessionID string, msg inputMessage, down bool) {
+	err := withActiveDesktopIfSessionZero(sessionID, func() error { return injectMouseButtonFn(msg.Button, down) })
+	if err != nil {
 		verb := "mouseup"
 		if down {
 			verb = "mousedown"
@@ -192,8 +202,9 @@ func applyMouseButton(msg inputMessage, down bool) {
 // applyKeyboardInput chama injectKeyboardFn e loga o resultado — mesmo
 // motivo de applyMouseMove (keydown quando down=true, keyup quando
 // down=false).
-func applyKeyboardInput(msg inputMessage, down bool) {
-	if err := injectKeyboardFn(msg.KeyCode, down); err != nil {
+func applyKeyboardInput(sessionID string, msg inputMessage, down bool) {
+	err := withActiveDesktopIfSessionZero(sessionID, func() error { return injectKeyboardFn(msg.KeyCode, down) })
+	if err != nil {
 		verb := "keyup"
 		if down {
 			verb = "keydown"

@@ -21,6 +21,36 @@ func liveSessionFrameIntervalMs() int {
 
 type liveSessionHandle struct {
 	stopCh chan struct{}
+	// sessionZero: achado 🟠 do code-reviewer -- gravado AQUI, por sessão,
+	// no momento do START (startLiveSession abaixo), e nunca mais
+	// reavaliado depois disso. Antes era um flag de PACOTE único
+	// (sessionZeroActive), e tanto handleStopLiveSession quanto o próprio
+	// runLiveSessionLoop reconsultavam condições que podiam MUDAR entre o
+	// start e o stop (a.hasLiveCompanion() reavaliado de novo no stop,
+	// companion podendo nascer/morrer no meio) -- isso causava: (1) uma
+	// sessão session-zero sendo "parada" pelo caminho errado (pipe pro
+	// companion, que nunca a conhecia) se um companion nascesse no meio
+	// por outro motivo; (2) duas sessões concorrentes (overlap breve num
+	// reconnect) pisando no MESMO flag global, uma desligando enquanto a
+	// outra ainda precisava dele ligado. Gravar o modo 1x, junto da
+	// entrada do mapa, e nunca reavaliar depois, elimina as duas classes
+	// de corrida de uma vez.
+	sessionZero bool
+}
+
+// isSessionZero reporta se a sessão sessionID foi iniciada em modo
+// session-zero (ver startLiveSession) -- usado por
+// withActiveDesktopIfSessionZero (sessiondesktop_windows.go) e por
+// handleStopLiveSession (commands.go) em vez de reavaliar
+// a.hasLiveCompanion() no momento do stop (ver comentário de
+// liveSessionHandle.sessionZero acima pro motivo). false também quando a
+// sessão já não existe mais no mapa -- comportamento seguro por padrão
+// (não reanexa desktop à toa).
+func isSessionZero(sessionID string) bool {
+	liveSessionsMu.Lock()
+	defer liveSessionsMu.Unlock()
+	h, exists := liveSessions[sessionID]
+	return exists && h.sessionZero
 }
 
 var (
@@ -39,21 +69,29 @@ var (
 // esta chamada, fazendo o ACK mentir sobre o que de fato aconteceu. Não
 // testável em CI de ponta a ponta (exige desktop real + servidor real) —
 // verificar manualmente.
-func startLiveSession(sessionID, mode, companionToken, serverURL string) bool {
+// sessionZero: achado do item 1 (acesso remoto sem sessão Windows
+// interativa, 14/11/2026) -- true quando quem está chamando é o PRÓPRIO
+// SERVIÇO assumindo direto (sem companion, ver handleStartLiveSession em
+// commands.go), nunca true quando o companion chama (ele só existe quando
+// JÁ há sessão interativa). Gravado no liveSessionHandle desta sessão (ver
+// struct acima) -- é essa gravação, não um flag global, que
+// selectLiveSessionCapturer/withActiveDesktopIfSessionZero consultam
+// depois, pelo sessionID, pro resto da vida da sessão.
+func startLiveSession(sessionID, mode, companionToken, serverURL string, sessionZero bool) bool {
 	liveSessionsMu.Lock()
 	if _, exists := liveSessions[sessionID]; exists {
 		liveSessionsMu.Unlock()
 		logWarn(fmt.Sprintf("companion: sessão %s já está ativa, ignorando start duplicado", sessionID))
 		return false
 	}
-	handle := &liveSessionHandle{stopCh: make(chan struct{})}
+	handle := &liveSessionHandle{stopCh: make(chan struct{}), sessionZero: sessionZero}
 	liveSessions[sessionID] = handle
 	liveSessionsMu.Unlock()
 
 	wsURL := buildLiveWebSocketURL(serverURL, sessionID, companionToken)
 
 	safeGo("liveSession-"+sessionID, func() {
-		runLiveSessionWithReconnect(sessionID, wsURL, mode, handle.stopCh)
+		runLiveSessionWithReconnect(sessionID, wsURL, mode, handle.stopCh, sessionZero)
 		// IMPORTANTE (correção de concorrência): só remove do mapa se a
 		// entrada ainda for ESTE handle específico, não qualquer coisa que
 		// esteja sob esta sessionID no momento. Sem essa checagem de
@@ -242,11 +280,11 @@ var runLiveSessionLoopFn = runLiveSessionLoop
 // reconectar depois de um stop explícito que chegou enquanto a última
 // tentativa ainda rodava; depois, pra um stop chegar durante a espera não
 // disparar mais uma tentativa inútil.
-func runLiveSessionWithReconnect(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
+func runLiveSessionWithReconnect(sessionID, wsURL, mode string, stopCh <-chan struct{}, sessionZero bool) {
 	delay := liveSessionReconnectInitialDelay
 	retries := 0
 	for {
-		runLiveSessionLoopFn(sessionID, wsURL, mode, stopCh)
+		runLiveSessionLoopFn(sessionID, wsURL, mode, stopCh, sessionZero)
 
 		select {
 		case <-stopCh:
@@ -272,11 +310,42 @@ func runLiveSessionWithReconnect(sessionID, wsURL, mode string, stopCh <-chan st
 	}
 }
 
-func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
+// selectLiveSessionCapturerFn: indireção testável de selectLiveSessionCapturer
+// -- extraída de dentro de runLiveSessionLoop (que não é testável em CI,
+// precisa de WebSocket/desktop reais) só pra esta decisão específica (qual
+// capturer usar) poder ser testada isolada, sem discar nada.
+var selectLiveSessionCapturerFn = selectLiveSessionCapturer
+
+// selectLiveSessionCapturer escolhe o capturer certo pra sessão: sessionZero
+// sempre usa sessionZeroScreenCapturer (GDI + anexa à desktop ativa a cada
+// frame, ver screencapture_sessionzero_windows.go) -- nunca newScreenCapturerFn
+// (DXGI), que não tem comportamento documentado/testado contra a secure
+// desktop (login/UAC). Fora do modo session-zero, comportamento idêntico a
+// antes desta feature existir.
+func selectLiveSessionCapturer(sessionZero bool) (capturer screenCapturer, backend string) {
+	if sessionZero {
+		return sessionZeroScreenCapturer{}, "session-zero-gdi"
+	}
+	return newScreenCapturerFn()
+}
+
+func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}, sessionZero bool) {
 	conn, _, err := liveSessionDialer.Dial(wsURL, nil)
 	if err != nil {
 		logError(fmt.Sprintf("companion: falha ao conectar em %s: %v", redactLiveSessionURL(wsURL), err))
 		return
+	}
+
+	// sessionZero já foi gravado em liveSessions[sessionID].sessionZero por
+	// startLiveSession, ANTES desta goroutine nascer -- isSessionZero
+	// (consultada por applyMouseMove/applyMouseButton/applyKeyboardInput
+	// via withActiveDesktopIfSessionZero) já enxerga isso desde já, nenhum
+	// flag adicional pra ligar/desligar aqui. Só o log de diagnóstico
+	// (qual desktop está ativa no início) é específico deste ponto.
+	if sessionZero {
+		if name, nameErr := activeDesktopName(); nameErr == nil {
+			logInfo(fmt.Sprintf("companion: sessão %s em modo session-zero, desktop ativa no início: %q", sessionID, name))
+		}
 	}
 	// readerDone + a ordem dos 3 defers abaixo garantem que, quando esta
 	// função retornar, a goroutine leitora já tenha terminado de VERDADE
@@ -336,7 +405,7 @@ func runLiveSessionLoop(sessionID, wsURL, mode string, stopCh <-chan struct{}) {
 	// tick, em vez de recriar todo o contexto de captura 10x/s como o GDI
 	// fazia. Close() garantido mesmo se a sessão terminar por stopCh ou por
 	// falha de escrita (return dentro do loop abaixo).
-	capturer, backend := newScreenCapturerFn()
+	capturer, backend := selectLiveSessionCapturerFn(sessionZero)
 	defer capturer.Close()
 	logInfo(fmt.Sprintf("companion: sessão %s usando backend de captura %s", sessionID, backend))
 

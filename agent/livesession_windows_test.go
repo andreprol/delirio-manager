@@ -181,6 +181,49 @@ func TestReadLiveSessionInputNonNormalModeConsumesAllMessages(t *testing.T) {
 	}
 }
 
+// TestSelectLiveSessionCapturer: sessionZero=true tem que usar SEMPRE
+// sessionZeroScreenCapturer (GDI + desktop ativa), nunca newScreenCapturerFn
+// (DXGI, sem garantia nenhuma contra a secure desktop) -- e sessionZero=false
+// tem que continuar usando newScreenCapturerFn, comportamento idêntico a
+// antes desta feature existir.
+func TestSelectLiveSessionCapturer(t *testing.T) {
+	originalNewScreenCapturer := newScreenCapturerFn
+	t.Cleanup(func() { newScreenCapturerFn = originalNewScreenCapturer })
+	var newScreenCapturerCalled bool
+	newScreenCapturerFn = func() (screenCapturer, string) {
+		newScreenCapturerCalled = true
+		return gdiScreenCapturer{}, "gdi"
+	}
+
+	t.Run("sessionZero=true usa sessionZeroScreenCapturer, não newScreenCapturerFn", func(t *testing.T) {
+		newScreenCapturerCalled = false
+		capturer, backend := selectLiveSessionCapturer(true)
+		if _, ok := capturer.(sessionZeroScreenCapturer); !ok {
+			t.Errorf("capturer = %T, want sessionZeroScreenCapturer", capturer)
+		}
+		if backend != "session-zero-gdi" {
+			t.Errorf("backend = %q, want session-zero-gdi", backend)
+		}
+		if newScreenCapturerCalled {
+			t.Error("newScreenCapturerFn não deveria ter sido chamado em modo session-zero")
+		}
+	})
+
+	t.Run("sessionZero=false usa newScreenCapturerFn, comportamento de sempre", func(t *testing.T) {
+		newScreenCapturerCalled = false
+		capturer, backend := selectLiveSessionCapturer(false)
+		if _, ok := capturer.(gdiScreenCapturer); !ok {
+			t.Errorf("capturer = %T, want gdiScreenCapturer (via newScreenCapturerFn mockado)", capturer)
+		}
+		if backend != "gdi" {
+			t.Errorf("backend = %q, want gdi", backend)
+		}
+		if !newScreenCapturerCalled {
+			t.Error("newScreenCapturerFn deveria ter sido chamado fora do modo session-zero")
+		}
+	})
+}
+
 // TestRunLiveSessionWithReconnect cobre o loop de reconexão (achado real
 // 13/11/2026: sem ele, qualquer queda inesperada da sessão exigia fechar e
 // reabrir a janela manualmente no dashboard, mesmo a rede voltando sozinha
@@ -201,11 +244,11 @@ func TestRunLiveSessionWithReconnect(t *testing.T) {
 	t.Run("stop explícito (stopCh já fechado quando o loop retorna) nunca tenta de novo", func(t *testing.T) {
 		calls := 0
 		stopCh := make(chan struct{})
-		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}) {
+		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}, sessionZero bool) {
 			calls++
 			close(stopCh) // simula stopLiveSession tendo sido chamado DURANTE esta "conexão"
 		}
-		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh)
+		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh, false)
 		if calls != 1 {
 			t.Errorf("calls = %d, want 1 (stop explícito não deveria reconectar)", calls)
 		}
@@ -214,14 +257,14 @@ func TestRunLiveSessionWithReconnect(t *testing.T) {
 	t.Run("queda inesperada reconecta e eventualmente se recupera", func(t *testing.T) {
 		calls := 0
 		stopCh := make(chan struct{})
-		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}) {
+		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}, sessionZero bool) {
 			calls++
 			if calls >= 3 {
 				close(stopCh) // "conexão estabilizou" -- simula um stop real chegando depois
 			}
 			// calls 1 e 2: retorna sem fechar stopCh -- simula queda inesperada
 		}
-		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh)
+		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh, false)
 		if calls != 3 {
 			t.Errorf("calls = %d, want 3 (2 quedas inesperadas + reconexão que se estabiliza)", calls)
 		}
@@ -231,10 +274,10 @@ func TestRunLiveSessionWithReconnect(t *testing.T) {
 		calls := 0
 		stopCh := make(chan struct{})
 		defer close(stopCh) // limpeza -- não deveria ser necessário pro teste passar, só evita vazar o canal
-		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}) {
+		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}, sessionZero bool) {
 			calls++ // nunca fecha stopCh -- toda tentativa "cai" de novo
 		}
-		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh)
+		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh, false)
 		wantCalls := 1 + liveSessionReconnectMaxAttempts // 1ª tentativa + N retries
 		if calls != wantCalls {
 			t.Errorf("calls = %d, want %d (1ª tentativa + %d retries, depois desiste)", calls, wantCalls, liveSessionReconnectMaxAttempts)
@@ -245,7 +288,7 @@ func TestRunLiveSessionWithReconnect(t *testing.T) {
 		calls := 0
 		stopCh := make(chan struct{})
 		liveSessionReconnectInitialDelay = 50 * time.Millisecond // folga pra fechar stopCh no meio da espera
-		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}) {
+		runLiveSessionLoopFn = func(sessionID, wsURL, mode string, stop <-chan struct{}, sessionZero bool) {
 			calls++
 			// nunca fecha stopCh aqui -- quem fecha é a goroutine abaixo, durante o delay de backoff
 		}
@@ -253,7 +296,7 @@ func TestRunLiveSessionWithReconnect(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 			close(stopCh)
 		}()
-		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh)
+		runLiveSessionWithReconnect("s1", "ws://x", "normal", stopCh, false)
 		if calls != 1 {
 			t.Errorf("calls = %d, want 1 (stop durante o backoff não deveria disparar nova tentativa)", calls)
 		}

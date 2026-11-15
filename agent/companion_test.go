@@ -129,8 +129,10 @@ func TestHandleCompanionPipeMessage_StartLiveSession(t *testing.T) {
 	defer func() { startLiveSessionFn = original }()
 
 	var gotSessionID, gotMode, gotToken, gotServerURL string
-	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) bool {
+	var gotSessionZero bool
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string, sessionZero bool) bool {
 		gotSessionID, gotMode, gotToken, gotServerURL = sessionID, mode, companionToken, serverURL
+		gotSessionZero = sessionZero
 		return true
 	}
 
@@ -151,6 +153,13 @@ func TestHandleCompanionPipeMessage_StartLiveSession(t *testing.T) {
 		t.Errorf("startLiveSessionFn recebeu params incompletos: sessionID=%q mode=%q token=%q serverURL=%q",
 			gotSessionID, gotMode, gotToken, gotServerURL)
 	}
+	// sessionZero sempre false vindo do companion -- ele só existe quando
+	// JÁ há sessão interativa de verdade (session_windows.go); modo
+	// session-zero é exclusivo do serviço assumindo direto, sem companion
+	// (handleStartLiveSession, commands.go).
+	if gotSessionZero {
+		t.Error("companion nunca deveria passar sessionZero=true pro startLiveSessionFn")
+	}
 }
 
 // TestHandleCompanionPipeMessage_StartLiveSessionDuplicate confirma que
@@ -160,7 +169,7 @@ func TestHandleCompanionPipeMessage_StartLiveSession(t *testing.T) {
 func TestHandleCompanionPipeMessage_StartLiveSessionDuplicate(t *testing.T) {
 	original := startLiveSessionFn
 	defer func() { startLiveSessionFn = original }()
-	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) bool {
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string, sessionZero bool) bool {
 		return false
 	}
 
@@ -173,7 +182,7 @@ func TestHandleCompanionPipeMessage_StartLiveSessionDuplicate(t *testing.T) {
 func TestHandleCompanionPipeMessage_StartLiveSessionRequiresSessionID(t *testing.T) {
 	original := startLiveSessionFn
 	defer func() { startLiveSessionFn = original }()
-	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string) bool {
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string, sessionZero bool) bool {
 		t.Fatal("não deveria chamar startLiveSessionFn sem sessionId")
 		return false
 	}

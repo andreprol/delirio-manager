@@ -32,6 +32,20 @@ type Config struct {
 	// sem nenhuma propagação manual. Default false (zero value) — rollout
 	// é opt-in por máquina, igual o comportamento atual.
 	FeatureLiveAccess bool `json:"featureLiveAccess"`
+
+	// FeatureSessionZeroCapture liga/desliga o modo "session-zero" do Acesso
+	// Remoto NESTE agente: quando não existe sessão Windows interativa
+	// (tela de login, tela de bloqueio, UAC, boot em andamento) — sem
+	// isso, start-live-session falha de cara (sessionWatchTick nunca lança
+	// o companion sem WTS_ACTIVE/Disconnected reconectável, ver
+	// session_windows.go). Com a flag ligada, o PRÓPRIO serviço (já roda
+	// como LocalSystem) anexa a thread chamadora à desktop ATIVA no
+	// momento (Winlogon/Default/Screen-saver, via OpenInputDesktop+
+	// SetThreadDesktop, ver sessiondesktop_windows.go) e assume
+	// captura/injeção direto, sem companion. Mesmo padrão de rollout de
+	// FeatureLiveAccess (opt-in por máquina, default false, testar 1
+	// canário antes de qualquer rollout maior).
+	FeatureSessionZeroCapture bool `json:"featureSessionZeroCapture"`
 }
 
 // loadConfigReadOnly lê e decodifica config.json sem nenhum efeito colateral

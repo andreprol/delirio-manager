@@ -60,7 +60,7 @@ func (a *Agent) commandHandlers() map[string]func(Command) (string, error) {
 		"get_agent_log":          handleGetAgentLog,
 		"capture-screenshot":     handleCaptureScreenshot,
 		"start-live-session":     a.handleStartLiveSession,
-		"stop-live-session":      handleStopLiveSession,
+		"stop-live-session":      a.handleStopLiveSession,
 	}
 }
 
@@ -336,6 +336,24 @@ func featureLiveAccessEnabled() bool {
 	return featureLiveAccessFlag
 }
 
+// featureSessionZeroCaptureFlag: mesmo padrão de featureLiveAccessFlag
+// acima, flag separada e independente — FeatureLiveAccess liga o Acesso
+// Remoto em si (companion), esta liga especificamente o modo
+// session-zero (serviço captura/injeta direto, sem companion, quando não
+// há sessão interativa). Só o SERVIÇO lê isso de verdade (o companion só
+// existe quando JÁ há sessão interativa, logo nunca entra em modo
+// session-zero) — ainda assim setada no mesmo lugar/padrão por
+// uniformidade e pra não exigir um load de config diferente só pra isto.
+var featureSessionZeroCaptureFlag bool
+
+func setFeatureSessionZeroCaptureEnabled(v bool) {
+	featureSessionZeroCaptureFlag = v
+}
+
+func featureSessionZeroCaptureEnabled() bool {
+	return featureSessionZeroCaptureFlag
+}
+
 // handleStartLiveSession repassa o pedido de sessão ao vivo pro companion
 // via pipe local. Não repassa ServerURL na mensagem — pipeMessage nem tem
 // esse campo (removido): a pipe aceita conexões de qualquer processo do
@@ -363,6 +381,22 @@ func (a *Agent) handleStartLiveSession(cmd Command) (string, error) {
 	}
 	logInfo(fmt.Sprintf("Comando START-LIVE-SESSION recebido (ID: %s, mode: %s).", cmd.ID, params.Mode))
 
+	// a.hasLiveCompanion(): achado do item 1 (acesso remoto sem sessão
+	// Windows interativa, 14/11/2026) -- sem companion vivo AGORA (tela de
+	// login/lock/UAC/boot, ou companion ainda não teve tempo de nascer),
+	// o caminho de sempre (pipe) falharia de cara (ninguém escutando do
+	// outro lado). Com FEATURE_SESSION0_CAPTURE ligada, o PRÓPRIO SERVIÇO
+	// assume direto (sessionZero=true), sem esperar nenhum companion.
+	if !a.hasLiveCompanion() {
+		if !featureSessionZeroCaptureEnabled() {
+			return "", fmt.Errorf("start-live-session: sem companion ativo e FEATURE_SESSION0_CAPTURE desabilitada neste agente")
+		}
+		if !startLiveSessionFn(params.SessionID, params.Mode, params.CompanionToken, a.cfg.ServerURL, true) {
+			return "", fmt.Errorf("start-live-session: sessão %s já está ativa (modo session-zero)", params.SessionID)
+		}
+		return "Sessão ao vivo iniciada em modo session-zero (sem sessão interativa).", nil
+	}
+
 	_, err := sendPipeRequestFn(pipeMessage{
 		Type: "start-live-session", RequestID: generateUUID(),
 		SessionID: params.SessionID, Mode: params.Mode, CompanionToken: params.CompanionToken,
@@ -373,9 +407,13 @@ func (a *Agent) handleStartLiveSession(cmd Command) (string, error) {
 	return "Sessão ao vivo iniciada no companion.", nil
 }
 
-// handleStopLiveSession não precisa de a.cfg (não repassa ServerURL pro
-// companion) — fica standalone, mesmo padrão de handleReboot/handleWoL etc.
-func handleStopLiveSession(cmd Command) (string, error) {
+// handleStopLiveSession: uma sessão iniciada em modo session-zero precisa
+// ser encerrada chamando stopLiveSessionFn AQUI no serviço (stopLiveSession
+// é local ao processo, mapa liveSessions em livesession_windows.go), não
+// via pipe pro companion (que nunca a iniciou, e pode nem existir) -- ver
+// comentário em isLiveSessionActive logo abaixo pro porquê de consultar
+// isso em vez de a.hasLiveCompanion().
+func (a *Agent) handleStopLiveSession(cmd Command) (string, error) {
 	var params struct {
 		SessionID string `json:"sessionId"`
 	}
@@ -389,6 +427,26 @@ func handleStopLiveSession(cmd Command) (string, error) {
 		return "", fmt.Errorf("stop-live-session: FEATURE_LIVE_ACCESS desabilitada neste agente")
 	}
 	logInfo(fmt.Sprintf("Comando STOP-LIVE-SESSION recebido (ID: %s).", cmd.ID))
+
+	// isLiveSessionActive(params.SessionID), NÃO a.hasLiveCompanion() --
+	// achado 🔴 CRÍTICO do code-reviewer: hasLiveCompanion() reflete o
+	// estado ATUAL do companion, que sessionWatchTick (goroutine própria,
+	// a cada 15s) pode mudar a qualquer momento depois do START -- no
+	// caso de uso principal desta feature (operador olhando a tela de
+	// login, usuário loga DURANTE a sessão), um companion podia nascer
+	// entre o start (session-zero) e o stop, fazendo o stop decidir pelo
+	// caminho da pipe -- que vai pro mapa liveSessions de OUTRO processo
+	// (o companion), que nunca teve essa sessionID: a sessão session-zero
+	// real (goroutine rodando, WS aberto, ainda injetando mouse/teclado)
+	// nunca seria parada de verdade, ficando órfã. isLiveSessionActive
+	// consulta o registro gravado NO START (liveSessionHandle.sessionZero,
+	// ver livesession_windows.go) -- só pergunta "este processo (serviço)
+	// tem uma sessão local com essa sessionID", nunca reavalia a condição
+	// que levou a ela existir.
+	if isLiveSessionActive(params.SessionID) {
+		stopLiveSessionFn(params.SessionID)
+		return "Sessão ao vivo encerrada (modo session-zero).", nil
+	}
 
 	_, err := sendPipeRequestFn(pipeMessage{
 		Type: "stop-live-session", RequestID: generateUUID(), SessionID: params.SessionID,

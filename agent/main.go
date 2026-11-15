@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.9.9" // fix: browse-remote-folder forca o dialog "Procurar pasta" pra frente (SetForegroundWindow+SetWindowPos topmost no BFFM_INITIALIZED) -- em 1.9.8 o dialog nascia atras de qualquer janela ja em primeiro plano na tela remota, invisivel pro operador, companion ficava preso esperando um clique que nunca chegava
+	Version            = "1.10.0" // feat: modo session-zero (FEATURE_SESSION0_CAPTURE) -- servico captura/injeta direto na desktop ativa (Winlogon/Default) via OpenWindowStation+SetThreadDesktop, sem precisar do companion -- acesso remoto passa a funcionar na tela de login/bloqueio/UAC/boot, nao so com sessao interativa de pe. Flag desligada por padrao, opt-in por maquina
 )
 
 func main() {

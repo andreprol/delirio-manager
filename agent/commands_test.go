@@ -7,7 +7,22 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
+
+// withFakeLiveCompanion simula "existe um companion vivo agora" pro
+// chamador (hasLiveCompanion, agent.go) -- os testes de start/stop-live-
+// session que esperam o caminho de sempre (pipe pro companion) precisam
+// disso desde que handleStartLiveSession/handleStopLiveSession passaram a
+// checar a.hasLiveCompanion() pra decidir entre esse caminho e o modo
+// session-zero (achado do item 1, 14/11/2026).
+func withFakeLiveCompanion(t *testing.T) {
+	t.Helper()
+	original := isCompanionAliveFn
+	isCompanionAliveFn = func(windows.Handle) bool { return true }
+	t.Cleanup(func() { isCompanionAliveFn = original })
+}
 
 // newTestAgent cria um Agent minimo para testes de executeCommand.
 // Nao inicializa http.Client nem canais — apenas o campo cfg e necessario
@@ -471,6 +486,7 @@ func TestExecuteCommand_CaptureScreenshot_Registered(t *testing.T) {
 func TestHandleStartLiveSession(t *testing.T) {
 	setFeatureLiveAccessEnabled(true)
 	t.Cleanup(func() { setFeatureLiveAccessEnabled(false) })
+	withFakeLiveCompanion(t)
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 
@@ -498,6 +514,7 @@ func TestHandleStartLiveSession(t *testing.T) {
 func TestHandleStopLiveSession(t *testing.T) {
 	setFeatureLiveAccessEnabled(true)
 	t.Cleanup(func() { setFeatureLiveAccessEnabled(false) })
+	withFakeLiveCompanion(t)
 	original := sendPipeRequestFn
 	defer func() { sendPipeRequestFn = original }()
 
@@ -507,8 +524,9 @@ func TestHandleStopLiveSession(t *testing.T) {
 		return pipeMessage{RequestID: msg.RequestID}, nil
 	}
 
+	a := newTestAgent("https://exemplo.test")
 	cmd := Command{ID: "cmd-2", Type: "stop-live-session", Params: json.RawMessage(`{"sessionId":"s1"}`)}
-	_, err := handleStopLiveSession(cmd)
+	_, err := a.handleStopLiveSession(cmd)
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -544,8 +562,9 @@ func TestHandleStopLiveSessionRequiresSessionID(t *testing.T) {
 		return pipeMessage{}, nil
 	}
 
+	a := newTestAgent("https://exemplo.test")
 	cmd := Command{ID: "cmd-2", Type: "stop-live-session", Params: json.RawMessage(`{}`)}
-	_, err := handleStopLiveSession(cmd)
+	_, err := a.handleStopLiveSession(cmd)
 	if err == nil {
 		t.Fatal("esperava erro com sessionId ausente")
 	}
@@ -577,9 +596,190 @@ func TestHandleStopLiveSessionFeatureDisabled(t *testing.T) {
 		return pipeMessage{}, nil
 	}
 
+	a := newTestAgent("https://exemplo.test")
 	cmd := Command{ID: "cmd-2", Type: "stop-live-session", Params: json.RawMessage(`{"sessionId":"s1"}`)}
-	_, err := handleStopLiveSession(cmd)
+	_, err := a.handleStopLiveSession(cmd)
 	if err == nil {
 		t.Fatal("esperava erro com FEATURE_LIVE_ACCESS desabilitada")
+	}
+}
+
+// ── modo session-zero (item 1, 14/11/2026 -- acesso sem sessão interativa) ───
+
+// TestHandleStartLiveSessionSessionZeroEnabled: sem companion vivo
+// (hasLiveCompanion=false, default de newTestAgent/isCompanionAliveFn real
+// com handle 0) e FEATURE_SESSION0_CAPTURE ligada -- o SERVIÇO assume
+// direto via startLiveSessionFn(sessionZero=true), nunca passa pela pipe.
+func TestHandleStartLiveSessionSessionZeroEnabled(t *testing.T) {
+	setFeatureLiveAccessEnabled(true)
+	t.Cleanup(func() { setFeatureLiveAccessEnabled(false) })
+	setFeatureSessionZeroCaptureEnabled(true)
+	t.Cleanup(func() { setFeatureSessionZeroCaptureEnabled(false) })
+
+	origPipe := sendPipeRequestFn
+	t.Cleanup(func() { sendPipeRequestFn = origPipe })
+	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
+		t.Fatal("não deveria chamar a pipe -- sem companion, devia ir direto pro modo session-zero")
+		return pipeMessage{}, nil
+	}
+
+	origStart := startLiveSessionFn
+	t.Cleanup(func() { startLiveSessionFn = origStart })
+	var gotSessionID, gotServerURL string
+	var gotSessionZero bool
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string, sessionZero bool) bool {
+		gotSessionID, gotServerURL, gotSessionZero = sessionID, serverURL, sessionZero
+		return true
+	}
+
+	a := newTestAgent("https://exemplo.test")
+	cmd := Command{ID: "cmd-1", Type: "start-live-session", Params: json.RawMessage(`{"sessionId":"s1","mode":"normal"}`)}
+	msg, err := a.handleStartLiveSession(cmd)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if gotSessionID != "s1" || gotServerURL != "https://exemplo.test" {
+		t.Errorf("startLiveSessionFn recebeu sessionID=%q serverURL=%q, want s1/https://exemplo.test", gotSessionID, gotServerURL)
+	}
+	if !gotSessionZero {
+		t.Error("esperava sessionZero=true (sem companion vivo)")
+	}
+	if !strings.Contains(msg, "session-zero") {
+		t.Errorf("mensagem de sucesso deveria mencionar session-zero, veio %q", msg)
+	}
+}
+
+// TestHandleStartLiveSessionSessionZeroDisabled: sem companion vivo e
+// FEATURE_SESSION0_CAPTURE desligada (default) -- erro claro, nem pipe nem
+// startLiveSessionFn chamados. Esse é o comportamento de hoje (antes desta
+// feature, start-live-session sem companion simplesmente travaria/falharia
+// na pipe) -- a flag precisa estar EXPLICITAMENTE ligada pra mudar isso.
+func TestHandleStartLiveSessionSessionZeroDisabled(t *testing.T) {
+	setFeatureLiveAccessEnabled(true)
+	t.Cleanup(func() { setFeatureLiveAccessEnabled(false) })
+	// featureSessionZeroCaptureEnabled fica no default (false) de propósito.
+
+	origPipe := sendPipeRequestFn
+	t.Cleanup(func() { sendPipeRequestFn = origPipe })
+	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
+		t.Fatal("não deveria chamar a pipe -- sem companion")
+		return pipeMessage{}, nil
+	}
+	origStart := startLiveSessionFn
+	t.Cleanup(func() { startLiveSessionFn = origStart })
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string, sessionZero bool) bool {
+		t.Fatal("não deveria chamar startLiveSessionFn -- FEATURE_SESSION0_CAPTURE desligada")
+		return false
+	}
+
+	a := newTestAgent("https://exemplo.test")
+	cmd := Command{ID: "cmd-1", Type: "start-live-session", Params: json.RawMessage(`{"sessionId":"s1"}`)}
+	_, err := a.handleStartLiveSession(cmd)
+	if err == nil {
+		t.Fatal("esperava erro -- sem companion e sem FEATURE_SESSION0_CAPTURE")
+	}
+	if !strings.Contains(err.Error(), "FEATURE_SESSION0_CAPTURE") {
+		t.Errorf("erro deveria mencionar FEATURE_SESSION0_CAPTURE, veio %q", err.Error())
+	}
+}
+
+// TestHandleStartLiveSessionSessionZeroDuplicate: startLiveSessionFn
+// devolvendo false (sessão já ativa) tem que virar erro, mesmo
+// comportamento do caminho via pipe (TestHandleCompanionPipeMessage_
+// StartLiveSessionDuplicate, companion_test.go).
+func TestHandleStartLiveSessionSessionZeroDuplicate(t *testing.T) {
+	setFeatureLiveAccessEnabled(true)
+	t.Cleanup(func() { setFeatureLiveAccessEnabled(false) })
+	setFeatureSessionZeroCaptureEnabled(true)
+	t.Cleanup(func() { setFeatureSessionZeroCaptureEnabled(false) })
+
+	origStart := startLiveSessionFn
+	t.Cleanup(func() { startLiveSessionFn = origStart })
+	startLiveSessionFn = func(sessionID, mode, companionToken, serverURL string, sessionZero bool) bool {
+		return false
+	}
+
+	a := newTestAgent("https://exemplo.test")
+	cmd := Command{ID: "cmd-1", Type: "start-live-session", Params: json.RawMessage(`{"sessionId":"s1"}`)}
+	_, err := a.handleStartLiveSession(cmd)
+	if err == nil {
+		t.Fatal("esperava erro quando startLiveSessionFn devolve false")
+	}
+}
+
+// TestHandleStopLiveSessionSessionZero: sem companion vivo -- chama
+// stopLiveSessionFn DIRETO (local, mapa liveSessions em
+// livesession_windows.go), nunca a pipe.
+// TestHandleStopLiveSessionSessionZero: a decisão de parar local (em vez de
+// via pipe) agora vem de isLiveSessionActive(sessionID) -- consultando o
+// registro gravado NO START (liveSessionHandle, livesession_windows.go),
+// não mais a.hasLiveCompanion() (achado 🔴 CRÍTICO do code-reviewer: essa
+// releitura podia divergir do estado no momento do start, ver comentário
+// em handleStopLiveSession). Simula isso registrando "s1" direto no mapa
+// liveSessions, mesmo padrão de TestIsLiveSessionActive
+// (livesession_windows_test.go).
+func TestHandleStopLiveSessionSessionZero(t *testing.T) {
+	setFeatureLiveAccessEnabled(true)
+	t.Cleanup(func() { setFeatureLiveAccessEnabled(false) })
+
+	const sid = "s1"
+	liveSessionsMu.Lock()
+	liveSessions[sid] = &liveSessionHandle{stopCh: make(chan struct{}), sessionZero: true}
+	liveSessionsMu.Unlock()
+	t.Cleanup(func() {
+		liveSessionsMu.Lock()
+		delete(liveSessions, sid)
+		liveSessionsMu.Unlock()
+	})
+
+	origPipe := sendPipeRequestFn
+	t.Cleanup(func() { sendPipeRequestFn = origPipe })
+	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
+		t.Fatal("não deveria chamar a pipe -- sessão registrada localmente (session-zero)")
+		return pipeMessage{}, nil
+	}
+
+	origStop := stopLiveSessionFn
+	t.Cleanup(func() { stopLiveSessionFn = origStop })
+	var gotSessionID string
+	stopLiveSessionFn = func(sessionID string) { gotSessionID = sessionID }
+
+	a := newTestAgent("https://exemplo.test")
+	cmd := Command{ID: "cmd-2", Type: "stop-live-session", Params: json.RawMessage(`{"sessionId":"s1"}`)}
+	_, err := a.handleStopLiveSession(cmd)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if gotSessionID != "s1" {
+		t.Errorf("stopLiveSessionFn recebeu sessionID=%q, want s1", gotSessionID)
+	}
+}
+
+// TestHandleStopLiveSessionCompanionAliveButNotLocallyRegistered: achado
+// 🔴 CRÍTICO do code-reviewer, cenário espelhado -- se a sessionID pedida
+// não está registrada localmente (foi iniciada via companion de verdade,
+// nunca por este serviço), o stop tem que ir pela pipe, não importa o
+// estado atual do companion -- isLiveSessionActive só reflete sessões que
+// ESTE processo (serviço) iniciou localmente.
+func TestHandleStopLiveSessionCompanionAliveButNotLocallyRegistered(t *testing.T) {
+	setFeatureLiveAccessEnabled(true)
+	t.Cleanup(func() { setFeatureLiveAccessEnabled(false) })
+
+	origPipe := sendPipeRequestFn
+	t.Cleanup(func() { sendPipeRequestFn = origPipe })
+	var pipeCalled bool
+	sendPipeRequestFn = func(msg pipeMessage, timeout time.Duration) (pipeMessage, error) {
+		pipeCalled = true
+		return pipeMessage{RequestID: msg.RequestID}, nil
+	}
+
+	a := newTestAgent("https://exemplo.test")
+	cmd := Command{ID: "cmd-2", Type: "stop-live-session", Params: json.RawMessage(`{"sessionId":"s-nao-registrada"}`)}
+	_, err := a.handleStopLiveSession(cmd)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if !pipeCalled {
+		t.Fatal("deveria ter ido pela pipe -- sessão não registrada localmente")
 	}
 }

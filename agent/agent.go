@@ -139,6 +139,7 @@ func newAgent() *Agent {
 	// 1x por processo, logo após o load — ver comentário de featureLiveAccessFlag
 	// em commands.go.
 	setFeatureLiveAccessEnabled(cfg.FeatureLiveAccess)
+	setFeatureSessionZeroCaptureEnabled(cfg.FeatureSessionZeroCapture)
 
 	initLogger("agent.log")
 
@@ -388,6 +389,16 @@ func (a *Agent) sessionWatchTick() {
 		return
 	}
 	a.recordCompanionLaunched(activeID, pid, handle, job)
+}
+
+// hasLiveCompanion reporta se existe um companion rodando DE VERDADE agora
+// (não só "foi lançado alguma vez") — mesma checagem que sessionWatchTick já
+// usa pra decidir se relança. handleStartLiveSession/handleStopLiveSession
+// (commands.go) usam isto pra escolher entre o caminho de sempre (pipe pro
+// companion) e o modo session-zero (serviço assume direto, sem sessão
+// interativa nenhuma — ver FEATURE_SESSION0_CAPTURE, config.go).
+func (a *Agent) hasLiveCompanion() bool {
+	return isCompanionAliveFn(windows.Handle(a.companionHandle.Load()))
 }
 
 // reconnectFailureLogThrottle: loga a 1ª falha de reconexão, depois só 1 a

@@ -222,8 +222,11 @@ func handleCompanionPipeMessage(msg pipeMessage, cfg *Config) pipeMessage {
 		// de check-then-act real entre ele e esta chamada (pipe aceita
 		// conexões concorrentes), fazendo o ACK mentir sobre duplicata.
 		// cfg.ServerURL (local), nunca msg.ServerURL — ver comentário da
-		// função sobre por quê.
-		if !startLiveSessionFn(msg.SessionID, msg.Mode, msg.CompanionToken, cfg.ServerURL) {
+		// função sobre por quê. sessionZero=false sempre aqui: o companion
+		// só existe quando JÁ há sessão interativa de verdade (ver
+		// session_windows.go) -- modo session-zero é exclusivo do serviço
+		// assumindo direto, sem companion (handleStartLiveSession, commands.go).
+		if !startLiveSessionFn(msg.SessionID, msg.Mode, msg.CompanionToken, cfg.ServerURL, false) {
 			return pipeMessage{RequestID: msg.RequestID, Error: fmt.Sprintf("sessão %s já está ativa", msg.SessionID)}
 		}
 		return pipeMessage{RequestID: msg.RequestID}
