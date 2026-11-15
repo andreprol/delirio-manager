@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+// swapReadFileFn troca readFileFn por um fake controlável — mesmo padrão de
+// swapConfigStore, pra testar readConfigFileWithRetry sem I/O real.
+func swapReadFileFn(t *testing.T, fn func(string) ([]byte, error)) {
+	t.Helper()
+	original := readFileFn
+	readFileFn = fn
+	t.Cleanup(func() { readFileFn = original })
+}
+
 // fakeConfigStore substitui configStoreImpl nos testes — load/save em
 // memória, sem tocar disco, com falhas e contagem de tentativas
 // controláveis pra reproduzir determinística o cenário de corrida de
@@ -87,6 +96,155 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	}
 	if loaded.MachineID != original.MachineID {
 		t.Errorf("MachineID: got %q want %q", loaded.MachineID, original.MachineID)
+	}
+}
+
+// TestReadConfigFileWithRetry_RetriesTransientFailure reproduz o incidente
+// real de 15/11/2026: leitura falha nas primeiras tentativas (arquivo
+// momentaneamente travado por antivírus/rename concorrente de um
+// PowerShell externo editando config.json) e sucede antes de esgotar as
+// tentativas — não pode cair pro ramo de "primeira execução" nesse caso.
+func TestReadConfigFileWithRetry_RetriesTransientFailure(t *testing.T) {
+	calls := 0
+	wantData := []byte(`{"machineId":"estavel-123"}`)
+	swapReadFileFn(t, func(string) ([]byte, error) {
+		calls++
+		if calls <= configLoadRetries {
+			return nil, errors.New("fake: arquivo em uso por outro processo")
+		}
+		return wantData, nil
+	})
+
+	data, err := readConfigFileWithRetry("qualquer-caminho")
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if string(data) != string(wantData) {
+		t.Errorf("data: got %q want %q", data, wantData)
+	}
+	if calls != configLoadRetries+1 {
+		t.Errorf("calls: got %d want %d (deveria ter parado de tentar no 1o sucesso)", calls, configLoadRetries+1)
+	}
+}
+
+// TestReadConfigFileWithRetry_GivesUpAfterExhaustingRetries garante que a
+// falha persistente (não só transiente) ainda é reportada pro chamador,
+// depois de esgotar as tentativas.
+func TestReadConfigFileWithRetry_GivesUpAfterExhaustingRetries(t *testing.T) {
+	calls := 0
+	wantErr := errors.New("fake: disco com problema de verdade")
+	swapReadFileFn(t, func(string) ([]byte, error) {
+		calls++
+		return nil, wantErr
+	})
+
+	_, err := readConfigFileWithRetry("qualquer-caminho")
+	if !errors.Is(err, wantErr) {
+		t.Errorf("erro: got %v want %v", err, wantErr)
+	}
+	if calls != configLoadRetries+1 {
+		t.Errorf("calls: got %d want %d (deveria ter tentado todas as vezes antes de desistir)", calls, configLoadRetries+1)
+	}
+}
+
+// TestReadConfigFileWithRetry_FileGenuinelyMissing_NoRetry cobre a primeira
+// execução de verdade (arquivo nunca existiu): não deve ficar tentando de
+// novo nem esperar configLoadRetryDelay — os.IsNotExist é definitivo, não
+// transiente.
+func TestReadConfigFileWithRetry_FileGenuinelyMissing_NoRetry(t *testing.T) {
+	calls := 0
+	notExistErr := os.ErrNotExist
+	swapReadFileFn(t, func(string) ([]byte, error) {
+		calls++
+		return nil, notExistErr
+	})
+
+	_, err := readConfigFileWithRetry("qualquer-caminho")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("erro: got %v want os.ErrNotExist", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls: got %d want 1 (arquivo ausente de verdade nao deveria tentar de novo)", calls)
+	}
+}
+
+// TestLoadConfig_TransientReadFailure_DoesNotResetIdentity reproduz o bug
+// de ponta a ponta: config.json existe no disco com identidade real, mas a
+// leitura falha transitoriamente (ex: lock de antivírus) — loadConfig deve
+// conseguir ler depois do retry e preservar machineId/token/flags, NUNCA
+// gerar uma identidade nova por cima disso.
+func TestLoadConfig_TransientReadFailure_DoesNotResetIdentity(t *testing.T) {
+	calls := 0
+	realData := []byte(`{
+		"serverUrl": "https://dt-manager.brazilsouth.cloudapp.azure.com",
+		"machineId": "67935643-802c-4ab8-a44a-a4da060fc295",
+		"token": "7ba0907b-8e90-4470-9c7a-c15f1efa4e03",
+		"intervalSecs": 30,
+		"pollSecs": 10,
+		"featureLiveAccess": true,
+		"featureSessionZeroCapture": true
+	}`)
+	swapReadFileFn(t, func(string) ([]byte, error) {
+		calls++
+		if calls <= 2 {
+			return nil, errors.New("fake: lock transiente de antivirus")
+		}
+		return realData, nil
+	})
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if cfg.MachineID != "67935643-802c-4ab8-a44a-a4da060fc295" {
+		t.Errorf("MachineID foi descartado pela falha transiente: got %q", cfg.MachineID)
+	}
+	if cfg.Token != "7ba0907b-8e90-4470-9c7a-c15f1efa4e03" {
+		t.Errorf("Token foi descartado pela falha transiente: got %q", cfg.Token)
+	}
+	if !cfg.FeatureLiveAccess || !cfg.FeatureSessionZeroCapture {
+		t.Errorf("flags foram resetadas pela falha transiente: featureLiveAccess=%v featureSessionZeroCapture=%v",
+			cfg.FeatureLiveAccess, cfg.FeatureSessionZeroCapture)
+	}
+}
+
+// TestLoadConfig_PersistentReadFailure_DoesNotOverwriteRealFile cobre o
+// achado 🔴 CRÍTICO da revisão de 15/11/2026: a 1a versão deste fix ainda
+// caía no ramo de "primeira execução" quando os.IsNotExist era falso mas o
+// retry se esgotava mesmo assim (ex: lock de disco/antivírus durando mais
+// que 1s) — chamando saveConfig(cfg) e sobrescrevendo PRA SEMPRE o
+// config.json real (machineId/token de produção) por uma identidade nova
+// efêmera. loadConfig deve retornar o erro pro chamador e, acima de tudo,
+// NUNCA escrever em configPath() nesse caso — um boot futuro bem-sucedido
+// precisa encontrar o arquivo original intacto.
+func TestLoadConfig_PersistentReadFailure_DoesNotOverwriteRealFile(t *testing.T) {
+	// configPath() usa os.Executable() -- no binário de teste isso resolve
+	// pra um caminho real e gravável; garante que não existe nada lá antes
+	// (nem sobra de outro teste) pra detectar com segurança uma escrita
+	// indevida feita por este teste.
+	path := configPath()
+	_ = os.Remove(path)
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	calls := 0
+	persistentErr := errors.New("fake: disco com problema de verdade, nunca se recupera")
+	swapReadFileFn(t, func(string) ([]byte, error) {
+		calls++
+		return nil, persistentErr
+	})
+
+	cfg, err := loadConfig()
+	if !errors.Is(err, persistentErr) {
+		t.Errorf("err: got %v want %v (falha persistente deve ser propagada, nao engolida)", err, persistentErr)
+	}
+	if cfg == nil {
+		t.Fatal("loadConfig nao deveria retornar cfg nil mesmo em erro (contrato existente com o chamador)")
+	}
+	if calls != configLoadRetries+1 {
+		t.Errorf("calls: got %d want %d", calls, configLoadRetries+1)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("loadConfig escreveu em %s numa falha persistente -- deveria ter deixado o arquivo real intacto (ou ausente, nunca criado do zero)", path)
 	}
 }
 

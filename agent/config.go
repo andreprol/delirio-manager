@@ -56,7 +56,13 @@ type Config struct {
 // (é ele quem lança o companion), então a migração já rodou há muito tempo.
 func loadConfigReadOnly() (*Config, error) {
 	cfg := defaultConfig()
-	data, err := os.ReadFile(configPath())
+	// readConfigFileWithRetry (nao os.ReadFile direto): o companion esta
+	// sujeito a mesma colisao transiente que motivou o retry em loadConfig
+	// (rename atomico externo/lock de antivirus) -- achado MEDIO do
+	// code-reviewer, 15/11/2026. Sem efeito colateral de escrita aqui (essa
+	// e a garantia que a doc desta funcao promete), so a leitura ganha
+	// resiliencia.
+	data, err := readConfigFileWithRetry(configPath())
 	if err != nil {
 		return cfg, err
 	}
@@ -75,14 +81,80 @@ func configPath() string {
 	return filepath.Join(filepath.Dir(exe), "config.json")
 }
 
+// configLoadRetries/configLoadRetryDelay cobrem o boot do serviço colidindo
+// com uma escrita externa concorrente no MESMO config.json — achado real de
+// 15/11/2026 (incidente session-zero): loadConfig não tinha NENHUM retry na
+// leitura inicial, ao contrário de loadFreshConfigWithRetry (usado só pelos
+// saves periódicos). Um PowerShell externo editando config.json (rollout de
+// feature flag via /api/machines/:id/run) bem na janela entre o
+// Move-Item/rename e o antivírus liberar o lock do arquivo, seguido de
+// Restart-Service, fazia o processo novo encontrar o arquivo momentaneamente
+// ilegível, tratar isso como "primeira execução" (ramo abaixo) e gerar
+// machineId+token NOVOS do zero, descartando tanto a identidade quanto a
+// edição externa que acabara de chegar — sem erro nenhum visível, silencioso.
+// 5 tentativas x 200ms (1s no pior caso) é imperceptível num boot normal mas
+// cobre folgado o lock transiente de antivírus/rename concorrente.
+const (
+	configLoadRetries    = 5
+	configLoadRetryDelay = 200 * time.Millisecond
+)
+
+// readFileFn: indireção testável de os.ReadFile, mesmo padrão de
+// startLiveSessionFn/configStoreImpl já usado neste pacote — var global
+// mutável trocada em teste (swapReadFileFn, config_test.go) sem mutex,
+// seguro só porque nenhum teste deste pacote usa t.Parallel() (mesma
+// ressalva já documentada pra configStoreImpl/swapConfigStore).
+var readFileFn = os.ReadFile
+
+// readConfigFileWithRetry tenta ler path até configLoadRetries+1 vezes,
+// esperando configLoadRetryDelay entre tentativas — exceto quando o arquivo
+// genuinamente não existe (os.IsNotExist), caso em que não há por que
+// esperar: não é uma colisão transiente, é mesmo a primeira execução.
+func readConfigFileWithRetry(path string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt <= configLoadRetries; attempt++ {
+		data, err := readFileFn(path)
+		if err == nil {
+			return data, nil
+		}
+		if os.IsNotExist(err) {
+			return nil, err
+		}
+		lastErr = err
+		if attempt < configLoadRetries {
+			time.Sleep(configLoadRetryDelay)
+		}
+	}
+	return nil, lastErr
+}
+
+// handleConfigReadFailure trata o ramo de "readConfigFileWithRetry falhou"
+// de loadConfig — extraído só pra reduzir a complexidade ciclomática de
+// loadConfig (linter cyclop, max 10 por função), mesmo padrão já usado por
+// applyLocalInputLock/dispatchLiveSessionInput neste pacote. Ver os
+// comentários originais (antes desta extração) sobre o porquê de cada ramo:
+// os.IsNotExist é primeira execução de verdade (persiste default); qualquer
+// outro erro é falha transiente que esgotou o retry — achado CRÍTICO do
+// code-reviewer, 15/11/2026, NUNCA deve persistir uma identidade nova por
+// cima do config.json real só porque ele ficou ilegível por mais tempo que
+// o retry cobre (disco com problema, lock mais longo que 1s, etc.).
+func handleConfigReadFailure(cfg *Config, err error) (*Config, error) {
+	if os.IsNotExist(err) {
+		if saveErr := saveConfig(cfg); saveErr != nil {
+			logWarn(fmt.Sprintf("loadConfig: falha ao persistir config padrao na primeira execucao: %v", saveErr))
+		}
+		return cfg, nil
+	}
+	logWarn(fmt.Sprintf("loadConfig: leitura de config.json falhou mesmo apos %d tentativas (%v) -- NAO sobrescrevendo o arquivo, seguindo em memoria com identidade efemera", configLoadRetries, err))
+	return cfg, err
+}
+
 func loadConfig() (*Config, error) {
 	cfg := defaultConfig()
 
-	data, err := os.ReadFile(configPath())
+	data, err := readConfigFileWithRetry(configPath())
 	if err != nil {
-		// Primeira execucao: salva config padrao
-		_ = saveConfig(cfg)
-		return cfg, nil
+		return handleConfigReadFailure(cfg, err)
 	}
 
 	if err := json.Unmarshal(data, cfg); err != nil {

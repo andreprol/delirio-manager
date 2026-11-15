@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.10.0" // feat: modo session-zero (FEATURE_SESSION0_CAPTURE) -- servico captura/injeta direto na desktop ativa (Winlogon/Default) via OpenWindowStation+SetThreadDesktop, sem precisar do companion -- acesso remoto passa a funcionar na tela de login/bloqueio/UAC/boot, nao so com sessao interativa de pe. Flag desligada por padrao, opt-in por maquina
+	Version            = "1.10.1" // fix: loadConfig sem retry na leitura inicial do config.json causava perda de identidade (machineId/token) e reset de feature flags quando a leitura colidia com escrita externa concorrente (rollout de flag via PowerShell + restart) -- achado em producao 15/11/2026 durante canario do session-zero (item acima, 1.10.0)
 )
 
 func main() {
