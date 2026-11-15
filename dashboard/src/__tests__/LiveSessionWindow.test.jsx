@@ -1093,15 +1093,64 @@ describe('LiveSessionWindow', () => {
   // VERDADE, aberto na tela remota -- ver agent/folderpicker_windows.go).
   // 2ª tentativa depois do André rejeitar a 1ª (14/11/2026, "o botão está
   // sem função").
-  it('clicar no "📂" do painel remoto chama sendBrowseRemoteFolder', async () => {
+  it('clicar no "📂" do painel remoto chama sendBrowseRemoteFolder e FECHA o modal', async () => {
     render(<LiveSessionWindow />)
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
     await openFileBrowserAndWaitListings()
 
-    fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1]) // [0]=local, [1]=remoto
+    act(() => {
+      fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1]) // [0]=local, [1]=remoto
+    })
 
     expect(sendBrowseRemoteFolderMock).toHaveBeenCalledTimes(1)
+    // Achado real AO VIVO (14/11/2026, agent v1.9.9 já com o dialog
+    // forçado pra frente): o dialog nativo passou a abrir e aparecer no
+    // vídeo de verdade, mas o operador nunca via -- o PRÓPRIO
+    // FileBrowserModal (overlay full-screen) cobria o vídeo por baixo
+    // dele. Fechar o modal aqui expõe o vídeo real (e volta o
+    // encaminhamento normal de mouse/teclado, via fileBrowserOpenRef).
+    expect(screen.queryByTestId('file-browser-modal')).not.toBeInTheDocument()
+  })
+
+  // Enquanto o modal está escondido esperando o dialog remoto, o botão
+  // que REABRE manualmente ("📁 Transferir arquivo...", na toolbar fora
+  // do modal) precisa ficar desabilitado -- reabrir na mão cobriria o
+  // vídeo de novo, escondendo o dialog que o operador está tentando ver.
+  it('enquanto aguarda o seletor remoto, o botão "Transferir arquivo..." fica desabilitado', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    act(() => {
+      fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1])
+    })
+
+    expect(screen.getByText('📁 Transferir arquivo...')).toBeDisabled()
+  })
+
+  // Round-trip completo: clicar fecha o modal, a resposta real chegando
+  // REABRE o modal sozinho (senão o operador ficaria preso olhando o
+  // vídeo normal, sem jeito de ver o resultado nem voltar pro navegador
+  // de arquivos).
+  it('remote-folder-picked REABRE o modal depois de fechado pelo clique', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    act(() => {
+      fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1])
+    })
+    expect(screen.queryByTestId('file-browser-modal')).not.toBeInTheDocument()
+
+    act(() => {
+      lastUseLiveSessionArgs.onRemoteFolderPickResult({ type: 'remote-folder-picked', path: 'C:\\Users\\Loja\\Documents', requestId: 1 })
+    })
+
+    expect(screen.getByTestId('file-browser-modal')).toBeInTheDocument()
+    expect(sendListRemoteDirMock).toHaveBeenCalledWith('C:\\Users\\Loja\\Documents')
   })
 
   it('remote-folder-picked navega pro caminho escolhido (chama sendListRemoteDir)', async () => {
@@ -1165,18 +1214,129 @@ describe('LiveSessionWindow', () => {
     act(() => {
       fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1])
     })
-    expect(screen.getByTitle('Aguardando seleção na tela remota...')).toBeDisabled()
+    // Modal fechado enquanto aguarda (ver teste "FECHA o modal" acima) --
+    // o indicativo de espera agora é o botão da TOOLBAR, não mais um
+    // botão dentro do modal (que nem está renderizado nesse momento).
+    expect(screen.queryByTestId('file-browser-modal')).not.toBeInTheDocument()
+    expect(screen.getByText('📁 Transferir arquivo...')).toBeDisabled()
 
     act(() => { vi.advanceTimersByTime(2 * 60 * 1000) })
 
+    // Timeout REABRE o modal (senão o erro ficaria escondido pra sempre
+    // até o operador reabrir manualmente) e mostra o erro dentro dele.
+    expect(screen.getByTestId('file-browser-modal')).toBeInTheDocument()
     expect(screen.getByText(/não respondeu a tempo/i)).toBeInTheDocument()
-    expect(screen.getAllByTitle('Procurar pasta...')[1]).not.toBeDisabled()
+    expect(screen.getByText('📁 Transferir arquivo...')).not.toBeDisabled()
     // Achado 🟠 do code-reviewer: o timeout tem que desarmar a correlação
     // de requestId (abandonBrowseRemoteFolder) -- senão uma resposta real
     // chegando depois ainda navegaria o painel remoto sozinho.
     expect(abandonBrowseRemoteFolderMock).toHaveBeenCalledTimes(1)
     vi.useRealTimers()
   })
+
+  // Achado 🟠 do code-reviewer: browsingRemote só era liberado pela
+  // resposta real ou pelo timeout de 2min -- se a sessão caísse de vez
+  // (status 'error', o único que useLiveSession.js manda quando o
+  // servidor recusou de propósito e NUNCA MAIS reconecta) no meio da
+  // espera, o operador ficava preso até o timeout inteiro estourar, sem
+  // necessidade -- nenhuma resposta viria nunca.
+  it('status "error" enquanto aguarda o seletor remoto recupera na hora, sem esperar o timeout', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    act(() => {
+      fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1])
+    })
+    expect(screen.queryByTestId('file-browser-modal')).not.toBeInTheDocument()
+
+    act(() => { lastUseLiveSessionArgs.onStatusChange('error') })
+
+    expect(screen.getByTestId('file-browser-modal')).toBeInTheDocument()
+    expect(screen.getByText(/conexão.*encerrada/i)).toBeInTheDocument()
+    expect(abandonBrowseRemoteFolderMock).toHaveBeenCalledTimes(1)
+  })
+
+  // Achado 🟡 do code-reviewer: depois do watcher acima reabrir o modal
+  // numa sessão MORTA (status 'error', nunca reconecta), o botão "📂"
+  // remoto (dentro do modal, disabled só por browsingRemote) ficava
+  // clicável de novo -- clicar mandava sendBrowseRemoteFolder pro WS já
+  // fechado (no-op silencioso) e o MESMO watcher disparava de novo no
+  // commit seguinte, fechando+reabrindo o modal num flicker instantâneo
+  // a cada clique.
+  it('clicar no "📂" remoto numa sessão já morta (status error) não faz nada -- sem flicker', async () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+    await openFileBrowserAndWaitListings()
+
+    act(() => { fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1]) })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('error') }) // watcher já recuperou, reabriu o modal
+
+    // 2º achado 🟡 do code-reviewer, mesma rodada: o botão ficava com
+    // APARÊNCIA normal/clicável (disabled só olhava browsingRemote, que já
+    // tinha voltado a false) -- o clique virava no-op silencioso em vez de
+    // simplesmente não poder ser clicado. Verificado ANTES do clique de
+    // novo abaixo, pra provar que é o atributo disabled, não só o handler.
+    expect(screen.getAllByTitle(/Procurar pasta|Sem conexão/)[1]).toBeDisabled()
+
+    sendBrowseRemoteFolderMock.mockClear()
+    abandonBrowseRemoteFolderMock.mockClear()
+
+    act(() => {
+      fireEvent.click(screen.getAllByTitle(/Procurar pasta|Sem conexão/)[1]) // sessão ainda "error" -- clica de novo
+    })
+
+    expect(sendBrowseRemoteFolderMock).not.toHaveBeenCalled()
+    expect(abandonBrowseRemoteFolderMock).not.toHaveBeenCalled()
+    expect(screen.getByTestId('file-browser-modal')).toBeInTheDocument() // continua aberto, sem flicker
+  })
+
+  // Mesmo achado, caso mais comum: blip transitório ('reconnecting'/
+  // 'disconnected') com o modal já aberto e NADA sendo aguardado
+  // (browsingRemote nunca foi true) -- antes deste fix o botão continuava
+  // com aparência normal/clicável durante a queda de conexão inteira.
+  it.each(['reconnecting', 'disconnected', 'error'])(
+    'botão "📂" remoto fica desabilitado (visualmente) enquanto status for "%s", mesmo sem estar aguardando seletor',
+    async (disconnectedStatus) => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+      await openFileBrowserAndWaitListings()
+
+      expect(screen.getAllByTitle('Procurar pasta...')[1]).not.toBeDisabled()
+
+      act(() => { lastUseLiveSessionArgs.onStatusChange(disconnectedStatus) })
+
+      expect(screen.getAllByTitle(/Procurar pasta|Sem conexão/)[1]).toBeDisabled()
+    },
+  )
+
+  // 'reconnecting'/'disconnected' são blips comuns (rede de loja
+  // instável) que o próprio hook já tenta reconectar sozinho com
+  // backoff -- reagir a esses na hora cancelaria o seletor remoto à toa
+  // numa queda de 1-2s que se resolveria sozinha. Só o timeout de 2min
+  // (já testado acima) cobre esses casos, de propósito.
+  it.each(['reconnecting', 'disconnected'])(
+    'status "%s" enquanto aguarda o seletor remoto NÃO recupera na hora (blip comum, deixa o timeout cuidar)',
+    async (transientStatus) => {
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+      act(() => { lastUseLiveSessionArgs.onStatusChange('connected') })
+      await openFileBrowserAndWaitListings()
+
+      act(() => {
+        fireEvent.click(screen.getAllByTitle('Procurar pasta...')[1])
+      })
+      expect(screen.queryByTestId('file-browser-modal')).not.toBeInTheDocument()
+
+      act(() => { lastUseLiveSessionArgs.onStatusChange(transientStatus) })
+
+      expect(screen.queryByTestId('file-browser-modal')).not.toBeInTheDocument()
+      expect(abandonBrowseRemoteFolderMock).not.toHaveBeenCalled()
+    },
+  )
 
   it('mode shadow: botão "Transferir arquivo..." não aparece (não há controle remoto)', () => {
     render(<LiveSessionWindow />)

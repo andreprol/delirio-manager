@@ -70,7 +70,16 @@ function parentWindowsPath(p) {
 // code-reviewer (14/11/2026): Pane tinha crescido pra 11 props soltas,
 // piorado por este diff. Só o painel remoto passa este objeto.
 function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, onBrowse, remoteBrowse }) {
-  const { onGoToPath, onBrowseRemote, browsingRemote } = remoteBrowse || {}
+  const { onGoToPath, onBrowseRemote, browsingRemote, remoteConnected } = remoteBrowse || {}
+  // disabled 🟡 do code-reviewer (14/11/2026): antes só checava
+  // browsingRemote -- numa reconexão passageira ('reconnecting'/
+  // 'disconnected') ou numa sessão já morta ('error') reaberta pelo
+  // watcher em LiveSessionWindow.jsx, o botão aparecia clicável mas
+  // sendBrowseRemoteFolder já virava no-op silencioso (status!=='connected'
+  // em handleBrowseRemote) -- clique sem efeito nenhum, sem aviso.
+  // remoteConnected vem undefined pro painel LOCAL (onGoToPath/
+  // onBrowseRemote também não existem ali), então só afeta o remoto.
+  const disabledRemoteBrowse = !!browsingRemote || remoteConnected === false
   const path = listing?.path || ''
   const entries = listing?.entries || []
   const error = listing?.error || listing?.message
@@ -102,8 +111,12 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, on
           <button
             className="btn btn-secondary"
             onClick={onBrowseRemote || (() => { pathInputRef.current?.focus(); pathInputRef.current?.select() })}
-            disabled={!!browsingRemote}
-            title={browsingRemote ? 'Aguardando seleção na tela remota...' : 'Procurar pasta...'}
+            disabled={disabledRemoteBrowse}
+            title={
+              browsingRemote ? 'Aguardando seleção na tela remota...'
+                : remoteConnected === false ? 'Sem conexão com a sessão ao vivo'
+                : 'Procurar pasta...'
+            }
             style={{ padding: '2px 8px' }}
           >{browsingRemote ? '⏳' : '📂'}</button>
         )}
@@ -153,7 +166,7 @@ function Pane({ testId, title, listing, selected, onSelect, onNavigate, onUp, on
 export function FileBrowserModal({
   localListing, remoteListing, requestLocalDir, requestRemoteDir,
   onSendToRemote, onSendToLocal, isTransferring, onClose, onBrowseLocal,
-  onBrowseRemote, browsingRemote,
+  onBrowseRemote, browsingRemote, remoteConnected,
 }) {
   const [selectedLocal, setSelectedLocal] = useState(null)
   const [selectedRemote, setSelectedRemote] = useState(null)
@@ -271,7 +284,7 @@ export function FileBrowserModal({
             onSelect={(e) => !e.isDir && setSelectedRemote(e.name)}
             onNavigate={navigateRemote}
             onUp={goUpRemote}
-            remoteBrowse={{ onGoToPath: goRemoteTo, onBrowseRemote, browsingRemote }}
+            remoteBrowse={{ onGoToPath: goRemoteTo, onBrowseRemote, browsingRemote, remoteConnected }}
           />
         </div>
       </div>

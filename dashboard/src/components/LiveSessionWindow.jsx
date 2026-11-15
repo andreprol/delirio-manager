@@ -322,30 +322,53 @@ export function LiveSessionWindow() {
     setRemoteListing({ path: msg.path, entries: msg.entries || [] })
   }, [])
 
-  // handleRemoteFolderPickResult: resposta a browse-remote-folder (dialog
-  // nativo "Procurar pasta" aberto NA TELA remota, ver
-  // agent/folderpicker_windows.go) -- "picked" navega pro caminho
-  // escolhido (mesmo mecanismo de qualquer navegação do painel remoto,
-  // via sendListRemoteDirRef), "cancelled" não faz nada (operador desistiu
-  // do dialog, fica onde já estava -- mesmo comportamento do "📂" local),
-  // "error" mostra no PAINEL REMOTO (não no rodapé/toolbar, que fica
-  // escondido atrás do FileBrowserModal full-screen enquanto ele está
-  // aberto) reusando o mesmo campo `error` que uma navegação com falha já
-  // usa.
-  const handleRemoteFolderPickResult = useCallback((msg) => {
+  // recoverFromBrowseRemote: achado 🟡 do code-reviewer -- extrai a
+  // sequência repetida "desarma o timeout pendente + destrava a UI +
+  // reabre o modal" que handleRemoteFolderPickResult/handleBrowseRemote
+  // (timeout)/o novo watcher de desconexão abaixo precisavam das 3.
+  // errorMessage null/undefined (resposta "picked"/"cancelled" de
+  // verdade) não escreve nada em remoteListing -- só os caminhos que
+  // "desistem" de esperar (erro real, timeout, conexão caiu) mostram
+  // mensagem. Não mexe em abandonBrowseRemoteFolder -- cada call site
+  // decide se precisa invalidar a correlação (só quem desiste SEM uma
+  // resposta real combinando precisa, ver comentários nos call sites).
+  const recoverFromBrowseRemote = useCallback((errorMessage) => {
     if (browsingRemoteTimeoutRef.current) {
       clearTimeout(browsingRemoteTimeoutRef.current)
       browsingRemoteTimeoutRef.current = null
     }
     setBrowsingRemote(false)
+    setFileBrowserOpen(true)
+    if (errorMessage) {
+      setRemoteListing((prev) => ({ path: prev?.path || '', error: errorMessage }))
+    }
+  }, [])
+
+  // handleRemoteFolderPickResult: resposta a browse-remote-folder (dialog
+  // nativo "Procurar pasta" aberto NA TELA remota, ver
+  // agent/folderpicker_windows.go). Acontece DEPOIS do FileBrowserModal já
+  // ter sido escondido por handleBrowseRemote (ver comentário lá pro
+  // motivo) -- recoverFromBrowseRemote sempre REABRE o modal, senão o
+  // operador ficaria preso olhando o vídeo normal da sessão sem nenhum
+  // jeito de ver o resultado nem voltar pro navegador de arquivos
+  // sozinho. "picked" navega pro caminho escolhido (mesmo mecanismo de
+  // qualquer navegação do painel remoto, via sendListRemoteDirRef),
+  // "cancelled" não faz nada além de reabrir (operador desistiu do
+  // dialog, fica onde já estava -- mesmo comportamento do "📂" local),
+  // "error" mostra DENTRO do painel remoto. Nunca chama
+  // abandonBrowseRemoteFolder -- esta É a resposta real, o hook
+  // (useLiveSession.js) já validou o requestId sozinho antes de chamar
+  // este callback.
+  const handleRemoteFolderPickResult = useCallback((msg) => {
     if (msg.type === 'remote-folder-pick-error') {
-      setRemoteListing((prev) => ({ path: prev?.path || '', error: msg.message || 'falha ao abrir o seletor de pasta remoto' }))
+      recoverFromBrowseRemote(msg.message || 'falha ao abrir o seletor de pasta remoto')
       return
     }
+    recoverFromBrowseRemote(null)
     if (msg.type === 'remote-folder-picked') {
       sendListRemoteDirRef.current?.(msg.path)
     }
-  }, [])
+  }, [recoverFromBrowseRemote])
 
   const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendBrowseRemoteFolder, abandonBrowseRemoteFolder, sendClipboardGetFile, sendClipboardGetSequence } = useLiveSession({
     serverUrl: session?.serverUrl,
@@ -378,27 +401,50 @@ export function LiveSessionWindow() {
   // dispara o dialog nativo "Procurar pasta" NA TELA remota, equivalente
   // de verdade ao "📂 Procurar pasta..." do painel local (pedido do André,
   // 14/11/2026 -- o botão remoto antes só focava o campo de texto, "sem
-  // função" de verdade). browsingRemoteTimeoutMs: escolher pasta é ação
-  // humana, pode demorar bastante -- generoso de propósito, só existe pra
-  // não deixar o botão "⏳" PRA SEMPRE se o companion nunca responder
-  // (sessão caiu, agent antigo sem suporte ao comando ainda).
+  // função" de verdade).
+  //
+  // setFileBrowserOpen(false): achado real AO VIVO (14/11/2026, mesmo dia
+  // -- André testou com o fix de foreground do agent/v1.9.9 já publicado)
+  // -- o dialog nativo passou a abrir e FICAR VISÍVEL de verdade no vídeo
+  // da sessão (confirmado por print), mas o operador nunca via, porque o
+  // PRÓPRIO FileBrowserModal (overlay local, position:fixed/inset:0/
+  // zIndex:1000) cobre a tela inteira ENQUANTO ESTÁ ABERTO -- inclusive o
+  // canvas de vídeo por baixo dele. Fechar o modal aqui expõe o vídeo de
+  // verdade (e fileBrowserOpenRef, lido pelo onKeyDown/onKeyUp/
+  // onWinKeyCombo/handleDrop acima, já libera o encaminhamento normal de
+  // mouse/teclado assim que fileBrowserOpen vira false -- o operador passa
+  // a controlar o dialog remoto exatamente como qualquer outra interação
+  // normal da sessão ao vivo, sem precisar de nenhum canal novo).
+  // handleRemoteFolderPickResult SEMPRE reabre o modal quando a resposta
+  // chegar (picked/cancelled/error) -- ver comentário lá.
+  //
+  // browsingRemoteTimeoutMs: escolher pasta é ação humana, pode demorar
+  // bastante -- generoso de propósito, só existe pra não deixar o
+  // operador preso olhando o vídeo normal pra sempre se o companion nunca
+  // responder (sessão caiu, agent antigo sem suporte ao comando ainda).
   const browsingRemoteTimeoutMs = 2 * 60 * 1000
   const handleBrowseRemote = useCallback(() => {
-    if (browsingRemote) return
+    // status !== 'connected': achado 🟡 do code-reviewer -- depois do
+    // watcher de status==='error' acima reabrir o modal numa sessão
+    // morta (nunca reconecta, ver comentário lá), o botão "📂" remoto
+    // ficava clicável de novo; clicar fechava o modal, mandava
+    // sendBrowseRemoteFolder (no-op silencioso, WS fechado) e o mesmo
+    // watcher disparava de novo no commit seguinte, fechando+reabrindo
+    // o modal num flicker instantâneo e repetível a cada clique.
+    if (browsingRemote || status !== 'connected') return
     setBrowsingRemote(true)
+    setFileBrowserOpen(false)
     sendBrowseRemoteFolder()
     browsingRemoteTimeoutRef.current = setTimeout(() => {
-      browsingRemoteTimeoutRef.current = null
-      setBrowsingRemote(false)
       // abandonBrowseRemoteFolder: achado 🟠 do code-reviewer -- sem isso,
       // uma resposta REAL chegando bem depois do timeout (operador demorou
       // mais de 2min escolhendo a pasta) ainda bateria o requestId e
       // navegaria o painel remoto sozinho, bem depois do operador já ter
       // visto "não respondeu a tempo".
       abandonBrowseRemoteFolder()
-      setRemoteListing((prev) => ({ path: prev?.path || '', error: 'seletor de pasta remoto não respondeu a tempo' }))
+      recoverFromBrowseRemote('seletor de pasta remoto não respondeu a tempo')
     }, browsingRemoteTimeoutMs)
-  }, [browsingRemote, sendBrowseRemoteFolder, abandonBrowseRemoteFolder])
+  }, [browsingRemote, status, sendBrowseRemoteFolder, abandonBrowseRemoteFolder, recoverFromBrowseRemote])
 
   // Desarma o timeout acima se a janela fechar/desmontar no meio da
   // espera -- mesma cautela de releaseAllHeldKeys/stopRecordingIfActive
@@ -408,6 +454,29 @@ export function LiveSessionWindow() {
       if (browsingRemoteTimeoutRef.current) clearTimeout(browsingRemoteTimeoutRef.current)
     }
   }, [])
+
+  // Achado 🟠 do code-reviewer: browsingRemote só era liberado pela
+  // resposta real OU pelo timeout fixo de 2min -- se a conexão caísse
+  // (companion derrubado, rede da loja soltando) no meio da espera, o
+  // operador ficava preso com o modal escondido e o botão desabilitado
+  // até o timeout inteiro estourar, mesmo num caso em que a sessão nunca
+  // mais vai voltar (só esse, não qualquer blip -- ver status==='error'
+  // abaixo). Reage à MUDANÇA de status pra recuperar na hora nesse caso.
+  //
+  // Só status==='error' (nunca 'disconnected'/'reconnecting'): useLiveSession.js
+  // só manda 'error' quando o PRÓPRIO servidor fechou de propósito com um
+  // TERMINAL_CLOSE_CODE -- aí sim nenhuma resposta vai chegar nunca,
+  // bail imediato é certo. 'disconnected'/'reconnecting' são blips
+  // comuns (rede de loja instável) que o hook já tenta reconectar sozinho
+  // com backoff -- reagir a ESSES na hora cancelaria o seletor remoto à
+  // toa numa queda de 1-2s que se resolveria sozinha, pior experiência
+  // que só confiar no timeout de 2min já existente pra esse caso.
+  useEffect(() => {
+    if (browsingRemote && status === 'error') {
+      abandonBrowseRemoteFolder()
+      recoverFromBrowseRemote('conexão com a sessão foi encerrada enquanto aguardava o seletor de pasta remoto')
+    }
+  }, [status, browsingRemote, abandonBrowseRemoteFolder, recoverFromBrowseRemote])
 
   // Enquanto remoteUser ainda não chegou (session-info é mandado 1x, pode
   // levar um instante ou nunca chegar — agent antigo sem essa versão), o
@@ -1189,9 +1258,14 @@ export function LiveSessionWindow() {
             <button
               className="btn btn-secondary"
               onClick={() => setFileBrowserOpen(true)}
-              disabled={ending || isTransferring || status !== 'connected'}
+              disabled={ending || isTransferring || browsingRemote || status !== 'connected'}
               title={
                 isTransferring ? 'Já existe uma transferência em andamento'
+                  // browsingRemote: o modal está escondido de propósito
+                  // enquanto o dialog nativo remoto espera o operador (ver
+                  // handleBrowseRemote) -- reabrir manualmente agora cobriria
+                  // o vídeo da sessão de novo, escondendo esse dialog.
+                  : browsingRemote ? 'Aguardando o seletor de pasta na tela remota...'
                   : status !== 'connected' ? 'Sem conexão com a sessão ao vivo'
                   : undefined
               }
@@ -1225,6 +1299,7 @@ export function LiveSessionWindow() {
           onBrowseLocal={() => window.electronAPI?.pickLocalFolder()}
           onBrowseRemote={handleBrowseRemote}
           browsingRemote={browsingRemote}
+          remoteConnected={status === 'connected'}
           onSendToRemote={(localFullPath, fileName, destDir) => {
             sendLocalFileToRemote(localFullPath, fileName, destDir)
             setFileBrowserOpen(false)
