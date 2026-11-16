@@ -19,6 +19,7 @@ describeDb('db-pg (Grupo 13: NCR Monitor + service_status)', () => {
   let db;
   const createdMessageIds = [];
   const createdMachineIds = [];
+  const createdCommandIds = [];
 
   beforeAll(() => {
     db = require('./db-pg');
@@ -28,6 +29,13 @@ describeDb('db-pg (Grupo 13: NCR Monitor + service_status)', () => {
     const pool = db.getPool();
     while (createdMessageIds.length) {
       await pool.query('DELETE FROM ncr_monitor_emails WHERE message_id=$1', [createdMessageIds.pop()]);
+    }
+    // commands não tem FK pra machines (mesmo caso do Grupo 2) -- limpeza
+    // ANTES de apagar a máquina, e rastreada desde a criação (não só no
+    // fim do corpo do teste), senão um assert que falhe no meio deixa a
+    // linha órfã na instância dev compartilhada.
+    while (createdCommandIds.length) {
+      await pool.query('DELETE FROM commands WHERE id=$1', [createdCommandIds.pop()]);
     }
     while (createdMachineIds.length) {
       const id = createdMachineIds.pop();
@@ -126,6 +134,7 @@ describeDb('db-pg (Grupo 13: NCR Monitor + service_status)', () => {
     it('traz só quando o commando não foi acked e passou do cutoff', async () => {
       const machineId = await insertMachine(`HOST-${crypto.randomUUID().slice(0, 8)}`);
       const oldCommandId = await db.createCommand(machineId, 'ncr-lookup');
+      createdCommandIds.push(oldCommandId); // rastreado antes de qualquer assert abaixo
       // força created_at pro passado (createCommand usa now())
       await db.getPool().query(`UPDATE commands SET created_at=$1 WHERE id=$2`, [new Date(Date.now() - 3600000).toISOString(), oldCommandId]);
 
@@ -135,10 +144,7 @@ describeDb('db-pg (Grupo 13: NCR Monitor + service_status)', () => {
 
       const cutoff = new Date(Date.now() - 1800000).toISOString(); // 30min atrás
       const timedOut = await db.ncrGetAckTimedOut(cutoff);
-      expect(timedOut.map(t => t.order_ref !== undefined)).toBeTruthy();
       expect(timedOut.some(t => t.command_id === oldCommandId)).toBe(true);
-
-      await db.getPool().query('DELETE FROM commands WHERE id=$1', [oldCommandId]);
     });
   });
 

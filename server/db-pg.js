@@ -7,6 +7,19 @@
 // este arquivo ainda (require('./db') continua apontando pro SQLite até a
 // Fase 4, cutover). Zero risco de produção enquanto isso for verdade.
 //
+// Tamanho do arquivo (142 funções, ~18 domínios de tabela sem relação):
+// o `code-reviewer` do Grupo 14 apontou isso como 🟠 ALTO (SRP de módulo,
+// deveria ser quebrado em arquivos por domínio). Decisão deliberada de NÃO
+// fazer essa quebra agora: este arquivo espelha `server/db.js` 1:1 de
+// propósito, o que facilitou toda comparação linha-a-linha dos 14 reviews
+// desta fase -- separar agora, no meio da Fase 2/antes da Fase 3 (ETL),
+// seria um refactor grande e arriscado (mover ~2300 linhas entre arquivos)
+// sem nenhum ganho funcional, já que nada usa este módulo em produção
+// ainda. Fica como recomendação pra Fase 4/5 (cutover/cleanup), quando o
+// arquivo for de fato ativado -- nesse momento, quebrar por domínio
+// (db/machines.js, db/zamak.js, db/pontoRemoto.js...) com um index.js
+// agregando os exports é a hora certa.
+//
 // Grupo 1 (machines + metrics) -- 17 das 18 funções do domínio. `registerMachine`
 // fica de fora de propósito: faz re-key de UUID + merge de duplicatas usando
 // `pragma foreign_keys=OFF` do SQLite, que não tem equivalente direto em
@@ -2144,6 +2157,14 @@ async function createRemoteEmployee({ cpf, name, store, passwordHash }) {
   return rows[0];
 }
 
+// `SELECT *` devolve password_hash junto -- IGUAL ao original, de propósito,
+// não um descuido do port: o único caller real (routes/pontoRemoto.js, rota
+// de login) usa `employee.password_hash` direto pra `verifyPassword()` na
+// MESMA chamada -- tirar a coluna daqui quebraria o login assim que a
+// Fase 4 trocar pro require('./db-pg'). Confirmado que o hash nunca escapa
+// num response HTTP: todo `res.json` que usa `req.employee` (vindo de
+// getRemoteEmployeeById via middleware/employeeAuth.js) seleciona campos
+// específicos (`{ name, store }`), nunca serializa o objeto inteiro.
 async function getRemoteEmployeeByCpf(cpf) {
   const { rows } = await getPool().query('SELECT * FROM remote_employees WHERE cpf = $1', [cpf]);
   return rows[0];

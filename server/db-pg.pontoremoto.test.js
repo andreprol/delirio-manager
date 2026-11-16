@@ -69,7 +69,9 @@ describeDb('db-pg (Grupo 14: Ponto Remoto)', () => {
       const list = await db.listRemoteEmployees();
       const names = list.filter(e => e.name === 'Zeta' || e.name === 'Alfa').map(e => e.name);
       expect(names.indexOf('Alfa')).toBeLessThan(names.indexOf('Zeta'));
-      expect(list[0]).not.toHaveProperty('password_hash');
+      // list[0] seria uma linha qualquer da instância dev compartilhada,
+      // não necessariamente Zeta/Alfa -- checa a lista inteira de verdade.
+      expect(list.every(e => !('password_hash' in e))).toBe(true);
     });
 
     it('setRemoteEmployeeActive desativa e atualiza updated_at', async () => {
