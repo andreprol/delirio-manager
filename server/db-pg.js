@@ -62,6 +62,18 @@
 // tradução. `INSERT OR REPLACE` -> `ON CONFLICT DO UPDATE` (freshdesk_cache,
 // troca o id no SQLite, preserva no Postgres -- sem efeito aqui).
 //
+// Grupo 11 (métricas horárias + eventos offline + reading-miss) -- 2
+// traduções novas: `strftime('%s','now')` -> `EXTRACT(EPOCH FROM NOW())`;
+// e `HAVING <alias do SELECT>` do SQLite NÃO funciona em Postgres
+// (confirmado ao vivo: "column does not exist") -- precisa repetir a
+// expressão agregada completa dentro do HAVING, só ORDER BY aceita alias.
+//
+// Grupo 12 (zamak_*, 5 tabelas) -- achado bug real no original:
+// `getZamakDiscrepancies` consultava `zamak_device_cache` (sem a coluna
+// `detected_at` que usava no ORDER BY) em vez de `zamak_discrepancies`;
+// função exportada mas nunca chamada em nenhum route/service (confirmado
+// via grep), por isso nunca deu erro em produção. Corrigido no port.
+//
 // Regras de tradução (mesmas de todo o arquivo, ver migrations/ pro schema):
 //   - `?` -> `$1,$2...`
 //   - `.prepare(sql).get/all/run()` -> `await pool.query(sql, params)`, lendo
@@ -1509,6 +1521,484 @@ async function getStoresOverview() {
   return { countMap, scoreMap };
 }
 
+// ── Métricas horárias ─────────────────────────────────────────────────────────
+
+// month = "YYYY-MM" -> [inicio, fim) do mês em epoch (segundos) ou ISO,
+// conforme a coluna que a query compara. Usado por 5 funções deste grupo
+// (mesma lógica de corte de mês repetida originalmente em cada uma).
+function monthRangeEpoch(month) {
+  const [year, mon] = month.split('-').map(Number);
+  return {
+    start: Math.floor(new Date(year, mon - 1, 1).getTime() / 1000),
+    end: Math.floor(new Date(year, mon, 1).getTime() / 1000),
+  };
+}
+
+function monthRangeIso(month) {
+  const [year, mon] = month.split('-').map(Number);
+  return {
+    start: new Date(year, mon - 1, 1).toISOString(),
+    end: new Date(year, mon, 1).toISOString(),
+  };
+}
+
+async function insertMetricsHourly(machineId, { snapshotTs, cpuPct, ramPct, diskPct, cpuTempC }) {
+  const hourOfDay = new Date(snapshotTs * 1000).getUTCHours();
+  const localHour = new Date(snapshotTs * 1000).getHours();
+  const hourWeight = (localHour >= 8 && localHour < 22) ? 2 : 1;
+  const pool = getPool();
+  await pool.query(
+    `INSERT INTO machine_metrics_hourly
+      (machine_id, snapshot_ts, hour_of_day, hour_weight, cpu_pct, ram_pct, disk_pct, cpu_temp_c)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [machineId, snapshotTs, hourOfDay, hourWeight, cpuPct ?? 0, ramPct ?? 0, diskPct ?? 0, cpuTempC ?? -1]
+  );
+  // datetime('now') do SQLite -> (now() AT TIME ZONE 'utc')::text, mesma
+  // tradução já usada no schema (migrations/1794791426884) pros defaults.
+  await pool.query(`UPDATE machines SET last_hourly_at = (now() AT TIME ZONE 'utc')::text WHERE id = $1`, [machineId]);
+}
+
+// Retorna média ponderada por hora de todas as máquinas da loja no mês informado.
+// month = "2026-07"
+async function getWeightedMetricsForStore(location, month) {
+  const { start, end } = monthRangeEpoch(month);
+
+  const { rows } = await getPool().query(
+    `SELECT
+      SUM(mmh.cpu_pct  * mmh.hour_weight) / NULLIF(SUM(mmh.hour_weight), 0) AS avg_cpu_pct,
+      SUM(mmh.ram_pct  * mmh.hour_weight) / NULLIF(SUM(mmh.hour_weight), 0) AS avg_ram_pct,
+      SUM(mmh.disk_pct * mmh.hour_weight) / NULLIF(SUM(mmh.hour_weight), 0) AS avg_disk_pct,
+      SUM(CASE WHEN mmh.cpu_temp_c > 0 THEN mmh.cpu_temp_c * mmh.hour_weight ELSE 0 END)
+        / NULLIF(SUM(CASE WHEN mmh.cpu_temp_c > 0 THEN mmh.hour_weight ELSE 0 END), 0) AS avg_cpu_temp,
+      COUNT(*) AS total_readings
+     FROM machine_metrics_hourly mmh
+     JOIN machines m ON m.id = mmh.machine_id
+     WHERE m.location = $1
+       AND mmh.snapshot_ts >= $2 AND mmh.snapshot_ts < $3`,
+    [location, start, end]
+  );
+  // Agregado sem GROUP BY sempre devolve exatamente 1 linha no Postgres
+  // (mesmo sem nenhuma linha correspondente -- COUNT vira 0, SUM vira NULL),
+  // então `rows[0]` nunca é undefined aqui; sem fallback "row ausente".
+  const row = rows[0];
+  return { ...row, total_readings: Number(row.total_readings) };
+}
+
+// ── Eventos offline ───────────────────────────────────────────────────────────
+
+async function insertOfflineEvent(machineId, { offlineAt, onlineAt, durationMin }) {
+  await getPool().query(
+    `INSERT INTO machine_offline_events (machine_id, offline_at, online_at, duration_min)
+     VALUES ($1, $2, $3, $4)`,
+    [machineId, offlineAt, onlineAt, durationMin]
+  );
+}
+
+// Retorna contagem total de eventos offline da loja no mês informado.
+async function getOfflineEventsForStore(location, month) {
+  const { start, end } = monthRangeIso(month);
+
+  return countQuery(
+    `SELECT COUNT(*) AS c
+     FROM machine_offline_events moe
+     JOIN machines m ON m.id = moe.machine_id
+     WHERE m.location = $1
+       AND moe.offline_at >= $2 AND moe.offline_at < $3`,
+    [location, start, end]
+  );
+}
+
+// ── Leituras horárias perdidas ────────────────────────────────────────────────
+
+// `INSERT OR IGNORE` do original não evita conflito real HOJE --
+// reading_miss_events só tem índices NÃO-únicos em (machine_id,
+// expected_hour) e (expected_hour) (confirmado no schema, migrations/
+// 1794791426884). `ON CONFLICT DO NOTHING` sem target preserva o mesmo
+// comportamento atual (equivalente a um INSERT comum, já que não há
+// nenhuma constraint única pra colidir) -- não é bug introduzido pelo
+// port, já era assim no SQLite original. Decidir se deveria existir uma
+// UNIQUE aqui está fora do escopo desta migração.
+async function insertReadingMiss(machineId, { expectedHour, machineStatus, agentVersion, lastHeartbeat, diagnosis }) {
+  await getPool().query(
+    `INSERT INTO reading_miss_events
+      (machine_id, expected_hour, machine_status, agent_version, last_heartbeat, diagnosis)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT DO NOTHING`,
+    [machineId, expectedHour, machineStatus, agentVersion || null, lastHeartbeat || null, diagnosis || null]
+  );
+}
+
+async function getReadingMissesForDate(dateStr) {
+  const dayStart = Math.floor(new Date(dateStr + 'T00:00:00Z').getTime() / 1000);
+  const dayEnd = dayStart + 86400;
+  const { rows } = await getPool().query(
+    `SELECT rme.machine_id, rme.expected_hour, rme.machine_status,
+            rme.agent_version, rme.last_heartbeat, rme.diagnosis,
+            m.hostname, m.location, m.display_name
+     FROM reading_miss_events rme
+     JOIN machines m ON m.id = rme.machine_id
+     WHERE rme.expected_hour >= $1 AND rme.expected_hour < $2
+     ORDER BY rme.machine_status DESC, m.location, m.hostname, rme.expected_hour`,
+    [dayStart, dayEnd]
+  );
+  return rows;
+}
+
+async function getReadingMissesForMonth(storeName, month) {
+  const { start, end } = monthRangeEpoch(month);
+  const { rows } = await getPool().query(
+    `SELECT m.hostname, m.display_name,
+            COUNT(*) AS total_misses,
+            SUM(CASE WHEN rme.machine_status = 'online'  THEN 1 ELSE 0 END) AS online_misses,
+            SUM(CASE WHEN rme.machine_status = 'offline' THEN 1 ELSE 0 END) AS offline_misses
+     FROM reading_miss_events rme
+     JOIN machines m ON m.id = rme.machine_id
+     WHERE m.location = $1
+       AND rme.expected_hour >= $2 AND rme.expected_hour < $3
+     GROUP BY m.id
+     ORDER BY online_misses DESC, total_misses DESC`,
+    [storeName, start, end]
+  );
+  return rows.map(r => ({
+    ...r,
+    total_misses: Number(r.total_misses),
+    online_misses: Number(r.online_misses),
+    offline_misses: Number(r.offline_misses),
+  }));
+}
+
+// Máquinas online sem leitura há mais de N horas — usado pelo monitor.
+// 2 traduções SQLite-específicas aqui: `strftime('%s','now')` ->
+// `EXTRACT(EPOCH FROM NOW())`; e o `HAVING last_snapshot_ts ...` do
+// original referenciava o ALIAS do SELECT -- SQLite permite isso, Postgres
+// NÃO (confirmado ao vivo: "column does not exist") -- precisa repetir a
+// expressão agregada completa (MAX(h.snapshot_ts)) dentro do HAVING.
+async function getMachinesOnlineMissingReading(sinceTs) {
+  const { rows } = await getPool().query(
+    `SELECT m.id, m.hostname, m.display_name, m.location, m.status,
+            m.agent_version, m.last_seen,
+            MAX(h.snapshot_ts) AS last_snapshot_ts,
+            COUNT(h.id)        AS readings_24h
+     FROM machines m
+     LEFT JOIN machine_metrics_hourly h
+       ON h.machine_id = m.id AND h.snapshot_ts >= EXTRACT(EPOCH FROM NOW())::bigint - 86400
+     WHERE m.status = 'online'
+     GROUP BY m.id
+     HAVING MAX(h.snapshot_ts) IS NULL OR MAX(h.snapshot_ts) < $1
+     ORDER BY last_snapshot_ts ASC NULLS FIRST`,
+    [sinceTs]
+  );
+  return rows.map(r => ({ ...r, readings_24h: Number(r.readings_24h) }));
+}
+
+// Média mensal de hardware por máquina (usa machine_metrics_hourly, não metrics 24h)
+async function getMachineDataForMonth(storeName, month) {
+  const { start, end } = monthRangeEpoch(month);
+
+  const { rows } = await getPool().query(
+    `SELECT m.id, m.hostname, m.status,
+            AVG(h.cpu_pct)  AS avg_cpu,
+            AVG(h.ram_pct)  AS avg_ram,
+            AVG(CASE WHEN h.cpu_temp_c > 0 THEN h.cpu_temp_c ELSE NULL END) AS avg_temp,
+            AVG(h.disk_pct) AS avg_disk_pct,
+            COUNT(h.id)     AS reading_count
+     FROM machines m
+     LEFT JOIN machine_metrics_hourly h
+       ON h.machine_id = m.id
+       AND h.snapshot_ts >= $1 AND h.snapshot_ts < $2
+     WHERE m.location = $3
+     GROUP BY m.id
+     ORDER BY m.hostname`,
+    [start, end, storeName]
+  );
+  return rows.map(r => ({ ...r, reading_count: Number(r.reading_count) }));
+}
+
+// Máquinas sem medição horária no mês (offline total ou agente desatualizado)
+async function getMachinesWithoutMetrics(storeName, month) {
+  const { start, end } = monthRangeEpoch(month);
+
+  const { rows } = await getPool().query(
+    `SELECT m.id, m.hostname, m.status
+     FROM machines m
+     WHERE m.location = $1
+       AND NOT EXISTS (
+         SELECT 1 FROM machine_metrics_hourly h
+         WHERE h.machine_id = m.id
+           AND h.snapshot_ts >= $2 AND h.snapshot_ts < $3
+       )
+     ORDER BY m.hostname`,
+    [storeName, start, end]
+  );
+  return rows;
+}
+
+// Resumo de medições das últimas 24h — para email diário de verificação do agente
+async function getDailyMetricsSummary() {
+  const since = Math.floor(Date.now() / 1000) - 86400;
+  const { rows } = await getPool().query(
+    `SELECT m.id, m.hostname, m.location, m.status, m.agent_version, m.last_hourly_at,
+            COUNT(h.id) as readings_24h
+     FROM machines m
+     LEFT JOIN machine_metrics_hourly h
+       ON h.machine_id = m.id AND h.snapshot_ts >= $1
+     GROUP BY m.id
+     ORDER BY m.location, readings_24h ASC, m.hostname`,
+    [since]
+  );
+  return rows.map(r => ({ ...r, readings_24h: Number(r.readings_24h) }));
+}
+
+// Diagnóstico de snapshots horários — última medição por máquina
+async function getHourlyMetricsDiag() {
+  const since = Math.floor(Date.now() / 1000) - 86400;
+  const { rows } = await getPool().query(
+    `SELECT m.id, m.hostname, m.location, m.status, m.agent_version, m.last_hourly_at,
+            COUNT(h.id) as readings_24h,
+            MAX(h.snapshot_ts) as last_snapshot_ts
+     FROM machines m
+     LEFT JOIN machine_metrics_hourly h
+       ON h.machine_id = m.id AND h.snapshot_ts >= $1
+     GROUP BY m.id
+     ORDER BY readings_24h ASC, m.location, m.hostname`,
+    [since]
+  );
+  return rows.map(r => ({ ...r, readings_24h: Number(r.readings_24h) }));
+}
+
+// ── Zamak / N-able N-sight cache ────────────────────────────────────────────────
+
+async function upsertZamakDevices(rows) {
+  await withTransaction(async (client) => {
+    for (const r of rows) {
+      await client.query(
+        `INSERT INTO zamak_device_cache
+          (device_id, site_id, site_name, store_name, device_name, device_type, status,
+           os_type, ip_address, has_web_protection,
+           patch_critical, patch_high, patch_medium, patch_total,
+           threats_active, failing_checks, dm_machine_id, dm_hostname, cached_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         ON CONFLICT (device_id) DO UPDATE SET
+           site_id = EXCLUDED.site_id, site_name = EXCLUDED.site_name,
+           store_name = EXCLUDED.store_name, device_name = EXCLUDED.device_name,
+           device_type = EXCLUDED.device_type, status = EXCLUDED.status,
+           os_type = EXCLUDED.os_type, ip_address = EXCLUDED.ip_address,
+           has_web_protection = EXCLUDED.has_web_protection,
+           patch_critical = EXCLUDED.patch_critical, patch_high = EXCLUDED.patch_high,
+           patch_medium = EXCLUDED.patch_medium, patch_total = EXCLUDED.patch_total,
+           threats_active = EXCLUDED.threats_active, failing_checks = EXCLUDED.failing_checks,
+           dm_machine_id = EXCLUDED.dm_machine_id, dm_hostname = EXCLUDED.dm_hostname,
+           cached_at = EXCLUDED.cached_at`,
+        [
+          r.device_id, r.site_id, r.site_name, r.store_name, r.device_name,
+          r.device_type, r.status, r.os_type, r.ip_address,
+          r.has_web_protection ? 1 : 0,
+          r.patch_critical, r.patch_high, r.patch_medium, r.patch_total,
+          r.threats_active, r.failing_checks,
+          r.dm_machine_id || null, r.dm_hostname || null, r.cached_at,
+        ]
+      );
+    }
+  });
+}
+
+// DELETE + INSERTs envolvidos na MESMA transação (melhoria deliberada: o
+// original rodava o DELETE como statement solto FORA da `.transaction()`
+// do insert -- se o loop de insert falhasse no meio, a tabela ficava
+// vazia sem rollback possível, porque o DELETE já tinha "commitado" de
+// graça). replaceZamakThreats/Performance/Outages abaixo seguem o mesmo padrão.
+async function replaceZamakDiscrepancies(rows) {
+  await withTransaction(async (client) => {
+    await client.query('DELETE FROM zamak_discrepancies');
+    for (const r of rows) {
+      await client.query(
+        `INSERT INTO zamak_discrepancies
+          (type, device_name, store_name, zamak_device_id, dm_machine_id, detail, detected_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [r.type, r.device_name, r.store_name || null, r.zamak_device_id || null, r.dm_machine_id || null, r.detail || null, r.detected_at]
+      );
+    }
+  });
+}
+
+// Status consolidado de ambas as integrações (Zamak + Freshdesk)
+async function getIntegrationsStatus() {
+  const now = Date.now();
+  const pool = getPool();
+  let zamakLast = null, freshdeskLast = null;
+  try {
+    const { rows } = await pool.query(`SELECT MAX(cached_at) as t FROM zamak_device_cache`);
+    zamakLast = rows[0]?.t || null;
+  } catch (_) { /* mesma defesa do original -- tolera tabela ausente */ }
+  try {
+    const { rows } = await pool.query(`SELECT MAX(cached_at) as t FROM freshdesk_cache`);
+    freshdeskLast = rows[0]?.t || null;
+  } catch (_) { /* idem */ }
+
+  const ageMin = (ts) => ts ? (now - new Date(ts).getTime()) / 60000 : null;
+  const zamakAge = ageMin(zamakLast);
+  const freshdeskAge = ageMin(freshdeskLast);
+
+  return {
+    zamak:     { lastSync: zamakLast,     ageMinutes: zamakAge,     ok: zamakAge     !== null && zamakAge     < 360 },
+    freshdesk: { lastSync: freshdeskLast, ageMinutes: freshdeskAge, ok: freshdeskAge !== null && freshdeskAge < 240 },
+  };
+}
+
+// Devices conhecidos no cache — evita re-discovery na API durante sync diário
+async function getZamakCachedDeviceIds() {
+  const { rows } = await getPool().query(
+    `SELECT device_id, device_name, store_name FROM zamak_device_cache WHERE device_id IS NOT NULL`
+  );
+  return rows;
+}
+
+// Retorna quantas horas desde o último sync (Infinity se nunca sincronizou)
+async function getZamakCacheAge() {
+  const { rows } = await getPool().query(
+    `SELECT cached_at FROM zamak_device_cache ORDER BY cached_at DESC LIMIT 1`
+  );
+  const row = rows[0];
+  if (!row) return Infinity;
+  return (Date.now() - new Date(row.cached_at).getTime()) / 3600000;
+}
+
+// Resumo por loja: agregados de patches, ameaças e failing checks. Todos os
+// 7 campos são COUNT/SUM -- todos precisam de Number() (bigint-como-string
+// do Postgres). Number(null) é 0 em JS, então o fallback funciona mesmo sem
+// `|| 0` por campo.
+async function getZamakSummaryForStore(storeName) {
+  const { rows } = await getPool().query(
+    `SELECT
+      COUNT(*) AS total_devices,
+      SUM(patch_critical) AS patch_critical,
+      SUM(patch_high)     AS patch_high,
+      SUM(patch_total)    AS patch_total,
+      SUM(threats_active) AS threats_active,
+      SUM(failing_checks) AS failing_checks,
+      SUM(CASE WHEN status IN ('offline','overdue','Error') THEN 1 ELSE 0 END) AS devices_offline
+     FROM zamak_device_cache
+     WHERE store_name = $1`,
+    [storeName]
+  );
+  const row = rows[0];
+  if (!row) {
+    return {
+      total_devices: 0, patch_critical: 0, patch_high: 0, patch_total: 0,
+      threats_active: 0, failing_checks: 0, devices_offline: 0,
+    };
+  }
+  return {
+    total_devices: Number(row.total_devices),
+    patch_critical: Number(row.patch_critical),
+    patch_high: Number(row.patch_high),
+    patch_total: Number(row.patch_total),
+    threats_active: Number(row.threats_active),
+    failing_checks: Number(row.failing_checks),
+    devices_offline: Number(row.devices_offline),
+  };
+}
+
+// Bug real achado no original: a função consultava `zamak_device_cache`
+// (que nem tem coluna `detected_at`) em vez de `zamak_discrepancies` --
+// exportada mas NUNCA chamada em nenhum route/service (confirmado via
+// grep), por isso o erro nunca apareceu em produção (SQLite também daria
+// "no such column" se alguém chamasse). Corrigido no port pra consultar a
+// tabela certa.
+async function getZamakDiscrepancies() {
+  const { rows } = await getPool().query(
+    `SELECT * FROM zamak_discrepancies ORDER BY detected_at DESC`
+  );
+  return rows;
+}
+
+async function replaceZamakThreats(rows) {
+  await withTransaction(async (client) => {
+    await client.query('DELETE FROM zamak_threats');
+    for (const r of rows) {
+      await client.query(
+        `INSERT INTO zamak_threats (device_id, device_name, store_name, threat_name, category, last_status, cached_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [r.device_id, r.device_name, r.store_name, r.threat_name, r.category, r.last_status, r.cached_at]
+      );
+    }
+  });
+}
+
+async function getZamakThreats(storeName) {
+  if (storeName) {
+    const { rows } = await getPool().query(
+      `SELECT * FROM zamak_threats WHERE store_name = $1 ORDER BY device_name, threat_name`, [storeName]
+    );
+    return rows;
+  }
+  const { rows } = await getPool().query(`SELECT * FROM zamak_threats ORDER BY store_name, device_name, threat_name`);
+  return rows;
+}
+
+async function replaceZamakPerformance(rows) {
+  await withTransaction(async (client) => {
+    await client.query('DELETE FROM zamak_performance');
+    for (const r of rows) {
+      await client.query(
+        `INSERT INTO zamak_performance
+          (device_id, device_name, store_name, cpu_avg, cpu_peak, ram_total_mb, ram_avail_avg, disk_time_avg, cached_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          r.device_id, r.device_name, r.store_name,
+          r.cpu_avg ?? null, r.cpu_peak ?? null,
+          r.ram_total_mb ?? null, r.ram_avail_avg ?? null,
+          r.disk_time_avg ?? null, r.cached_at,
+        ]
+      );
+    }
+  });
+}
+
+async function getZamakPerformance(storeName) {
+  if (storeName) {
+    const { rows } = await getPool().query(
+      `SELECT * FROM zamak_performance WHERE store_name = $1 ORDER BY device_name`, [storeName]
+    );
+    return rows;
+  }
+  const { rows } = await getPool().query(`SELECT * FROM zamak_performance ORDER BY store_name, device_name`);
+  return rows;
+}
+
+// `outage_id TEXT UNIQUE` é nullable -- Postgres (igual SQLite) trata NULL
+// como distinto em constraint UNIQUE, então linhas sem outage_id nunca
+// "conflitam" e sempre inserem, igual o INSERT OR IGNORE original.
+async function replaceZamakOutages(rows) {
+  await withTransaction(async (client) => {
+    await client.query('DELETE FROM zamak_outages');
+    for (const r of rows) {
+      await client.query(
+        `INSERT INTO zamak_outages
+          (outage_id, device_id, device_name, store_name, reason, state, utc_start, utc_end, duration_min, check_description, cached_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (outage_id) DO NOTHING`,
+        [
+          r.outage_id, r.device_id, r.device_name, r.store_name,
+          r.reason, r.state, r.utc_start, r.utc_end ?? null,
+          r.duration_min ?? null, r.check_description ?? null, r.cached_at,
+        ]
+      );
+    }
+  });
+}
+
+async function getZamakOutages(storeName) {
+  if (storeName) {
+    const { rows } = await getPool().query(
+      `SELECT * FROM zamak_outages WHERE store_name = $1 ORDER BY utc_start DESC`, [storeName]
+    );
+    return rows;
+  }
+  const { rows } = await getPool().query(`SELECT * FROM zamak_outages ORDER BY utc_start DESC`);
+  return rows;
+}
+
 module.exports = {
   getPool, closePool, withTransaction,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
@@ -1539,4 +2029,13 @@ module.exports = {
   getFreshdeskCacheAge, upsertFreshdeskTickets, getFreshdeskActive, getFreshdeskClosed,
   saveReportRun, getReportHistory, getRecentReportRun,
   saveFeedback, getRecentFeedback, getStoresOverview,
+  insertMetricsHourly, getWeightedMetricsForStore,
+  insertOfflineEvent, getOfflineEventsForStore,
+  insertReadingMiss, getReadingMissesForDate, getReadingMissesForMonth,
+  getMachinesOnlineMissingReading, getMachineDataForMonth, getMachinesWithoutMetrics,
+  getDailyMetricsSummary, getHourlyMetricsDiag,
+  upsertZamakDevices, replaceZamakDiscrepancies, getIntegrationsStatus,
+  getZamakCachedDeviceIds, getZamakCacheAge, getZamakSummaryForStore, getZamakDiscrepancies,
+  replaceZamakThreats, getZamakThreats, replaceZamakPerformance, getZamakPerformance,
+  replaceZamakOutages, getZamakOutages,
 };
