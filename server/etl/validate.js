@@ -15,7 +15,7 @@ const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const { Pool } = require('pg');
-const { TABLE_ORDER } = require('./sqlite-to-pg');
+const { TABLE_ORDER, countRows } = require('./sqlite-to-pg');
 
 function parseArgs(argv) {
   const args = { sqlitePath: null };
@@ -27,16 +27,19 @@ function parseArgs(argv) {
 }
 
 function sha256(value) {
-  return crypto.createHash('sha256').update(String(value ?? '')).digest('hex');
+  // NULL precisa de um marcador que nenhum cpf/password_hash real produziria --
+  // String(null ?? '') === '' colidiria com uma string vazia real e esconderia
+  // divergência exatamente nos 2 campos sensíveis que esta checagem existe pra proteger.
+  const marker = value === null || value === undefined ? '\u0000NULL\u0000' : String(value);
+  return crypto.createHash('sha256').update(marker).digest('hex');
 }
 
 async function validateCounts(sqlite, pool) {
   console.log('--- contagem por tabela ---');
   const mismatches = [];
   for (const table of TABLE_ORDER) {
-    const src = sqlite.prepare(`SELECT COUNT(*) AS c FROM "${table}"`).get().c;
-    const { rows } = await pool.query(`SELECT COUNT(*) AS c FROM "${table}"`);
-    const dst = Number(rows[0].c);
+    const src = await countRows(sqlite, table);
+    const dst = await countRows(pool, table);
     const ok = src === dst;
     if (!ok) mismatches.push({ table, src, dst });
     console.log(`${table.padEnd(28)} origem=${String(src).padStart(10)}  destino=${String(dst).padStart(10)}  ${ok ? 'OK' : '<< DIFERENTE'}`);

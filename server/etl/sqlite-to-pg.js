@@ -20,6 +20,15 @@
 //   node server/etl/sqlite-to-pg.js --dry-run --sqlite-path=<copia.db>
 //   node server/etl/sqlite-to-pg.js --load --truncate-first --sqlite-path=<copia.db>
 // DATABASE_URL precisa estar no ambiente (ver server/.env.postgres.example).
+//
+// Recuperação após queda no meio da carga: cada tabela é carregada em
+// batches autocommit independentes (sem transação cobrindo a tabela
+// inteira), então uma queda no meio deixa ESSA tabela parcialmente
+// carregada. Toda tabela tem PK (ver server/migrations/1794791426884_*),
+// então um rerun SEM --truncate-first falha alto com violação de PK em vez
+// de duplicar silenciosamente -- mas a recuperação correta é sempre rodar
+// de novo com --truncate-first (reseta as 38 tabelas e recarrega do zero),
+// nunca tentar "completar" uma tabela parcial manualmente.
 
 const path = require('path');
 const Database = require('better-sqlite3');
@@ -43,6 +52,19 @@ const TABLE_ORDER = [
   'watchlist_matches',
 ];
 
+function validateArgs(args) {
+  if (!args.mode) throw new Error('passe --dry-run ou --load');
+  if (!args.sqlitePath) throw new Error('passe --sqlite-path=<caminho da cópia do .db>');
+  if (args.onlyTable && !TABLE_ORDER.includes(args.onlyTable)) {
+    throw new Error(`--table="${args.onlyTable}" não é uma tabela conhecida (ver TABLE_ORDER)`);
+  }
+  if (args.onlyTable && args.truncateFirst) {
+    throw new Error('--truncate-first + --table= não é seguro: truncate sempre afeta as 38 tabelas, ' +
+      'apagaria as outras 37 sem recarregá-las. Rode --truncate-first sem --table= (carga completa), ' +
+      'ou --table= sozinho pra recarregar uma tabela específica sem truncar nada.');
+  }
+}
+
 function parseArgs(argv) {
   const args = { mode: null, truncateFirst: false, sqlitePath: null, onlyTable: null };
   for (const raw of argv.slice(2)) {
@@ -53,8 +75,7 @@ function parseArgs(argv) {
     else if (raw.startsWith('--table=')) args.onlyTable = raw.slice('--table='.length);
     else throw new Error(`argumento desconhecido: ${raw}`);
   }
-  if (!args.mode) throw new Error('passe --dry-run ou --load');
-  if (!args.sqlitePath) throw new Error('passe --sqlite-path=<caminho da cópia do .db>');
+  validateArgs(args);
   return args;
 }
 
@@ -165,9 +186,11 @@ async function loadTable(sqlite, pool, table) {
       const nextVal = Number(rows[0].max_id) + 1;
       await client.query('SELECT setval(pg_get_serial_sequence($1,$2), $3, false)', [table, identityColumn, nextVal]);
     }
-  } finally {
-    client.release();
+  } catch (err) {
+    client.release(err); // descarta o client (não devolve pro pool) em erro de conexão, não só de dado
+    throw err;
   }
+  client.release();
   console.log(`${table.padEnd(28)} ${total} linhas carregadas`);
   return total;
 }
@@ -208,4 +231,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { TABLE_ORDER, parseArgs, assertSameColumnSet, sqlitePkColumns, sqliteColumnNames };
+module.exports = { TABLE_ORDER, parseArgs, validateArgs, assertSameColumnSet, sqlitePkColumns, sqliteColumnNames, countRows };
