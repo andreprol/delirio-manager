@@ -7,7 +7,10 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "jest --testEnvironment node",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "migrate:up": "node-pg-migrate up",
+    "migrate:down": "node-pg-migrate down",
+    "migrate:create": "node-pg-migrate create -j sql"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -23,8 +26,10 @@
     "docx": "^9.7.1",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
+    "node-pg-migrate": "^9.0.0",
     "nodemailer": "^8.0.10",
     "pdfkit": "^0.15.0",
+    "pg": "^8.23.1",
     "qrcode": "^1.5.4",
     "ws": "^8.17.1"
   }
