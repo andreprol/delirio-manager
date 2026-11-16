@@ -79,6 +79,11 @@
 // aqui já são sempre `toISOString()` (confirmado nos call sites),
 // comparação direta de string TEXT basta, sem função de data nenhuma.
 //
+// Grupo 14 (Ponto Remoto REP-P/REP-A) -- ÚLTIMO grupo do port (14/14).
+// Tradução 1:1, sem padrão novo. Dado sensível (cpf, password_hash,
+// lat/lng) -- LGPD, cuidado redobrado em qualquer teste/log futuro desta
+// seção pra nunca imprimir valor real.
+//
 // Regras de tradução (mesmas de todo o arquivo, ver migrations/ pro schema):
 //   - `?` -> `$1,$2...`
 //   - `.prepare(sql).get/all/run()` -> `await pool.query(sql, params)`, lendo
@@ -2119,6 +2124,111 @@ async function getServiceStatusBOH() {
   return rows;
 }
 
+// ── Ponto Remoto (REP-P/REP-A) ────────────────────────────────────────────────
+// Funcionários elegíveis batem ponto via celular/web, fora do fluxo dos
+// relógios Henry Hexa físicos (REP-C). remote_time_entries é append-only por
+// design — nenhuma função aqui faz UPDATE/DELETE num registro já criado; uma
+// correção administrativa sempre insere uma nova linha referenciando a
+// original (corrects_id), preservando a trilha de auditoria exigida pela
+// Portaria MTP 671/2021. Dado sensível (cpf, password_hash, lat/lng) --
+// nenhum teste/comentário deste grupo deve imprimir valor real nenhum.
+// Último grupo do port (14/14) -- tradução 1:1, sem padrão novo.
+
+async function createRemoteEmployee({ cpf, name, store, passwordHash }) {
+  const now = new Date().toISOString();
+  const { rows } = await getPool().query(
+    `INSERT INTO remote_employees (cpf, name, store, password_hash, active, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, 1, $5, $6) RETURNING *`,
+    [cpf, name, store, passwordHash, now, now]
+  );
+  return rows[0];
+}
+
+async function getRemoteEmployeeByCpf(cpf) {
+  const { rows } = await getPool().query('SELECT * FROM remote_employees WHERE cpf = $1', [cpf]);
+  return rows[0];
+}
+
+async function getRemoteEmployeeById(id) {
+  const { rows } = await getPool().query('SELECT * FROM remote_employees WHERE id = $1', [id]);
+  return rows[0];
+}
+
+async function listRemoteEmployees() {
+  const { rows } = await getPool().query(
+    `SELECT id, cpf, name, store, active, created_at, updated_at FROM remote_employees ORDER BY name`
+  );
+  return rows;
+}
+
+async function setRemoteEmployeeActive(id, active) {
+  await getPool().query(
+    'UPDATE remote_employees SET active = $1, updated_at = $2 WHERE id = $3',
+    [active ? 1 : 0, new Date().toISOString(), id]
+  );
+}
+
+async function createRemoteSession({ tokenHash, employeeId, createdAt, expiresAt }) {
+  await getPool().query(
+    `INSERT INTO remote_sessions (token_hash, employee_id, created_at, expires_at) VALUES ($1, $2, $3, $4)`,
+    [tokenHash, employeeId, createdAt, expiresAt]
+  );
+}
+
+async function getRemoteSession(tokenHash) {
+  const { rows } = await getPool().query('SELECT * FROM remote_sessions WHERE token_hash = $1', [tokenHash]);
+  return rows[0];
+}
+
+async function deleteRemoteSession(tokenHash) {
+  await getPool().query('DELETE FROM remote_sessions WHERE token_hash = $1', [tokenHash]);
+}
+
+async function insertRemoteTimeEntry({ employeeId, type, serverTs, lat, lng, accuracy, withinGeofence, correctsId, correctionReason, createdBy }) {
+  const now = new Date().toISOString();
+  const { rows } = await getPool().query(
+    `INSERT INTO remote_time_entries
+      (employee_id, type, server_ts, lat, lng, accuracy, within_geofence, corrects_id, correction_reason, created_by, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+    [
+      employeeId, type, serverTs,
+      lat ?? null, lng ?? null, accuracy ?? null,
+      withinGeofence === null || withinGeofence === undefined ? null : (withinGeofence ? 1 : 0),
+      correctsId ?? null, correctionReason ?? null,
+      createdBy || 'employee', now,
+    ]
+  );
+  return rows[0];
+}
+
+async function getRemoteTimeEntryById(id) {
+  const { rows } = await getPool().query('SELECT * FROM remote_time_entries WHERE id = $1', [id]);
+  return rows[0];
+}
+
+async function listRemoteTimeEntriesForEmployee(employeeId, limit = 200) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM remote_time_entries WHERE employee_id = $1 ORDER BY server_ts DESC LIMIT $2`,
+    [employeeId, limit]
+  );
+  return rows;
+}
+
+async function listAllRemoteTimeEntries({ employeeId = null, limit = 500 } = {}) {
+  if (employeeId) {
+    const { rows } = await getPool().query(
+      `SELECT * FROM remote_time_entries WHERE employee_id = $1 ORDER BY server_ts DESC LIMIT $2`,
+      [employeeId, limit]
+    );
+    return rows;
+  }
+  const { rows } = await getPool().query(
+    `SELECT * FROM remote_time_entries ORDER BY server_ts DESC LIMIT $1`,
+    [limit]
+  );
+  return rows;
+}
+
 module.exports = {
   getPool, closePool, withTransaction,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
@@ -2161,4 +2271,9 @@ module.exports = {
   ncrInsertEmail, ncrGetByMessageId, ncrGetByCommandId, ncrUpdate,
   ncrGetPendingRetries, ncrGetAckTimedOut,
   upsertServiceStatus, getServiceStatusBOH,
+  createRemoteEmployee, getRemoteEmployeeByCpf, getRemoteEmployeeById,
+  listRemoteEmployees, setRemoteEmployeeActive,
+  createRemoteSession, getRemoteSession, deleteRemoteSession,
+  insertRemoteTimeEntry, getRemoteTimeEntryById,
+  listRemoteTimeEntriesForEmployee, listAllRemoteTimeEntries,
 };
