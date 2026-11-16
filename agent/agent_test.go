@@ -316,3 +316,73 @@ func TestResetBackoffIfCompanionHealthy(t *testing.T) {
 		}
 	})
 }
+
+// TestJitteredDuration cobre o fix do incidente 15/11/2026 (SQLite
+// single-writer derrubado por 130 agentes reconectando no mesmo segundo após
+// broadcast fleet-wide): jitteredDuration precisa manter o resultado dentro
+// de base*(1±jitterPct) e nunca retornar <= 0, mesmo em casos extremos.
+func TestJitteredDuration(t *testing.T) {
+	t.Run("fica dentro de base ± jitterPct ao longo de muitas amostras", func(t *testing.T) {
+		base := 30 * time.Second
+		pct := 0.3
+		min := time.Duration(float64(base) * (1 - pct))
+		max := time.Duration(float64(base) * (1 + pct))
+
+		for i := 0; i < 1000; i++ {
+			got := jitteredDuration(base, pct)
+			if got < min || got > max {
+				t.Fatalf("jitteredDuration(%v, %v) = %v, fora de [%v, %v]", base, pct, got, min, max)
+			}
+		}
+	})
+
+	t.Run("nunca retorna <= 0 mesmo com jitterPct >= 1", func(t *testing.T) {
+		base := 5 * time.Second
+		for i := 0; i < 1000; i++ {
+			got := jitteredDuration(base, 1.5)
+			if got <= 0 {
+				t.Fatalf("jitteredDuration(%v, 1.5) = %v, deveria ser > 0", base, got)
+			}
+		}
+	})
+
+	t.Run("base <= 0 retorna base sem modificar", func(t *testing.T) {
+		if got := jitteredDuration(0, 0.3); got != 0 {
+			t.Errorf("jitteredDuration(0, 0.3) = %v, want 0", got)
+		}
+	})
+}
+
+// TestInitialHeartbeatDelay cobre o guard de initialHeartbeatDelay: com
+// IntervalSecs<=0 (ex: config.go recuperando um .tmp corrompido sem passar
+// pela sanitização normal), rand.Intn(0) panicaria sem esse guard.
+func TestInitialHeartbeatDelay(t *testing.T) {
+	t.Run("fica entre 0 e min(intervalSecs, 30s)", func(t *testing.T) {
+		for i := 0; i < 1000; i++ {
+			got := initialHeartbeatDelay(20)
+			if got < 0 || got > 20*time.Second {
+				t.Fatalf("initialHeartbeatDelay(20) = %v, fora de [0, 20s]", got)
+			}
+		}
+	})
+
+	t.Run("nunca excede o teto de 30s mesmo com intervalSecs grande", func(t *testing.T) {
+		for i := 0; i < 1000; i++ {
+			got := initialHeartbeatDelay(600)
+			if got < 0 || got > maxInitialHeartbeatDelaySecs*time.Second {
+				t.Fatalf("initialHeartbeatDelay(600) = %v, fora de [0, %ds]", got, maxInitialHeartbeatDelaySecs)
+			}
+		}
+	})
+
+	t.Run("intervalSecs <= 0 não panica — cai pro teto de 30s", func(t *testing.T) {
+		for _, intervalSecs := range []int{0, -5} {
+			for i := 0; i < 100; i++ {
+				got := initialHeartbeatDelay(intervalSecs)
+				if got < 0 || got > maxInitialHeartbeatDelaySecs*time.Second {
+					t.Fatalf("initialHeartbeatDelay(%d) = %v, fora de [0, %ds]", intervalSecs, got, maxInitialHeartbeatDelaySecs)
+				}
+			}
+		}
+	})
+}

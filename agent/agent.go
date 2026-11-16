@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"sync"
@@ -262,24 +263,78 @@ func (a *Agent) collectAndSendBootEvents() {
 	logInfo(fmt.Sprintf("Sent %d Windows events to server", len(events)))
 }
 
-func (a *Agent) heartbeatLoop() {
-	ticker := time.NewTicker(time.Duration(a.cfg.IntervalSecs) * time.Second)
-	defer ticker.Stop()
+// heartbeatJitterPct espalha heartbeat/polling de agentes que reiniciam
+// juntos (ex: update fleet-wide via broadcast). Sem isso, um restart de toda
+// a frota sincroniza todos os agentes no mesmo segundo contra o banco
+// single-writer do servidor — causa raiz do incidente de 15/11/2026 (ver
+// memoria do projeto: project_delirio_manager_incidente_sqlite_15_11).
+const heartbeatJitterPct = 0.3
 
-	// Envia heartbeat imediatamente na primeira vez
+// maxInitialHeartbeatDelaySecs limita o delay inicial a um teto fixo,
+// independente de IntervalSecs: uma config com intervalo bem maior que o
+// default (30s) não deve esperar minutos pro primeiro heartbeat, o que
+// atrasaria demais scripts de confirmação de rollout (ex: release-auto.ps1
+// medindo quantas máquinas já reportaram a versão nova).
+const maxInitialHeartbeatDelaySecs = 30
+
+// jitteredDuration varia base em ±jitterPct, nunca retornando <= 0. jitterPct
+// é uma fração (0.3 = ±30%).
+func jitteredDuration(base time.Duration, jitterPct float64) time.Duration {
+	if base <= 0 {
+		return base
+	}
+	delta := float64(base) * jitterPct
+	offset := (rand.Float64()*2 - 1) * delta // -delta..+delta
+	d := base + time.Duration(offset)
+	if d <= 0 {
+		return base
+	}
+	return d
+}
+
+// safeSendHeartbeat roda sendHeartbeat protegido contra panic — chamado em
+// todo start/restart do agent (incluindo restarts em massa via broadcast),
+// então um panic aqui não pode matar o processo inteiro.
+func (a *Agent) safeSendHeartbeat() {
+	defer func() {
+		if r := recover(); r != nil {
+			logError(fmt.Sprintf("heartbeat panic: %v", r))
+		}
+	}()
 	a.sendHeartbeat()
+}
+
+// initialHeartbeatDelay sorteia o delay inicial antes do primeiro heartbeat,
+// em 0..min(intervalSecs, maxInitialHeartbeatDelaySecs). rand.Intn panica com
+// n<=0: loadConfig normalmente sanitiza IntervalSecs (config.go, <10 → 30),
+// mas o caminho de recuperação via .tmp em config corrompido pode devolver um
+// valor fora dessa sanitização — por isso o guard aqui, mesmo padrão
+// defensivo já usado em jitteredDuration.
+func initialHeartbeatDelay(intervalSecs int) time.Duration {
+	capSecs := min(intervalSecs, maxInitialHeartbeatDelaySecs)
+	if capSecs <= 0 {
+		capSecs = maxInitialHeartbeatDelaySecs
+	}
+	return time.Duration(rand.Intn(capSecs)) * time.Second
+}
+
+func (a *Agent) heartbeatLoop() {
+	// Delay inicial aleatório antes do primeiro heartbeat, em vez de disparar
+	// na hora: é o ponto onde um restart fleet-wide sincronizava todos os
+	// agentes no mesmo segundo.
+	initialDelay := initialHeartbeatDelay(a.cfg.IntervalSecs)
+	select {
+	case <-time.After(initialDelay):
+	case <-a.stopCh:
+		return
+	}
+	a.safeSendHeartbeat()
 
 	for {
+		wait := jitteredDuration(time.Duration(a.cfg.IntervalSecs)*time.Second, heartbeatJitterPct)
 		select {
-		case <-ticker.C:
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						logError(fmt.Sprintf("heartbeat panic: %v", r))
-					}
-				}()
-				a.sendHeartbeat()
-			}()
+		case <-time.After(wait):
+			a.safeSendHeartbeat()
 		case <-a.stopCh:
 			return
 		}
@@ -489,12 +544,10 @@ func (a *Agent) applyLaunchBackoff(err error) {
 }
 
 func (a *Agent) commandLoop() {
-	ticker := time.NewTicker(time.Duration(a.cfg.PollSecs) * time.Second)
-	defer ticker.Stop()
-
 	for {
+		wait := jitteredDuration(time.Duration(a.cfg.PollSecs)*time.Second, heartbeatJitterPct)
 		select {
-		case <-ticker.C:
+		case <-time.After(wait):
 			a.pollCommands()
 		case <-a.stopCh:
 			return
