@@ -37,7 +37,30 @@
 // comportamento de busca; (b) getNFCeIndexStatus tem VÁRIOS COUNT/SUM que
 // precisam de Number() -- inclusive um caso em que o `|| 0` de uma função
 // auxiliar (_parseSessionRow) não pegaria uma string bigint não-vazia
-// ("0" || 0 === "0").
+// ("0" || 0 === "0"). Extraído helper countQuery() compartilhado.
+//
+// Grupo 7 (registerMachine, deferido do Grupo 1, + dr_backups) -- a função
+// mais arriscada do arquivo: precisou de migração de schema própria
+// (ON UPDATE CASCADE nas FKs que apontam pra machines, ver comentário em
+// registerMachine) pra substituir o `pragma foreign_keys=OFF` do SQLite.
+// Achado um bug latente real no original enquanto escrevia essa migração:
+// `insights` tinha FK pra machines mas nunca esteve na lista manual de
+// re-key do SQLite -- corrigido de graça no port.
+//
+// Grupo 8 (acesso remoto: watchlist_keywords, activity_log, live_sessions)
+// -- generalizei `deleteCommandsInBatches` pra `deleteInBatches(table, ...)`
+// e reusei em `purgeActivityLog` (mesmo risco de volume do incidente de
+// commands -- activity_log também cresce rápido, 224 máquinas capturando
+// janela/processo o tempo todo).
+//
+// Grupo 9 (Ref1 Registry + Módulo Relatório: report_topics*, freshdesk_cache,
+// report_runs, report_feedback) -- maior grupo até agora (21 funções).
+// Vários INSERT/UPDATE/DELETE seguidos de SELECT por id consolidados em
+// RETURNING * numa query só (createTopic, updateTopic, moveTopic,
+// resolveTopic, saveReportRun) -- menos round-trips, sem mudar
+// comportamento observável. `substr()` existe idêntico em Postgres, sem
+// tradução. `INSERT OR REPLACE` -> `ON CONFLICT DO UPDATE` (freshdesk_cache,
+// troca o id no SQLite, preserva no Postgres -- sem efeito aqui).
 //
 // Regras de tradução (mesmas de todo o arquivo, ver migrations/ pro schema):
 //   - `?` -> `$1,$2...`
@@ -357,30 +380,37 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-const COMMANDS_PURGE_BATCH_SIZE = 1000;
-const COMMANDS_PURGE_BATCH_SLEEP_MS = 100;
+const PURGE_BATCH_SIZE = 1000;
+const PURGE_BATCH_SLEEP_MS = 100;
 
-// Apaga de `commands` em lotes (mesma razão do port original em db.js: um
+// Apaga de `table` em lotes (mesma razão do port original em db.js: um
 // DELETE único sobre dezenas de milhares de linhas é lento demais e, sem
 // ceder o loop entre lotes, atrasa outras queries na mesma pool). SQLite
 // usa `rowid` pra isso (alias implícito, não existe em Postgres) -- aqui
-// usamos `id` direto, que é a PK real da tabela.
-async function deleteCommandsInBatches(whereSql, params) {
+// usamos `id` direto, que é a PK real de toda tabela com essa forma neste
+// arquivo. `table` nunca vem de input externo -- sempre string literal fixa
+// no próprio código-fonte (mesma garantia de `whereSql`), nunca concatenação
+// de valor de usuário.
+async function deleteInBatches(table, whereSql, params) {
   const pool = getPool();
   const limitParamIndex = params.length + 1;
   let total = 0;
   for (;;) {
     const { rowCount } = await pool.query(
-      `DELETE FROM commands WHERE id IN (
-        SELECT id FROM commands WHERE ${whereSql} LIMIT $${limitParamIndex}
+      `DELETE FROM ${table} WHERE id IN (
+        SELECT id FROM ${table} WHERE ${whereSql} LIMIT $${limitParamIndex}
       )`,
-      [...params, COMMANDS_PURGE_BATCH_SIZE]
+      [...params, PURGE_BATCH_SIZE]
     );
     total += rowCount;
-    if (rowCount < COMMANDS_PURGE_BATCH_SIZE) break;
-    await sleep(COMMANDS_PURGE_BATCH_SLEEP_MS);
+    if (rowCount < PURGE_BATCH_SIZE) break;
+    await sleep(PURGE_BATCH_SLEEP_MS);
   }
   return total;
+}
+
+async function deleteCommandsInBatches(whereSql, params) {
+  return deleteInBatches('commands', whereSql, params);
 }
 
 // Apaga comandos de machine_id que não existe mais em `machines` (órfãos).
@@ -902,6 +932,583 @@ async function markAutoEmailFailed(chave, error) {
   );
 }
 
+// ── Machines: registerMachine (Grupo 7) ────────────────────────────────────────
+// Deferido do Grupo 1 de propósito -- é a função mais arriscada do arquivo
+// (re-key de UUID + merge de duplicatas). Precisou de uma migração de
+// schema própria antes de portar: migrations/..._add-on-update-cascade-
+// machine-fks.sql adiciona ON UPDATE CASCADE nas 10 FKs que apontam pra
+// machines(id) (activity_log, dr_backups, insights, live_sessions,
+// machine_metrics_hourly, machine_offline_events, nfce_index,
+// nfce_indexed_days, reading_miss_events, win_events).
+//
+// Achado ao escrever essa migração: `insights` SEMPRE teve essa FK mas
+// NUNCA esteve na lista `_MACHINE_CHILD_TABLES` do db.js original -- bug
+// latente: insights de uma máquina re-keyed ficavam órfãos no SQLite
+// (machine_id apontando pro UUID antigo, que deixa de existir, sem o
+// SQLite revalidar isso ao religar `foreign_keys = ON`). Corrigido de
+// graça aqui: insights agora segue o re-key como as outras 9 tabelas com FK.
+
+// Tabelas com machine_id SEM FK pra machines -- precisam de UPDATE/DELETE
+// manual no re-key/dedup abaixo. As 10 com FK (ver migração acima) seguem
+// o UPDATE/DELETE de `machines` automaticamente via ON UPDATE/DELETE CASCADE.
+const MACHINE_CHILD_TABLES_NO_FK = ['metrics', 'commands', 'events', 'nfce_auto_email_log', 'service_status'];
+
+// Re-key de UUID (config.json corrompido/reinstall) + merge de duplicatas
+// por hostname. O original SQLite precisa de `pragma('foreign_keys = OFF')`
+// porque mudar machines.id violaria toda FK que aponta pra ele -- sem
+// equivalente em Postgres (não dá pra desligar a checagem globalmente, nem
+// precisa, por isso): ON UPDATE CASCADE propaga a mudança de PK automaticamente
+// pras 10 tabelas com FK; só as 5 sem FK (MACHINE_CHILD_TABLES_NO_FK) exigem
+// UPDATE manual aqui, igual ao original fazia pra todas as 14.
+//
+// Simplificação real sobre o original: o SQLite tinha um passo extra
+// (`DELETE FROM watchlist_matches WHERE activity_log_id IN (SELECT id FROM
+// activity_log WHERE machine_id=?)`) só porque `foreign_keys=OFF` também
+// desligava o CASCADE de watchlist_matches->activity_log durante o dedup.
+// Em Postgres as FKs nunca são desligadas globalmente -- apagar activity_log
+// já cascade-deleta watchlist_matches sozinho (watchlist_matches.activity_log_id
+// REFERENCES activity_log(id) ON DELETE CASCADE), então esse passo não existe
+// mais aqui.
+//
+// Decisão deliberada (não faithful 1:1): o original envolve cada
+// UPDATE/DELETE da lista manual em `try{}catch(_){}` próprio, tolerando
+// falha tabela-a-tabela sem abortar o re-key. Aqui, dentro de uma
+// `withTransaction` real, deixo propagar -- qualquer falha aborta a
+// transação inteira (rollback limpo) em vez de deixar o re-key
+// parcialmente aplicado silenciosamente. Schema aqui é totalmente
+// controlado (todas as tabelas sempre existem), então não há motivo pra
+// tolerar falha de tabela individual como o SQLite original.
+//
+// 🔴 Achado real no review deste grupo (corrigido): o SQLite original é
+// imune a race entre chamadas concorrentes pro MESMO hostname porque
+// `d.transaction()()` roda 100% síncrono, sem nenhum ponto onde outra
+// chamada pudesse se intercalar entre o SELECT do canonical e a mutação.
+// Isso se perde ao virar async -- duas chamadas pro mesmo hostname (ex:
+// agent com config.json persistentemente corrompido, reinstalando em
+// loop) podiam ler o mesmo canonical ANTES de qualquer commit, e uma
+// acabava apagando a máquina que a outra JUSTAGORA recriou como
+// "duplicata". Fix: TUDO (os 3 casos) roda dentro de uma única transação
+// que começa adquirindo `pg_advisory_xact_lock(hashtext(upper(hostname)))`
+// -- serializa qualquer chamada concorrente pro mesmo hostname (chamadas
+// pra hostnames diferentes não bloqueiam entre si). O lock libera
+// automaticamente no fim da transação (commit ou rollback), sem unlock
+// manual. `addEvent` continua fora da transação (mesmo lugar do original).
+async function registerMachine({ machineId, hostname, agentVersion }) {
+  const now = new Date().toISOString();
+
+  const { token, event } = await withTransaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext(upper($1)))', [hostname]);
+
+    // 1. UUID já conhecido → atualiza normalmente. Reconferido AQUI DENTRO
+    // (não só antes de entrar na transação) -- com o lock já adquirido,
+    // nenhuma outra chamada pro mesmo hostname pode ter mudado o estado
+    // entre uma checagem "de fora" e esta.
+    const { rows: existingRows } = await client.query('SELECT * FROM machines WHERE id = $1', [machineId]);
+    const existing = existingRows[0];
+    if (existing) {
+      await client.query(
+        `UPDATE machines SET hostname=$1, agent_version=$2, last_seen=$3, online_since=$4, status='online'
+         WHERE id=$5`,
+        [hostname, agentVersion || '', now, now, machineId]
+      );
+      return { token: existing.token, event: null };
+    }
+
+    // 2. UUID desconhecido mas hostname conhecido → re-key atômico
+    const { rows: canonicalRows } = await client.query(
+      `SELECT * FROM machines WHERE UPPER(hostname) = UPPER($1)
+       ORDER BY CASE WHEN location != 'Temporário' THEN 0 ELSE 1 END,
+                last_seen DESC LIMIT 1`,
+      [hostname]
+    );
+    const canonical = canonicalRows[0];
+    if (canonical) {
+      return _rekeyAndMergeMachine(client, { oldId: canonical.id, canonicalToken: canonical.token, machineId, hostname, agentVersion, now });
+    }
+
+    // 3. Máquina genuinamente nova
+    const token2 = crypto.randomUUID();
+    await client.query(
+      `INSERT INTO machines
+        (id, hostname, display_name, location, token, agent_version, status, last_seen, online_since, registered_at)
+       VALUES ($1, $2, $3, 'Temporário', $4, $5, 'online', $6, $7, $8)`,
+      [machineId, hostname, hostname, token2, agentVersion || '', now, now, now]
+    );
+    return { token: token2, event: { type: 'agent_installed', details: `Agente v${agentVersion || '?'} registrado` } };
+  });
+
+  if (event) await addEvent(machineId, event.type, event.details);
+  return token;
+}
+
+// Extraído de registerMachine (caso 2) só pra manter a função principal
+// legível -- segue rodando no `client` da mesma transação/lock, não é uma
+// unidade de trabalho independente.
+async function _rekeyAndMergeMachine(client, { oldId, canonicalToken, machineId, hostname, agentVersion, now }) {
+  for (const t of MACHINE_CHILD_TABLES_NO_FK) {
+    await client.query(`UPDATE ${t} SET machine_id=$1 WHERE machine_id=$2`, [machineId, oldId]);
+  }
+  // Re-key do registro principal -- ON UPDATE CASCADE propaga pras 10
+  // tabelas com FK automaticamente.
+  await client.query('UPDATE machines SET id=$1 WHERE id=$2', [machineId, oldId]);
+  await client.query(
+    `UPDATE machines SET hostname=$1, agent_version=$2, last_seen=$3, online_since=$4, status='online'
+     WHERE id=$5`,
+    [hostname, agentVersion || '', now, now, machineId]
+  );
+
+  // Remove todos os outros registros com mesmo hostname (duplicatas de registros anteriores)
+  const { rows: dupes } = await client.query(
+    `SELECT id FROM machines WHERE UPPER(hostname) = UPPER($1) AND id != $2`,
+    [hostname, machineId]
+  );
+  for (const { id: dupId } of dupes) {
+    for (const t of MACHINE_CHILD_TABLES_NO_FK) {
+      await client.query(`DELETE FROM ${t} WHERE machine_id=$1`, [dupId]);
+    }
+    await client.query('DELETE FROM machines WHERE id=$1', [dupId]); // cascade cuida das 10 tabelas com FK
+  }
+
+  return {
+    token: canonicalToken,
+    event: { type: 'agent_reregistered', details: `UUID atualizado (config recuperado de ${oldId.slice(0, 8)}): agente v${agentVersion || '?'}` },
+  };
+}
+
+// ── DR Backups (Grupo 7) ────────────────────────────────────────────────────────
+
+async function updateMachineDRStatus(machineId, { setup, lastOk, storageGb, version } = {}) {
+  const map = {
+    dr_setup: setup,
+    dr_last_ok: lastOk,
+    dr_storage_gb: storageGb,
+    dr_version: version,
+  };
+  const keys = Object.keys(map).filter(k => map[k] !== undefined);
+  if (!keys.length) return;
+  const set = keys.map((k, i) => `${k}=$${i + 1}`).join(', ');
+  await getPool().query(
+    `UPDATE machines SET ${set} WHERE id=$${keys.length + 1}`,
+    [...keys.map(k => map[k]), machineId]
+  );
+}
+
+async function insertDRBackup(machineId, { backedAt, status, storageGb, durationMin, errorMsg } = {}) {
+  await getPool().query(
+    `INSERT INTO dr_backups (machine_id, backed_at, status, storage_gb, duration_min, error_msg)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [
+      machineId, backedAt, status,
+      storageGb != null ? storageGb : null,
+      durationMin != null ? durationMin : null,
+      errorMsg || null,
+    ]
+  );
+}
+
+async function getDRHistory(machineId, days = 28) {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const { rows } = await getPool().query(
+    `SELECT * FROM dr_backups WHERE machine_id=$1 AND backed_at>=$2 ORDER BY backed_at DESC`,
+    [machineId, cutoff]
+  );
+  return rows;
+}
+
+// SUM(dr_storage_gb) sobre coluna DOUBLE PRECISION volta como number de
+// verdade via `pg` (confirmado ao vivo contra a instância dev -- só
+// COUNT/SUM sobre inteiro/bigint vêm como string). Só total/okLast24h/
+// failing (COUNT) precisam de countQuery. As 4 queries são independentes
+// e só leitura -- paralelizadas com Promise.all (melhoria deliberada: o
+// original roda sequencial só porque better-sqlite3 não tem concorrência;
+// aqui reduz latência sem risco nenhum, o pool suporta queries paralelas).
+async function getDROverview() {
+  const pool = getPool();
+  const threshold24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  const [total, okLast24h, totalGbResult, failing] = await Promise.all([
+    countQuery(`SELECT COUNT(*) as c FROM machines WHERE dr_setup='configured'`),
+    countQuery(`SELECT COUNT(*) as c FROM machines WHERE dr_setup='configured' AND dr_last_ok>=$1`, [threshold24h]),
+    pool.query(`SELECT COALESCE(SUM(dr_storage_gb),0) as s FROM machines WHERE dr_setup='configured'`),
+    countQuery(`SELECT COUNT(*) as c FROM machines WHERE dr_setup='error'`),
+  ]);
+
+  return { total, okLast24h, totalGb: totalGbResult.rows[0].s, failing };
+}
+
+async function getMachinesDRDue(olderThanISO) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM machines WHERE dr_setup = 'configured' AND (dr_last_ok IS NULL OR dr_last_ok < $1)`,
+    [olderThanISO]
+  );
+  return rows;
+}
+
+// ── Watchlist ─────────────────────────────────────────────────────────────────
+
+async function createWatchlistKeyword(keyword) {
+  const now = new Date().toISOString();
+  const { rows } = await getPool().query(
+    'INSERT INTO watchlist_keywords (keyword, active, created_at) VALUES ($1, 1, $2) RETURNING id',
+    [keyword, now]
+  );
+  return rows[0].id;
+}
+
+async function getWatchlistKeywords() {
+  const { rows } = await getPool().query('SELECT * FROM watchlist_keywords ORDER BY id DESC');
+  return rows;
+}
+
+async function getActiveWatchlistKeywords() {
+  const { rows } = await getPool().query('SELECT * FROM watchlist_keywords WHERE active = 1');
+  return rows;
+}
+
+async function setWatchlistKeywordActive(id, active) {
+  await getPool().query('UPDATE watchlist_keywords SET active = $1 WHERE id = $2', [active ? 1 : 0, id]);
+}
+
+async function deleteWatchlistKeyword(id) {
+  await getPool().query('DELETE FROM watchlist_keywords WHERE id = $1', [id]);
+}
+
+// ── Activity log (acesso remoto) ──────────────────────────────────────────────
+
+async function insertActivityLog(machineId, windowTitle, processName) {
+  const now = new Date().toISOString();
+  const { rows } = await getPool().query(
+    `INSERT INTO activity_log (machine_id, window_title, process_name, captured_at)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    [machineId, windowTitle || '', processName || '', now]
+  );
+  return { id: rows[0].id, capturedAt: now };
+}
+
+async function getActivityLog(machineId, limit = 100) {
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 100;
+  // id DESC como desempate: capturas no mesmo milissegundo (relógio grosseiro) mantêm a ordem de inserção
+  const { rows } = await getPool().query(
+    `SELECT * FROM activity_log WHERE machine_id = $1
+     ORDER BY captured_at DESC, id DESC LIMIT $2`,
+    [machineId, safeLimit]
+  );
+  return rows;
+}
+
+// Reaproveita deleteInBatches (mesmo motivo de purgeOldTerminalCommands no
+// Grupo 2: activity_log é tabela de alto volume — captura de janela/processo
+// a cada poucos segundos por máquina, 224 máquinas — um DELETE único
+// cobrindo a janela de retenção inteira teria o mesmo risco de travar o
+// writer que o incidente de 15/11 já expôs em `commands`.
+async function purgeActivityLog(days) {
+  if (!Number.isFinite(days) || days <= 0) return 0;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  return deleteInBatches('activity_log', 'captured_at < $1', [cutoff]);
+}
+
+// ── Live sessions (acesso remoto) ─────────────────────────────────────────────
+
+async function createLiveSession(machineId, mode) {
+  if (mode !== 'normal' && mode !== 'shadow') {
+    throw new Error(`mode inválido: ${mode}`);
+  }
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await getPool().query(
+    `INSERT INTO live_sessions (id, machine_id, mode, started_at) VALUES ($1, $2, $3, $4)`,
+    [id, machineId, mode, now]
+  );
+  return id;
+}
+
+async function getLiveSession(sessionId) {
+  const { rows } = await getPool().query('SELECT * FROM live_sessions WHERE id = $1', [sessionId]);
+  return rows[0];
+}
+
+async function endLiveSession(sessionId) {
+  const now = new Date().toISOString();
+  await getPool().query('UPDATE live_sessions SET ended_at = $1 WHERE id = $2', [now, sessionId]);
+}
+
+async function setLiveSessionRecorded(sessionId) {
+  await getPool().query('UPDATE live_sessions SET recorded = 1 WHERE id = $1', [sessionId]);
+}
+
+// ── Ref1 Registry ────────────────────────────────────────────────────────────
+
+async function registerRef1({ ref1, cpf, name }) {
+  const n = parseInt(ref1, 10);
+  if (!n || n <= 0) return;
+  await getPool().query(
+    `INSERT INTO ref1_registry (ref1, cpf, name, assigned_at) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (ref1) DO NOTHING`,
+    [n, cpf || '', name || '', new Date().toISOString()]
+  );
+}
+
+// MAX() sobre coluna INTEGER devolve number de verdade via `pg` (confirmado
+// ao vivo -- diferente de COUNT/SUM, que sempre promovem pra bigint/string
+// mesmo sobre coluna INTEGER). Sem Number() aqui de propósito.
+async function getMaxRef1() {
+  const { rows } = await getPool().query('SELECT MAX(ref1) as max FROM ref1_registry');
+  return rows[0]?.max || 0;
+}
+
+// ── Módulo Relatório ──────────────────────────────────────────────────────────
+
+const CRITICAL_RE = /^(TERM|BOH)/i;
+
+function isCriticalMachine(mention) {
+  return mention ? CRITICAL_RE.test(mention.trim()) : false;
+}
+
+async function getTopics(storeName) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM report_topics WHERE store_name = $1 ORDER BY
+     CASE severity WHEN 'critica' THEN 0 WHEN 'alta' THEN 1 WHEN 'media' THEN 2 ELSE 3 END, created_at DESC`,
+    [storeName]
+  );
+  return rows;
+}
+
+async function getAllStoresTopicCount() {
+  const { rows } = await getPool().query(
+    `SELECT store_name, COUNT(*) as count FROM report_topics GROUP BY store_name`
+  );
+  return rows.map(r => ({ ...r, count: Number(r.count) }));
+}
+
+// INSERT...RETURNING * numa query só -- o original fazia INSERT seguido de
+// SELECT por lastInsertRowid (2 round-trips); aqui 1 só, sem mudar
+// comportamento (linha inserida é única, sem risco de concorrência entre
+// as duas operações que existiria num SELECT+UPDATE).
+async function createTopic({ store_name, description, severity, machine_mention, photo_path, created_by }) {
+  const critical = isCriticalMachine(machine_mention);
+  const now = new Date().toISOString();
+  const { rows } = await getPool().query(
+    `INSERT INTO report_topics (store_name, description, severity, machine_mention, is_critical_machine, photo_path, created_at, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [store_name, description, severity, machine_mention || null, critical ? 1 : 0, photo_path || null, now, created_by || 'TI']
+  );
+  return rows[0];
+}
+
+// UPDATE...RETURNING * numa query só -- mesma simplificação de createTopic.
+// Devolve `undefined` se o id não existir (mesmo contrato de `.get()` no
+// original, que não checava existência antes de atualizar).
+async function updateTopic(id, { description, severity, machine_mention, photo_path }) {
+  const critical = isCriticalMachine(machine_mention);
+  const pool = getPool();
+  // photo_path === undefined → não alterar (preservar o que está no DB)
+  // photo_path === null      → limpar fotos explicitamente
+  if (photo_path !== undefined) {
+    const { rows } = await pool.query(
+      `UPDATE report_topics SET description=$1, severity=$2, machine_mention=$3, is_critical_machine=$4, photo_path=$5
+       WHERE id=$6 RETURNING *`,
+      [description, severity, machine_mention || null, critical ? 1 : 0, photo_path, id]
+    );
+    return rows[0];
+  }
+  const { rows } = await pool.query(
+    `UPDATE report_topics SET description=$1, severity=$2, machine_mention=$3, is_critical_machine=$4
+     WHERE id=$5 RETURNING *`,
+    [description, severity, machine_mention || null, critical ? 1 : 0, id]
+  );
+  return rows[0];
+}
+
+// DELETE...RETURNING * substitui o SELECT inicial do original (pega os
+// dados do topic sendo apagado na mesma query) -- a ordem muda (apaga antes
+// de inserir no histórico, original fazia o contrário), mas como tudo roda
+// dentro de uma transação, observadores externos nunca veem o estado
+// intermediário de nenhum dos dois jeitos (isolamento da transação).
+async function resolveTopic(id) {
+  const now = new Date().toISOString();
+  return withTransaction(async (client) => {
+    const { rows } = await client.query('DELETE FROM report_topics WHERE id = $1 RETURNING *', [id]);
+    const topic = rows[0];
+    if (!topic) return null;
+    await client.query(
+      `INSERT INTO report_topics_history
+        (original_topic_id, store_name, description, severity, machine_mention, is_critical_machine, photo_path, created_at, resolved_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        topic.id, topic.store_name, topic.description, topic.severity, topic.machine_mention,
+        topic.is_critical_machine, topic.photo_path, topic.created_at, now,
+      ]
+    );
+    return { resolved: true };
+  });
+}
+
+async function moveTopic(id, newStoreName) {
+  const { rows } = await getPool().query(
+    'UPDATE report_topics SET store_name = $1 WHERE id = $2 RETURNING *',
+    [newStoreName, id]
+  );
+  return rows[0] || null; // original checava existência antes e retornava null explícito
+}
+
+async function replicateTopic(id, targetStores) {
+  const { rows: topicRows } = await getPool().query('SELECT * FROM report_topics WHERE id = $1', [id]);
+  const topic = topicRows[0];
+  if (!topic) return null;
+  const now = new Date().toISOString();
+  const critical = isCriticalMachine(topic.machine_mention);
+
+  return withTransaction(async (client) => {
+    const created = [];
+    for (const storeName of targetStores) {
+      const { rows } = await client.query(
+        `INSERT INTO report_topics (store_name, description, severity, machine_mention, is_critical_machine, photo_path, created_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+        [storeName, topic.description, topic.severity, topic.machine_mention, critical ? 1 : 0, topic.photo_path, now, topic.created_by || 'TI']
+      );
+      created.push({ id: rows[0].id, store_name: storeName });
+    }
+    return created;
+  });
+}
+
+async function getTopicsHistory(storeName, months = 6) {
+  const since = new Date();
+  since.setMonth(since.getMonth() - months);
+  const { rows } = await getPool().query(
+    `SELECT * FROM report_topics_history WHERE store_name = $1 AND resolved_at >= $2 ORDER BY resolved_at DESC`,
+    [storeName, since.toISOString()]
+  );
+  return rows;
+}
+
+// Freshdesk cache
+
+async function getFreshdeskCacheAge(storeName) {
+  const { rows } = await getPool().query(
+    `SELECT cached_at FROM freshdesk_cache WHERE store_name = $1 ORDER BY cached_at DESC LIMIT 1`,
+    [storeName]
+  );
+  const row = rows[0];
+  if (!row) return Infinity;
+  return (Date.now() - new Date(row.cached_at).getTime()) / 3600000; // hours
+}
+
+// `INSERT OR REPLACE` do SQLite apaga+reinsere em conflito, trocando o id
+// AUTOINCREMENT; `ON CONFLICT DO UPDATE` do Postgres preserva o id
+// existente -- diferença sem efeito aqui (nada referencia
+// freshdesk_cache.id como FK, é só cache re-sincronizado periodicamente).
+async function upsertFreshdeskTickets(tickets) {
+  const now = new Date().toISOString();
+  await withTransaction(async (client) => {
+    for (const t of tickets) {
+      await client.query(
+        `INSERT INTO freshdesk_cache (ticket_id, store_name, title, status, priority, created_at, resolved_at, cached_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (ticket_id) DO UPDATE SET
+           store_name  = EXCLUDED.store_name,
+           title       = EXCLUDED.title,
+           status      = EXCLUDED.status,
+           priority    = EXCLUDED.priority,
+           created_at  = EXCLUDED.created_at,
+           resolved_at = EXCLUDED.resolved_at,
+           cached_at   = EXCLUDED.cached_at`,
+        [t.ticket_id, t.store_name, t.title, t.status, t.priority, t.created_at, t.resolved_at, now]
+      );
+    }
+  });
+}
+
+// substr(string, start, length) existe idêntico em Postgres (confirmado ao
+// vivo) -- nenhuma tradução necessária aqui, ao contrário de LIKE/rowid/etc.
+async function getFreshdeskActive(storeName, month) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM freshdesk_cache
+     WHERE store_name = $1 AND status IN ('open','pending')
+     AND substr(created_at, 1, 7) <= $2 ORDER BY created_at DESC`,
+    [storeName, month]
+  );
+  return rows;
+}
+
+async function getFreshdeskClosed(storeName, month) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM freshdesk_cache
+     WHERE store_name = $1 AND status = 'closed'
+     AND substr(resolved_at, 1, 7) = $2 ORDER BY resolved_at DESC`,
+    [storeName, month]
+  );
+  return rows;
+}
+
+// Report runs
+
+async function saveReportRun(data) {
+  const { rows } = await getPool().query(
+    `INSERT INTO report_runs (store_name, month, generated_at, score_total, score_hardware, score_software,
+     score_connectivity, score_security, score_incidents, score_operational, ai_narrative, ai_recommendations, docx_path, pdf_path)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+    [
+      data.store_name, data.month, new Date().toISOString(),
+      data.score_total, data.score_hardware, data.score_software,
+      data.score_connectivity, data.score_security, data.score_incidents, data.score_operational,
+      data.ai_narrative, JSON.stringify(data.ai_recommendations || []),
+      data.docx_path || null, data.pdf_path || null,
+    ]
+  );
+  return rows[0].id;
+}
+
+async function getReportHistory(storeName) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM report_runs WHERE store_name = $1 ORDER BY generated_at DESC LIMIT 12`,
+    [storeName]
+  );
+  return rows;
+}
+
+// Dedup: evita gerar (e pagar) relatório de novo se já existe um recente
+// pra mesma loja+mês dentro da janela.
+async function getRecentReportRun(storeName, month, windowMinutes) {
+  const cutoff = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+  const { rows } = await getPool().query(
+    `SELECT * FROM report_runs WHERE store_name = $1 AND month = $2 AND generated_at >= $3
+     ORDER BY generated_at DESC LIMIT 1`,
+    [storeName, month, cutoff]
+  );
+  return rows[0];
+}
+
+// Feedback
+
+async function saveFeedback({ store_name, month, feedback_text, report_run_id }) {
+  await getPool().query(
+    `INSERT INTO report_feedback (report_run_id, store_name, month, feedback_text, created_at)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [report_run_id || null, store_name, month, feedback_text, new Date().toISOString()]
+  );
+}
+
+async function getRecentFeedback(storeName, limit = 5) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM report_feedback WHERE store_name = $1 ORDER BY created_at DESC LIMIT $2`,
+    [storeName, limit]
+  );
+  return rows;
+}
+
+// Stores list with score + open topics
+async function getStoresOverview() {
+  const topicCounts = await getAllStoresTopicCount();
+  const { rows: runs } = await getPool().query(
+    `SELECT store_name, score_total, generated_at FROM report_runs r1
+     WHERE generated_at = (SELECT MAX(generated_at) FROM report_runs r2 WHERE r2.store_name = r1.store_name)`
+  );
+  const countMap = Object.fromEntries(topicCounts.map(r => [r.store_name, r.count]));
+  const scoreMap = Object.fromEntries(runs.map(r => [r.store_name, { score: r.score_total, generatedAt: r.generated_at }]));
+  return { countMap, scoreMap };
+}
+
 module.exports = {
   getPool, closePool, withTransaction,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
@@ -920,4 +1527,16 @@ module.exports = {
   upsertNFCeRecords, searchNFCe, getNFCeByChave, getNFCeIndexStatus,
   markNFCeDayIndexed, getIndexedDayKeysSet, todayDayKey,
   claimAutoEmail, markAutoEmailSent, markAutoEmailFailed,
+  registerMachine,
+  updateMachineDRStatus, insertDRBackup, getDRHistory, getDROverview, getMachinesDRDue,
+  createWatchlistKeyword, getWatchlistKeywords, getActiveWatchlistKeywords,
+  setWatchlistKeywordActive, deleteWatchlistKeyword,
+  insertActivityLog, getActivityLog, purgeActivityLog,
+  createLiveSession, getLiveSession, endLiveSession, setLiveSessionRecorded,
+  registerRef1, getMaxRef1,
+  isCriticalMachine, getTopics, getAllStoresTopicCount, createTopic, updateTopic,
+  resolveTopic, moveTopic, replicateTopic, getTopicsHistory,
+  getFreshdeskCacheAge, upsertFreshdeskTickets, getFreshdeskActive, getFreshdeskClosed,
+  saveReportRun, getReportHistory, getRecentReportRun,
+  saveFeedback, getRecentFeedback, getStoresOverview,
 };
