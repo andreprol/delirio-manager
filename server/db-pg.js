@@ -74,6 +74,16 @@ async function closePool() {
   }
 }
 
+// Roda uma query de COUNT(*) (ou qualquer SELECT de 1 linha com coluna "c")
+// e devolve Number() já convertido -- COUNT(*)/SUM(...) do Postgres vêm
+// como bigint, que o driver `pg` traz como STRING, não number. Centralizado
+// aqui pra nunca mais esquecer o Number() num grupo futuro (a repetição já
+// apareceu nos Grupos 2, 4 e 6).
+async function countQuery(sql, params = []) {
+  const { rows } = await getPool().query(sql, params);
+  return Number(rows[0]?.c || 0);
+}
+
 // withTransaction: helper compartilhado pra todo o arquivo (substitui
 // better-sqlite3 `.transaction()`, que é síncrono). BEGIN/COMMIT/ROLLBACK
 // num client dedicado do pool -- fn recebe esse client, não o pool, pra
@@ -379,8 +389,8 @@ async function deleteCommandsInBatches(whereSql, params) {
 // driver `pg` traz como STRING (não number) -- por isso o Number() explícito,
 // senão `=== 0` nunca bateria.
 async function purgeOrphanCommands() {
-  const { rows } = await getPool().query('SELECT COUNT(*) as c FROM machines');
-  if (Number(rows[0].c) === 0) return 0;
+  const machineCount = await countQuery('SELECT COUNT(*) as c FROM machines');
+  if (machineCount === 0) return 0;
   return deleteCommandsInBatches('machine_id NOT IN (SELECT id FROM machines)', []);
 }
 
@@ -580,10 +590,9 @@ async function markWinEventsRead(machineId) {
 }
 
 async function countUnreadWinEvents(machineId) {
-  const { rows } = await getPool().query(
+  return countQuery(
     'SELECT COUNT(*) as c FROM win_events WHERE machine_id = $1 AND is_read = 0', [machineId]
   );
-  return Number(rows[0].c);
 }
 
 // ── Insights ──────────────────────────────────────────────────────────────────
@@ -623,13 +632,11 @@ async function markInsightRead(id) {
 
 async function countUnreadInsights(machineId) {
   if (machineId) {
-    const { rows } = await getPool().query(
+    return countQuery(
       'SELECT COUNT(*) as c FROM insights WHERE machine_id = $1 AND is_read = 0', [machineId]
     );
-    return Number(rows[0].c);
   }
-  const { rows } = await getPool().query('SELECT COUNT(*) as c FROM insights WHERE is_read = 0');
-  return Number(rows[0].c);
+  return countQuery('SELECT COUNT(*) as c FROM insights WHERE is_read = 0');
 }
 
 // ── Clock Offboard Log (LGPD Art. 15/16) ─────────────────────────────────────
@@ -779,10 +786,9 @@ async function getNFCeIndexStatus(machineId) {
   );
   const months = monthRows.map(r => ({ ...r, total: Number(r.total) }));
 
-  const { rows: totalRows } = await pool.query(
+  const totalRecords = await countQuery(
     'SELECT COUNT(*) as c FROM nfce_index WHERE machine_id = $1', [machineId]
   );
-  const totalRecords = Number(totalRows[0]?.c || 0);
 
   const { rows: listCmdRows } = await pool.query(
     `SELECT status, acked_at, created_at FROM commands
@@ -812,11 +818,10 @@ async function getNFCeIndexStatus(machineId) {
     ({ totalDays, pendingDays, sessionStartedAt } = _parseSessionRow(sess));
     processedDays = totalDays - pendingDays;
   } else {
-    const { rows: pendingRows } = await pool.query(
+    pendingDays = await countQuery(
       `SELECT COUNT(*) as c FROM commands WHERE machine_id = $1 AND type = 'aloha-index-nfce-day' AND status = 'pending'`,
       [machineId]
     );
-    pendingDays = Number(pendingRows[0]?.c || 0);
   }
 
   return {
