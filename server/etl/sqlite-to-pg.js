@@ -36,6 +36,17 @@ const { Pool } = require('pg');
 
 const BATCH_SIZE = 500;
 
+// Postgres rejeita \u0000 em qualquer coluna de texto (SQLite aceita --
+// achado real na Fase 3 com dado de produção: 25/50049 linhas de `commands`
+// tinham NUL byte dentro de `result` (saída crua capturada de agente
+// Windows, ex: hourlySnapshot/wevtutil com mojibake de encoding). O byte
+// nunca é visível/significativo pro usuário -- strip é seguro, mas conta
+// quantas vezes aconteceu por tabela pra não esconder o problema de
+// origem silenciosamente.
+function stripNulBytes(value) {
+  return typeof value === 'string' && value.includes('\u0000') ? value.split('\u0000').join('') : value;
+}
+
 const TABLE_ORDER = [
   // nível 0 -- sem FK de saída
   'machines', 'metrics', 'commands', 'events', 'alerts', 'groups',
@@ -157,6 +168,7 @@ async function loadTable(sqlite, pool, table) {
   const overriding = identityColumn ? ' OVERRIDING SYSTEM VALUE' : '';
   const client = await pool.connect();
   let total = 0;
+  let nulCount = 0;
   try {
     const iter = sqlite.prepare(selectSql).iterate();
     let batch = [];
@@ -166,7 +178,12 @@ async function loadTable(sqlite, pool, table) {
       const params = [];
       const valueGroups = batch.map((row, i) => {
         const placeholders = columns.map((_, j) => `$${i * columns.length + j + 1}`);
-        for (const col of columns) params.push(row[col]);
+        for (const col of columns) {
+          const raw = row[col];
+          const clean = stripNulBytes(raw);
+          if (clean !== raw) nulCount++;
+          params.push(clean);
+        }
         return `(${placeholders.join(',')})`;
       });
       const sql = `INSERT INTO "${table}" (${colList})${overriding} VALUES ${valueGroups.join(',')}`;
@@ -191,7 +208,8 @@ async function loadTable(sqlite, pool, table) {
     throw err;
   }
   client.release();
-  console.log(`${table.padEnd(28)} ${total} linhas carregadas`);
+  const nulSuffix = nulCount > 0 ? ` (${nulCount} valor(es) com NUL byte removido)` : '';
+  console.log(`${table.padEnd(28)} ${total} linhas carregadas${nulSuffix}`);
   return total;
 }
 
