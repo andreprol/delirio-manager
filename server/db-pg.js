@@ -16,6 +16,17 @@
 // Grupo 2 (commands + events) -- todas as funções do domínio, incluindo
 // purgeOrphanCommands/purgeOldTerminalCommands (já existiam no db.js original
 // como fix do incidente 15/11 -- aqui só troca `rowid` por `id`, a PK real).
+// Achado real no 2º review deste grupo: SELECT+UPDATE separados (atômicos
+// de graça no SQLite síncrono) viram race de verdade com pool concorrente
+// -- ver feedback_sqlite_para_postgres_select_update_race na memória antes
+// de portar qualquer função nova que tenha esse padrão.
+//
+// Grupo 3 (alerts + groups) -- todas as funções do domínio.
+//
+// Grupo 4 (win_events + insights) -- todas as funções do domínio. COUNT(*)
+// do Postgres devolve bigint, que o driver `pg` traz como STRING -- todo
+// "countUnread*" precisa de Number() explícito (mesma lição de
+// purgeOrphanCommands no Grupo 2).
 //
 // Regras de tradução (mesmas de todo o arquivo, ver migrations/ pro schema):
 //   - `?` -> `$1,$2...`
@@ -420,6 +431,193 @@ async function getEvents(machineId, limit = 100) {
   return rows;
 }
 
+// ── Alerts ────────────────────────────────────────────────────────────────────
+
+async function getAlerts(machineId) {
+  if (machineId) {
+    const { rows } = await getPool().query(
+      'SELECT * FROM alerts WHERE machine_id=$1 OR machine_id IS NULL', [machineId]
+    );
+    return rows;
+  }
+  const { rows } = await getPool().query('SELECT * FROM alerts ORDER BY id');
+  return rows;
+}
+
+// better-sqlite3 devolve `lastInsertRowid` do .run(); Postgres precisa de
+// RETURNING explícito.
+async function createAlert(rule) {
+  const now = new Date().toISOString();
+  const { rows } = await getPool().query(
+    `INSERT INTO alerts (machine_id, type, threshold, duration_mins, channels, enabled, created_at)
+     VALUES ($1,$2,$3,$4,$5,1,$6) RETURNING id`,
+    [
+      rule.machineId || null,
+      rule.type, rule.threshold || 0, rule.durationMins || 3,
+      JSON.stringify(rule.channels || ['push']),
+      now,
+    ]
+  );
+  return rows[0].id;
+}
+
+async function deleteAlert(id) {
+  await getPool().query('DELETE FROM alerts WHERE id=$1', [id]);
+}
+
+// ── Groups ────────────────────────────────────────────────────────────────────
+
+async function getGroups() {
+  const { rows } = await getPool().query('SELECT * FROM groups ORDER BY sort_order, name');
+  return rows;
+}
+
+// Original fazia SELECT MAX(sort_order) e depois INSERT em 2 chamadas --
+// mesma classe de race do SELECT+UPDATE (ver comentário no topo do
+// arquivo): 2 createGroup concorrentes poderiam ler o mesmo MAX antes de
+// qualquer INSERT, gerando sort_order duplicado. INSERT...SELECT numa
+// query só resolve a race entre chamadas JS (SELECT agregado sobre tabela
+// vazia ainda devolve 1 linha, COALESCE cobre o caso "nenhum grupo ainda").
+// Limitação conhecida (aceita, não corrigida): sob READ COMMITTED, duas
+// TRANSAÇÕES Postgres concorrentes ainda podem ler o mesmo MAX antes de
+// qualquer COMMIT. Sem impacto real -- sort_order não é UNIQUE, só name
+// (PK) é, e getGroups ordena por (sort_order, name), então um empate de
+// sort_order só degrada pro desempate alfabético, nunca gera erro/duplicata
+// de verdade. Criar grupo é ação admin rara via dashboard, não caminho
+// crítico de agente. Se algum dia importar eliminar de vez, usar
+// `SELECT ... FOR UPDATE` numa linha de lock ou advisory lock.
+async function createGroup(name) {
+  const now = new Date().toISOString();
+  await getPool().query(
+    `INSERT INTO groups (name, sort_order, created_at)
+     SELECT $1, COALESCE(MAX(sort_order),0)+1, $2 FROM groups
+     ON CONFLICT (name) DO NOTHING`,
+    [name, now]
+  );
+}
+
+// Envolvido em transação (melhoria deliberada sobre o original, mesmo
+// motivo de deleteMachine no Grupo 1): evita deixar a máquina sem grupo
+// (location='') mas o grupo ainda existindo, se a 2ª query falhar.
+async function deleteGroup(name) {
+  await withTransaction(async (client) => {
+    await client.query(`UPDATE machines SET location='' WHERE location=$1`, [name]);
+    await client.query('DELETE FROM groups WHERE name=$1', [name]);
+  });
+}
+
+async function renameGroup(oldName, newName) {
+  await withTransaction(async (client) => {
+    await client.query('UPDATE machines SET location=$1 WHERE location=$2', [newName, oldName]);
+    await client.query('UPDATE groups SET name=$1 WHERE name=$2', [newName, oldName]);
+  });
+}
+
+async function reorderGroups(names) {
+  await withTransaction(async (client) => {
+    for (let i = 0; i < names.length; i++) {
+      await client.query('UPDATE groups SET sort_order=$1 WHERE name=$2', [i, names[i]]);
+    }
+  });
+}
+
+// ── Win Events ────────────────────────────────────────────────────────────────
+
+const FOCUSED_EVENT_IDS = [41, 6008, 1074, 1001, 19, 20, 7034, 6005, 6006];
+
+// Loop de INSERT envolvido em transação (equivalente ao `.transaction()`
+// síncrono do better-sqlite3 original); purga de eventos >30 dias continua
+// como statement separado FORA da transação, igual ao original.
+async function saveWinEvents(machineId, events) {
+  await withTransaction(async (client) => {
+    for (const e of events) {
+      await client.query(
+        `INSERT INTO win_events (machine_id, event_time, event_id, source, level, translation, raw_message)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [machineId, e.eventTime, e.eventId, e.source, e.level, e.translation, e.rawMessage || null]
+      );
+    }
+  });
+
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  await getPool().query('DELETE FROM win_events WHERE machine_id=$1 AND event_time<$2', [machineId, cutoff]);
+}
+
+async function getWinEvents(machineId, scope = 'focused') {
+  if (scope === 'focused') {
+    const placeholders = FOCUSED_EVENT_IDS.map((_, i) => `$${i + 2}`).join(',');
+    const { rows } = await getPool().query(
+      `SELECT * FROM win_events
+       WHERE machine_id = $1 AND event_id IN (${placeholders})
+       ORDER BY event_time DESC LIMIT 200`,
+      [machineId, ...FOCUSED_EVENT_IDS]
+    );
+    return rows;
+  }
+  const { rows } = await getPool().query(
+    `SELECT * FROM win_events WHERE machine_id = $1 ORDER BY event_time DESC LIMIT 200`,
+    [machineId]
+  );
+  return rows;
+}
+
+async function markWinEventsRead(machineId) {
+  await getPool().query('UPDATE win_events SET is_read = 1 WHERE machine_id = $1', [machineId]);
+}
+
+async function countUnreadWinEvents(machineId) {
+  const { rows } = await getPool().query(
+    'SELECT COUNT(*) as c FROM win_events WHERE machine_id = $1 AND is_read = 0', [machineId]
+  );
+  return Number(rows[0].c);
+}
+
+// ── Insights ──────────────────────────────────────────────────────────────────
+
+async function saveInsight({ machineId, severity, pattern, solution, patternHash }) {
+  await getPool().query(
+    `INSERT INTO insights (machine_id, severity, pattern, solution, pattern_hash)
+     VALUES ($1,$2,$3,$4,$5) ON CONFLICT (pattern_hash) DO NOTHING`,
+    [machineId || null, severity, pattern, solution || null, patternHash]
+  );
+}
+
+async function getInsights({ machineId, limit = 50 } = {}) {
+  if (machineId) {
+    const { rows } = await getPool().query(
+      `SELECT * FROM insights WHERE machine_id = $1 ORDER BY generated_at DESC LIMIT $2`,
+      [machineId, limit]
+    );
+    return rows;
+  }
+  const { rows } = await getPool().query(
+    `SELECT i.*, m.display_name, m.hostname
+     FROM insights i
+     LEFT JOIN machines m ON i.machine_id = m.id
+     ORDER BY
+       CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+       generated_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return rows;
+}
+
+async function markInsightRead(id) {
+  await getPool().query('UPDATE insights SET is_read = 1 WHERE id = $1', [id]);
+}
+
+async function countUnreadInsights(machineId) {
+  if (machineId) {
+    const { rows } = await getPool().query(
+      'SELECT COUNT(*) as c FROM insights WHERE machine_id = $1 AND is_read = 0', [machineId]
+    );
+    return Number(rows[0].c);
+  }
+  const { rows } = await getPool().query('SELECT COUNT(*) as c FROM insights WHERE is_read = 0');
+  return Number(rows[0].c);
+}
+
 module.exports = {
   getPool, closePool, withTransaction,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
@@ -430,4 +628,8 @@ module.exports = {
   createCommand, getPendingCommands, ackCommand, purgeOrphanCommands, purgeOldTerminalCommands,
   getCommandHistory, getLastAlohaScan, getCommandById, getCommandResult,
   addEvent, getEvents,
+  getAlerts, createAlert, deleteAlert,
+  getGroups, createGroup, deleteGroup, renameGroup, reorderGroups,
+  saveWinEvents, getWinEvents, markWinEventsRead, countUnreadWinEvents,
+  saveInsight, getInsights, markInsightRead, countUnreadInsights,
 };
