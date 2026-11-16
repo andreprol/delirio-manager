@@ -3,8 +3,19 @@
 /**
  * Testes do Grupo 12 (zamak_device_cache, zamak_discrepancies,
  * zamak_threats, zamak_performance, zamak_outages) de server/db-pg.js
- * contra um Postgres real (instância dev). Nenhuma dessas tabelas tem FK
- * -- limpeza manual por device_id/store_name únicos.
+ * contra um Postgres real (instância dev).
+ *
+ * 🔴 Achado real do code-reviewer: replaceZamakDiscrepancies/Threats/
+ * Performance/Outages fazem DELETE da TABELA INTEIRA (sem WHERE) antes de
+ * inserir -- testar isso direto contra a instância dev COMPARTILHADA
+ * apagaria qualquer dado real de sync que estivesse lá (confirmado que
+ * hoje está vazio só porque esta instância foi criada nesta sessão e
+ * nenhum serviço de produção aponta pra ela ainda -- mas o padrão em si
+ * era perigoso e teria apagado dado de verdade assim que alguém rodasse
+ * um sync manual contra esta mesma instância). Todo teste que chama uma
+ * dessas 4 funções usa `withTableSnapshot` abaixo: captura o conteúdo
+ * ANTES, roda o teste, restaura (DELETE + re-INSERT do snapshot) no
+ * finally -- mesmo se o teste falhar.
  */
 
 const crypto = require('crypto');
@@ -29,16 +40,30 @@ describeDb('db-pg (Grupo 12: zamak_*)', () => {
     while (createdDeviceIds.length) {
       const deviceId = createdDeviceIds.pop();
       await pool.query('DELETE FROM zamak_device_cache WHERE device_id=$1', [deviceId]);
-      await pool.query('DELETE FROM zamak_threats WHERE device_id=$1', [deviceId]);
-      await pool.query('DELETE FROM zamak_performance WHERE device_id=$1', [deviceId]);
-      await pool.query('DELETE FROM zamak_outages WHERE device_id=$1', [deviceId]);
-      await pool.query('DELETE FROM zamak_discrepancies WHERE zamak_device_id=$1', [deviceId]);
     }
   });
 
   afterAll(async () => {
     await db.closePool();
   });
+
+  // `table` é sempre string literal fixa nas chamadas abaixo, nunca vinda
+  // de input externo -- mesma garantia de segurança de `deleteInBatches`
+  // no próprio db-pg.js.
+  async function withTableSnapshot(table, fn) {
+    const pool = db.getPool();
+    const { rows: snapshot } = await pool.query(`SELECT * FROM ${table}`);
+    try {
+      await fn();
+    } finally {
+      await pool.query(`DELETE FROM ${table}`);
+      for (const row of snapshot) {
+        const cols = Object.keys(row);
+        const placeholders = cols.map((_, i) => `$${i + 1}`).join(',');
+        await pool.query(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`, cols.map(c => row[c]));
+      }
+    }
+  }
 
   function deviceRow(overrides = {}) {
     const deviceId = `dev-${crypto.randomUUID()}`;
@@ -55,11 +80,13 @@ describeDb('db-pg (Grupo 12: zamak_*)', () => {
   }
 
   describe('upsertZamakDevices', () => {
+    // upsertZamakDevices é upsert por device_id (ON CONFLICT DO UPDATE),
+    // nunca apaga linha nenhuma -- não precisa de snapshot/restore.
     it('insere e, em conflito de device_id, atualiza (ON CONFLICT DO UPDATE)', async () => {
       const row = deviceRow();
       await db.upsertZamakDevices([row]);
 
-      let cached = await db.getZamakCachedDeviceIds();
+      const cached = await db.getZamakCachedDeviceIds();
       expect(cached.map(d => d.device_id)).toContain(row.device_id);
 
       await db.upsertZamakDevices([{ ...row, status: 'offline', patch_critical: 9 }]);
@@ -118,69 +145,73 @@ describeDb('db-pg (Grupo 12: zamak_*)', () => {
 
   describe('getZamakDiscrepancies (bug corrigido: consultava a tabela errada)', () => {
     it('lê de zamak_discrepancies (não zamak_device_cache)', async () => {
-      const deviceId = `dev-${crypto.randomUUID()}`;
-      createdDeviceIds.push(deviceId);
-      await db.replaceZamakDiscrepancies([
-        { type: 'missing_in_dm', device_name: 'PDV-X', store_name: 'Loja', zamak_device_id: deviceId, detected_at: new Date().toISOString() },
-      ]);
+      await withTableSnapshot('zamak_discrepancies', async () => {
+        const deviceId = `dev-${crypto.randomUUID()}`;
+        await db.replaceZamakDiscrepancies([
+          { type: 'missing_in_dm', device_name: 'PDV-X', store_name: 'Loja', zamak_device_id: deviceId, detected_at: new Date().toISOString() },
+        ]);
 
-      const discrepancies = await db.getZamakDiscrepancies();
-      expect(discrepancies.some(d => d.zamak_device_id === deviceId)).toBe(true);
-      expect(discrepancies[0]).toHaveProperty('detected_at'); // coluna real de zamak_discrepancies
+        const discrepancies = await db.getZamakDiscrepancies();
+        expect(discrepancies.some(d => d.zamak_device_id === deviceId)).toBe(true);
+        expect(discrepancies[0]).toHaveProperty('detected_at'); // coluna real de zamak_discrepancies
+      });
     });
   });
 
   describe('replaceZamakThreats / getZamakThreats', () => {
     it('substitui todo o conteúdo anterior (replace-all)', async () => {
-      const deviceId = `dev-${crypto.randomUUID()}`;
-      createdDeviceIds.push(deviceId);
-      await db.replaceZamakThreats([
-        { device_id: deviceId, device_name: 'PDV-1', store_name: 'Loja', threat_name: 'Trojan.X', category: 'malware', last_status: 'active', cached_at: new Date().toISOString() },
-      ]);
-      expect(await db.getZamakThreats('Loja')).toHaveLength(1);
+      await withTableSnapshot('zamak_threats', async () => {
+        const deviceId = `dev-${crypto.randomUUID()}`;
+        await db.replaceZamakThreats([
+          { device_id: deviceId, device_name: 'PDV-1', store_name: 'Loja', threat_name: 'Trojan.X', category: 'malware', last_status: 'active', cached_at: new Date().toISOString() },
+        ]);
+        expect(await db.getZamakThreats('Loja')).toHaveLength(1);
 
-      await db.replaceZamakThreats([]); // replace vazio -- limpa tudo
-      const { rows } = await db.getPool().query('SELECT COUNT(*) c FROM zamak_threats');
-      expect(Number(rows[0].c)).toBe(0);
+        await db.replaceZamakThreats([]); // replace vazio -- limpa tudo
+        const { rows } = await db.getPool().query('SELECT COUNT(*) c FROM zamak_threats');
+        expect(Number(rows[0].c)).toBe(0);
+      });
     });
   });
 
   describe('replaceZamakPerformance / getZamakPerformance', () => {
     it('salva métricas nullable corretamente', async () => {
-      const deviceId = `dev-${crypto.randomUUID()}`;
-      createdDeviceIds.push(deviceId);
-      await db.replaceZamakPerformance([
-        { device_id: deviceId, device_name: 'PDV-1', store_name: 'Loja', cpu_avg: 45.5, cpu_peak: 90.1, cached_at: new Date().toISOString() },
-      ]);
+      await withTableSnapshot('zamak_performance', async () => {
+        const deviceId = `dev-${crypto.randomUUID()}`;
+        await db.replaceZamakPerformance([
+          { device_id: deviceId, device_name: 'PDV-1', store_name: 'Loja', cpu_avg: 45.5, cpu_peak: 90.1, cached_at: new Date().toISOString() },
+        ]);
 
-      const perf = await db.getZamakPerformance('Loja');
-      expect(perf[0].cpu_avg).toBeCloseTo(45.5, 2);
-      expect(perf[0].ram_total_mb).toBeNull();
+        const perf = await db.getZamakPerformance('Loja');
+        expect(perf[0].cpu_avg).toBeCloseTo(45.5, 2);
+        expect(perf[0].ram_total_mb).toBeNull();
+      });
     });
   });
 
   describe('replaceZamakOutages / getZamakOutages', () => {
     it('ON CONFLICT DO NOTHING em outage_id duplicado, NULL nunca conflita', async () => {
-      const deviceId = `dev-${crypto.randomUUID()}`;
-      createdDeviceIds.push(deviceId);
-      const outageId = `out-${crypto.randomUUID()}`;
+      await withTableSnapshot('zamak_outages', async () => {
+        const deviceId = `dev-${crypto.randomUUID()}`;
+        const outageId = `out-${crypto.randomUUID()}`;
+        const now = new Date().toISOString();
 
-      const now = new Date().toISOString();
-      await db.replaceZamakOutages([
-        { outage_id: outageId, device_id: deviceId, device_name: 'PDV-1', store_name: 'Loja', reason: 'power', state: 'resolved', utc_start: now, cached_at: now },
-      ]);
-      // replaceZamakOutages faz DELETE FROM zamak_outages (tabela inteira) antes de inserir --
-      // então essa 2ª chamada sempre insere de novo (outageId não existe mais depois do DELETE).
-      // O teste de ON CONFLICT em si está coberto indiretamente: outage_id repetido DENTRO do
-      // mesmo array de replace não duplicaria.
-      await db.replaceZamakOutages([
-        { outage_id: outageId, device_id: deviceId, device_name: 'PDV-1', store_name: 'Loja', reason: 'power', state: 'resolved', utc_start: now, cached_at: now },
-        { outage_id: outageId, device_id: deviceId, device_name: 'PDV-1', store_name: 'Loja', reason: 'power-dup', state: 'resolved', utc_start: now, cached_at: now },
-      ]);
+        await db.replaceZamakOutages([
+          { outage_id: outageId, device_id: deviceId, device_name: 'PDV-1', store_name: 'Loja', reason: 'power', state: 'resolved', utc_start: now, cached_at: now },
+        ]);
+        // replaceZamakOutages faz DELETE FROM zamak_outages (tabela inteira) antes de inserir --
+        // então essa 2ª chamada sempre insere de novo (outageId não existe mais depois do DELETE).
+        // O teste de ON CONFLICT em si está coberto indiretamente: outage_id repetido DENTRO do
+        // mesmo array de replace não duplicaria.
+        await db.replaceZamakOutages([
+          { outage_id: outageId, device_id: deviceId, device_name: 'PDV-1', store_name: 'Loja', reason: 'power', state: 'resolved', utc_start: now, cached_at: now },
+          { outage_id: outageId, device_id: deviceId, device_name: 'PDV-1', store_name: 'Loja', reason: 'power-dup', state: 'resolved', utc_start: now, cached_at: now },
+        ]);
 
-      const outages = await db.getZamakOutages('Loja');
-      expect(outages).toHaveLength(1); // a 2ª com mesmo outage_id foi ignorada
-      expect(outages[0].reason).toBe('power'); // a 1ª venceu
+        const outages = await db.getZamakOutages('Loja');
+        expect(outages).toHaveLength(1); // a 2ª com mesmo outage_id foi ignorada
+        expect(outages[0].reason).toBe('power'); // a 1ª venceu
+      });
     });
   });
 });

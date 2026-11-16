@@ -1936,6 +1936,13 @@ function getZamakSummaryForStore(storeName) {
   };
 }
 
+// BUG conhecido (achado 16/11/2026 portando pra db-pg.js, ver Grupo 12 em
+// project_delirio_manager_incidente_sqlite_15_11 na memória): devia
+// consultar `zamak_discrepancies`, não `zamak_device_cache` (que nem tem
+// coluna `detected_at`). Função exportada mas nunca chamada em nenhum
+// route/service -- por isso nunca deu erro em produção. Não corrigido
+// aqui de propósito (fora do escopo da migração tocar o SQLite em
+// produção); já corrigido na versão Postgres (db-pg.js).
 function getZamakDiscrepancies() {
   return getDb().prepare(
     `SELECT * FROM zamak_device_cache ORDER BY detected_at DESC`

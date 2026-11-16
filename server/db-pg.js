@@ -74,6 +74,11 @@
 // função exportada mas nunca chamada em nenhum route/service (confirmado
 // via grep), por isso nunca deu erro em produção. Corrigido no port.
 //
+// Grupo 13 (NCR Monitor + service_status) -- `datetime(x) <= datetime('now')`
+// do original só normaliza formato antes de comparar; como os timestamps
+// aqui já são sempre `toISOString()` (confirmado nos call sites),
+// comparação direta de string TEXT basta, sem função de data nenhuma.
+//
 // Regras de tradução (mesmas de todo o arquivo, ver migrations/ pro schema):
 //   - `?` -> `$1,$2...`
 //   - `.prepare(sql).get/all/run()` -> `await pool.query(sql, params)`, lendo
@@ -1865,8 +1870,12 @@ async function getZamakCacheAge() {
 
 // Resumo por loja: agregados de patches, ameaças e failing checks. Todos os
 // 7 campos são COUNT/SUM -- todos precisam de Number() (bigint-como-string
-// do Postgres). Number(null) é 0 em JS, então o fallback funciona mesmo sem
-// `|| 0` por campo.
+// do Postgres). Loja sem nenhum device: a query ainda devolve exatamente 1
+// linha (agregado sem GROUP BY sempre devolve, mesmo com 0 matches --
+// COUNT=0, SUM=NULL), então `row` nunca é undefined/ausente de verdade; é
+// o `Number(null) === 0` de cada campo (não o `if (!row)` abaixo) que
+// produz os zeros nesse caso. O `if (!row)` é só defensivo/morto -- mesma
+// situação já confirmada em getWeightedMetricsForStore (Grupo 11).
 async function getZamakSummaryForStore(storeName) {
   const { rows } = await getPool().query(
     `SELECT
@@ -1999,6 +2008,117 @@ async function getZamakOutages(storeName) {
   return rows;
 }
 
+// ── NCR Monitor — Check de Encomendas ────────────────────────────────────────
+
+async function ncrInsertEmail(row) {
+  const result = await getPool().query(
+    `INSERT INTO ncr_monitor_emails
+      (message_id, received_at, order_ref, enterprise_unit_id, store_name,
+       boh_hostname, machine_id, total_value, date_brt, lead_minutes, products_json)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     ON CONFLICT (message_id) DO NOTHING`,
+    [
+      row.message_id, row.received_at, row.order_ref || null,
+      row.enterprise_unit_id || null, row.store_name || null,
+      row.boh_hostname || null, row.machine_id || null,
+      row.total_value != null ? row.total_value : null,
+      row.date_brt || null,
+      row.lead_minutes || 0,
+      row.products_json || null,
+    ]
+  );
+  return result.rowCount;
+}
+
+async function ncrGetByMessageId(messageId) {
+  const { rows } = await getPool().query('SELECT * FROM ncr_monitor_emails WHERE message_id = $1', [messageId]);
+  return rows[0];
+}
+
+async function ncrGetByCommandId(commandId) {
+  const { rows } = await getPool().query('SELECT * FROM ncr_monitor_emails WHERE command_id = $1', [commandId]);
+  return rows[0];
+}
+
+async function ncrUpdate(id, fields) {
+  const keys = Object.keys(fields);
+  if (!keys.length) return;
+  const set = keys.map((k, i) => `${k}=$${i + 1}`).join(', ');
+  await getPool().query(
+    `UPDATE ncr_monitor_emails SET ${set} WHERE id=$${keys.length + 1}`,
+    [...keys.map(k => fields[k]), id]
+  );
+}
+
+// `datetime(x) <= datetime('now')` do original só normaliza formato de data
+// antes de comparar -- next_retry_at já é sempre `toISOString()` (confirmado
+// no único call site, routes/agent.js:373), então comparação direta de
+// string funciona igual (mesma convenção de timestamp-como-TEXT usada em
+// todo o resto do db-pg.js).
+async function ncrGetPendingRetries() {
+  const now = new Date().toISOString();
+  const { rows } = await getPool().query(
+    `SELECT * FROM ncr_monitor_emails
+     WHERE danfe_found IS NULL
+       AND retry_count > 0
+       AND retry_count < 5
+       AND machine_id IS NOT NULL
+       AND (next_retry_at IS NULL OR next_retry_at <= $1)
+       AND command_id IS NOT NULL`,
+    [now]
+  );
+  return rows;
+}
+
+async function ncrGetAckTimedOut(cutoffIso) {
+  const { rows } = await getPool().query(
+    `SELECT e.id, e.order_ref, e.boh_hostname, e.command_id,
+            c.created_at AS cmd_created_at
+     FROM ncr_monitor_emails e
+     JOIN commands c ON c.id = e.command_id
+     WHERE e.danfe_found IS NULL
+       AND e.machine_id IS NOT NULL
+       AND e.command_id IS NOT NULL
+       AND e.notified_at IS NULL
+       AND c.acked_at IS NULL
+       AND c.created_at < $1`,
+    [cutoffIso]
+  );
+  return rows;
+}
+
+// ── Monitoramento de serviços NCR Voyix (BOH) ───────────────────────────────────
+
+async function upsertServiceStatus(machineId, serviceName, status, lastRestartAt, lastRestartOk) {
+  const now = new Date().toISOString();
+  await getPool().query(
+    `INSERT INTO service_status (machine_id, service_name, status, last_restart_at, last_restart_ok, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (machine_id, service_name) DO UPDATE SET
+       status          = EXCLUDED.status,
+       last_restart_at = EXCLUDED.last_restart_at,
+       last_restart_ok = EXCLUDED.last_restart_ok,
+       updated_at      = EXCLUDED.updated_at`,
+    [machineId, serviceName, status, lastRestartAt ?? null, lastRestartOk ?? null, now]
+  );
+}
+
+// `UPPER(m.hostname) LIKE '%BOH'` não precisa de ILIKE: o lado esquerdo já é
+// forçado pra uppercase e o padrão já é literal uppercase, então a
+// case-sensitividade do LIKE nunca entra em jogo aqui -- diferente de
+// searchNFCe (Grupo 6), onde o termo de busca vinha direto do usuário.
+async function getServiceStatusBOH() {
+  const { rows } = await getPool().query(
+    `SELECT s.machine_id, s.service_name, s.status AS service_status,
+            s.last_restart_at, s.last_restart_ok, s.updated_at
+     FROM service_status s
+     JOIN machines m ON m.id = s.machine_id
+     WHERE UPPER(m.hostname) LIKE '%BOH'
+     ORDER BY m.hostname, s.service_name`
+  );
+  return rows;
+}
+
 module.exports = {
   getPool, closePool, withTransaction,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
@@ -2038,4 +2158,7 @@ module.exports = {
   getZamakCachedDeviceIds, getZamakCacheAge, getZamakSummaryForStore, getZamakDiscrepancies,
   replaceZamakThreats, getZamakThreats, replaceZamakPerformance, getZamakPerformance,
   replaceZamakOutages, getZamakOutages,
+  ncrInsertEmail, ncrGetByMessageId, ncrGetByCommandId, ncrUpdate,
+  ncrGetPendingRetries, ncrGetAckTimedOut,
+  upsertServiceStatus, getServiceStatusBOH,
 };
