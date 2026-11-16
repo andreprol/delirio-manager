@@ -123,25 +123,37 @@ describeDb('db-pg (Grupo 4: win_events + insights)', () => {
       await db.saveInsight({ machineId, severity: 'warning', pattern: 'w', patternHash: warningHash });
       await db.saveInsight({ machineId, severity: 'critical', pattern: 'c', patternHash: criticalHash });
 
+      // getInsights({limit:500}) lê o estado GLOBAL da instância dev
+      // compartilhada -- se outro processo tiver >500 insights mais
+      // recentes, um dos dois hashes cairia fora da janela do LIMIT e
+      // findIndex devolveria -1 silenciosamente (toBeLessThan(-1, N) passa
+      // sem checar nada de verdade). Filtra só pelos 2 hashes deste teste
+      // e confirma que ambos foram encontrados antes de comparar a ordem.
       const all = await db.getInsights({ limit: 500 });
-      const warningIdx = all.findIndex(i => i.pattern_hash === warningHash);
-      const criticalIdx = all.findIndex(i => i.pattern_hash === criticalHash);
+      const mine = all.filter(i => i.pattern_hash === warningHash || i.pattern_hash === criticalHash);
+      const warningIdx = mine.findIndex(i => i.pattern_hash === warningHash);
+      const criticalIdx = mine.findIndex(i => i.pattern_hash === criticalHash);
+      expect(warningIdx).not.toBe(-1);
+      expect(criticalIdx).not.toBe(-1);
       expect(criticalIdx).toBeLessThan(warningIdx);
-      expect(all[criticalIdx].display_name).toBe('PDV Teste');
+      expect(mine[criticalIdx].display_name).toBe('PDV Teste');
     });
 
-    it('markInsightRead zera countUnreadInsights(machineId) e countUnreadInsights() global', async () => {
+    it('markInsightRead zera countUnreadInsights(machineId) e decrementa countUnreadInsights() global', async () => {
       const machineId = await insertMachine();
       const patternHash = uniqueHash();
       await db.saveInsight({ machineId, severity: 'warning', pattern: 'p', patternHash });
       const [row] = await db.getInsights({ machineId });
 
       expect(await db.countUnreadInsights(machineId)).toBeGreaterThanOrEqual(1);
-      await db.markInsightRead(row.id);
-      expect(await db.countUnreadInsights(machineId)).toBe(0);
+      const globalBefore = await db.countUnreadInsights();
+      expect(globalBefore).toBeGreaterThanOrEqual(1);
 
-      const globalCount = await db.countUnreadInsights();
-      expect(typeof globalCount).toBe('number');
+      await db.markInsightRead(row.id);
+
+      expect(await db.countUnreadInsights(machineId)).toBe(0);
+      const globalAfter = await db.countUnreadInsights();
+      expect(globalAfter).toBe(globalBefore - 1);
     });
   });
 });

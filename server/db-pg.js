@@ -28,6 +28,17 @@
 // "countUnread*" precisa de Number() explícito (mesma lição de
 // purgeOrphanCommands no Grupo 2).
 //
+// Grupo 5 (clock_offboard_log + clock_operation_log, LGPD Art. 15/16) --
+// todas as funções do domínio, tradução 1:1 sem nenhum padrão novo.
+//
+// Grupo 6 (NF-Ce: nfce_index, nfce_indexed_days, nfce_auto_email_log) --
+// 2 achados novos: (a) `LIKE` do SQLite é case-insensitive pra ASCII por
+// padrão, `LIKE` do Postgres é case-sensitive -- usar `ILIKE` pra manter o
+// comportamento de busca; (b) getNFCeIndexStatus tem VÁRIOS COUNT/SUM que
+// precisam de Number() -- inclusive um caso em que o `|| 0` de uma função
+// auxiliar (_parseSessionRow) não pegaria uma string bigint não-vazia
+// ("0" || 0 === "0").
+//
 // Regras de tradução (mesmas de todo o arquivo, ver migrations/ pro schema):
 //   - `?` -> `$1,$2...`
 //   - `.prepare(sql).get/all/run()` -> `await pool.query(sql, params)`, lendo
@@ -523,6 +534,9 @@ async function reorderGroups(names) {
 
 // ── Win Events ────────────────────────────────────────────────────────────────
 
+// IDs do Windows Event Log monitorados no modo "Focado"
+// 41=reinício inesperado, 6008=desligamento inesperado, 1074=desligamento programado,
+// 1001=BSOD, 19=update OK, 20=update falhou, 7034=serviço caiu, 6005=boot, 6006=shutdown limpo
 const FOCUSED_EVENT_IDS = [41, 6008, 1074, 1001, 19, 20, 7034, 6005, 6006];
 
 // Loop de INSERT envolvido em transação (equivalente ao `.transaction()`
@@ -618,6 +632,271 @@ async function countUnreadInsights(machineId) {
   return Number(rows[0].c);
 }
 
+// ── Clock Offboard Log (LGPD Art. 15/16) ─────────────────────────────────────
+
+async function logClockOffboard({ cpf, employeeName, triggeredBy, timestamp, success, removed, alreadyAbsent, failed, detail }) {
+  await getPool().query(
+    `INSERT INTO clock_offboard_log
+      (cpf, employee_name, triggered_by, timestamp, success, removed, already_absent, failed, detail)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [cpf, employeeName, triggeredBy, timestamp, success, removed, alreadyAbsent, failed, detail]
+  );
+}
+
+async function getClockOffboardLog(limit = 100) {
+  const { rows } = await getPool().query(
+    'SELECT * FROM clock_offboard_log ORDER BY timestamp DESC LIMIT $1', [limit]
+  );
+  return rows;
+}
+
+async function logClockOperation({ operation, cpf, employeeName, triggeredBy, timestamp, success, total, okCount, failedCount, detail }) {
+  await getPool().query(
+    `INSERT INTO clock_operation_log
+      (operation, cpf, employee_name, triggered_by, timestamp, success, total, ok_count, failed_count, detail)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [
+      operation,
+      cpf,
+      employeeName || '',
+      triggeredBy || '',
+      timestamp,
+      success ? 1 : 0,
+      total || 0,
+      okCount || 0,
+      failedCount || 0,
+      typeof detail === 'string' ? detail : JSON.stringify(detail || []),
+    ]
+  );
+}
+
+async function getClockOperationLog(limit = 100, operation = null) {
+  if (operation) {
+    const { rows } = await getPool().query(
+      'SELECT * FROM clock_operation_log WHERE operation = $1 ORDER BY timestamp DESC LIMIT $2',
+      [operation, limit]
+    );
+    return rows;
+  }
+  const { rows } = await getPool().query(
+    'SELECT * FROM clock_operation_log ORDER BY timestamp DESC LIMIT $1', [limit]
+  );
+  return rows;
+}
+
+// ── NF-Ce Index ───────────────────────────────────────────────────────────────
+
+// ON CONFLICT(...) DO UPDATE SET x=excluded.x é sintaxe que o Postgres
+// originou e o SQLite copiou -- traduz quase sem mudança, só `excluded`
+// (minúsculo no SQLite) -> `EXCLUDED` (convenção Postgres, case-insensitive
+// de qualquer forma) e `?` -> `$N`. Loop de upserts envolvido em transação
+// (equivalente ao `.transaction()` síncrono original).
+async function upsertNFCeRecords(machineId, records) {
+  const now = new Date().toISOString();
+  await withTransaction(async (client) => {
+    for (const r of records) {
+      const monthYear = (r.dh_emi || '').slice(0, 7);
+      const productsText = (r.danfe?.products || []).map(p => p.xProd || '').join(' | ');
+      await client.query(
+        `INSERT INTO nfce_index
+          (machine_id, chave, n_nf, dh_emi, v_nf, day_folder, month_year, products_text, danfe_json, indexed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT (machine_id, chave) DO UPDATE SET
+           n_nf          = EXCLUDED.n_nf,
+           dh_emi        = EXCLUDED.dh_emi,
+           v_nf          = EXCLUDED.v_nf,
+           products_text = EXCLUDED.products_text,
+           danfe_json    = EXCLUDED.danfe_json,
+           indexed_at    = EXCLUDED.indexed_at`,
+        [
+          machineId, r.chave, r.n_nf || 0, r.dh_emi || '',
+          r.v_nf || 0, r.day_folder || '', monthYear,
+          productsText, JSON.stringify(r.danfe || {}), now,
+        ]
+      );
+    }
+  });
+}
+
+// `LIKE` do SQLite é case-insensitive pra ASCII por padrão; `LIKE` do
+// Postgres é case-sensitive -- precisa de `ILIKE` pra manter a mesma busca
+// "contém, sem diferenciar maiúscula/minúscula" que o original tinha de
+// graça.
+async function searchNFCe({ machineId, dateFrom, dateTo, valueMin, valueMax, product, limit = 50, offset = 0 }) {
+  const pool = getPool();
+  const conditions = ['machine_id = $1'];
+  const args = [machineId];
+
+  if (dateFrom) { args.push(dateFrom); conditions.push(`dh_emi >= $${args.length}`); }
+  if (dateTo) { args.push(dateTo + 'T23:59:59'); conditions.push(`dh_emi <= $${args.length}`); }
+  if (valueMin != null) { args.push(valueMin); conditions.push(`v_nf >= $${args.length}`); }
+  if (valueMax != null) { args.push(valueMax); conditions.push(`v_nf <= $${args.length}`); }
+  if (product) { args.push(`%${product}%`); conditions.push(`products_text ILIKE $${args.length}`); }
+
+  const where = conditions.join(' AND ');
+  const { rows: totalRows } = await pool.query(`SELECT COUNT(*) as c FROM nfce_index WHERE ${where}`, args);
+  const total = Number(totalRows[0].c);
+
+  const { rows } = await pool.query(
+    `SELECT id, chave, n_nf, dh_emi, v_nf, day_folder, month_year, products_text, indexed_at
+     FROM nfce_index WHERE ${where}
+     ORDER BY dh_emi DESC LIMIT $${args.length + 1} OFFSET $${args.length + 2}`,
+    [...args, limit, offset]
+  );
+
+  return { total, results: rows };
+}
+
+async function getNFCeByChave(machineId, chave) {
+  const { rows } = await getPool().query(
+    'SELECT * FROM nfce_index WHERE machine_id = $1 AND chave = $2', [machineId, chave]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return { ...row, danfe: JSON.parse(row.danfe_json || '{}') };
+}
+
+// Função pura, sem query -- idêntica ao original.
+function _parseSessionRow(sess) {
+  return {
+    totalDays:        sess?.total      || 0,
+    pendingDays:      sess?.pending    || 0,
+    sessionStartedAt: sess?.started_at || null,
+  };
+}
+
+// COUNT(*)/SUM(...) do Postgres devolvem bigint como STRING via `pg` --
+// convertidos pra Number ANTES de chegar em _parseSessionRow (o `|| 0` de
+// _parseSessionRow não pega string não-vazia: "0" || 0 === "0", não 0).
+async function getNFCeIndexStatus(machineId) {
+  const pool = getPool();
+
+  const { rows: monthRows } = await pool.query(
+    `SELECT month_year, COUNT(*) as total, MAX(indexed_at) as last_indexed
+     FROM nfce_index WHERE machine_id = $1
+     GROUP BY month_year ORDER BY month_year DESC LIMIT 12`,
+    [machineId]
+  );
+  const months = monthRows.map(r => ({ ...r, total: Number(r.total) }));
+
+  const { rows: totalRows } = await pool.query(
+    'SELECT COUNT(*) as c FROM nfce_index WHERE machine_id = $1', [machineId]
+  );
+  const totalRecords = Number(totalRows[0]?.c || 0);
+
+  const { rows: listCmdRows } = await pool.query(
+    `SELECT status, acked_at, created_at FROM commands
+     WHERE machine_id = $1 AND type = 'aloha-list-nfce-months' ORDER BY created_at DESC LIMIT 1`,
+    [machineId]
+  );
+  const listCmd = listCmdRows[0] || null;
+
+  // Sessão atual: todos os aloha-index-nfce-day enfileirados desde o último
+  // aloha-list-nfce-months. pendingDays sem valor inicial de propósito --
+  // os dois branches abaixo sempre reatribuem antes de qualquer leitura.
+  let totalDays = 0, pendingDays, processedDays = 0, sessionStartedAt = null;
+  if (listCmd) {
+    const { rows: sessRows } = await pool.query(
+      `SELECT
+         COUNT(*) as total,
+         SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+         MIN(created_at) as started_at
+       FROM commands
+       WHERE machine_id = $1 AND type = 'aloha-index-nfce-day' AND created_at >= $2`,
+      [machineId, listCmd.created_at]
+    );
+    const sessRaw = sessRows[0];
+    const sess = sessRaw
+      ? { total: Number(sessRaw.total), pending: Number(sessRaw.pending || 0), started_at: sessRaw.started_at }
+      : null;
+    ({ totalDays, pendingDays, sessionStartedAt } = _parseSessionRow(sess));
+    processedDays = totalDays - pendingDays;
+  } else {
+    const { rows: pendingRows } = await pool.query(
+      `SELECT COUNT(*) as c FROM commands WHERE machine_id = $1 AND type = 'aloha-index-nfce-day' AND status = 'pending'`,
+      [machineId]
+    );
+    pendingDays = Number(pendingRows[0]?.c || 0);
+  }
+
+  return {
+    months,
+    totalRecords,
+    pendingDays,
+    totalDays,
+    processedDays,
+    sessionStartedAt,
+    listMonths: listCmd,
+  };
+}
+
+// ── NF-Ce indexação incremental ─────────────────────────────────────────────
+// Rastreia quais dias já foram indexados por máquina, pra "Indexar mês atual" /
+// "Indexar histórico completo" / scheduler noturno pularem dias já processados
+// em vez de reenfileirar tudo a cada clique/execução.
+
+async function markNFCeDayIndexed(machineId, dayKey, recordCount) {
+  await getPool().query(
+    `INSERT INTO nfce_indexed_days (machine_id, day_key, record_count, indexed_at)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (machine_id, day_key) DO UPDATE SET
+       record_count = EXCLUDED.record_count,
+       indexed_at   = EXCLUDED.indexed_at`,
+    [machineId, dayKey, recordCount || 0, new Date().toISOString()]
+  );
+}
+
+// Retorna o Set de day_keys ("YYYY-MM-DD") já indexados para a máquina.
+async function getIndexedDayKeysSet(machineId) {
+  const { rows } = await getPool().query(
+    'SELECT day_key FROM nfce_indexed_days WHERE machine_id = $1', [machineId]
+  );
+  return new Set(rows.map(r => r.day_key));
+}
+
+// Chave "YYYY-MM-DD" de hoje (hora local do servidor) — o dia corrente nunca
+// é pulado na indexação incremental porque a loja pode ainda estar vendendo.
+// Função pura, sem query -- idêntica ao original.
+function todayDayKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+// ── NF-Ce auto-envio por e-mail ─────────────────────────────────────────────
+// Reivindicação atômica por chave (única nacionalmente) — evita enviar a
+// mesma DANFE 2x mesmo se duas passadas de indexação processarem a mesma nota
+// em paralelo ou em execuções diferentes.
+
+// Retorna true se esta chamada "ganhou" a reivindicação (pode prosseguir pro
+// envio); false se já foi reivindicada antes (enviada, falhou ou em curso).
+// `rowCount` do pg já reflete se o INSERT foi afetado de verdade (0 se o
+// ON CONFLICT DO NOTHING descartou) -- equivalente direto ao `.changes`
+// do better-sqlite3, sem o problema de bigint-como-string (rowCount é
+// metadado do driver, não coluna de resultado).
+async function claimAutoEmail(chave, machineId, emailTo) {
+  const result = await getPool().query(
+    `INSERT INTO nfce_auto_email_log (chave, machine_id, email_to, status, created_at)
+     VALUES ($1,$2,$3,'pending',$4)
+     ON CONFLICT (chave) DO NOTHING`,
+    [chave, machineId, emailTo, new Date().toISOString()]
+  );
+  return result.rowCount === 1;
+}
+
+async function markAutoEmailSent(chave) {
+  await getPool().query(
+    `UPDATE nfce_auto_email_log SET status='sent', sent_at=$1 WHERE chave=$2`,
+    [new Date().toISOString(), chave]
+  );
+}
+
+async function markAutoEmailFailed(chave, error) {
+  await getPool().query(
+    `UPDATE nfce_auto_email_log SET status='failed', error=$1 WHERE chave=$2`,
+    [String(error || '').slice(0, 500), chave]
+  );
+}
+
 module.exports = {
   getPool, closePool, withTransaction,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
@@ -632,4 +911,8 @@ module.exports = {
   getGroups, createGroup, deleteGroup, renameGroup, reorderGroups,
   saveWinEvents, getWinEvents, markWinEventsRead, countUnreadWinEvents,
   saveInsight, getInsights, markInsightRead, countUnreadInsights,
+  logClockOffboard, getClockOffboardLog, logClockOperation, getClockOperationLog,
+  upsertNFCeRecords, searchNFCe, getNFCeByChave, getNFCeIndexStatus,
+  markNFCeDayIndexed, getIndexedDayKeysSet, todayDayKey,
+  claimAutoEmail, markAutoEmailSent, markAutoEmailFailed,
 };
