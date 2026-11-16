@@ -4,6 +4,7 @@ const db     = require('../db');
 const logger = require('./logger');
 
 const RETENTION_DAYS = 90;
+const COMMANDS_RETENTION_DAYS = 30;
 
 function runPurgeOnce() {
   try {
@@ -17,6 +18,22 @@ function runPurgeOnce() {
     // outage do servidor inteiro (mesma lição do incidente WAL 275GB).
     logger.error('[ActivityRetention] erro ao purgar activity_log', { error: err.message });
     return 0;
+  }
+}
+
+async function runCommandsPurgeOnce() {
+  try {
+    const orphans = await db.purgeOrphanCommands();
+    const old     = await db.purgeOldTerminalCommands(COMMANDS_RETENTION_DAYS);
+    if (orphans > 0 || old > 0) {
+      logger.info(`[ActivityRetention] commands: ${orphans} órfãos + ${old} terminais > ${COMMANDS_RETENTION_DAYS}d removidos`);
+    }
+    return { orphans, old };
+  } catch (err) {
+    // Mesma lição do incidente 15/11/2026: um erro de purge não pode virar
+    // outage do servidor inteiro.
+    logger.error('[ActivityRetention] erro ao purgar commands', { error: err.message });
+    return { orphans: 0, old: 0 };
   }
 }
 
@@ -34,12 +51,17 @@ function scheduleNext() {
   const delayMs = next - now;
   timer = setTimeout(() => {
     runPurgeOnce();
+    runCommandsPurgeOnce(); // fire-and-forget — ver comentário em scheduleDailyPurge
     scheduleNext();
   }, delayMs);
 }
 
 function scheduleDailyPurge() {
   runPurgeOnce(); // imediato no boot, não espera até a próxima janela
+  // Sem await de propósito: runCommandsPurgeOnce roda em batches que cedem o
+  // event loop entre lotes (ver db.js), então não precisa (e não deve)
+  // bloquear o boot do servidor esperando o backlog inteiro ser limpo.
+  runCommandsPurgeOnce();
   scheduleNext();
 }
 
@@ -48,4 +70,7 @@ function stop() {
   timer = null;
 }
 
-module.exports = { runPurgeOnce, scheduleDailyPurge, stop, RETENTION_DAYS };
+module.exports = {
+  runPurgeOnce, runCommandsPurgeOnce, scheduleDailyPurge, stop,
+  RETENTION_DAYS, COMMANDS_RETENTION_DAYS,
+};

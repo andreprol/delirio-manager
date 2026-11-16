@@ -2,9 +2,14 @@
 
 jest.mock('../db', () => ({
   purgeActivityLog: jest.fn(() => 3),
+  purgeOrphanCommands: jest.fn(async () => 0),
+  purgeOldTerminalCommands: jest.fn(async () => 0),
 }));
 
-const { runPurgeOnce, scheduleDailyPurge, stop, RETENTION_DAYS } = require('./activityRetention');
+const {
+  runPurgeOnce, runCommandsPurgeOnce, scheduleDailyPurge, stop,
+  RETENTION_DAYS, COMMANDS_RETENTION_DAYS,
+} = require('./activityRetention');
 
 afterEach(() => stop());
 
@@ -27,12 +32,48 @@ describe('runPurgeOnce', () => {
   });
 });
 
+describe('runCommandsPurgeOnce', () => {
+  it('chama purgeOrphanCommands e purgeOldTerminalCommands (com COMMANDS_RETENTION_DAYS) e retorna o resultado', async () => {
+    const db = require('../db');
+    db.purgeOrphanCommands.mockResolvedValueOnce(56171);
+    db.purgeOldTerminalCommands.mockResolvedValueOnce(120);
+
+    const result = await runCommandsPurgeOnce();
+
+    expect(db.purgeOrphanCommands).toHaveBeenCalledWith();
+    expect(db.purgeOldTerminalCommands).toHaveBeenCalledWith(COMMANDS_RETENTION_DAYS);
+    expect(result).toEqual({ orphans: 56171, old: 120 });
+  });
+
+  it('erro no purge de órfãos não lança — retorna zeros e segue (sem chamar o purge de antigos)', async () => {
+    const db = require('../db');
+    db.purgeOrphanCommands.mockRejectedValueOnce(new Error('disco cheio'));
+    db.purgeOldTerminalCommands.mockClear();
+
+    const result = await runCommandsPurgeOnce();
+
+    expect(result).toEqual({ orphans: 0, old: 0 });
+    expect(db.purgeOldTerminalCommands).not.toHaveBeenCalled();
+  });
+
+  it('erro no purge de antigos não lança — retorna zeros e segue', async () => {
+    const db = require('../db');
+    db.purgeOldTerminalCommands.mockRejectedValueOnce(new Error('disco cheio'));
+
+    const result = await runCommandsPurgeOnce();
+
+    expect(result).toEqual({ orphans: 0, old: 0 });
+  });
+});
+
 describe('scheduleDailyPurge / stop', () => {
   it('roda o purge imediatamente no boot', () => {
     const db = require('../db');
     db.purgeActivityLog.mockClear();
+    db.purgeOrphanCommands.mockClear();
     scheduleDailyPurge();
     expect(db.purgeActivityLog).toHaveBeenCalledTimes(1);
+    expect(db.purgeOrphanCommands).toHaveBeenCalledTimes(1);
   });
 
   it('stop() sem agendamento ativo não lança', () => {

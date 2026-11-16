@@ -74,6 +74,9 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_commands_machine_status
       ON commands(machine_id, status);
 
+    CREATE INDEX IF NOT EXISTS idx_commands_status_created
+      ON commands(status, created_at);
+
     CREATE TABLE IF NOT EXISTS events (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       machine_id TEXT NOT NULL,
@@ -840,6 +843,62 @@ function ackCommand(commandId, machineId, success, message) {
     SET status=?, acked_at=?, result=?
     WHERE id=? AND machine_id=?`
   ).run(success ? 'acked' : 'failed', now, message || '', commandId, machineId);
+}
+
+// `commands` nunca teve limpeza (sem FK pra machines, sem retenção) e chegou
+// a 106.220 linhas (56.171 órfãs de uma única máquina removida há 2 meses),
+// inchando o banco pra 51GB e piorando a contenção de escrita no incidente
+// de 15/11/2026 (ver memória do projeto). purgeOrphanCommands e
+// purgeOldTerminalCommands abaixo fazem essa limpeza em batches (1000
+// linhas + 100ms entre lotes — padrão já usado neste projeto pra
+// DELETE/UPDATE em escala, ver feedback_sqlite_batch_migration na memória):
+// um DELETE único cobrindo dezenas de milhares de linhas trava o writer
+// síncrono do better-sqlite3 por tempo demais, inclusive bloqueando o
+// event loop do Node inteiro — exatamente o tipo de contenção que este fix
+// existe para evitar, não reintroduzir.
+const COMMANDS_PURGE_BATCH_SIZE = 1000;
+const COMMANDS_PURGE_BATCH_SLEEP_MS = 100;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Apaga de `commands` em lotes de COMMANDS_PURGE_BATCH_SIZE, cedendo o event
+// loop (sleep de COMMANDS_PURGE_BATCH_SLEEP_MS) entre lotes — usado por
+// purgeOrphanCommands e purgeOldTerminalCommands abaixo.
+async function deleteCommandsInBatches(whereSql, params) {
+  const d = getDb();
+  let total = 0;
+  for (;;) {
+    const info = d.prepare(`
+      DELETE FROM commands WHERE rowid IN (
+        SELECT rowid FROM commands WHERE ${whereSql} LIMIT ?
+      )
+    `).run(...params, COMMANDS_PURGE_BATCH_SIZE);
+    total += info.changes;
+    if (info.changes < COMMANDS_PURGE_BATCH_SIZE) break;
+    await sleep(COMMANDS_PURGE_BATCH_SLEEP_MS);
+  }
+  return total;
+}
+
+// Apaga comandos de machine_id que não existe mais em `machines` (órfãos).
+// Nunca apaga sem antes confirmar que `machines` tem pelo menos 1 linha —
+// se a tabela vier vazia por qualquer motivo transiente (bug de migração,
+// corrida num boot limpo), o anti-join trataria `commands` inteira como
+// órfã e apagaria tudo.
+async function purgeOrphanCommands() {
+  const { c: machineCount } = getDb().prepare('SELECT COUNT(*) as c FROM machines').get();
+  if (machineCount === 0) return 0;
+  return deleteCommandsInBatches('machine_id NOT IN (SELECT id FROM machines)', []);
+}
+
+// Apaga comandos terminais (acked/failed/cancelled) com created_at > days.
+// Nunca apaga pending/sent — ainda podem ser entregues/consultados.
+async function purgeOldTerminalCommands(days) {
+  if (!Number.isFinite(days) || days <= 0) return 0;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  return deleteCommandsInBatches("status IN ('acked', 'failed', 'cancelled') AND created_at < ?", [cutoff]);
 }
 
 function getCommandHistory(machineId, limit = 50) {
@@ -2153,6 +2212,7 @@ module.exports = {
   saveMetrics, getMetrics,
   // commands
   createCommand, getPendingCommands, ackCommand, getCommandHistory, getLastAlohaScan, getCommandResult,
+  purgeOrphanCommands, purgeOldTerminalCommands,
   // events
   addEvent, getEvents,
   // alerts
