@@ -2,8 +2,9 @@
 
 // Validação pós-carga do ETL (server/etl/sqlite-to-pg.js) -- roda depois de
 // um --load real. 2 checagens: (1) contagem de linhas por tabela, origem vs
-// destino, tem que ser EXATAMENTE igual (esperamos carga completa, não
-// incremental); (2) checksum de amostra em remote_employees.cpf/password_hash
+// destino, tem que ser igual -- exceto nas tabelas de FK_FILTERS, onde o
+// destino tem DE PROPÓSITO menos linhas (órfãs puladas, ver comentário em
+// sqlite-to-pg.js); (2) checksum de amostra em remote_employees.cpf/password_hash
 // -- os 2 campos sensíveis que todo o resto da Fase 2 teve cuidado especial
 // de não expor fora de lugar (ver registerRemoteEmployeeByCpf/ById em
 // db-pg.js), então valem conferência extra de que o dado chegou intacto.
@@ -15,7 +16,7 @@ const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const { Pool } = require('pg');
-const { TABLE_ORDER, countRows } = require('./sqlite-to-pg');
+const { TABLE_ORDER, FK_FILTERS, countRows } = require('./sqlite-to-pg');
 
 function parseArgs(argv) {
   const args = { sqlitePath: null };
@@ -34,11 +35,22 @@ function sha256(value) {
   return crypto.createHash('sha256').update(marker).digest('hex');
 }
 
+async function expectedSrcCount(sqlite, table) {
+  const fk = FK_FILTERS[table];
+  if (!fk) return countRows(sqlite, table);
+  // Mesmo filtro de órfãos do ETL (ver FK_FILTERS em sqlite-to-pg.js) --
+  // destino tem menos linhas DE PROPÓSITO quando há órfãos, então a
+  // contagem esperada aqui já exclui eles, não a contagem bruta da origem.
+  return sqlite.prepare(
+    `SELECT COUNT(*) AS c FROM "${table}" WHERE "${fk.column}" IN (SELECT "${fk.refColumn}" FROM "${fk.refTable}")`
+  ).get().c;
+}
+
 async function validateCounts(sqlite, pool) {
   console.log('--- contagem por tabela ---');
   const mismatches = [];
   for (const table of TABLE_ORDER) {
-    const src = await countRows(sqlite, table);
+    const src = await expectedSrcCount(sqlite, table);
     const dst = await countRows(pool, table);
     const ok = src === dst;
     if (!ok) mismatches.push({ table, src, dst });

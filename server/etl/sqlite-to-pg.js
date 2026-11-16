@@ -76,6 +76,34 @@ const TABLE_ORDER = [
   'watchlist_matches',
 ];
 
+// Achado real na Fase 3: linhas órfãs de verdade no SQLite de produção --
+// bug de re-key antigo (registerMachine re-keya o UUID da máquina, mas
+// `insights` nunca esteve na lista manual de re-key do db.js original --
+// mesmo bug já corrigido no port da Fase 2, ver registerMachine em
+// db-pg.js) deixou filhos apontando pro UUID antigo, que não existe mais.
+// Alcance medido no dado real: win_events 33/62 (53%), insights 22581/35497
+// (64%!), nfce_index 195775/4140844 (5%), machine_metrics_hourly 263/272980,
+// reading_miss_events 13/35654. SQLite nunca aplicou a FK retroativamente
+// ao religar `foreign_keys=ON`; Postgres aplica de verdade, então essas
+// linhas têm que ser puladas (não dá pra inventar uma máquina que não
+// existe) -- filtradas aqui, contagem logada pra não esconder o tamanho
+// real do problema.
+const FK_FILTERS = {
+  win_events: { column: 'machine_id', refTable: 'machines', refColumn: 'id' },
+  insights: { column: 'machine_id', refTable: 'machines', refColumn: 'id' },
+  nfce_index: { column: 'machine_id', refTable: 'machines', refColumn: 'id' },
+  nfce_indexed_days: { column: 'machine_id', refTable: 'machines', refColumn: 'id' },
+  dr_backups: { column: 'machine_id', refTable: 'machines', refColumn: 'id' },
+  activity_log: { column: 'machine_id', refTable: 'machines', refColumn: 'id' },
+  live_sessions: { column: 'machine_id', refTable: 'machines', refColumn: 'id' },
+  machine_metrics_hourly: { column: 'machine_id', refTable: 'machines', refColumn: 'id' },
+  machine_offline_events: { column: 'machine_id', refTable: 'machines', refColumn: 'id' },
+  reading_miss_events: { column: 'machine_id', refTable: 'machines', refColumn: 'id' },
+  remote_sessions: { column: 'employee_id', refTable: 'remote_employees', refColumn: 'id' },
+  remote_time_entries: { column: 'employee_id', refTable: 'remote_employees', refColumn: 'id' },
+  watchlist_matches: { column: 'activity_log_id', refTable: 'activity_log', refColumn: 'id' },
+};
+
 function validateArgs(args) {
   if (!args.mode) throw new Error('passe --dry-run ou --load');
   if (!args.sqlitePath) throw new Error('passe --sqlite-path=<caminho da cópia do .db>');
@@ -176,7 +204,14 @@ async function loadTable(sqlite, pool, table) {
   const pkCols = sqlitePkColumns(sqlite, table);
   const colList = columns.map(c => `"${c}"`).join(', ');
   const orderClause = pkCols.length ? ` ORDER BY ${pkCols.map(c => `"${c}"`).join(', ')}` : '';
-  const selectSql = `SELECT ${colList} FROM "${table}"${orderClause}`;
+  const fk = FK_FILTERS[table];
+  const whereClause = fk
+    ? ` WHERE "${fk.column}" IN (SELECT "${fk.refColumn}" FROM "${fk.refTable}")`
+    : '';
+  const selectSql = `SELECT ${colList} FROM "${table}"${whereClause}${orderClause}`;
+  const orphanCount = fk ? await countRows(sqlite, table) - sqlite.prepare(
+    `SELECT COUNT(*) AS c FROM "${table}"${whereClause}`
+  ).get().c : 0;
 
   // COPY implicitamente faz OVERRIDING SYSTEM VALUE pra colunas IDENTITY
   // quando elas aparecem na lista de colunas (semântica nativa do Postgres,
@@ -215,7 +250,8 @@ async function loadTable(sqlite, pool, table) {
   }
   client.release();
   const nulSuffix = nulCount > 0 ? ` (${nulCount} valor(es) com NUL byte removido)` : '';
-  console.log(`${table.padEnd(28)} ${total} linhas carregadas${nulSuffix}`);
+  const orphanSuffix = orphanCount > 0 ? ` (${orphanCount} linha(s) órfã(s) pulada(s), FK "${fk.column}")` : '';
+  console.log(`${table.padEnd(28)} ${total} linhas carregadas${nulSuffix}${orphanSuffix}`);
   return total;
 }
 
@@ -255,4 +291,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { TABLE_ORDER, parseArgs, validateArgs, assertSameColumnSet, sqlitePkColumns, sqliteColumnNames, countRows };
+module.exports = { TABLE_ORDER, FK_FILTERS, parseArgs, validateArgs, assertSameColumnSet, sqlitePkColumns, sqliteColumnNames, countRows };
