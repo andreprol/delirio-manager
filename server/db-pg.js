@@ -13,6 +13,10 @@
 // Postgres (precisa de ON UPDATE CASCADE nas FKs ou constraints deferráveis
 // -- decisão de schema própria, não cabe junto com o resto deste grupo).
 //
+// Grupo 2 (commands + events) -- todas as funções do domínio, incluindo
+// purgeOrphanCommands/purgeOldTerminalCommands (já existiam no db.js original
+// como fix do incidente 15/11 -- aqui só troca `rowid` por `id`, a PK real).
+//
 // Regras de tradução (mesmas de todo o arquivo, ver migrations/ pro schema):
 //   - `?` -> `$1,$2...`
 //   - `.prepare(sql).get/all/run()` -> `await pool.query(sql, params)`, lendo
@@ -24,6 +28,7 @@
 //     services/alertEngine.js já esperam (`JSON.parse(machine.last_metrics)`).
 
 const { Pool } = require('pg');
+const crypto = require('crypto');
 const logger = require('./services/logger');
 
 let pool;
@@ -269,6 +274,152 @@ async function getMetrics(machineId, hours = 24) {
   return rows;
 }
 
+// ── Commands ──────────────────────────────────────────────────────────────────
+
+async function createCommand(machineId, type, params = {}) {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await getPool().query(
+    `INSERT INTO commands (id, machine_id, type, params, status, created_at)
+     VALUES ($1,$2,$3,$4,'pending',$5)`,
+    [id, machineId, type, JSON.stringify(params), now]
+  );
+  return id;
+}
+
+// SELECT + UPDATE separados (como no original db.js) deixariam de ser
+// atômicos em Postgres: duas chamadas concorrentes pra mesma machineId
+// (ex: retry de heartbeat) poderiam ler os mesmos comandos 'pending' antes
+// de qualquer uma marcar 'sent', entregando o mesmo comando duas vezes. No
+// SQLite original isso não existia porque better-sqlite3 é síncrono --
+// aqui precisa de UPDATE...RETURNING numa query só. CTE pra preservar a
+// ORDER BY created_at ASC do original (RETURNING puro não garante ordem).
+async function getPendingCommands(machineId) {
+  const now = new Date().toISOString();
+  const { rows: cmds } = await getPool().query(
+    `WITH updated AS (
+       UPDATE commands SET status='sent', sent_at=$2
+       WHERE machine_id=$1 AND status='pending'
+       RETURNING id, type, params, created_at
+     )
+     SELECT id, type, params FROM updated ORDER BY created_at ASC`,
+    [machineId, now]
+  );
+
+  return cmds.map(c => ({
+    id: c.id,
+    type: c.type,
+    params: JSON.parse(c.params || '{}'),
+  }));
+}
+
+async function ackCommand(commandId, machineId, success, message) {
+  const now = new Date().toISOString();
+  await getPool().query(
+    `UPDATE commands SET status=$1, acked_at=$2, result=$3 WHERE id=$4 AND machine_id=$5`,
+    [success ? 'acked' : 'failed', now, message || '', commandId, machineId]
+  );
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+const COMMANDS_PURGE_BATCH_SIZE = 1000;
+const COMMANDS_PURGE_BATCH_SLEEP_MS = 100;
+
+// Apaga de `commands` em lotes (mesma razão do port original em db.js: um
+// DELETE único sobre dezenas de milhares de linhas é lento demais e, sem
+// ceder o loop entre lotes, atrasa outras queries na mesma pool). SQLite
+// usa `rowid` pra isso (alias implícito, não existe em Postgres) -- aqui
+// usamos `id` direto, que é a PK real da tabela.
+async function deleteCommandsInBatches(whereSql, params) {
+  const pool = getPool();
+  const limitParamIndex = params.length + 1;
+  let total = 0;
+  for (;;) {
+    const { rowCount } = await pool.query(
+      `DELETE FROM commands WHERE id IN (
+        SELECT id FROM commands WHERE ${whereSql} LIMIT $${limitParamIndex}
+      )`,
+      [...params, COMMANDS_PURGE_BATCH_SIZE]
+    );
+    total += rowCount;
+    if (rowCount < COMMANDS_PURGE_BATCH_SIZE) break;
+    await sleep(COMMANDS_PURGE_BATCH_SLEEP_MS);
+  }
+  return total;
+}
+
+// Apaga comandos de machine_id que não existe mais em `machines` (órfãos).
+// Nunca apaga sem antes confirmar que `machines` tem pelo menos 1 linha --
+// ver mesmo comentário em db.js. COUNT(*) do Postgres devolve bigint, que o
+// driver `pg` traz como STRING (não number) -- por isso o Number() explícito,
+// senão `=== 0` nunca bateria.
+async function purgeOrphanCommands() {
+  const { rows } = await getPool().query('SELECT COUNT(*) as c FROM machines');
+  if (Number(rows[0].c) === 0) return 0;
+  return deleteCommandsInBatches('machine_id NOT IN (SELECT id FROM machines)', []);
+}
+
+// Apaga comandos terminais (acked/failed/cancelled) com created_at > days.
+// Nunca apaga pending/sent — ainda podem ser entregues/consultados.
+async function purgeOldTerminalCommands(days) {
+  if (!Number.isFinite(days) || days <= 0) return 0;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  return deleteCommandsInBatches(`status IN ('acked', 'failed', 'cancelled') AND created_at < $1`, [cutoff]);
+}
+
+async function getCommandHistory(machineId, limit = 50) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM commands WHERE machine_id=$1 ORDER BY created_at DESC LIMIT $2`,
+    [machineId, limit]
+  );
+  return rows;
+}
+
+async function getLastAlohaScan(machineId) {
+  const { rows } = await getPool().query(
+    `SELECT id, result, acked_at FROM commands
+     WHERE machine_id=$1 AND type='aloha-scan' AND status='acked' AND result IS NOT NULL
+     ORDER BY acked_at DESC LIMIT 1`,
+    [machineId]
+  );
+  return rows[0];
+}
+
+async function getCommandById(id) {
+  const { rows } = await getPool().query(
+    'SELECT id, machine_id, type, params, status FROM commands WHERE id = $1', [id]
+  );
+  return rows[0];
+}
+
+async function getCommandResult(id) {
+  const { rows } = await getPool().query(
+    'SELECT id, status, result, acked_at FROM commands WHERE id = $1', [id]
+  );
+  return rows[0];
+}
+
+// ── Events ────────────────────────────────────────────────────────────────────
+
+async function addEvent(machineId, type, details = '') {
+  const now = new Date().toISOString();
+  await getPool().query(
+    'INSERT INTO events (machine_id, ts, type, details) VALUES ($1,$2,$3,$4)',
+    [machineId, now, type, details]
+  );
+}
+
+async function getEvents(machineId, limit = 100) {
+  const { rows } = await getPool().query(
+    'SELECT * FROM events WHERE machine_id=$1 ORDER BY ts DESC LIMIT $2',
+    [machineId, limit]
+  );
+  return rows;
+}
+
 module.exports = {
   getPool, closePool, withTransaction,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
@@ -276,4 +427,7 @@ module.exports = {
   getMachinesStale, setWolStatus, getMachinesWolTesting, getMachinesBiosNeeded,
   getMachinesOfflineForWake, getMachinesAutoWolTesting, updateMachineInsightCursor,
   saveMetrics, getMetrics,
+  createCommand, getPendingCommands, ackCommand, purgeOrphanCommands, purgeOldTerminalCommands,
+  getCommandHistory, getLastAlohaScan, getCommandById, getCommandResult,
+  addEvent, getEvents,
 };
