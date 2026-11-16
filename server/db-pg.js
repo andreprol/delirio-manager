@@ -1283,12 +1283,14 @@ async function registerRef1({ ref1, cpf, name }) {
   );
 }
 
-// MAX() sobre coluna INTEGER devolve number de verdade via `pg` (confirmado
-// ao vivo -- diferente de COUNT/SUM, que sempre promovem pra bigint/string
-// mesmo sobre coluna INTEGER). Sem Number() aqui de propósito.
+// ref1_registry.ref1 virou BIGINT na Fase 3 (ETL achou valor real > limite
+// de INTEGER -- ver migrations/1794859503910_ref1-registry-ref1-bigint.sql),
+// então MAX() agora devolve bigint-como-string via `pg` (mesma lição de
+// sempre). Number() obrigatório -- antes da migration a coluna era INTEGER
+// e MAX() devolvia number de verdade; não é mais o caso.
 async function getMaxRef1() {
   const { rows } = await getPool().query('SELECT MAX(ref1) as max FROM ref1_registry');
-  return rows[0]?.max || 0;
+  return Number(rows[0]?.max || 0);
 }
 
 // ── Módulo Relatório ──────────────────────────────────────────────────────────
