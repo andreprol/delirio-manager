@@ -21,20 +21,33 @@
 //   node server/etl/sqlite-to-pg.js --load --truncate-first --sqlite-path=<copia.db>
 // DATABASE_URL precisa estar no ambiente (ver server/.env.postgres.example).
 //
-// Recuperação após queda no meio da carga: cada tabela é carregada em
-// batches autocommit independentes (sem transação cobrindo a tabela
-// inteira), então uma queda no meio deixa ESSA tabela parcialmente
-// carregada. Toda tabela tem PK (ver server/migrations/1794791426884_*),
-// então um rerun SEM --truncate-first falha alto com violação de PK em vez
-// de duplicar silenciosamente -- mas a recuperação correta é sempre rodar
-// de novo com --truncate-first (reseta as 38 tabelas e recarrega do zero),
-// nunca tentar "completar" uma tabela parcial manualmente.
+// Carga via COPY FROM STDIN (bem mais rápido que INSERT em lote pro volume
+// real -- ver [[feedback_etl_insert_lote_lento_usar_copy]] na memória do
+// projeto): cada tabela é UM comando COPY só, atômico por natureza do
+// Postgres (queda no meio não deixa linha parcial -- ou a tabela inteira
+// aplicou, ou nenhuma linha ficou). Recuperação após queda: rodar de novo
+// com --truncate-first (reseta as 38 tabelas do zero); um rerun SEM
+// --truncate-first falha alto com violação de PK na primeira tabela que já
+// tinha sido carregada por completo antes da queda.
 
 const path = require('path');
+const { Readable, Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 const Database = require('better-sqlite3');
 const { Pool } = require('pg');
+const copyFrom = require('pg-copy-streams').from;
 
-const BATCH_SIZE = 500;
+// Marcador de NULL do COPY CSV -- escolhido pra nunca colidir com dado real
+// porque todo valor de texto real sai SEMPRE entre aspas (csvField), e o
+// COPY só trata o campo como NULL quando ele aparece SEM aspas (semântica
+// do formato CSV do Postgres). "\N" é o default do formato TEXT do Postgres,
+// reaproveitado aqui só por familiaridade -- poderia ser qualquer string.
+const NULL_MARKER = '\\N';
+
+function csvField(value) {
+  if (value === null || value === undefined) return NULL_MARKER;
+  return `"${String(value).split('"').join('""')}"`;
+}
 
 // Postgres rejeita \u0000 em qualquer coluna de texto (SQLite aceita --
 // achado real na Fase 3 com dado de produção: 25/50049 linhas de `commands`
@@ -165,38 +178,31 @@ async function loadTable(sqlite, pool, table) {
   const orderClause = pkCols.length ? ` ORDER BY ${pkCols.map(c => `"${c}"`).join(', ')}` : '';
   const selectSql = `SELECT ${colList} FROM "${table}"${orderClause}`;
 
-  const overriding = identityColumn ? ' OVERRIDING SYSTEM VALUE' : '';
+  // COPY implicitamente faz OVERRIDING SYSTEM VALUE pra colunas IDENTITY
+  // quando elas aparecem na lista de colunas (semântica nativa do Postgres,
+  // sem sintaxe extra) -- ao contrário de INSERT, que exigiria a cláusula.
+  const copySql = `COPY "${table}" (${colList}) FROM STDIN WITH (FORMAT csv, NULL '${NULL_MARKER}')`;
   const client = await pool.connect();
   let total = 0;
   let nulCount = 0;
   try {
     const iter = sqlite.prepare(selectSql).iterate();
-    let batch = [];
-
-    async function flush() {
-      if (batch.length === 0) return;
-      const params = [];
-      const valueGroups = batch.map((row, i) => {
-        const placeholders = columns.map((_, j) => `$${i * columns.length + j + 1}`);
-        for (const col of columns) {
+    const rowReadable = Readable.from(iter, { objectMode: true });
+    const toCsvLine = new Transform({
+      objectMode: true,
+      transform(row, _enc, cb) {
+        const line = columns.map(col => {
           const raw = row[col];
           const clean = stripNulBytes(raw);
           if (clean !== raw) nulCount++;
-          params.push(clean);
-        }
-        return `(${placeholders.join(',')})`;
-      });
-      const sql = `INSERT INTO "${table}" (${colList})${overriding} VALUES ${valueGroups.join(',')}`;
-      await client.query(sql, params);
-      total += batch.length;
-      batch = [];
-    }
-
-    for (const row of iter) {
-      batch.push(row);
-      if (batch.length >= BATCH_SIZE) await flush();
-    }
-    await flush();
+          return csvField(clean);
+        }).join(',') + '\n';
+        total++;
+        cb(null, line);
+      },
+    });
+    const ingestStream = client.query(copyFrom(copySql));
+    await pipeline(rowReadable, toCsvLine, ingestStream);
 
     if (identityColumn) {
       const { rows } = await client.query(`SELECT COALESCE(MAX("${identityColumn}"),0) AS max_id FROM "${table}"`);
