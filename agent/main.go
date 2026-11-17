@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.10.2" // fix: GetDIBits nao tratava BI_BITFIELDS -- captura preta (sessao "Conectada" sem nenhum frame) na desktop "Winlogon" (tela de login/lock), modo session-zero. Achado ao vivo 17/11/2026 na AUXILIAR-ASS, retomando o canario pausado em 1.10.1 (ver linha acima)
+	Version            = "1.10.3" // fix: BI_BITFIELDS com mascaras de cor zeradas (driver da desktop "Winlogon" nao preenche, apesar da doc da Microsoft) -- fallback pra BI_RGB forcado em vez de erro permanente. Achado testando 1.10.2 ao vivo na AUXILIAR-ASS (ver linha acima)
 )
 
 func main() {
