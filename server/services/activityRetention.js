@@ -5,6 +5,7 @@ const logger = require('./logger');
 
 const RETENTION_DAYS = 90;
 const COMMANDS_RETENTION_DAYS = 30;
+const NCR_XML_RETENTION_DAYS = 7;
 
 async function runPurgeOnce() {
   try {
@@ -17,6 +18,24 @@ async function runPurgeOnce() {
     // Nunca derruba o processo por isso — um erro de purge não pode virar
     // outage do servidor inteiro (mesma lição do incidente WAL 275GB).
     logger.error('[ActivityRetention] erro ao purgar activity_log', { error: err.message });
+    return 0;
+  }
+}
+
+// purgeNcrXmlPayloads: xml_b64 (XML completo da NFCe, base64) em
+// ncr_monitor_emails é write-only -- grava só pra anexar no e-mail de
+// confirmação, nenhuma rota relê depois (ver comentário na própria função
+// em db-pg.js). 7 dias dá margem pra debugar e-mail não entregue sem
+// acumular pra sempre; a linha em si (order_ref/chave/valor) continua.
+async function runNcrXmlPurgeOnce() {
+  try {
+    const removed = await db.purgeNcrXmlPayloads(NCR_XML_RETENTION_DAYS);
+    if (removed > 0) {
+      logger.info(`[ActivityRetention] ${removed} payloads xml_b64 zerados em ncr_monitor_emails (> ${NCR_XML_RETENTION_DAYS}d)`);
+    }
+    return removed;
+  } catch (err) {
+    logger.error('[ActivityRetention] erro ao purgar xml_b64 de ncr_monitor_emails', { error: err.message });
     return 0;
   }
 }
@@ -52,6 +71,7 @@ function scheduleNext() {
   timer = setTimeout(() => {
     runPurgeOnce();
     runCommandsPurgeOnce(); // fire-and-forget — ver comentário em scheduleDailyPurge
+    runNcrXmlPurgeOnce();
     scheduleNext();
   }, delayMs);
 }
@@ -62,6 +82,7 @@ function scheduleDailyPurge() {
   // event loop entre lotes (ver db.js), então não precisa (e não deve)
   // bloquear o boot do servidor esperando o backlog inteiro ser limpo.
   runCommandsPurgeOnce();
+  runNcrXmlPurgeOnce();
   scheduleNext();
 }
 
@@ -71,6 +92,6 @@ function stop() {
 }
 
 module.exports = {
-  runPurgeOnce, runCommandsPurgeOnce, scheduleDailyPurge, stop,
-  RETENTION_DAYS, COMMANDS_RETENTION_DAYS,
+  runPurgeOnce, runCommandsPurgeOnce, runNcrXmlPurgeOnce, scheduleDailyPurge, stop,
+  RETENTION_DAYS, COMMANDS_RETENTION_DAYS, NCR_XML_RETENTION_DAYS,
 };

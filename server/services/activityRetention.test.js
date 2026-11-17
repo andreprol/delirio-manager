@@ -4,11 +4,12 @@ jest.mock('../db-pg', () => ({
   purgeActivityLog: jest.fn(() => 3),
   purgeOrphanCommands: jest.fn(async () => 0),
   purgeOldTerminalCommands: jest.fn(async () => 0),
+  purgeNcrXmlPayloads: jest.fn(async () => 0),
 }));
 
 const {
-  runPurgeOnce, runCommandsPurgeOnce, scheduleDailyPurge, stop,
-  RETENTION_DAYS, COMMANDS_RETENTION_DAYS,
+  runPurgeOnce, runCommandsPurgeOnce, runNcrXmlPurgeOnce, scheduleDailyPurge, stop,
+  RETENTION_DAYS, COMMANDS_RETENTION_DAYS, NCR_XML_RETENTION_DAYS,
 } = require('./activityRetention');
 
 afterEach(() => stop());
@@ -65,14 +66,33 @@ describe('runCommandsPurgeOnce', () => {
   });
 });
 
+describe('runNcrXmlPurgeOnce', () => {
+  it('chama purgeNcrXmlPayloads com NCR_XML_RETENTION_DAYS e retorna quantos payloads zerou', async () => {
+    const db = require('../db-pg');
+    db.purgeNcrXmlPayloads.mockResolvedValueOnce(12);
+    const removed = await runNcrXmlPurgeOnce();
+    expect(db.purgeNcrXmlPayloads).toHaveBeenCalledWith(NCR_XML_RETENTION_DAYS);
+    expect(removed).toBe(12);
+  });
+
+  it('erro no purge não lança — retorna 0 e segue', async () => {
+    const db = require('../db-pg');
+    db.purgeNcrXmlPayloads.mockRejectedValueOnce(new Error('disco cheio'));
+    const removed = await runNcrXmlPurgeOnce();
+    expect(removed).toBe(0);
+  });
+});
+
 describe('scheduleDailyPurge / stop', () => {
   it('roda o purge imediatamente no boot', () => {
     const db = require('../db-pg');
     db.purgeActivityLog.mockClear();
     db.purgeOrphanCommands.mockClear();
+    db.purgeNcrXmlPayloads.mockClear();
     scheduleDailyPurge();
     expect(db.purgeActivityLog).toHaveBeenCalledTimes(1);
     expect(db.purgeOrphanCommands).toHaveBeenCalledTimes(1);
+    expect(db.purgeNcrXmlPayloads).toHaveBeenCalledTimes(1);
   });
 
   it('stop() sem agendamento ativo não lança', () => {

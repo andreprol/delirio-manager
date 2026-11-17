@@ -148,6 +148,37 @@ describeDb('db-pg (Grupo 13: NCR Monitor + service_status)', () => {
     });
   });
 
+  describe('purgeNcrXmlPayloads', () => {
+    it('zera xml_b64 só de linhas com created_at mais velho que N dias, mantém o resto da linha', async () => {
+      const oldId = trackMessage(`old-${crypto.randomUUID()}`);
+      await db.ncrInsertEmail({ message_id: oldId, received_at: new Date().toISOString(), order_ref: 'old-ref' });
+      const oldRow = await db.ncrGetByMessageId(oldId);
+      await db.ncrUpdate(oldRow.id, { xml_b64: 'QkFTRTY0LVhNTA==' });
+      await db.getPool().query(`UPDATE ncr_monitor_emails SET created_at=$1 WHERE id=$2`,
+        [new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(), oldRow.id]);
+
+      const recentId = trackMessage(`recent-${crypto.randomUUID()}`);
+      await db.ncrInsertEmail({ message_id: recentId, received_at: new Date().toISOString() });
+      const recentRow = await db.ncrGetByMessageId(recentId);
+      await db.ncrUpdate(recentRow.id, { xml_b64: 'QkFTRTY0LVhNTA==' });
+
+      const removed = await db.purgeNcrXmlPayloads(7);
+      expect(removed).toBeGreaterThanOrEqual(1);
+
+      const oldAfter = await db.ncrGetByMessageId(oldId);
+      expect(oldAfter.xml_b64).toBeNull();
+      expect(oldAfter.order_ref).toBe('old-ref'); // resto da linha intacto
+
+      const recentAfter = await db.ncrGetByMessageId(recentId);
+      expect(recentAfter.xml_b64).toBe('QkFTRTY0LVhNTA=='); // recente, não mexeu
+    });
+
+    it('days inválido (<=0 ou NaN) não lança e retorna 0', async () => {
+      await expect(db.purgeNcrXmlPayloads(0)).resolves.toBe(0);
+      await expect(db.purgeNcrXmlPayloads(NaN)).resolves.toBe(0);
+    });
+  });
+
   describe('upsertServiceStatus / getServiceStatusBOH', () => {
     it('ON CONFLICT(machine_id,service_name) atualiza em vez de duplicar', async () => {
       const machineId = await insertMachine(`BOH-${crypto.randomUUID().slice(0, 8)}`);

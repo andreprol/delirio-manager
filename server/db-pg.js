@@ -2071,6 +2071,37 @@ async function ncrUpdate(id, fields) {
   );
 }
 
+// purgeNcrXmlPayloads: zera xml_b64 (XML completo da NFCe em base64) dos
+// registros antigos de ncr_monitor_emails -- achado real (17/11/2026):
+// routes/agent.js:postProcessNfceFind grava xml_b64 no banco só pra anexar
+// no e-mail de confirmação (ver services/ncrMonitor.js:sendNcrResultEmail),
+// que usa o valor em MEMÓRIA (result.xml_b64), nunca relê do banco. Nenhuma
+// rota ou tela do dashboard faz SELECT dessa coluna depois -- é write-only,
+// cresce pra sempre sem nenhum uso (XML em base64 é ~33% maior que o
+// original). Mantém a linha inteira (order_ref/chave/valor/auditoria),
+// zera só o payload grande. Mesmo padrão de lote de deleteInBatches, mas
+// UPDATE em vez de DELETE (a linha continua existindo).
+async function purgeNcrXmlPayloads(days) {
+  if (!Number.isFinite(days) || days <= 0) return 0;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const pool = getPool();
+  let total = 0;
+  for (;;) {
+    const { rowCount } = await pool.query(
+      `UPDATE ncr_monitor_emails SET xml_b64 = NULL WHERE id IN (
+        SELECT id FROM ncr_monitor_emails
+        WHERE xml_b64 IS NOT NULL AND created_at < $1
+        LIMIT $2
+      )`,
+      [cutoff, PURGE_BATCH_SIZE]
+    );
+    total += rowCount;
+    if (rowCount < PURGE_BATCH_SIZE) break;
+    await sleep(PURGE_BATCH_SLEEP_MS);
+  }
+  return total;
+}
+
 // `datetime(x) <= datetime('now')` do original só normaliza formato de data
 // antes de comparar -- next_retry_at já é sempre `toISOString()` (confirmado
 // no único call site, routes/agent.js:373), então comparação direta de
@@ -2292,7 +2323,7 @@ module.exports = {
   getZamakCachedDeviceIds, getZamakCacheAge, getZamakSummaryForStore, getZamakDiscrepancies,
   replaceZamakThreats, getZamakThreats, replaceZamakPerformance, getZamakPerformance,
   replaceZamakOutages, getZamakOutages,
-  ncrInsertEmail, ncrGetByMessageId, ncrGetByCommandId, ncrUpdate,
+  ncrInsertEmail, ncrGetByMessageId, ncrGetByCommandId, ncrUpdate, purgeNcrXmlPayloads,
   ncrGetPendingRetries, ncrGetAckTimedOut,
   upsertServiceStatus, getServiceStatusBOH,
   createRemoteEmployee, getRemoteEmployeeByCpf, getRemoteEmployeeById,
