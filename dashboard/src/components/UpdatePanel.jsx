@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { api, getServerUrl } from '../api'
+import { api, getServerUrl, getAdminSecret } from '../api'
 
 export function UpdatePanel({ onClose }) {
   const [step, setStep]           = useState('idle') // idle | uploading | broadcasting | done | error
@@ -42,6 +42,11 @@ export function UpdatePanel({ onClose }) {
       xhr.open('POST', `${getServerUrl()}/api/update/publish`)
       xhr.setRequestHeader('Content-Type', 'application/octet-stream')
       xhr.setRequestHeader('X-Agent-Version', version)
+      // Achado do code-reviewer (17/11/2026, fix da RCE): este XHR é cru,
+      // não passa pelo helper request() de api.js -- precisa do header na
+      // mão, senão /publish sempre devolve 401 desde que passou a exigir
+      // X-Admin-Secret.
+      xhr.setRequestHeader('X-Admin-Secret', getAdminSecret())
 
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) setProgress(Math.round(e.loaded / e.total * 100))

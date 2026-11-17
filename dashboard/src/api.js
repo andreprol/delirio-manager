@@ -79,10 +79,12 @@ export const api = {
   renameGroup:   (name, newName) => request('PUT',    `/api/groups/${encodeURIComponent(name)}`, { newName }),
   deleteGroup:   (name)          => request('DELETE', `/api/groups/${encodeURIComponent(name)}`),
 
-  // Update
+  // Update — /broadcast e /machine/:id exigem X-Admin-Secret desde a correção
+  // da RCE (endpoints publicavam/disparavam update em ~130 lojas sem nenhuma
+  // autenticação, ver [[project_delirio_update_endpoints_sem_auth]]).
   getUpdateVersion:  ()     => request('GET',  '/api/update/version'),
-  broadcastUpdate:   ()     => request('POST', '/api/update/broadcast', {}),
-  updateMachineNow:  (id)   => request('POST', `/api/update/machine/${id}`, {}),
+  broadcastUpdate:   ()     => request('POST', '/api/update/broadcast', {}, { admin: true }),
+  updateMachineNow:  (id)   => request('POST', `/api/update/machine/${id}`, {}, { admin: true }),
 
   // Win Events
   getWinEvents:      (id, scope = 'focused') => request('GET', `/api/machines/${id}/win-events?scope=${scope}`),

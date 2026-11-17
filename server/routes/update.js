@@ -10,6 +10,7 @@ const crypto   = require('crypto');
 const db       = require('../db-pg');
 const { broadcast } = require('../services/websocket');
 const { asyncHandler } = require('../middleware/asyncHandler');
+const { adminAuth, safeSecretEqual } = require('../middleware/adminAuth');
 
 const PUBLIC_DIR    = path.join(__dirname, '..', 'public');
 const VERSION_FILE  = path.join(PUBLIC_DIR, 'version.json');
@@ -31,7 +32,12 @@ router.get('/version', (req, res) => {
 // POST /api/update/publish — faz upload do novo agente.exe
 // Body: multipart form com campo "binary" (o .exe)
 // OU JSON com { base64: "...", version: "1.1.0" } para upload via API
-router.post('/publish', express.raw({ type: 'application/octet-stream', limit: '50mb' }), (req, res) => {
+// adminAuth ANTES do express.raw: rejeita sem nunca bufferizar o corpo (até
+// 50MB) -- não reabre a superfície de exaustão de memória/banda que o
+// endpoint tinha sem autenticação. O próprio adminAuth faz req.resume() no
+// caminho de rejeição pra drenar o socket sem processar, evitando o
+// ECONNRESET que apareceria aqui sem isso (achado nos testes, app.test.js).
+router.post('/publish', adminAuth, express.raw({ type: 'application/octet-stream', limit: '50mb' }), (req, res) => {
   const version = req.headers['x-agent-version'];
   if (!version) {
     return res.status(400).json({ error: 'Header X-Agent-Version obrigatorio' });
@@ -74,7 +80,7 @@ router.post('/publish', express.raw({ type: 'application/octet-stream', limit: '
 
 // POST /api/update/broadcast — envia comando de update para todas as maquinas online
 // Body: { targetVersion: "1.1.0" } (opcional, usa versao atual se omitido)
-router.post('/broadcast', asyncHandler(async (req, res) => {
+router.post('/broadcast', adminAuth, asyncHandler(async (req, res) => {
   const info = readVersionInfo();
   const version = req.body?.targetVersion || info.version;
 
@@ -105,7 +111,7 @@ router.post('/broadcast', asyncHandler(async (req, res) => {
 }));
 
 // POST /api/update/machine/:id — envia update para maquina especifica
-router.post('/machine/:id', asyncHandler(async (req, res) => {
+router.post('/machine/:id', adminAuth, asyncHandler(async (req, res) => {
   const machine = await db.getMachineById(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 
@@ -147,7 +153,9 @@ function loadServerConfig() {
 router.post('/upload-dashboard', (req, res, next) => {
   const cfg    = loadServerConfig();
   const secret = cfg.uploadSecret;
-  if (!secret || req.headers['x-upload-secret'] !== secret) {
+  // safeSecretEqual (timing-safe), não !== -- mesmo padrão que adminAuth.js
+  // já documenta como "única fonte de verdade" pra segredos de alto risco.
+  if (!secret || !safeSecretEqual(req.headers['x-upload-secret'], secret)) {
     return res.status(401).json({ error: 'Unauthorized — configure uploadSecret em config.json' });
   }
   next();

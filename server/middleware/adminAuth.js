@@ -32,10 +32,26 @@ function safeSecretEqual(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+function rejectUnauthorized(req, res) {
+  const respond = () => res.status(401).json({ error: 'X-Admin-Secret inválido ou não configurado' });
+  // req.complete: true quando a mensagem inteira já chegou -- a maioria das
+  // rotas protegidas por adminAuth tem corpo pequeno/já consumido por um
+  // parser antes (ex: express.json() global), e nesse caso 'end' já disparou
+  // há muito tempo: registrar o listener depois NUNCA chamaria respond()
+  // (evento perdido, achado ao rodar os testes -- toda rota exceto /publish
+  // travava em timeout). Só /publish (express.raw de 50MB, consumido DEPOIS
+  // deste middleware) ainda tem o corpo pendente no socket aqui -- aí sim
+  // precisa esperar 'end' antes de responder, senão o cliente vê ECONNRESET
+  // (achado do code-reviewer, 17/11/2026, fix da RCE).
+  if (req.complete) return respond();
+  req.on('end', respond);
+  req.resume();
+}
+
 function adminAuth(req, res, next) {
   const secret = loadAdminSecret();
   if (!secret || !safeSecretEqual(req.headers['x-admin-secret'], secret)) {
-    return res.status(401).json({ error: 'X-Admin-Secret inválido ou não configurado' });
+    return rejectUnauthorized(req, res);
   }
   next();
 }

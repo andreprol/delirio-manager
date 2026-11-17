@@ -20,10 +20,12 @@
        hack de rename do push-agent-to-machines.ps1 -- pra TODAS as
        maquinas que estiverem online nesse instante).
 
-    Nenhum dos dois endpoints pede secret (diferente de
-    push-agent-to-machines.ps1, que le .secrets/admin-secret.txt pro
-    canal run_powershell). Confirmado lendo server/routes/update.js --
-    /publish e /broadcast nao tem middleware de auth.
+    Os dois endpoints agora exigem X-Admin-Secret (fix da RCE de 17/11/2026
+    -- /publish e /broadcast estavam sem middleware de auth nenhum, qualquer
+    requisicao na URL publica publicava .exe arbitrario e disparava execucao
+    em ~130 maquinas de loja, ver [[project_delirio_update_endpoints_sem_auth]]).
+    Le .secrets/admin-secret.txt, mesmo arquivo que push-agent-to-machines.ps1
+    usa pro canal run_powershell.
 
 .NOTES
     Autorizado por Andre em 13/11/2026 (sessao de atualizacao de frota)
@@ -38,11 +40,16 @@
     feedback_agent_autoupdate_pull_based_any_heartbeat.md).
 #>
 param(
-    [string]$ServerURL = "https://dt-manager.brazilsouth.cloudapp.azure.com"
+    [string]$ServerURL = "https://dt-manager.brazilsouth.cloudapp.azure.com",
+    [string]$AdminSecretPath = (Join-Path $PSScriptRoot "..\.secrets\admin-secret.txt")
 )
 
 $ErrorActionPreference = "Stop"
 $agentDir = $PSScriptRoot
+
+if (-not (Test-Path $AdminSecretPath)) { throw "Admin secret nao encontrado em $AdminSecretPath" }
+$adminSecret = (Get-Content $AdminSecretPath | Where-Object { $_ -and $_ -notmatch '^-+$' -and $_ -ne 'adminSecret' } | Select-Object -First 1).Trim()
+if (-not $adminSecret) { throw "Nao consegui extrair o valor de $AdminSecretPath" }
 
 # 1. Versao atual (fonte unica: agent/main.go)
 $mainGo = Get-Content (Join-Path $agentDir "main.go") -Raw
@@ -89,7 +96,7 @@ Write-Host "Build confirmado: v$builtVersion" -ForegroundColor Green
 Write-Host "Publicando v$version no servidor..." -ForegroundColor Cyan
 $publishResp = Invoke-RestMethod -Uri "$ServerURL/api/update/publish" -Method Post -TimeoutSec 60 `
     -InFile $exePath -ContentType "application/octet-stream" `
-    -Headers @{ "X-Agent-Version" = $version }
+    -Headers @{ "X-Agent-Version" = $version; "X-Admin-Secret" = $adminSecret }
 if (-not $publishResp.ok) { throw "Publish falhou: $($publishResp | ConvertTo-Json -Compress)" }
 $shaPrefix = $publishResp.sha256.Substring(0, [Math]::Min(16, $publishResp.sha256.Length))
 Write-Host "Publicado: v$($publishResp.version), sha256 $shaPrefix..., $([math]::Round($publishResp.sizeBytes/1KB))KB" -ForegroundColor Green
@@ -101,7 +108,7 @@ Write-DecisionLog "publish v$version ok (sha256 $shaPrefix) | razao: deploy auto
 try {
     Write-Host "Disparando update pras maquinas online..." -ForegroundColor Cyan
     $broadcastResp = Invoke-RestMethod -Uri "$ServerURL/api/update/broadcast" -Method Post -TimeoutSec 60 `
-        -ContentType "application/json" -Body "{}"
+        -ContentType "application/json" -Body "{}" -Headers @{ "X-Admin-Secret" = $adminSecret }
     Write-Host "Comando enviado: $($broadcastResp.sent) de $($broadcastResp.total) maquina(s) online. Atualizam sozinhas nos proximos ~30s." -ForegroundColor Green
     Write-DecisionLog "broadcast $($broadcastResp.sent)/$($broadcastResp.total) maquina(s) online | razao: push imediato apos publish bem-sucedido"
 } catch {

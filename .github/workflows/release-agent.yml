@@ -6,8 +6,12 @@ name: Release — Agent (Go)
 # Pre-requisito: bumpar Version em agent/main.go ANTES de criar a tag.
 # O job valida que a tag bate com main.go e falha se divergirem.
 #
-# Segredos necessários no repo: nenhum
-# (endpoint /api/update/publish valida MZ magic + tamanho mínimo 1MB)
+# Segredos necessários no repo: ADMIN_SECRET
+# (/api/update/publish exige X-Admin-Secret desde o fix da RCE de 17/11/2026 --
+# antes disso o endpoint não tinha autenticação nenhuma, ver
+# [[project_delirio_update_endpoints_sem_auth]] na memória do projeto. Mesmo
+# valor de .secrets/admin-secret.txt local; configurar com
+# `gh secret set ADMIN_SECRET` no repo.)
 #
 # go-version 1.24 (não 1.22): github.com/kirides/go-d3d (captura de tela via
 # DXGI, 29/10/2026) usa structs.HostLayout, package novo do Go 1.24 stdlib —
@@ -57,6 +61,8 @@ jobs:
             .
 
       - name: Publish binary to server
+        env:
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
         run: |
           VERSION="${{ steps.ver.outputs.VERSION }}"
           EXE="delirio-agent-${VERSION}.exe"
@@ -66,6 +72,7 @@ jobs:
             -X POST "$URL" \
             -H "Content-Type: application/octet-stream" \
             -H "X-Agent-Version: $VERSION" \
+            -H "X-Admin-Secret: ${ADMIN_SECRET}" \
             --data-binary "@$EXE" \
             -w "\n%{http_code}")
 

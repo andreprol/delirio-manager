@@ -407,23 +407,47 @@ describe('GET /api/update/version', () => {
 // POST /api/update/publish
 // ─────────────────────────────────────────────────────────────────────────────
 describe('POST /api/update/publish', () => {
+  const ADMIN_SECRET = 'test-admin-secret-xyz';
   let writeFileSpy;
   let mkdirSpy;
+  let readFileSpy;
 
   beforeEach(() => {
     writeFileSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
     mkdirSpy     = jest.spyOn(fs, 'mkdirSync').mockImplementation(() => {});
+    // adminAuth lê config.json -- mesmo padrão de 'POST /api/machines/:id/run' abaixo.
+    readFileSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((p, enc) => {
+      if (typeof p === 'string' && p.endsWith('config.json')) {
+        return JSON.stringify({ adminSecret: ADMIN_SECRET });
+      }
+      return jest.requireActual('fs').readFileSync(p, enc);
+    });
   });
 
   afterEach(() => {
     writeFileSpy.mockRestore();
     mkdirSpy.mockRestore();
+    readFileSpy.mockRestore();
+  });
+
+  // Fix da RCE de 17/11/2026 -- /publish não tinha autenticação nenhuma
+  // (qualquer requisição na URL pública publicava um .exe arbitrário, que o
+  // /broadcast em seguida distribuía pras ~130 máquinas de loja).
+  it('401 sem X-Admin-Secret', async () => {
+    const res = await request(app)
+      .post('/api/update/publish')
+      .set('Content-Type', 'application/octet-stream')
+      .set('X-Agent-Version', '1.5.19')
+      .send(Buffer.alloc(2 * 1024 * 1024, 0x4D))
+      .expect(401);
+    expect(res.body.error).toMatch(/X-Admin-Secret/i);
   });
 
   it('400 quando X-Agent-Version header ausente', async () => {
     const res = await request(app)
       .post('/api/update/publish')
       .set('Content-Type', 'application/octet-stream')
+      .set('X-Admin-Secret', ADMIN_SECRET)
       .send(Buffer.alloc(2 * 1024 * 1024, 0x4D))
       .expect(400);
     expect(res.body.error).toMatch(/X-Agent-Version/);
@@ -433,6 +457,7 @@ describe('POST /api/update/publish', () => {
     const res = await request(app)
       .post('/api/update/publish')
       .set('Content-Type', 'application/octet-stream')
+      .set('X-Admin-Secret', ADMIN_SECRET)
       .set('X-Agent-Version', '1.5.19')
       .send(Buffer.alloc(512 * 1024, 0x4D))
       .expect(400);
@@ -444,6 +469,7 @@ describe('POST /api/update/publish', () => {
     const res = await request(app)
       .post('/api/update/publish')
       .set('Content-Type', 'application/octet-stream')
+      .set('X-Admin-Secret', ADMIN_SECRET)
       .set('X-Agent-Version', '1.5.19')
       .send(buf)
       .expect(400);
@@ -458,6 +484,7 @@ describe('POST /api/update/publish', () => {
     const res = await request(app)
       .post('/api/update/publish')
       .set('Content-Type', 'application/octet-stream')
+      .set('X-Admin-Secret', ADMIN_SECRET)
       .set('X-Agent-Version', '1.5.19')
       .send(buf)
       .expect(200);
@@ -466,6 +493,49 @@ describe('POST /api/update/publish', () => {
     expect(res.body.version).toBe('1.5.19');
     expect(res.body.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(writeFileSpy).toHaveBeenCalledTimes(2); // agent exe + version.json
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/update/broadcast e POST /api/update/machine/:id
+// ─────────────────────────────────────────────────────────────────────────────
+describe('POST /api/update/broadcast e /api/update/machine/:id', () => {
+  const ADMIN_SECRET = 'test-admin-secret-xyz';
+  let readFileSpy;
+
+  beforeEach(() => {
+    readFileSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((p, enc) => {
+      if (typeof p === 'string' && p.endsWith('config.json')) {
+        return JSON.stringify({ adminSecret: ADMIN_SECRET });
+      }
+      return jest.requireActual('fs').readFileSync(p, enc);
+    });
+  });
+
+  afterEach(() => {
+    readFileSpy.mockRestore();
+    jest.clearAllMocks();
+  });
+
+  it('401 em /broadcast sem X-Admin-Secret', async () => {
+    const res = await request(app).post('/api/update/broadcast').send({}).expect(401);
+    expect(res.body.error).toMatch(/X-Admin-Secret/i);
+  });
+
+  it('401 em /machine/:id sem X-Admin-Secret', async () => {
+    const res = await request(app).post('/api/update/machine/machine-abc').send({}).expect(401);
+    expect(res.body.error).toMatch(/X-Admin-Secret/i);
+  });
+
+  it('200 em /machine/:id com X-Admin-Secret correto', async () => {
+    db.getMachineById.mockReturnValueOnce({ id: 'machine-abc' });
+    db.createCommand.mockReturnValueOnce('cmd-test-id');
+    const res = await request(app)
+      .post('/api/update/machine/machine-abc')
+      .set('X-Admin-Secret', ADMIN_SECRET)
+      .send({})
+      .expect(200);
+    expect(res.body.ok).toBe(true);
   });
 });
 
