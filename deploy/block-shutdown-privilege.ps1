@@ -61,6 +61,24 @@
     Apply/Rollback sao HIGH (modifica configuracao de seguranca) -- sempre
     registrado em .claude/decision.log pelo proprio script, confirmacao
     interativa obrigatoria, sem elevate em auto-approve.json ainda.
+
+    05/11/2026 (2a sessao): Apply na AUXILIAR-ASS "rodou" mas a confirmacao
+    imediata mostrou SeShutdownPrivilege ausente da secao. Diag melhorado
+    (exit code + log real + 2a leitura +2s) confirmou CAUSA RAIZ: nao era
+    race -- secedit /configure retornava exit code 1, log "nao foi feito
+    mapeamento entre nomes de conta e SIDs" (SIDs de servico orfaos em
+    OUTRAS linhas da secao faziam a secao INTEIRA falhar, derrubando junto
+    a linha que a gente tava tentando mudar). Separado disso: whoami /priv
+    de usuario JA LOGADO cacheia privilegios no token no logon -- teste de
+    "shutdown ainda funcionou" sem reautenticar a conta nao prova nada.
+
+    Fix: trocado secedit /export+edita+reimporta por LsaAddAccountRights /
+    LsaRemoveAccountRights via P/Invoke direto (Apply/Rollback) -- mexe SO
+    nos SIDs e privilegio alvo, sem reprocessar/resolver o resto da secao
+    USER_RIGHTS. Validado localmente (ADD+REMOVE round-trip limpo no grupo
+    Guests, S-1-5-32-546) antes de ir pra producao. Verify/Diag continuam
+    lendo via secedit /export (isso sempre funcionou certo, so a ESCRITA
+    via /configure que quebrava).
 #>
 param(
     [Parameter(Mandatory)][ValidateSet("Verify","Apply","Rollback","Diag")][string]$Action,
@@ -103,6 +121,124 @@ function Build-RemoteCommand([string]$psScript) {
     return '$b="{0}";$s=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b));Invoke-Expression $s' -f $b64
 }
 
+# Preambulo LSA (LsaAddAccountRights/LsaRemoveAccountRights via P/Invoke) --
+# substitui secedit /configure, que confirmado 05/11/2026 (2a sessao) falha
+# com exit code 1 "nao foi feito mapeamento entre nomes de conta e SIDs" em
+# maquinas com SIDs de servico orfaos em OUTRAS linhas da secao USER_RIGHTS
+# (secedit reprocessa a secao INTEIRA, nao so a linha editada -- 1 SID orfao
+# em qualquer lugar derruba a operacao toda). LSA API mexe so no privilegio e
+# SIDs especificos, sem tocar nem resolver o resto da secao. Validado local
+# (ADD+REMOVE round-trip limpo no grupo Guests) antes de ir pra producao.
+$lsaPreamble = @'
+if (-not ([System.Management.Automation.PSTypeName]"LsaHelper").Type) {
+Add-Type -Language CSharp -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public class LsaHelper {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct LSA_UNICODE_STRING {
+        public ushort Length;
+        public ushort MaximumLength;
+        public IntPtr Buffer;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct LSA_OBJECT_ATTRIBUTES {
+        public int Length;
+        public IntPtr RootDirectory;
+        public IntPtr ObjectName;
+        public int Attributes;
+        public IntPtr SecurityDescriptor;
+        public IntPtr SecurityQualityOfService;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, PreserveSig = true)]
+    public static extern uint LsaOpenPolicy(ref LSA_UNICODE_STRING SystemName, ref LSA_OBJECT_ATTRIBUTES ObjectAttributes, uint DesiredAccess, out IntPtr PolicyHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true, PreserveSig = true)]
+    public static extern uint LsaAddAccountRights(IntPtr PolicyHandle, byte[] AccountSid, LSA_UNICODE_STRING[] UserRights, int CountOfRights);
+
+    [DllImport("advapi32.dll", SetLastError = true, PreserveSig = true)]
+    public static extern uint LsaRemoveAccountRights(IntPtr PolicyHandle, byte[] AccountSid, [MarshalAs(UnmanagedType.U1)] bool AllRights, LSA_UNICODE_STRING[] UserRights, int CountOfRights);
+
+    [DllImport("advapi32.dll")]
+    public static extern int LsaNtStatusToWinError(uint status);
+
+    [DllImport("advapi32.dll")]
+    public static extern uint LsaClose(IntPtr ObjectHandle);
+}
+"@
+}
+
+function Convert-ToLsaString([string]$s) {
+    $r = New-Object LsaHelper+LSA_UNICODE_STRING
+    $r.Buffer = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni($s)
+    $r.Length = [uint16]($s.Length * 2)
+    $r.MaximumLength = [uint16](($s.Length + 1) * 2)
+    return $r
+}
+
+function Open-LsaPolicy {
+    $sysName = New-Object LsaHelper+LSA_UNICODE_STRING
+    $oa = New-Object LsaHelper+LSA_OBJECT_ATTRIBUTES
+    $handle = [IntPtr]::Zero
+    $POLICY_ALL_ACCESS = 0x000F0FFF
+    $status = [LsaHelper]::LsaOpenPolicy([ref]$sysName, [ref]$oa, $POLICY_ALL_ACCESS, [ref]$handle)
+    if ($status -ne 0) {
+        $win = [LsaHelper]::LsaNtStatusToWinError($status)
+        throw "LsaOpenPolicy falhou: status=$status winerror=$win"
+    }
+    return $handle
+}
+
+function Add-LsaRight([string]$sidString, [string]$rightName) {
+    $handle = Open-LsaPolicy
+    try {
+        $sid = New-Object System.Security.Principal.SecurityIdentifier($sidString)
+        $sidBytes = New-Object byte[] ($sid.BinaryLength)
+        $sid.GetBinaryForm($sidBytes, 0)
+        $lsaStr = Convert-ToLsaString $rightName
+        try {
+            $rights = [LsaHelper+LSA_UNICODE_STRING[]]@($lsaStr)
+            $status = [LsaHelper]::LsaAddAccountRights($handle, $sidBytes, $rights, 1)
+        } finally { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($lsaStr.Buffer) }
+        if ($status -ne 0) {
+            $win = [LsaHelper]::LsaNtStatusToWinError($status)
+            return "ERRO-status=$status-winerror=$win"
+        }
+        return "OK"
+    } finally { [LsaHelper]::LsaClose($handle) | Out-Null }
+}
+
+function Remove-LsaRight([string]$sidString, [string]$rightName) {
+    $handle = Open-LsaPolicy
+    try {
+        $sid = New-Object System.Security.Principal.SecurityIdentifier($sidString)
+        $sidBytes = New-Object byte[] ($sid.BinaryLength)
+        $sid.GetBinaryForm($sidBytes, 0)
+        $lsaStr = Convert-ToLsaString $rightName
+        try {
+            $rights = [LsaHelper+LSA_UNICODE_STRING[]]@($lsaStr)
+            $status = [LsaHelper]::LsaRemoveAccountRights($handle, $sidBytes, $false, $rights, 1)
+        } finally { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($lsaStr.Buffer) }
+        if ($status -ne 0 -and $status -ne 0xC0000034) {
+            $win = [LsaHelper]::LsaNtStatusToWinError($status)
+            return "ERRO-status=$status-winerror=$win"
+        }
+        return "OK"
+    } finally { [LsaHelper]::LsaClose($handle) | Out-Null }
+}
+
+function Get-SeShutdownLine {
+    $tmp = [System.IO.Path]::GetTempFileName()
+    secedit /export /cfg $tmp /areas USER_RIGHTS | Out-Null
+    $line = Get-Content $tmp -Encoding Unicode | Where-Object { $_ -match '^SeShutdownPrivilege\s*=' }
+    Remove-Item $tmp -ErrorAction SilentlyContinue
+    if ($line) { return $line.Trim() } else { return "NAO ENCONTRADA" }
+}
+'@
+
 $verifyScript = @'
 try {
     $tmp = [System.IO.Path]::GetTempFileName()
@@ -113,35 +249,51 @@ try {
 } catch { Write-Output "ERRO: $($_.Exception.Message)" }
 '@
 
-$applyScript = @'
+# Apply: le SIDs atuais, remove Admins/Users/PowerUsers do privilegio via LSA
+# e garante SYSTEM/LOCAL SERVICE/NETWORK SERVICE explicitos -- so os SIDs
+# alvo, sem reprocessar o resto da secao USER_RIGHTS (o que quebrava no
+# secedit /configure).
+$applyBody = @'
 try {
-    $tmp = [System.IO.Path]::GetTempFileName()
-    secedit /export /cfg $tmp /areas USER_RIGHTS | Out-Null
-    $content = Get-Content $tmp -Encoding Unicode
-    $line = $content | Where-Object { $_ -match '^SeShutdownPrivilege\s*=' }
-    $originalLine = if ($line) { $line.Trim() } else { "SeShutdownPrivilege = " }
+    $originalLine = Get-SeShutdownLine
     $originalSids = @()
     if ($originalLine -match '=\s*(.*)$') {
         $originalSids = ($matches[1] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
     }
-    $keepSids = $originalSids | Where-Object { $_ -ne '*S-1-5-32-544' -and $_ -ne '*S-1-5-32-545' -and $_ -ne '*S-1-5-32-551' }
-    foreach ($essential in @('*S-1-5-18','*S-1-5-19','*S-1-5-20')) {
-        if ($keepSids -notcontains $essential) { $keepSids += $essential }
+    $toRemove = @('*S-1-5-32-544','*S-1-5-32-545','*S-1-5-32-551') | Where-Object { $originalSids -contains $_ }
+    $toAdd    = @('*S-1-5-18','*S-1-5-19','*S-1-5-20') | Where-Object { $originalSids -notcontains $_ }
+    $removeResults = @()
+    foreach ($sidStr in $toRemove) { $plain = $sidStr.TrimStart('*'); $removeResults += "$sidStr=$(Remove-LsaRight $plain 'SeShutdownPrivilege')" }
+    $addResults = @()
+    foreach ($sidStr in $toAdd) { $plain = $sidStr.TrimStart('*'); $addResults += "$sidStr=$(Add-LsaRight $plain 'SeShutdownPrivilege')" }
+    Start-Sleep -Seconds 1
+    $confirmLine = Get-SeShutdownLine
+    Write-Output "ORIGINAL=[$originalLine] | REMOVIDOS=[$($removeResults -join '; ')] | ADICIONADOS=[$($addResults -join '; ')] | APLICADO=[$confirmLine]"
+} catch { Write-Output "ERRO: $($_.Exception.Message)" }
+'@
+
+# Rollback: mesma logica invertida -- __ORIGINAL_LINE_B64__ e substituido via
+# .Replace() e decodificado de base64 dentro do template remoto. Trocar
+# aspas simples por duplas (versao anterior) NAO elimina injecao -- o valor
+# ainda vira codigo reinterpretado pelo Invoke-Expression remoto se contiver
+# `"`, `` ` `` ou `$`. Base64 so usa [A-Za-z0-9+/=], sem metacaractere nenhum
+# pro PowerShell interpretar (achado real do code-reviewer, 17/11/2026).
+$rollbackBodyTemplate = @'
+try {
+    $originalLine = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("__ORIGINAL_LINE_B64__"))
+    $originalSids = @()
+    if ($originalLine -match '=\s*(.*)$') {
+        $originalSids = ($matches[1] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
     }
-    $newLine = "SeShutdownPrivilege = " + ($keepSids -join ',')
-    if ($content -match '^SeShutdownPrivilege\s*=') {
-        $newContent = $content | ForEach-Object { if ($_ -match '^SeShutdownPrivilege\s*=') { $newLine } else { $_ } }
-    } else {
-        $newContent = $content -replace '(\[Privilege Rights\])', "`$1`r`n$newLine"
-    }
-    Set-Content -Path $tmp -Value $newContent -Encoding Unicode
-    secedit /configure /db "$env:windir\security\local.sdb" /cfg $tmp /areas USER_RIGHTS /quiet | Out-Null
-    $tmp2 = [System.IO.Path]::GetTempFileName()
-    secedit /export /cfg $tmp2 /areas USER_RIGHTS | Out-Null
-    $confirmLineRaw = Get-Content $tmp2 -Encoding Unicode | Where-Object { $_ -match '^SeShutdownPrivilege\s*=' }
-    $confirmLine = if ($confirmLineRaw) { $confirmLineRaw.Trim() } else { "NAO ENCONTRADA" }
-    Remove-Item $tmp,$tmp2 -ErrorAction SilentlyContinue
-    Write-Output "ORIGINAL=[$originalLine] | APLICADO=[$confirmLine]"
+    $toAddBack = @('*S-1-5-32-544','*S-1-5-32-545','*S-1-5-32-551') | Where-Object { $originalSids -contains $_ }
+    $toRemoveBack = @('*S-1-5-18','*S-1-5-19','*S-1-5-20') | Where-Object { $originalSids -notcontains $_ }
+    $addResults = @()
+    foreach ($sidStr in $toAddBack) { $plain = $sidStr.TrimStart('*'); $addResults += "$sidStr=$(Add-LsaRight $plain 'SeShutdownPrivilege')" }
+    $removeResults = @()
+    foreach ($sidStr in $toRemoveBack) { $plain = $sidStr.TrimStart('*'); $removeResults += "$sidStr=$(Remove-LsaRight $plain 'SeShutdownPrivilege')" }
+    Start-Sleep -Seconds 1
+    $confirmLine = Get-SeShutdownLine
+    Write-Output "RESTAURADO=[$confirmLine] | READICIONADOS=[$($addResults -join '; ')] | REMOVIDOS=[$($removeResults -join '; ')]"
 } catch { Write-Output "ERRO: $($_.Exception.Message)" }
 '@
 
@@ -153,12 +305,29 @@ try {
 
     $tmp = [System.IO.Path]::GetTempFileName()
     secedit /export /cfg $tmp /areas USER_RIGHTS | Out-Null
+    $exportExit1 = $LASTEXITCODE
     $full = Get-Content $tmp -Encoding Unicode
     $shutdownRaw = ($full | Where-Object { $_ -match "SeShutdownPrivilege" })
+    $sectionDump1 = ($full | Where-Object { $_ -match '^Se\w+\s*=' }) -join ' || '
     Remove-Item $tmp -ErrorAction SilentlyContinue
 
+    # 2a leitura, 2s depois -- detecta race/lock no local.sdb (export logo apos
+    # configure pode pegar estado transitorio; comparar as duas leituras
+    # isola se a "ausencia" e real ou e so timing)
+    Start-Sleep -Seconds 2
+    $tmp3 = [System.IO.Path]::GetTempFileName()
+    secedit /export /cfg $tmp3 /areas USER_RIGHTS | Out-Null
+    $exportExit2 = $LASTEXITCODE
+    $full2 = Get-Content $tmp3 -Encoding Unicode
+    $shutdownRaw2 = ($full2 | Where-Object { $_ -match "SeShutdownPrivilege" })
+    Remove-Item $tmp3 -ErrorAction SilentlyContinue
+
     Write-Output "whoami/priv(SYSTEM)=[$sysPriv]"
-    Write-Output "secedit-raw=[$($shutdownRaw -join ' ; ')]"
+    $estavel = ($shutdownRaw -join ',').Trim() -eq ($shutdownRaw2 -join ',').Trim()
+    Write-Output "secedit-raw-leitura1=[$($shutdownRaw -join ' ; ')] exit=[$exportExit1]"
+    Write-Output "secedit-raw-leitura2(+2s)=[$($shutdownRaw2 -join ' ; ')] exit=[$exportExit2]"
+    Write-Output "ESTAVEL-ENTRE-LEITURAS=[$estavel]"
+    Write-Output "SECTION-DUMP-COMPLETA=[$sectionDump1]"
 } catch { Write-Output "ERRO: $($_.Exception.Message)" }
 '@
 
@@ -174,25 +343,11 @@ foreach ($t in $targets) {
             continue
         }
         $originalLine = (Get-Content $backupFile -Raw).Trim()
-        $rollbackScript = @"
-try {
-    `$tmp = [System.IO.Path]::GetTempFileName()
-    secedit /export /cfg `$tmp /areas USER_RIGHTS | Out-Null
-    `$content = Get-Content `$tmp -Encoding Unicode
-    `$newContent = `$content | ForEach-Object { if (`$_ -match '^SeShutdownPrivilege\s*=') { '$originalLine' } else { `$_ } }
-    Set-Content -Path `$tmp -Value `$newContent -Encoding Unicode
-    secedit /configure /db "`$env:windir\security\local.sdb" /cfg `$tmp /areas USER_RIGHTS /quiet | Out-Null
-    `$tmp2 = [System.IO.Path]::GetTempFileName()
-    secedit /export /cfg `$tmp2 /areas USER_RIGHTS | Out-Null
-    `$confirmLineRaw = Get-Content `$tmp2 -Encoding Unicode | Where-Object { `$_ -match '^SeShutdownPrivilege\s*=' }
-    `$confirmLine = if (`$confirmLineRaw) { `$confirmLineRaw.Trim() } else { "NAO ENCONTRADA" }
-    Remove-Item `$tmp,`$tmp2 -ErrorAction SilentlyContinue
-    Write-Output "RESTAURADO=[`$confirmLine]"
-} catch { Write-Output "ERRO: `$(`$_.Exception.Message)" }
-"@
+        $originalLineB64 = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($originalLine))
+        $rollbackScript = $lsaPreamble + "`n" + $rollbackBodyTemplate.Replace('__ORIGINAL_LINE_B64__', $originalLineB64)
         $remoteCommand = Build-RemoteCommand $rollbackScript
     } elseif ($Action -eq "Apply") {
-        $remoteCommand = Build-RemoteCommand $applyScript
+        $remoteCommand = Build-RemoteCommand ($lsaPreamble + "`n" + $applyBody)
     } elseif ($Action -eq "Diag") {
         $remoteCommand = Build-RemoteCommand $diagScript
     } else {
@@ -211,9 +366,14 @@ try {
             $resp = Receive-Job $job -ErrorAction Stop
             $out = $resp.output
             Write-Host $out -ForegroundColor Green
-            if ($Action -eq "Apply" -and $out -match 'ORIGINAL=\[(.*?)\]\s*\|\s*APLICADO=') {
-                Set-Content -Path (Join-Path $BackupDir "$($t.hostname).txt") -Value $matches[1] -NoNewline
-                Write-Host "    (backup salvo em $BackupDir\$($t.hostname).txt)" -ForegroundColor DarkGray
+            $backupFileOut = Join-Path $BackupDir "$($t.hostname).txt"
+            if ($Action -eq "Apply" -and $out -match 'ORIGINAL=\[(.*?)\]') {
+                if (Test-Path $backupFileOut) {
+                    Write-Host "    (backup ja existia em $backupFileOut -- NAO sobrescrito, so o Apply mais antigo conta como estado de fabrica)" -ForegroundColor DarkGray
+                } else {
+                    Set-Content -Path $backupFileOut -Value $matches[1] -NoNewline
+                    Write-Host "    (backup salvo em $backupFileOut)" -ForegroundColor DarkGray
+                }
             }
             $results += [PSCustomObject]@{ hostname = $t.hostname; status = "ok"; output = $out }
         } catch {
