@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.10.1" // fix: loadConfig sem retry na leitura inicial do config.json causava perda de identidade (machineId/token) e reset de feature flags quando a leitura colidia com escrita externa concorrente (rollout de flag via PowerShell + restart) -- achado em producao 15/11/2026 durante canario do session-zero (item acima, 1.10.0)
+	Version            = "1.10.2" // fix: GetDIBits nao tratava BI_BITFIELDS -- captura preta (sessao "Conectada" sem nenhum frame) na desktop "Winlogon" (tela de login/lock), modo session-zero. Achado ao vivo 17/11/2026 na AUXILIAR-ASS, retomando o canario pausado em 1.10.1 (ver linha acima)
 )
 
 func main() {
