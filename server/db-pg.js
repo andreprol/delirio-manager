@@ -1,11 +1,12 @@
 'use strict';
 
-// Port assíncrono (pg) de server/db.js (SQLite/better-sqlite3), Fase 2 da
-// migração pós-incidente 15/11/2026 (ver memória do projeto
-// project_delirio_manager_incidente_sqlite_15_11.md). Arquivo em construção,
-// função por função, por grupo de tabela -- NENHUM caller em produção usa
-// este arquivo ainda (require('./db') continua apontando pro SQLite até a
-// Fase 4, cutover). Zero risco de produção enquanto isso for verdade.
+// Port assíncrono (pg) do antigo server/db.js (SQLite/better-sqlite3, removido
+// na Fase 5), Fase 2 da migração pós-incidente 15/11/2026 (ver memória do
+// projeto project_delirio_manager_incidente_sqlite_15_11.md). Desde a Fase 4
+// (cutover, 16/11/2026) os 31 arquivos chamadores (20 routes + 10 services +
+// app.js + server.js) usam este módulo -- é o único backend de dados do
+// servidor agora. Deploy real em produção (restart da VM apontando pra
+// psql-dt-manager-prod) ainda pendente, bloqueado até a VM estabilizar.
 //
 // Tamanho do arquivo (142 funções, ~18 domínios de tabela sem relação):
 // o `code-reviewer` do Grupo 14 apontou isso como 🟠 ALTO (SRP de módulo,

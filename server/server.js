@@ -48,7 +48,7 @@ server.listen(PORT, () => {
   logger.info('Delirio Manager Server iniciado', {
     version: '1.0.0',
     port:    PORT,
-    db:      process.env.DB_PATH || 'data/dt-manager.db',
+    db:      process.env.DATABASE_URL ? 'postgres' : '(DATABASE_URL ausente)',
     health:  `http://localhost:${PORT}/health`,
   });
   alertEngine.start();
