@@ -166,27 +166,37 @@ func TestBitfields32ToRGBANonStandardChannelOrder(t *testing.T) {
 
 func TestResolveBitfieldsMasks(t *testing.T) {
 	biRGBHeader := bitmapInfo{header: bitmapInfoHeader{Compression: biRGB}}
-	r, g, b, err := resolveBitfieldsMasks(&biRGBHeader, 32)
-	if err != nil || r != 0 || g != 0 || b != 0 {
-		t.Errorf("BI_RGB deveria passar direto sem máscaras, got (%#x,%#x,%#x,%v)", r, g, b, err)
+	r, g, b, fallback, err := resolveBitfieldsMasks(&biRGBHeader, 32)
+	if err != nil || r != 0 || g != 0 || b != 0 || fallback {
+		t.Errorf("BI_RGB deveria passar direto sem máscaras nem fallback, got (%#x,%#x,%#x,%v,%v)", r, g, b, fallback, err)
 	}
 
 	bitfieldsHeader := bitmapInfo{header: bitmapInfoHeader{Compression: biBitfields}}
 	bitfieldsHeader.colorTable[0] = 0x00FF0000
 	bitfieldsHeader.colorTable[1] = 0x0000FF00
 	bitfieldsHeader.colorTable[2] = 0x000000FF
-	r, g, b, err = resolveBitfieldsMasks(&bitfieldsHeader, 32)
-	if err != nil || r != 0x00FF0000 || g != 0x0000FF00 || b != 0x000000FF {
-		t.Errorf("BI_BITFIELDS 32bpp válido deveria extrair as máscaras, got (%#x,%#x,%#x,%v)", r, g, b, err)
+	r, g, b, fallback, err = resolveBitfieldsMasks(&bitfieldsHeader, 32)
+	if err != nil || r != 0x00FF0000 || g != 0x0000FF00 || b != 0x000000FF || fallback {
+		t.Errorf("BI_BITFIELDS 32bpp válido deveria extrair as máscaras sem fallback, got (%#x,%#x,%#x,%v,%v)", r, g, b, fallback, err)
 	}
 
-	_, _, _, err = resolveBitfieldsMasks(&bitfieldsHeader, 16)
+	// Achado real 17/11/2026 (AUXILIAR-ASS, desktop "Winlogon") -- driver
+	// reporta BI_BITFIELDS mas as 3 máscaras vêm zeradas (inválidas).
+	// resolveBitfieldsMasks sinaliza fallback pra BI_RGB em vez de erro,
+	// pra readBitmapAsImage pedir conversão ao driver no 2º GetDIBits.
+	zeroMasksHeader := bitmapInfo{header: bitmapInfoHeader{Compression: biBitfields}}
+	_, _, _, fallback, err = resolveBitfieldsMasks(&zeroMasksHeader, 32)
+	if err != nil || !fallback {
+		t.Errorf("BI_BITFIELDS com máscaras zeradas deveria sinalizar useRGBFallback=true sem erro, got fallback=%v err=%v", fallback, err)
+	}
+
+	_, _, _, _, err = resolveBitfieldsMasks(&bitfieldsHeader, 16)
 	if err == nil {
 		t.Error("BI_BITFIELDS com 16bpp deveria ser rejeitado (só 32bpp suportado)")
 	}
 
 	rleHeader := bitmapInfo{header: bitmapInfoHeader{Compression: 1}} // BI_RLE8
-	_, _, _, err = resolveBitfieldsMasks(&rleHeader, 32)
+	_, _, _, _, err = resolveBitfieldsMasks(&rleHeader, 32)
 	if err == nil {
 		t.Error("compressão desconhecida/RLE deveria ser rejeitada")
 	}

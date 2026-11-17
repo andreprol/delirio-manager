@@ -207,24 +207,38 @@ type bitmapInfo struct {
 // silenciosa pro operador, só visível no agent.log). BI_BITFIELDS só faz
 // sentido pra 32bpp aqui (16bpp com bitfields teria caído no erro de bpp
 // em readBitmapAsImage, e 24bpp é sempre BI_RGB por definição do formato).
-func resolveBitfieldsMasks(bmi *bitmapInfo, bitCount uint16) (rMask, gMask, bMask uint32, err error) {
+//
+// 2ª rodada ao vivo 17/11/2026 (mesma AUXILIAR-ASS, já com o fix acima em
+// produção): a desktop "Winlogon" reporta Compression=BI_BITFIELDS na
+// consulta, MAS as 3 máscaras em bmi.colorTable vêm ZERADAS — o driver não
+// as preenche na consulta, apesar da documentação da Microsoft dizer que
+// deveria ("GetDIBits... returns... 3 DWORD color masks" junto da
+// consulta). Sem segunda opção confiável pra decodificar um BI_BITFIELDS
+// sem máscara real, useRGBFallback sinaliza pro chamador forçar
+// Compression=BI_RGB no 2º GetDIBits (pede conversão ao driver, em vez de
+// tentar ler o formato nativo) — só pra ESTE caso específico (máscara
+// inválida sob BI_BITFIELDS), nunca pro caminho BI_RGB nativo nem quando
+// as máscaras vêm válidas, então não reintroduz a falha de conversão
+// forçada já documentada em Daniela-Esc (driver NVIDIA antigo, 29/10/2026,
+// ver comentário no topo de readBitmapAsImage).
+func resolveBitfieldsMasks(bmi *bitmapInfo, bitCount uint16) (rMask, gMask, bMask uint32, useRGBFallback bool, err error) {
 	switch bmi.header.Compression {
 	case biRGB:
-		return 0, 0, 0, nil // fluxo de sempre, decodificado por bgraToRGBA/bgr24ToRGBA.
+		return 0, 0, 0, false, nil // fluxo de sempre, decodificado por bgraToRGBA/bgr24ToRGBA.
 	case biBitfields:
 		if bitCount != 32 {
-			return 0, 0, 0, fmt.Errorf("GetDIBits: BI_BITFIELDS com %d bpp não suportado (só 32 bpp)", bitCount)
+			return 0, 0, 0, false, fmt.Errorf("GetDIBits: BI_BITFIELDS com %d bpp não suportado (só 32 bpp)", bitCount)
 		}
 		rMask, gMask, bMask = bmi.colorTable[0], bmi.colorTable[1], bmi.colorTable[2]
 		if err := validateBitfieldsMasks(rMask, gMask, bMask); err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, true, nil
 		}
-		return rMask, gMask, bMask, nil
+		return rMask, gMask, bMask, false, nil
 	default:
 		// RLE4/RLE8/JPEG/PNG (valores 1/2/4/5) não fazem sentido pra
 		// captura de tela via BitBlt+GetDIBits — falhar explícito é melhor
 		// que decodificar lixo.
-		return 0, 0, 0, fmt.Errorf("GetDIBits: compressão %d não suportada (só BI_RGB/BI_BITFIELDS)", bmi.header.Compression)
+		return 0, 0, 0, false, fmt.Errorf("GetDIBits: compressão %d não suportada (só BI_RGB/BI_BITFIELDS)", bmi.header.Compression)
 	}
 }
 
@@ -289,7 +303,7 @@ func readBitmapAsImage(hdcMem, hBitmap, width, height uintptr) (*image.RGBA, err
 		// decodifica a imagem errada em silêncio.
 		return nil, fmt.Errorf("GetDIBits: formato de cor %d bpp não suportado (só 24/32 bpp)", bitCount)
 	}
-	bitfieldsRMask, bitfieldsGMask, bitfieldsBMask, err := resolveBitfieldsMasks(&bmi, bitCount)
+	bitfieldsRMask, bitfieldsGMask, bitfieldsBMask, useRGBFallback, err := resolveBitfieldsMasks(&bmi, bitCount)
 	if err != nil {
 		return nil, err
 	}
@@ -307,6 +321,30 @@ func readBitmapAsImage(hdcMem, hBitmap, width, height uintptr) (*image.RGBA, err
 	// pedimos. Sem forçar de novo aqui, o 2º passo herdaria esse valor e a
 	// imagem sairia de cabeça para baixo, sem nenhum erro.
 	bmi.header.Height = -int32(height)
+	// effectiveCompression é o formato que REALMENTE pedimos no 2º passo --
+	// achado 🟠 do code-reviewer: decodeCapturedBitmap usava
+	// bmi.header.Compression lido DEPOIS do 2º GetDIBits, mas este mesmo
+	// arquivo já documentou (comentário acima, sobre Height) que o GDI
+	// pode reescrever campos do header entre as duas chamadas -- se isso
+	// acontecer com Compression também, o fallback (abaixo) voltaria a
+	// cair no decoder de BI_BITFIELDS com as MESMAS máscaras zeradas que
+	// causaram o fallback, produzindo frame preto sólido sem erro nenhum.
+	// Guardar o valor pedido ANTES da chamada e nunca reler o campo depois
+	// elimina essa ambiguidade.
+	effectiveCompression := bmi.header.Compression
+	if useRGBFallback {
+		// Máscaras inválidas (ver resolveBitfieldsMasks) -- pede ao driver
+		// pra CONVERTER pra BI_RGB 32bpp no 2º passo em vez de decodificar
+		// um BI_BITFIELDS sem máscara de verdade. Achado 🟡 do
+		// code-reviewer: logar aqui é a ÚNICA telemetria que sobrevive
+		// desse caminho -- sem isso, "capturando ok só que com fallback"
+		// fica indistinguível de "capturando ok no formato nativo" no
+		// agent.log, justo no cenário (tela de login) que motivou toda
+		// essa investigação.
+		logWarn(fmt.Sprintf("captura: BI_BITFIELDS com máscaras de cor inválidas (r=%#x g=%#x b=%#x) -- forçando conversão pra BI_RGB 32bpp", bitfieldsRMask, bitfieldsGMask, bitfieldsBMask))
+		bmi.header.Compression = biRGB
+		effectiveCompression = biRGB
+	}
 	buf := make([]byte, stride*int(height))
 	clearLastError()
 	ret, _, lastErr = procGetDIBits.Call(
@@ -320,15 +358,20 @@ func readBitmapAsImage(hdcMem, hBitmap, width, height uintptr) (*image.RGBA, err
 		return nil, fmt.Errorf("GetDIBits falhou (tela %dx%d, %d bpp): %w", width, height, bitCount, lastErr)
 	}
 
-	if bmi.header.Compression == biBitfields {
-		return bitfields32ToRGBA(buf, int(width), int(height), bitfieldsRMask, bitfieldsGMask, bitfieldsBMask), nil
+	return decodeCapturedBitmap(buf, int(width), int(height), stride, bitCount, effectiveCompression, bitfieldsRMask, bitfieldsGMask, bitfieldsBMask), nil
+}
+
+// decodeCapturedBitmap escolhe o decoder certo pro buffer já preenchido
+// pelo 2º GetDIBits — extraído de readBitmapAsImage só por limite de
+// complexidade ciclomática do linter (cyclop, max 10).
+func decodeCapturedBitmap(buf []byte, width, height, stride int, bitCount uint16, compression uint32, rMask, gMask, bMask uint32) *image.RGBA {
+	if compression == biBitfields {
+		return bitfields32ToRGBA(buf, width, height, rMask, gMask, bMask)
 	}
-	switch bitCount {
-	case 32:
-		return bgraToRGBA(buf, int(width), int(height)), nil
-	default: // 24 — já validado acima, só sobra este caso
-		return bgr24ToRGBA(buf, stride, int(width), int(height)), nil
+	if bitCount == 32 {
+		return bgraToRGBA(buf, width, height)
 	}
+	return bgr24ToRGBA(buf, stride, width, height) // 24 — já validado acima, só sobra este caso
 }
 
 // bgraToRGBA converte um buffer BGRA (ordem de bytes que GetDIBits devolve
