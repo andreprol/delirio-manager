@@ -8,6 +8,10 @@ const router  = express.Router();
 const fs      = require('fs');
 const path    = require('path');
 const { spawn } = require('child_process');
+const db      = require('../db-pg');
+const { adminAuth } = require('../middleware/adminAuth');
+const { asyncHandler } = require('../middleware/asyncHandler');
+const dbSizeMonitor = require('../services/dbSizeMonitor');
 
 function loadAdminSecret() {
   try {
@@ -86,5 +90,28 @@ router.get('/status', authMiddleware, (req, res) => {
     ts:          new Date().toISOString(),
   });
 });
+
+// GET /api/admin/db-size
+// Estado atual de tamanho por tabela + crescimento na janela de
+// GROWTH_CHECK_WINDOW_DAYS, mesmo dado que o alerta diário por e-mail
+// calcula (ver services/dbSizeMonitor.js) -- pra checar sob demanda sem
+// esperar o e-mail ou abrir run-command.
+router.get('/db-size', adminAuth, asyncHandler(async (req, res) => {
+  const [current, growth] = await Promise.all([
+    db.getLatestDbSizeByTable(),
+    db.getDbSizeGrowth(dbSizeMonitor.GROWTH_CHECK_WINDOW_DAYS),
+  ]);
+  res.json({
+    // table_name em ambos (achado do code-reviewer: antes current usava
+    // "table" e growth usava "table_name" pro mesmo conceito).
+    current: current.map(r => ({ table_name: r.table_name, bytes: Number(r.bytes_total), rows: Number(r.row_count), at: r.snapshot_at })),
+    growth:  growth.map(r => ({ ...r, alertable: dbSizeMonitor.isAlertable(r) })),
+    thresholds: {
+      growthPct: dbSizeMonitor.GROWTH_PCT_THRESHOLD,
+      growthBytes: dbSizeMonitor.GROWTH_BYTES_THRESHOLD,
+      largeTableBytes: dbSizeMonitor.LARGE_TABLE_BYTES_THRESHOLD,
+    },
+  });
+}));
 
 module.exports = router;

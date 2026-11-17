@@ -45,6 +45,8 @@ jest.mock('./db-pg', () => ({
   upsertNFCeRecords:    jest.fn(),
   updateMachineDRStatus: jest.fn(),
   insertDRBackup:       jest.fn(),
+  getLatestDbSizeByTable: jest.fn(() => []),
+  getDbSizeGrowth:        jest.fn(() => []),
 }));
 
 jest.mock('./services/websocket', () => ({
@@ -649,6 +651,51 @@ describe('POST /api/machines/:id/run', () => {
     expect(res.status).toBe(500);
     expect(res.body.success).toBe(false);
     expect(res.body.output).toBe('erro powershell');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/admin/db-size
+// ─────────────────────────────────────────────────────────────────────────────
+describe('GET /api/admin/db-size', () => {
+  const ADMIN_SECRET = 'test-admin-secret-xyz';
+  let readFileSpy;
+
+  beforeEach(() => {
+    readFileSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((p, enc) => {
+      if (typeof p === 'string' && p.endsWith('config.json')) {
+        return JSON.stringify({ adminSecret: ADMIN_SECRET });
+      }
+      return jest.requireActual('fs').readFileSync(p, enc);
+    });
+  });
+
+  afterEach(() => {
+    readFileSpy.mockRestore();
+    jest.clearAllMocks();
+  });
+
+  it('401 sem X-Admin-Secret', async () => {
+    const res = await request(app).get('/api/admin/db-size').expect(401);
+    expect(res.body.error).toMatch(/X-Admin-Secret/i);
+  });
+
+  it('200 com X-Admin-Secret correto, marca alertable corretamente', async () => {
+    db.getLatestDbSizeByTable.mockResolvedValueOnce([
+      { table_name: 'ncr_monitor_emails', bytes_total: 600 * 1024 * 1024, row_count: 1000, snapshot_at: '2026-11-17T00:00:00Z' },
+    ]);
+    db.getDbSizeGrowth.mockResolvedValueOnce([
+      { table_name: 'ncr_monitor_emails', bytesNow: 600 * 1024 * 1024, bytesBefore: 500 * 1024 * 1024, growthBytes: 100 * 1024 * 1024, growthPct: 20, rowsNow: 1000, rowsBefore: 900 },
+    ]);
+
+    const res = await request(app)
+      .get('/api/admin/db-size')
+      .set('X-Admin-Secret', ADMIN_SECRET)
+      .expect(200);
+
+    expect(res.body.current[0].table_name).toBe('ncr_monitor_emails');
+    expect(res.body.growth[0].alertable).toBe(true); // bytesNow > LARGE_TABLE_BYTES_THRESHOLD (500MB)
+    expect(res.body.thresholds.largeTableBytes).toBe(500 * 1024 * 1024);
   });
 });
 

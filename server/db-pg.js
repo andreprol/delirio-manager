@@ -2284,8 +2284,121 @@ async function listAllRemoteTimeEntries({ employeeId = null, limit = 500 } = {})
   return rows;
 }
 
+// ── Monitoramento de tamanho do banco ─────────────────────────────────────────
+// Motivação: ncr_monitor_emails.xml_b64 cresceu write-only por meses sem
+// nenhum alerta até ser achado manualmente (17/11/2026, ver
+// [[project_delirio_update_endpoints_sem_auth]] / incidente SQLite->Postgres)
+// -- recordDbSizeSnapshot grava 1 linha por tabela de usuário todo dia,
+// getDbSizeGrowth compara com N dias atrás pra detectar crescimento anormal
+// cedo da próxima vez, sem depender de alguém reparar manualmente de novo.
+
+async function recordDbSizeSnapshot() {
+  const now = new Date().toISOString();
+  const { rows } = await getPool().query(`
+    SELECT relname AS table_name, pg_total_relation_size(relid) AS bytes_total, n_live_tup AS row_count
+    FROM pg_stat_user_tables
+    WHERE schemaname = 'public'
+  `);
+  if (!rows.length) return 0;
+  const values = [];
+  const placeholders = rows.map((r, i) => {
+    const base = i * 4;
+    values.push(r.table_name, Number(r.bytes_total), Number(r.row_count), now);
+    return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4})`;
+  });
+  await getPool().query(
+    `INSERT INTO db_size_snapshots (table_name, bytes_total, row_count, snapshot_at) VALUES ${placeholders.join(',')}`,
+    values
+  );
+  return rows.length;
+}
+
+// Snapshot mais recente de cada tabela (estado atual).
+async function getLatestDbSizeByTable() {
+  const { rows } = await getPool().query(`
+    SELECT DISTINCT ON (table_name) table_name, bytes_total, row_count, snapshot_at
+    FROM db_size_snapshots
+    ORDER BY table_name, snapshot_at DESC
+  `);
+  return rows;
+}
+
+// Compara o snapshot mais recente de cada tabela com o snapshot mais próximo
+// de `days` atrás (não exatamente `days`, pode não existir snapshot exato
+// nesse dia -- pega o mais próximo ANTES do corte, igual qualquer janela de
+// retenção deste projeto). Tabelas sem snapshot antigo o bastante (menos de
+// `days` dias de histórico) ficam de fora -- não dá pra calcular crescimento
+// sem um ponto de partida real.
+async function getDbSizeGrowth(days) {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const { rows } = await getPool().query(`
+    WITH latest AS (
+      SELECT DISTINCT ON (table_name) table_name, bytes_total, row_count, snapshot_at
+      FROM db_size_snapshots ORDER BY table_name, snapshot_at DESC
+    ), before_cutoff AS (
+      SELECT DISTINCT ON (table_name) table_name, bytes_total, row_count, snapshot_at
+      FROM db_size_snapshots WHERE snapshot_at <= $1
+      ORDER BY table_name, snapshot_at DESC
+    )
+    SELECT l.table_name, l.bytes_total AS bytes_now, b.bytes_total AS bytes_before,
+           l.row_count AS rows_now, b.row_count AS rows_before, b.snapshot_at AS before_at
+    FROM latest l JOIN before_cutoff b USING (table_name)
+    ORDER BY (l.bytes_total - b.bytes_total) DESC
+  `, [cutoff]);
+  return rows.map(r => ({
+    table_name: r.table_name,
+    bytesNow: Number(r.bytes_now),
+    bytesBefore: Number(r.bytes_before),
+    rowsNow: Number(r.rows_now),
+    rowsBefore: Number(r.rows_before),
+    beforeAt: r.before_at,
+    growthBytes: Number(r.bytes_now) - Number(r.bytes_before),
+    growthPct: Number(r.bytes_before) > 0
+      ? ((Number(r.bytes_now) - Number(r.bytes_before)) / Number(r.bytes_before)) * 100
+      : null,
+  }));
+}
+
+// A própria tabela de snapshots precisa de retenção -- sem isso, ironicamente
+// viraria o próximo "cresce pra sempre sem alerta".
+async function purgeDbSizeSnapshots(days) {
+  if (!Number.isFinite(days) || days <= 0) return 0;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  return deleteInBatches('db_size_snapshots', 'snapshot_at < $1', [cutoff]);
+}
+
+// getTablesAlertedWithinDays: nomes de tabela com alerta enviado dentro do
+// cooldown (ver comentário da migration db_size_alerts_sent) -- usado pra
+// não reenviar o mesmo alerta todo dia enquanto a tabela continuar acima
+// do threshold sem mudança real.
+async function getTablesAlertedWithinDays(days) {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const { rows } = await getPool().query(
+    'SELECT table_name FROM db_size_alerts_sent WHERE alerted_at >= $1',
+    [cutoff]
+  );
+  return rows.map(r => r.table_name);
+}
+
+// recordAlertsSent: upsert 1 linha por tabela recém-alertada (reseta o
+// cooldown a partir de agora).
+async function recordAlertsSent(rows) {
+  if (!rows.length) return;
+  const now = new Date().toISOString();
+  for (const r of rows) {
+    await getPool().query(
+      `INSERT INTO db_size_alerts_sent (table_name, alerted_at, bytes_at_alert)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (table_name) DO UPDATE SET alerted_at = $2, bytes_at_alert = $3`,
+      [r.table_name, now, r.bytesNow]
+    );
+  }
+}
+
 module.exports = {
   getPool, closePool, withTransaction,
+  recordDbSizeSnapshot, getLatestDbSizeByTable, getDbSizeGrowth, purgeDbSizeSnapshots,
+  getTablesAlertedWithinDays, recordAlertsSent,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
   deleteMachine, isDeletedMachine, updateMachine, setMachineStatus,
   getMachinesStale, setWolStatus, getMachinesWolTesting, getMachinesBiosNeeded,

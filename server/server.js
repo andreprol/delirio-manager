@@ -16,6 +16,7 @@ const { sendAlert }      = require('./services/resendAlert');
 const { initLiveRelay }  = require('./services/liveSessionRelay');
 const { createUpgradeRouter } = require('./services/upgradeRouter');
 const activityRetention  = require('./services/activityRetention');
+const dbSizeMonitor       = require('./services/dbSizeMonitor');
 
 const PORT = process.env.PORT || 3847;
 
@@ -58,6 +59,14 @@ server.listen(PORT, () => {
     activityRetention.scheduleDailyPurge();
   }
   metricsEmail.scheduleDailyMetricsEmail();
+  // FEATURE_DB_SIZE_MONITOR: achado do code-reviewer (17/11/2026) -- feature
+  // nova que manda e-mail de produção automaticamente sem nenhum kill switch,
+  // violando a convenção do projeto (CLAUDE.md "Feature Flags"). Default
+  // false (zero value) -- ligar manualmente no ecosystem.config.js da VM
+  // depois de confirmar que o snapshot/alerta rodam como esperado.
+  if (process.env.FEATURE_DB_SIZE_MONITOR === 'true') {
+    dbSizeMonitor.scheduleDailyMonitor();
+  }
   if (process.env.NCR_MONITOR_ENABLED === 'false') {
     logger.info('NCR monitor desabilitado via NCR_MONITOR_ENABLED=false');
   } else {
@@ -273,5 +282,6 @@ process.on('SIGTERM', () => {
   insightEngine.stop();
   rhHealthMonitor.stop();
   activityRetention.stop();
+  dbSizeMonitor.stop();
   server.close(() => process.exit(0));
 });
