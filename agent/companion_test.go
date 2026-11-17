@@ -108,6 +108,19 @@ func TestHandleCompanionPipeMessageCaptureError(t *testing.T) {
 		}}, "fake"
 	}
 
+	// captureOneScreenshotJPEG (screencapture_backend_windows.go) cai pro
+	// GDI real quando o backend mockado acima não é "gdi" — sem mockar
+	// também este 2º passo, o teste dependia implicitamente da captura GDI
+	// REAL (da tela de quem roda o teste) falhar sozinha, achado real
+	// 17/11/2026: corrigir o bug de BI_BITFIELDS (screencapture_windows.go)
+	// fez a captura GDI real funcionar em telas/ambientes que antes
+	// falhavam por esse mesmo motivo, quebrando essa suposição implícita.
+	originalCapture := captureScreenJPEGFn
+	defer func() { captureScreenJPEGFn = originalCapture }()
+	captureScreenJPEGFn = func(q int) ([]byte, error) {
+		return nil, fmt.Errorf("falha simulada de captura GDI (fallback)")
+	}
+
 	resp := handleCompanionPipeMessage(pipeMessage{Type: "capture-screenshot", RequestID: "req-3"}, &Config{})
 	if resp.Error == "" {
 		t.Fatal("esperava Error preenchido quando a captura falha")

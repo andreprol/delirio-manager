@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -59,6 +60,7 @@ func clearLastError() {
 const (
 	srcCopy      = 0x00CC0020
 	biRGB        = 0
+	biBitfields  = 3
 	dibRGBColors = 0
 )
 
@@ -172,22 +174,93 @@ func captureScreenJPEG(quality int) ([]byte, error) {
 // específica de formato, não um parâmetro nosso errado. Perguntar o
 // formato NATIVO primeiro e usar ESSE no pedido real evita depender do
 // driver saber converter.
-func readBitmapAsImage(hdcMem, hBitmap, width, height uintptr) (*image.RGBA, error) {
-	// bitmapInfo reserva espaço DEPOIS do bitmapInfoHeader pra GetDIBits
-	// escrever ali na CONSULTA (1º passo, abaixo) — nesse momento ainda não
-	// sabemos o formato nativo do bitmap, então o driver pode escrever uma
-	// tabela de cores (8bpp paletizado, até 256 RGBQUAD = 1024 bytes) ou
-	// BI_BITFIELDS (3 máscaras de cor), mesmo que o código REJEITE esses
-	// formatos logo em seguida. Achado 🔴 CRÍTICO da revisão de código: um
-	// bitmapInfoHeader "nu" (só os 40 bytes do header, na pilha do Go) é
-	// buffer overflow real nesse cenário, porque GetDIBits assume que
-	// recebeu um BITMAPINFO completo e escreve ali mesmo, após o header
-	// que ele enxerga — o overflow acontece ANTES de qualquer checagem
-	// nossa poder rejeitar o formato.
-	type bitmapInfo struct {
-		header     bitmapInfoHeader
-		colorTable [256]uint32 // espaço de segurança pra RGBQUAD/máscaras que a consulta pode escrever — não decodificado, só formatos 24/32bpp BI_RGB são aceitos abaixo
+// bitmapInfo reserva espaço DEPOIS do bitmapInfoHeader pra GetDIBits
+// escrever ali na CONSULTA (1º passo de readBitmapAsImage) — nesse momento
+// ainda não sabemos o formato nativo do bitmap, então o driver pode
+// escrever uma tabela de cores (8bpp paletizado, até 256 RGBQUAD = 1024
+// bytes) ou BI_BITFIELDS (3 máscaras de cor), mesmo que o código REJEITE
+// alguns desses formatos logo em seguida. Achado 🔴 CRÍTICO da revisão de
+// código (29/10/2026): um bitmapInfoHeader "nu" (só os 40 bytes do header,
+// na pilha do Go) é buffer overflow real nesse cenário, porque GetDIBits
+// assume que recebeu um BITMAPINFO completo e escreve ali mesmo, após o
+// header que ele enxerga — o overflow acontece ANTES de qualquer checagem
+// nossa poder rejeitar o formato. Tipo no escopo do arquivo (não mais local
+// a readBitmapAsImage) pra resolveBitfieldsMasks poder recebê-lo por
+// ponteiro.
+type bitmapInfo struct {
+	header     bitmapInfoHeader
+	colorTable [256]uint32 // espaço de segurança pra RGBQUAD/máscaras que a consulta pode escrever
+}
+
+// resolveBitfieldsMasks valida a combinação bitCount/Compression do bitmap
+// nativo (reportado pela consulta em readBitmapAsImage) e, se for
+// BI_BITFIELDS, extrai as 3 máscaras de cor (R/G/B, sem alpha — convenção
+// do próprio GetDIBits, ocupam os 3 primeiros uint32 de bmi.colorTable) —
+// extraído de readBitmapAsImage só por causa do limite de complexidade
+// ciclomática do linter (cyclop, max 10), mesmo padrão já usado neste
+// projeto. Achado ao vivo 17/11/2026 (sessão session-zero na desktop
+// "Winlogon", ver sessiondesktop_windows.go): GetDIBits reporta o bitmap
+// nativo dessa desktop com Compression=BI_BITFIELDS (3), não BI_RGB — a
+// tela normal (companion, usuário logado) nunca bateu nesse formato, só a
+// tela de login/lock. Erro explícito "compressão 3 não suportada" deixava
+// a sessão "Conectada" pra sempre sem nenhum frame (captura falha
+// silenciosa pro operador, só visível no agent.log). BI_BITFIELDS só faz
+// sentido pra 32bpp aqui (16bpp com bitfields teria caído no erro de bpp
+// em readBitmapAsImage, e 24bpp é sempre BI_RGB por definição do formato).
+func resolveBitfieldsMasks(bmi *bitmapInfo, bitCount uint16) (rMask, gMask, bMask uint32, err error) {
+	switch bmi.header.Compression {
+	case biRGB:
+		return 0, 0, 0, nil // fluxo de sempre, decodificado por bgraToRGBA/bgr24ToRGBA.
+	case biBitfields:
+		if bitCount != 32 {
+			return 0, 0, 0, fmt.Errorf("GetDIBits: BI_BITFIELDS com %d bpp não suportado (só 32 bpp)", bitCount)
+		}
+		rMask, gMask, bMask = bmi.colorTable[0], bmi.colorTable[1], bmi.colorTable[2]
+		if err := validateBitfieldsMasks(rMask, gMask, bMask); err != nil {
+			return 0, 0, 0, err
+		}
+		return rMask, gMask, bMask, nil
+	default:
+		// RLE4/RLE8/JPEG/PNG (valores 1/2/4/5) não fazem sentido pra
+		// captura de tela via BitBlt+GetDIBits — falhar explícito é melhor
+		// que decodificar lixo.
+		return 0, 0, 0, fmt.Errorf("GetDIBits: compressão %d não suportada (só BI_RGB/BI_BITFIELDS)", bmi.header.Compression)
 	}
+}
+
+// validateBitfieldsMasks rejeita qualquer máscara BI_BITFIELDS não-contígua,
+// zerada, ou sobreposta com outro canal — extraído de resolveBitfieldsMasks
+// só por limite de complexidade ciclomática do linter (cyclop, max 10).
+// Achado 🟡 do code-reviewer: sem validar, um driver fora do padrão
+// decodificaria cor ERRADA em silêncio — exatamente o cenário que este
+// arquivo já rejeita explicitamente noutro lugar ("falhar explícito é
+// melhor que decodificar lixo"). Um driver dentro do padrão nunca cai
+// aqui; só existe pra nunca confiar cegamente nos 3 DWORDs que o driver
+// escreveu.
+func validateBitfieldsMasks(rMask, gMask, bMask uint32) error {
+	if !isContiguousMask(rMask) || !isContiguousMask(gMask) || !isContiguousMask(bMask) {
+		return fmt.Errorf("GetDIBits: BI_BITFIELDS com máscara de cor não-contígua (r=%#x g=%#x b=%#x)", rMask, gMask, bMask)
+	}
+	if rMask&gMask != 0 || rMask&bMask != 0 || gMask&bMask != 0 {
+		return fmt.Errorf("GetDIBits: BI_BITFIELDS com máscaras de cor sobrepostas (r=%#x g=%#x b=%#x)", rMask, gMask, bMask)
+	}
+	return nil
+}
+
+// isContiguousMask confirma que mask é um único bloco de bits 1 contíguos
+// (ex: 0x00FF0000) — toda máscara de cor BI_BITFIELDS válida é assim; bits
+// espalhados (0xB0, por exemplo) indicariam um driver fora do padrão ou um
+// bug na origem do dado, e decodificar isso sem checar devolveria uma cor
+// errada sem nenhum erro visível.
+func isContiguousMask(mask uint32) bool {
+	if mask == 0 {
+		return false
+	}
+	shift, width := bitFieldShiftAndWidth(mask)
+	return mask == ((uint32(1)<<width)-1)<<shift
+}
+
+func readBitmapAsImage(hdcMem, hBitmap, width, height uintptr) (*image.RGBA, error) {
 	var bmi bitmapInfo
 	bmi.header = bitmapInfoHeader{
 		Size:   uint32(unsafe.Sizeof(bitmapInfoHeader{})),
@@ -216,15 +289,9 @@ func readBitmapAsImage(hdcMem, hBitmap, width, height uintptr) (*image.RGBA, err
 		// decodifica a imagem errada em silêncio.
 		return nil, fmt.Errorf("GetDIBits: formato de cor %d bpp não suportado (só 24/32 bpp)", bitCount)
 	}
-	if bmi.header.Compression != biRGB {
-		// BI_BITFIELDS (3) usaria 3 máscaras de cor pra decodificar os
-		// canais — bgraToRGBA/bgr24ToRGBA assumem ordem BGR(A) fixa, então
-		// aceitar BI_BITFIELDS sem ler as máscaras reais decodificaria
-		// cores trocadas em silêncio num driver com máscaras não-padrão
-		// (achado 🟡 da revisão: aceitar sem usar as máscaras é pior que
-		// não aceitar). RLE4/RLE8 também não fazem sentido pra captura de
-		// tela. Falhar explícito é melhor que decodificar lixo.
-		return nil, fmt.Errorf("GetDIBits: compressão %d não suportada (só BI_RGB)", bmi.header.Compression)
+	bitfieldsRMask, bitfieldsGMask, bitfieldsBMask, err := resolveBitfieldsMasks(&bmi, bitCount)
+	if err != nil {
+		return nil, err
 	}
 
 	// Linhas de bitmap no Windows são alinhadas em múltiplos de 4 bytes —
@@ -253,6 +320,9 @@ func readBitmapAsImage(hdcMem, hBitmap, width, height uintptr) (*image.RGBA, err
 		return nil, fmt.Errorf("GetDIBits falhou (tela %dx%d, %d bpp): %w", width, height, bitCount, lastErr)
 	}
 
+	if bmi.header.Compression == biBitfields {
+		return bitfields32ToRGBA(buf, int(width), int(height), bitfieldsRMask, bitfieldsGMask, bitfieldsBMask), nil
+	}
 	switch bitCount {
 	case 32:
 		return bgraToRGBA(buf, int(width), int(height)), nil
@@ -290,6 +360,60 @@ func bgr24ToRGBA(buf []byte, stride, width, height int) *image.RGBA {
 			pi := (y*width + x) * 4
 			img.Pix[pi], img.Pix[pi+1], img.Pix[pi+2], img.Pix[pi+3] = r, g, b, 255
 		}
+	}
+	return img
+}
+
+// bitFieldShiftAndWidth devolve o shift (quantos bits até o 1º bit setado,
+// vindo do LSB) e a largura em bits (quantos bits setados, sempre
+// contíguos numa máscara BI_BITFIELDS válida) de uma máscara de canal —
+// usado pra extrair e normalizar o canal pra 0-255 sem assumir 8 bits fixos
+// (um driver pode reportar canal de 5/6/10 bits, não só o caso comum de 8).
+func bitFieldShiftAndWidth(mask uint32) (shift, width uint32) {
+	if mask == 0 {
+		return 0, 0
+	}
+	for mask&1 == 0 {
+		mask >>= 1
+		shift++
+	}
+	for mask&1 == 1 {
+		width++
+		mask >>= 1
+	}
+	return shift, width
+}
+
+// bitfields32ToRGBA converte um buffer 32bpp BI_BITFIELDS (ordem/largura de
+// canal definida pelas 3 máscaras devolvidas por GetDIBits, não BGRA fixo
+// como bgraToRGBA assume) pra um *image.RGBA. Achado ao vivo 17/11/2026 na
+// desktop "Winlogon" (sessiondesktop_windows.go, modo session-zero) — ver
+// comentário em readBitmapAsImage. BI_BITFIELDS clássico só define 3
+// máscaras (R/G/B, sem alpha) — opaco sempre, mesma convenção de
+// bgr24ToRGBA pra canal alpha ausente.
+func bitfields32ToRGBA(buf []byte, width, height int, rMask, gMask, bMask uint32) *image.RGBA {
+	rShift, rBits := bitFieldShiftAndWidth(rMask)
+	gShift, gBits := bitFieldShiftAndWidth(gMask)
+	bShift, bBits := bitFieldShiftAndWidth(bMask)
+	scale := func(raw, bits uint32) byte {
+		if bits == 0 {
+			return 0
+		}
+		maxVal := uint64(1)<<bits - 1
+		// uint64 no cálculo intermediário (achado 🔵 do code-reviewer):
+		// raw*255 em uint32 poderia estourar pra bits largos o bastante
+		// (>~24), mesmo com resolveBitfieldsMasks já validando
+		// contiguidade/sobreposição das máscaras.
+		return byte(uint64(raw) * 255 / maxVal)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for i := 0; i < width*height; i++ {
+		pixel := binary.LittleEndian.Uint32(buf[i*4 : i*4+4])
+		r := scale((pixel&rMask)>>rShift, rBits)
+		g := scale((pixel&gMask)>>gShift, gBits)
+		b := scale((pixel&bMask)>>bShift, bBits)
+		pi := i * 4
+		img.Pix[pi], img.Pix[pi+1], img.Pix[pi+2], img.Pix[pi+3] = r, g, b, 255
 	}
 	return img
 }
