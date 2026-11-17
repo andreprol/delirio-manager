@@ -2,33 +2,34 @@
 
 const express = require('express');
 const router  = express.Router();
-const db      = require('../db');
+const db      = require('../db-pg');
 const { generateDanfePdf }  = require('../services/danfe');
 const { sendDanfeEmail }    = require('../services/nfce-mailer');
 const { sendDanfeWhatsapp, normalizePhone } = require('../services/nfce-whatsapp');
+const { asyncHandler } = require('../middleware/asyncHandler');
 
 // POST /api/aloha/:machineId/history/trigger
 // Envia aloha-list-nfce-months para o agente; o ACK handler enfileira os dias.
-router.post('/:machineId/history/trigger', (req, res) => {
-  const machine = db.getMachineById(req.params.machineId);
+router.post('/:machineId/history/trigger', asyncHandler(async (req, res) => {
+  const machine = await db.getMachineById(req.params.machineId);
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 
-  const id = db.createCommand(machine.id, 'aloha-list-nfce-months', {});
+  const id = await db.createCommand(machine.id, 'aloha-list-nfce-months', {});
   res.json({ ok: true, commandId: id, message: 'Listagem de meses enviada ao agente. Indexação iniciará em instantes.' });
-});
+}));
 
 // POST /api/aloha/:machineId/index/trigger
 // Enfileira comandos aloha-index-nfce-day para os dias do mês corrente ainda
 // não indexados (o dia de hoje é sempre reenfileirado — a loja pode estar vendendo).
-router.post('/:machineId/index/trigger', (req, res) => {
-  const machine = db.getMachineById(req.params.machineId);
+router.post('/:machineId/index/trigger', asyncHandler(async (req, res) => {
+  const machine = await db.getMachineById(req.params.machineId);
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 
   const now   = new Date();
   const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const today = now.getDate();
 
-  const indexedDays = db.getIndexedDayKeysSet(machine.id);
+  const indexedDays = await db.getIndexedDayKeysSet(machine.id);
   const todayKey    = db.todayDayKey();
 
   const commandIds = [];
@@ -37,22 +38,22 @@ router.post('/:machineId/index/trigger', (req, res) => {
     const day    = String(d).padStart(2, '0');
     const dayKey = `${month}-${day}`;
     if (indexedDays.has(dayKey) && dayKey !== todayKey) { skipped++; continue; }
-    const id = db.createCommand(machine.id, 'aloha-index-nfce-day', { month, day });
+    const id = await db.createCommand(machine.id, 'aloha-index-nfce-day', { month, day });
     commandIds.push(id);
   }
 
   res.json({ ok: true, month, days: commandIds.length, skipped, commandIds });
-});
+}));
 
 // GET /api/aloha/:machineId/index/status
-router.get('/:machineId/index/status', (req, res) => {
+router.get('/:machineId/index/status', asyncHandler(async (req, res) => {
   try {
-    const status = db.getNFCeIndexStatus(req.params.machineId);
+    const status = await db.getNFCeIndexStatus(req.params.machineId);
     res.json(status);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 function parseSearchParams(query) {
   const { machineId, dateFrom, dateTo, valueMin, valueMax, product, limit, offset } = query;
@@ -69,31 +70,31 @@ function parseSearchParams(query) {
 }
 
 // GET /api/aloha/search?machineId=&dateFrom=&dateTo=&valueMin=&valueMax=&product=&limit=&offset=
-router.get('/search', (req, res) => {
+router.get('/search', asyncHandler(async (req, res) => {
   if (!req.query.machineId) return res.status(400).json({ error: 'machineId obrigatorio' });
   try {
-    res.json(db.searchNFCe(parseSearchParams(req.query)));
+    res.json(await db.searchNFCe(parseSearchParams(req.query)));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/aloha/nfce/:chave?machineId=
-router.get('/nfce/:chave', (req, res) => {
+router.get('/nfce/:chave', asyncHandler(async (req, res) => {
   const { machineId } = req.query;
   if (!machineId) return res.status(400).json({ error: 'machineId obrigatorio' });
 
-  const record = db.getNFCeByChave(machineId, req.params.chave);
+  const record = await db.getNFCeByChave(machineId, req.params.chave);
   if (!record) return res.status(404).json({ error: 'NF-Ce nao encontrada' });
   res.json(record);
-});
+}));
 
 // GET /api/aloha/nfce/:chave/danfe?machineId=  → retorna PDF
-router.get('/nfce/:chave/danfe', async (req, res) => {
+router.get('/nfce/:chave/danfe', asyncHandler(async (req, res) => {
   const { machineId } = req.query;
   if (!machineId) return res.status(400).json({ error: 'machineId obrigatorio' });
 
-  const record = db.getNFCeByChave(machineId, req.params.chave);
+  const record = await db.getNFCeByChave(machineId, req.params.chave);
   if (!record) return res.status(404).json({ error: 'NF-Ce nao encontrada' });
 
   try {
@@ -105,17 +106,17 @@ router.get('/nfce/:chave/danfe', async (req, res) => {
     console.error('[DANFE] Erro ao gerar PDF:', err.message);
     res.status(500).json({ error: 'Erro ao gerar DANFE' });
   }
-});
+}));
 
 // POST /api/aloha/nfce/:chave/email
 // Body: { machineId, toEmail, extraCCs? }
-router.post('/nfce/:chave/email', async (req, res) => {
+router.post('/nfce/:chave/email', asyncHandler(async (req, res) => {
   const { machineId, toEmail, extraCCs = [] } = req.body;
   if (!machineId || !toEmail) {
     return res.status(400).json({ error: 'machineId e toEmail obrigatorios' });
   }
 
-  const record = db.getNFCeByChave(machineId, req.params.chave);
+  const record = await db.getNFCeByChave(machineId, req.params.chave);
   if (!record) return res.status(404).json({ error: 'NF-Ce nao encontrada' });
 
   try {
@@ -126,11 +127,11 @@ router.post('/nfce/:chave/email', async (req, res) => {
     console.error('[Email] Erro ao enviar DANFE:', err.message);
     res.status(500).json({ error: err.message || 'Erro ao enviar email' });
   }
-});
+}));
 
 // POST /api/aloha/nfce/:chave/whatsapp
 // Body: { machineId, toPhone, customerName? } — sempre disparo manual (botão no dashboard).
-router.post('/nfce/:chave/whatsapp', async (req, res) => {
+router.post('/nfce/:chave/whatsapp', asyncHandler(async (req, res) => {
   const { machineId, toPhone, customerName } = req.body;
   if (!machineId || !toPhone) {
     return res.status(400).json({ error: 'machineId e toPhone obrigatorios' });
@@ -139,7 +140,7 @@ router.post('/nfce/:chave/whatsapp', async (req, res) => {
     return res.status(400).json({ error: 'Número de telefone inválido' });
   }
 
-  const record = db.getNFCeByChave(machineId, req.params.chave);
+  const record = await db.getNFCeByChave(machineId, req.params.chave);
   if (!record) return res.status(404).json({ error: 'NF-Ce nao encontrada' });
 
   try {
@@ -150,6 +151,6 @@ router.post('/nfce/:chave/whatsapp', async (req, res) => {
     console.error('[WhatsApp] Erro ao enviar DANFE:', err.message);
     res.status(500).json({ error: err.message || 'Erro ao enviar WhatsApp' });
   }
-});
+}));
 
 module.exports = router;

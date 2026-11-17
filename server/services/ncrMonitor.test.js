@@ -1,6 +1,6 @@
 'use strict';
 
-jest.mock('../db', () => ({
+jest.mock('../db-pg', () => ({
   ncrUpdate:             jest.fn(),
   ncrGetByMessageId:     jest.fn(),
   ncrInsertEmail:        jest.fn(),
@@ -12,7 +12,7 @@ jest.mock('fs', () => {
   return { ...real, readFileSync: jest.fn(), writeFileSync: jest.fn() };
 });
 
-const db = require('../db');
+const db = require('../db-pg');
 const fs = require('fs');
 const {
   buildStoreUnresolvableEmail,

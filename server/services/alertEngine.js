@@ -3,7 +3,7 @@
 const path       = require('path');
 const fs         = require('fs');
 const nodemailer = require('nodemailer');
-const db         = require('../db');
+const db         = require('../db-pg');
 const { broadcast } = require('./websocket');
 const { getBiosGuide } = require('./wolBiosGuide');
 
@@ -33,7 +33,7 @@ function alertsEnabled() {
 }
 
 function start() {
-  timer = setInterval(checkAll, CHECK_INTERVAL_MS);
+  timer = setInterval(() => { checkAll().catch(e => console.error('[AlertEngine] checkAll erro:', e.message)); }, CHECK_INTERVAL_MS);
   console.log('[AlertEngine] Iniciado (intervalo: 30s, threshold offline: 90s)');
 }
 
@@ -41,11 +41,11 @@ function stop() {
   if (timer) clearInterval(timer);
 }
 
-function checkDRBackups() {
+async function checkDRBackups() {
   const cfg = loadConfig();
   const alertAfterHours = cfg.dr?.alert_after_hours || 24;
   const threshold = new Date(Date.now() - alertAfterHours * 60 * 60 * 1000).toISOString();
-  const due = db.getMachinesDRDue(threshold);
+  const due = await db.getMachinesDRDue(threshold);
 
   for (const machine of due) {
     const now       = Date.now();
@@ -62,7 +62,7 @@ function checkDRBackups() {
       ? `${displayName}: backup DR atrasado (último há ${hoursAgo}h)`
       : `${displayName}: backup DR nunca realizado`;
 
-    fireAlert(machine.id, 'dr_overdue', msg);
+    await fireAlert(machine.id, 'dr_overdue', msg);
     sendDROverdueEmail(displayName, location, hoursAgo, machine.dr_last_ok);
     console.log(`[AlertEngine] DR overdue: ${machine.id}`);
   }
@@ -103,13 +103,13 @@ async function sendDROverdueEmail(displayName, location, hoursAgo, lastOkISO) {
   }
 }
 
-function checkAll() {
-  checkOffline();
-  checkMetricThresholds();
-  checkWolTests();
-  checkWolAutoTests();
-  checkAutoWake();
-  checkDRBackups();
+async function checkAll() {
+  await checkOffline();
+  await checkMetricThresholds();
+  await checkWolTests();
+  await checkWolAutoTests();
+  await checkAutoWake();
+  await checkDRBackups();
 }
 
 function maybeSendOfflineNotification(machineId, displayName, location, lastSeen, lastMetrics) {
@@ -132,17 +132,17 @@ function maybeSendOfflineNotification(machineId, displayName, location, lastSeen
 }
 
 // Detecta maquinas que pararam de enviar heartbeat
-function checkOffline() {
+async function checkOffline() {
   const threshold = new Date(Date.now() - 90 * 1000).toISOString();
-  const stale     = db.getMachinesStale(threshold);
+  const stale     = await db.getMachinesStale(threshold);
 
   for (const machine of stale) {
-    db.setMachineStatus(machine.id, 'offline');
-    db.addEvent(machine.id, 'offline', 'Sem heartbeat por mais de 5 minutos');
+    await db.setMachineStatus(machine.id, 'offline');
+    await db.addEvent(machine.id, 'offline', 'Sem heartbeat por mais de 5 minutos');
 
     let lastMetrics = null;
     try {
-      const raw = db.getMetrics(machine.id, 1);
+      const raw = await db.getMetrics(machine.id, 1);
       if (raw.length > 0) lastMetrics = raw[raw.length - 1];
     } catch {}
 
@@ -160,7 +160,7 @@ function checkOffline() {
 
     maybeSendOfflineNotification(machine.id, displayName, location, machine.last_seen, lastMetrics);
 
-    fireAlert(machine.id, 'offline', `${displayName} ficou offline`);
+    await fireAlert(machine.id, 'offline', `${displayName} ficou offline`);
   }
 }
 
@@ -170,14 +170,14 @@ function clearOfflineCooldown(machineId) {
   offlineAlertCooldown.delete(machineId);
 }
 
-function checkCpuAlerts(machineId, displayName, m, alerts) {
+async function checkCpuAlerts(machineId, displayName, m, alerts) {
   const key = `${machineId}:cpu`;
   for (const rule of alerts) {
     if (m.cpuPct >= rule.threshold) {
       if (!cpuAlertStart.has(key)) cpuAlertStart.set(key, Date.now());
       const elapsed = (Date.now() - cpuAlertStart.get(key)) / 60000;
       if (elapsed >= rule.duration_mins) {
-        fireAlert(machineId, 'cpu_high',
+        await fireAlert(machineId, 'cpu_high',
           `${displayName}: CPU em ${m.cpuPct}% por ${Math.round(elapsed)}min`);
         cpuAlertStart.delete(key);
       }
@@ -187,27 +187,27 @@ function checkCpuAlerts(machineId, displayName, m, alerts) {
   }
 }
 
-function checkTempAlerts(machineId, displayName, m, alerts) {
+async function checkTempAlerts(machineId, displayName, m, alerts) {
   for (const rule of alerts) {
     if (m.cpuTempC > 0 && m.cpuTempC >= rule.threshold) {
-      fireAlert(machineId, 'temp_high',
+      await fireAlert(machineId, 'temp_high',
         `${displayName}: Temperatura CPU em ${m.cpuTempC}C`);
     }
   }
 }
 
-function checkDiskAlerts(machineId, displayName, m, alerts) {
+async function checkDiskAlerts(machineId, displayName, m, alerts) {
   for (const rule of alerts) {
     if (m.diskFreeGB > 0 && m.diskFreeGB <= rule.threshold) {
-      fireAlert(machineId, 'disk_low',
+      await fireAlert(machineId, 'disk_low',
         `${displayName}: Disco livre: ${m.diskFreeGB}GB`);
     }
   }
 }
 
 // Verifica limiares de CPU, temperatura e disco
-function checkMetricThresholds() {
-  const machines = db.getAllMachines();
+async function checkMetricThresholds() {
+  const machines = await db.getAllMachines();
 
   for (const machine of machines) {
     if (machine.status !== 'online' || !machine.last_metrics) continue;
@@ -216,32 +216,32 @@ function checkMetricThresholds() {
     try { m = JSON.parse(machine.last_metrics); } catch { continue; }
 
     const displayName = machine.display_name || machine.id;
-    const allAlerts   = db.getAlerts(machine.id);
+    const allAlerts   = await db.getAlerts(machine.id);
 
-    checkCpuAlerts(machine.id, displayName, m,
+    await checkCpuAlerts(machine.id, displayName, m,
       allAlerts.filter(a => a.enabled && a.type === 'cpu_high'));
-    checkTempAlerts(machine.id, displayName, m,
+    await checkTempAlerts(machine.id, displayName, m,
       allAlerts.filter(a => a.enabled && a.type === 'temp_high'));
-    checkDiskAlerts(machine.id, displayName, m,
+    await checkDiskAlerts(machine.id, displayName, m,
       allAlerts.filter(a => a.enabled && a.type === 'disk_low'));
   }
 }
 
-function checkWolTests() {
+async function checkWolTests() {
   const timeout = new Date(Date.now() - 3 * 60 * 1000).toISOString();
-  const machines = db.getMachinesWolTesting(timeout);
+  const machines = await db.getMachinesWolTesting(timeout);
 
   for (const machine of machines) {
     const displayName = machine.display_name || machine.hostname;
     const location    = machine.location || 'Sem localidade';
 
     if (machine.status === 'online') {
-      db.setWolStatus(machine.id, 'wol_confirmed');
-      fireAlert(machine.id, 'wol_confirmed',
+      await db.setWolStatus(machine.id, 'wol_confirmed');
+      await fireAlert(machine.id, 'wol_confirmed',
         `${displayName}: WoL confirmado! Máquina ligou via magic packet.`);
       console.log(`[WoL] Confirmado: ${machine.id}`);
     } else {
-      db.setWolStatus(machine.id, 'bios_needed');
+      await db.setWolStatus(machine.id, 'bios_needed');
       const guide = getBiosGuide(machine.motherboard);
       sendWolBiosAlert(machine, displayName, location, guide);
       console.log(`[WoL] BIOS needed: ${machine.id} (${guide.manufacturer})`);
@@ -249,13 +249,13 @@ function checkWolTests() {
   }
 }
 
-function checkAutoWake() {
+async function checkAutoWake() {
   const cfg = loadConfig();
   if (!cfg.autoWake?.enabled) return;
 
   const cutoff      = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-  const allMachines = db.getAllMachines();
-  const candidates  = db.getMachinesOfflineForWake(cutoff);
+  const allMachines = await db.getAllMachines();
+  const candidates  = await db.getMachinesOfflineForWake(cutoff);
 
   for (const machine of candidates) {
     const relay = allMachines.find(m =>
@@ -273,11 +273,11 @@ function checkAutoWake() {
     const name       = machine.display_name || machine.hostname;
     const location   = machine.location || 'Sem localidade';
 
-    db.createCommand(relay.id, 'wol', { mac: machine.mac, targetId: machine.id });
-    db.setWolStatus(machine.id, 'wol_auto_testing', now);
-    db.addEvent(machine.id, 'auto_wake_sent', `Auto-Wake: magic packet enviado via ${relay.display_name || relay.hostname}`);
+    await db.createCommand(relay.id, 'wol', { mac: machine.mac, targetId: machine.id });
+    await db.setWolStatus(machine.id, 'wol_auto_testing', now);
+    await db.addEvent(machine.id, 'auto_wake_sent', `Auto-Wake: magic packet enviado via ${relay.display_name || relay.hostname}`);
 
-    fireAlert(machine.id, 'auto_wake',
+    await fireAlert(machine.id, 'auto_wake',
       `Auto-Wake: enviando magic packet para ${name} (offline há ${offlineMin} min)`);
 
     sendAutoWakeEmail(name, location, offlineMin);
@@ -287,26 +287,26 @@ function checkAutoWake() {
   }
 }
 
-function checkWolAutoTests() {
+async function checkWolAutoTests() {
   const timeout  = new Date(Date.now() - 3 * 60 * 1000).toISOString();
-  const machines = db.getMachinesAutoWolTesting(timeout);
+  const machines = await db.getMachinesAutoWolTesting(timeout);
 
   for (const machine of machines) {
     const name     = machine.display_name || machine.hostname;
     const location = machine.location || 'Sem localidade';
 
     if (machine.status === 'online') {
-      db.setWolStatus(machine.id, 'wol_confirmed');
-      db.addEvent(machine.id, 'auto_wake_success', 'Máquina ligada automaticamente com sucesso');
-      fireAlert(machine.id, 'auto_wake_success',
+      await db.setWolStatus(machine.id, 'wol_confirmed');
+      await db.addEvent(machine.id, 'auto_wake_success', 'Máquina ligada automaticamente com sucesso');
+      await fireAlert(machine.id, 'auto_wake_success',
         `✅ ${name}: ligada automaticamente com sucesso!`);
       sendAutoWakeResultEmail(name, location, true);
       sendAutoWakeResultTeams(name, location, true);
       console.log(`[AutoWake] Sucesso: ${machine.id}`);
     } else {
-      db.setWolStatus(machine.id, 'wol_confirmed');
-      db.addEvent(machine.id, 'auto_wake_failed', 'Auto-Wake: sem resposta em 3 min');
-      fireAlert(machine.id, 'auto_wake_failed',
+      await db.setWolStatus(machine.id, 'wol_confirmed');
+      await db.addEvent(machine.id, 'auto_wake_failed', 'Auto-Wake: sem resposta em 3 min');
+      await fireAlert(machine.id, 'auto_wake_failed',
         `⚠️ ${name}: Auto-Wake falhou — sem resposta em 3 min`);
       sendAutoWakeResultEmail(name, location, false);
       sendAutoWakeResultTeams(name, location, false);
@@ -639,10 +639,10 @@ async function sendOfflineTeams(displayName, location, lastSeen, lastMetrics) {
   }
 }
 
-function fireAlert(machineId, type, message) {
+async function fireAlert(machineId, type, message) {
   if (!alertsEnabled()) return;
   broadcast('alert', { machineId, type, message, ts: new Date().toISOString() });
-  db.addEvent(machineId, `alert_${type}`, message);
+  await db.addEvent(machineId, `alert_${type}`, message);
   console.log(`[Alert] ${type} | ${machineId}: ${message}`);
 }
 

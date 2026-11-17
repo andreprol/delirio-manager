@@ -52,7 +52,7 @@ describe('alertEngine', () => {
       setWolStatus:              jest.fn(),
     };
 
-    jest.doMock('../db', () => dbMock);
+    jest.doMock('../db-pg', () => dbMock);
     jest.doMock('./websocket', () => ({ broadcast: broadcastMock }));
     jest.doMock('./wolBiosGuide', () => ({
       getBiosGuide: jest.fn(() => ({
@@ -85,12 +85,12 @@ describe('alertEngine', () => {
 
   // ── checkAll smoke ────────────────────────────────────────────────────────
   describe('checkAll', () => {
-    it('executa sem erro quando db retorna listas vazias', () => {
-      expect(() => alertEngine.checkAll()).not.toThrow();
+    it('executa sem erro quando db retorna listas vazias', async () => {
+      await expect(alertEngine.checkAll()).resolves.not.toThrow();
     });
 
-    it('não chama db.setMachineStatus quando não há máquinas stale', () => {
-      alertEngine.checkAll();
+    it('não chama db.setMachineStatus quando não há máquinas stale', async () => {
+      await alertEngine.checkAll();
       expect(dbMock.setMachineStatus).not.toHaveBeenCalled();
     });
   });
@@ -106,15 +106,15 @@ describe('alertEngine', () => {
       online_since: null,
     };
 
-    it('marca máquina stale como offline no banco', () => {
+    it('marca máquina stale como offline no banco', async () => {
       dbMock.getMachinesStale.mockReturnValue([MACHINE]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(dbMock.setMachineStatus).toHaveBeenCalledWith('mach-01', 'offline');
     });
 
-    it('emite broadcast machine:offline com campos corretos', () => {
+    it('emite broadcast machine:offline com campos corretos', async () => {
       dbMock.getMachinesStale.mockReturnValue([MACHINE]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       const [, payload] = broadcastMock.mock.calls.find(([e]) => e === 'machine:offline');
       expect(payload).toMatchObject({
         machineId:   'mach-01',
@@ -123,38 +123,38 @@ describe('alertEngine', () => {
       });
     });
 
-    it('usa hostname como displayName quando display_name é null', () => {
+    it('usa hostname como displayName quando display_name é null', async () => {
       dbMock.getMachinesStale.mockReturnValue([{ ...MACHINE, display_name: null }]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       const [, payload] = broadcastMock.mock.calls.find(([e]) => e === 'machine:offline');
       expect(payload.displayName).toBe('PC-BOH');
     });
 
-    it('usa "Sem localidade" quando location é null', () => {
+    it('usa "Sem localidade" quando location é null', async () => {
       dbMock.getMachinesStale.mockReturnValue([{ ...MACHINE, location: null }]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       const [, payload] = broadcastMock.mock.calls.find(([e]) => e === 'machine:offline');
       expect(payload.location).toBe('Sem localidade');
     });
 
-    it('registra addEvent offline para a máquina', () => {
+    it('registra addEvent offline para a máquina', async () => {
       dbMock.getMachinesStale.mockReturnValue([MACHINE]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(dbMock.addEvent).toHaveBeenCalledWith('mach-01', 'offline', expect.any(String));
     });
 
-    it('emite broadcast alert via fireAlert', () => {
+    it('emite broadcast alert via fireAlert', async () => {
       dbMock.getMachinesStale.mockReturnValue([MACHINE]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       const call = broadcastMock.mock.calls.find(([e, p]) => e === 'alert' && p?.type === 'offline');
       expect(call).toBeDefined();
       expect(call[1].machineId).toBe('mach-01');
     });
 
-    it('processa múltiplas máquinas stale independentemente', () => {
+    it('processa múltiplas máquinas stale independentemente', async () => {
       const m2 = { ...MACHINE, id: 'mach-02', hostname: 'PC-ECF' };
       dbMock.getMachinesStale.mockReturnValue([MACHINE, m2]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(dbMock.setMachineStatus).toHaveBeenCalledTimes(2);
       expect(dbMock.setMachineStatus).toHaveBeenCalledWith('mach-01', 'offline');
       expect(dbMock.setMachineStatus).toHaveBeenCalledWith('mach-02', 'offline');
@@ -174,31 +174,31 @@ describe('alertEngine', () => {
 
     beforeEach(() => setupModule({ emailEnabled: true }));
 
-    it('envia email na primeira detecção offline', () => {
+    it('envia email na primeira detecção offline', async () => {
       dbMock.getMachinesStale.mockReturnValue([MACHINE]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(sendMailMock).toHaveBeenCalledTimes(1);
     });
 
-    it('suprime email na segunda detecção dentro do cooldown de 30min', () => {
+    it('suprime email na segunda detecção dentro do cooldown de 30min', async () => {
       dbMock.getMachinesStale.mockReturnValue([MACHINE]);
-      alertEngine.checkAll();
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(sendMailMock).toHaveBeenCalledTimes(1);
     });
 
-    it('clearOfflineCooldown permite email imediato na próxima queda', () => {
+    it('clearOfflineCooldown permite email imediato na próxima queda', async () => {
       dbMock.getMachinesStale.mockReturnValue([MACHINE]);
-      alertEngine.checkAll();                           // 1º alerta — envia email
+      await alertEngine.checkAll();                           // 1º alerta — envia email
       alertEngine.clearOfflineCooldown('mach-cd');      // reseta cooldown
-      alertEngine.checkAll();                           // 2º alerta — deve enviar email novamente
+      await alertEngine.checkAll();                           // 2º alerta — deve enviar email novamente
       expect(sendMailMock).toHaveBeenCalledTimes(2);
     });
 
-    it('broadcast machine:offline sempre dispara, mesmo no cooldown', () => {
+    it('broadcast machine:offline sempre dispara, mesmo no cooldown', async () => {
       dbMock.getMachinesStale.mockReturnValue([MACHINE]);
-      alertEngine.checkAll();
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
+      await alertEngine.checkAll();
       const offlineCalls = broadcastMock.mock.calls.filter(([e]) => e === 'machine:offline');
       expect(offlineCalls).toHaveLength(2); // broadcast sempre, email só 1x
     });
@@ -221,203 +221,203 @@ describe('alertEngine', () => {
       return [{ enabled: 1, type, threshold, duration_mins }];
     }
 
-    it('ignora máquina com status offline', () => {
+    it('ignora máquina com status offline', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ status: 'offline' })]);
       dbMock.getAlerts.mockReturnValue(rule('cpu_high', 80));
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'cpu_high' }));
     });
 
-    it('ignora máquina sem last_metrics', () => {
+    it('ignora máquina sem last_metrics', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: null })]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.anything());
     });
 
-    it('não lança exceção com last_metrics corrompido', () => {
+    it('não lança exceção com last_metrics corrompido', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: 'not{json' })]);
-      expect(() => alertEngine.checkAll()).not.toThrow();
+      await expect(alertEngine.checkAll()).resolves.not.toThrow();
     });
 
-    it('regra desabilitada (enabled = 0) não gera alerta', () => {
+    it('regra desabilitada (enabled = 0) não gera alerta', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: JSON.stringify({ cpuPct: 99 }) })]);
       dbMock.getAlerts.mockReturnValue([{ enabled: 0, type: 'cpu_high', threshold: 80, duration_mins: 0 }]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'cpu_high' }));
     });
 
     // CPU high ─────────────────────────────────────────────────────────────
-    it('CPU abaixo do threshold — sem alerta cpu_high', () => {
+    it('CPU abaixo do threshold — sem alerta cpu_high', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: JSON.stringify({ cpuPct: 50 }) })]);
       dbMock.getAlerts.mockReturnValue(rule('cpu_high', 80, 5));
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'cpu_high' }));
     });
 
-    it('CPU acima do threshold mas tempo insuficiente — sem alerta ainda', () => {
+    it('CPU acima do threshold mas tempo insuficiente — sem alerta ainda', async () => {
       jest.useFakeTimers();
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: JSON.stringify({ cpuPct: 90 }) })]);
       dbMock.getAlerts.mockReturnValue(rule('cpu_high', 80, 5));
-      alertEngine.checkAll(); // inicia timer — elapsed = 0 min
+      await alertEngine.checkAll(); // inicia timer — elapsed = 0 min
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'cpu_high' }));
     });
 
-    it('CPU acima do threshold por tempo suficiente — alerta cpu_high dispara', () => {
+    it('CPU acima do threshold por tempo suficiente — alerta cpu_high dispara', async () => {
       jest.useFakeTimers();
       const m = machine({ last_metrics: JSON.stringify({ cpuPct: 90 }) });
       dbMock.getAllMachines.mockReturnValue([m]);
       dbMock.getAlerts.mockReturnValue(rule('cpu_high', 80, 5));
 
-      alertEngine.checkAll();              // inicia timer em t=0
+      await alertEngine.checkAll();              // inicia timer em t=0
       jest.advanceTimersByTime(6 * 60000); // avança 6 min → elapsed 6 >= 5
-      alertEngine.checkAll();              // dispara alerta
+      await alertEngine.checkAll();              // dispara alerta
 
       const call = broadcastMock.mock.calls.find(([e, p]) => e === 'alert' && p?.type === 'cpu_high');
       expect(call).toBeDefined();
       expect(call[1].machineId).toBe('mach-t');
     });
 
-    it('alerta cpu_high reseta timer após disparar (não faz spam)', () => {
+    it('alerta cpu_high reseta timer após disparar (não faz spam)', async () => {
       jest.useFakeTimers();
       const m = machine({ last_metrics: JSON.stringify({ cpuPct: 90 }) });
       dbMock.getAllMachines.mockReturnValue([m]);
       dbMock.getAlerts.mockReturnValue(rule('cpu_high', 80, 5));
 
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       jest.advanceTimersByTime(6 * 60000);
-      alertEngine.checkAll(); // dispara e reseta timer
-      alertEngine.checkAll(); // elapsed = 0 → não dispara
+      await alertEngine.checkAll(); // dispara e reseta timer
+      await alertEngine.checkAll(); // elapsed = 0 → não dispara
       jest.advanceTimersByTime(6 * 60000);
-      alertEngine.checkAll(); // dispara novamente após nova espera
+      await alertEngine.checkAll(); // dispara novamente após nova espera
 
       const calls = broadcastMock.mock.calls.filter(([e, p]) => e === 'alert' && p?.type === 'cpu_high');
       expect(calls).toHaveLength(2); // apenas 2 disparos, não 3
     });
 
-    it('CPU cai abaixo do threshold — timer limpo, sem alerta mesmo após espera', () => {
+    it('CPU cai abaixo do threshold — timer limpo, sem alerta mesmo após espera', async () => {
       jest.useFakeTimers();
       const mHigh = machine({ last_metrics: JSON.stringify({ cpuPct: 90 }) });
       const mLow  = machine({ last_metrics: JSON.stringify({ cpuPct: 30 }) });
       dbMock.getAllMachines.mockReturnValue([mHigh]);
       dbMock.getAlerts.mockReturnValue(rule('cpu_high', 80, 5));
 
-      alertEngine.checkAll();           // inicia timer
+      await alertEngine.checkAll();           // inicia timer
       dbMock.getAllMachines.mockReturnValue([mLow]);
       jest.advanceTimersByTime(6 * 60000);
-      alertEngine.checkAll();           // CPU baixa → timer limpo, sem alerta
+      await alertEngine.checkAll();           // CPU baixa → timer limpo, sem alerta
 
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'cpu_high' }));
     });
 
     // Temperatura high ─────────────────────────────────────────────────────
-    it('temperatura acima do threshold — alerta temp_high', () => {
+    it('temperatura acima do threshold — alerta temp_high', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: JSON.stringify({ cpuPct: 0, cpuTempC: 75 }) })]);
       dbMock.getAlerts.mockReturnValue(rule('temp_high', 70));
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).toHaveBeenCalledWith('alert', expect.objectContaining({
         machineId: 'mach-t',
         type:      'temp_high',
       }));
     });
 
-    it('temperatura abaixo do threshold — sem alerta temp_high', () => {
+    it('temperatura abaixo do threshold — sem alerta temp_high', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: JSON.stringify({ cpuPct: 0, cpuTempC: 60 }) })]);
       dbMock.getAlerts.mockReturnValue(rule('temp_high', 70));
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'temp_high' }));
     });
 
-    it('temperatura = 0 não dispara temp_high (sensor ausente)', () => {
+    it('temperatura = 0 não dispara temp_high (sensor ausente)', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: JSON.stringify({ cpuPct: 0, cpuTempC: 0 }) })]);
       dbMock.getAlerts.mockReturnValue(rule('temp_high', 0));
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'temp_high' }));
     });
 
     // Disco low ────────────────────────────────────────────────────────────
-    it('disco livre abaixo do threshold — alerta disk_low', () => {
+    it('disco livre abaixo do threshold — alerta disk_low', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: JSON.stringify({ cpuPct: 0, cpuTempC: 0, diskFreeGB: 3 }) })]);
       dbMock.getAlerts.mockReturnValue(rule('disk_low', 5));
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).toHaveBeenCalledWith('alert', expect.objectContaining({
         machineId: 'mach-t',
         type:      'disk_low',
       }));
     });
 
-    it('disco livre acima do threshold — sem alerta disk_low', () => {
+    it('disco livre acima do threshold — sem alerta disk_low', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: JSON.stringify({ cpuPct: 0, cpuTempC: 0, diskFreeGB: 20 }) })]);
       dbMock.getAlerts.mockReturnValue(rule('disk_low', 5));
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'disk_low' }));
     });
 
-    it('diskFreeGB = 0 não dispara disk_low (sem dados de disco)', () => {
+    it('diskFreeGB = 0 não dispara disk_low (sem dados de disco)', async () => {
       dbMock.getAllMachines.mockReturnValue([machine({ last_metrics: JSON.stringify({ diskFreeGB: 0 }) })]);
       dbMock.getAlerts.mockReturnValue(rule('disk_low', 5));
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'disk_low' }));
     });
   });
 
   // ── master switch (alerts.offlineEnabled = false) — dashboard ────────────
   describe('master switch — fireAlert (dashboard)', () => {
-    it('offline: sem broadcast "alert", mas machine:offline continua', () => {
+    it('offline: sem broadcast "alert", mas machine:offline continua', async () => {
       setupModule({ emailEnabled: true, offlineEnabled: false });
       dbMock.getMachinesStale.mockReturnValue([{
         id: 'mach-off', hostname: 'PC-OFF', display_name: 'PC Desligado',
         location: 'Loja', last_seen: '2026-07-10T20:00:00Z', online_since: null,
       }]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
 
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.anything());
       expect(broadcastMock).toHaveBeenCalledWith('machine:offline', expect.anything());
       expect(dbMock.setMachineStatus).toHaveBeenCalledWith('mach-off', 'offline');
     });
 
-    it('cpu_high: não dispara mesmo com regra habilitada', () => {
+    it('cpu_high: não dispara mesmo com regra habilitada', async () => {
       setupModule({ offlineEnabled: false });
       dbMock.getAllMachines.mockReturnValue([{
         id: 'mach-cpu', hostname: 'PC-CPU', status: 'online',
         last_metrics: JSON.stringify({ cpuPct: 99, cpuTempC: 0, diskFreeGB: 100 }),
       }]);
       dbMock.getAlerts.mockReturnValue([{ enabled: 1, type: 'cpu_high', threshold: 80, duration_mins: 0 }]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'cpu_high' }));
     });
 
-    it('flag ausente (default) — alertas continuam funcionando normalmente', () => {
+    it('flag ausente (default) — alertas continuam funcionando normalmente', async () => {
       setupModule({});
       dbMock.getMachinesStale.mockReturnValue([{
         id: 'mach-def', hostname: 'PC-DEF', display_name: 'PC Default',
         location: 'Loja', last_seen: '2026-07-10T20:00:00Z', online_since: null,
       }]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(broadcastMock).toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'offline' }));
     });
   });
 
   // ── master switch (alerts.offlineEnabled = false) — email/Teams ──────────
   describe('master switch — email (DR overdue / WoL BIOS)', () => {
-    it('DR overdue — não envia email nem fireAlert', () => {
+    it('DR overdue — não envia email nem fireAlert', async () => {
       setupModule({ emailEnabled: true, offlineEnabled: false });
       dbMock.getMachinesDRDue.mockReturnValue([{
         id: 'mach-dr', display_name: 'PC DR', hostname: 'PC-DR',
         location: 'Loja', dr_last_ok: null,
       }]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(sendMailMock).not.toHaveBeenCalled();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'dr_overdue' }));
     });
 
-    it('WoL BIOS needed — não envia email nem fireAlert', () => {
+    it('WoL BIOS needed — não envia email nem fireAlert', async () => {
       setupModule({ emailEnabled: true, offlineEnabled: false });
       jest.useFakeTimers().setSystemTime(new Date('2026-07-10T21:00:00Z'));
       dbMock.getMachinesWolTesting.mockReturnValue([{
         id: 'mach-wol', hostname: 'PC-WOL', display_name: 'PC WoL',
         location: 'Loja', status: 'offline', motherboard: 'ASUS ROG',
       }]);
-      alertEngine.checkAll();
+      await alertEngine.checkAll();
       expect(sendMailMock).not.toHaveBeenCalled();
       expect(broadcastMock).not.toHaveBeenCalledWith('alert', expect.objectContaining({ type: 'wol_bios_needed' }));
     });
@@ -425,27 +425,27 @@ describe('alertEngine', () => {
 
   // ── clearOfflineCooldown ──────────────────────────────────────────────────
   describe('clearOfflineCooldown', () => {
-    it('é exportado como função', () => {
+    it('é exportado como função', async () => {
       expect(typeof alertEngine.clearOfflineCooldown).toBe('function');
     });
 
-    it('não lança exceção para machineId inexistente no cooldown', () => {
+    it('não lança exceção para machineId inexistente no cooldown', async () => {
       expect(() => alertEngine.clearOfflineCooldown('nao-existe')).not.toThrow();
     });
   });
 
   // ── start / stop ──────────────────────────────────────────────────────────
   describe('start / stop', () => {
-    it('start não lança exceção', () => {
+    it('start não lança exceção', async () => {
       jest.useFakeTimers();
       expect(() => alertEngine.start()).not.toThrow();
     });
 
-    it('stop não lança exceção mesmo sem start prévio', () => {
+    it('stop não lança exceção mesmo sem start prévio', async () => {
       expect(() => alertEngine.stop()).not.toThrow();
     });
 
-    it('stop após start não lança exceção', () => {
+    it('stop após start não lança exceção', async () => {
       jest.useFakeTimers();
       alertEngine.start();
       expect(() => alertEngine.stop()).not.toThrow();

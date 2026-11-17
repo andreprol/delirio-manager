@@ -2,14 +2,15 @@
 
 const express = require('express');
 const router  = express.Router();
-const db      = require('../db');
+const db      = require('../db-pg');
 const { agentAuth, agentAuthNoLimit } = require('../middleware/auth');
-const { insertMetricsHourly, insertOfflineEvent } = require('../db');
+const { insertMetricsHourly, insertOfflineEvent } = require('../db-pg');
 const { broadcast } = require('../services/websocket');
 const { readVersionInfo } = require('./update');
 const { clearOfflineCooldown } = require('../services/alertEngine');
 const ncrMonitor = require('../services/ncrMonitor');
 const { maybeAutoSendDanfe } = require('../services/nfceAutoEmail');
+const { asyncHandler } = require('../middleware/asyncHandler');
 
 // Rate limit de registro: máximo 10 por IP a cada 30 min
 // Mitiga token theft via POST /api/register (endpoint sem auth).
@@ -25,7 +26,7 @@ function _checkRegRateLimit(ip) {
 
 // POST /api/register
 // Registra nova maquina ou atualiza existente. Retorna token.
-router.post('/register', (req, res) => {
+router.post('/register', asyncHandler(async (req, res) => {
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
   if (!_checkRegRateLimit(ip)) {
     return res.status(429).json({ error: 'Rate limit: muitos registros deste IP. Aguarde 30 min.' });
@@ -38,7 +39,7 @@ router.post('/register', (req, res) => {
   }
 
   try {
-    const token = db.registerMachine({
+    const token = await db.registerMachine({
       machineId,
       hostname,
       agentVersion: version || '',
@@ -58,7 +59,7 @@ router.post('/register', (req, res) => {
     console.error('[Register] Erro:', err.message);
     return res.status(500).json({ error: 'Erro interno' });
   }
-});
+}));
 
 // ── Validadores auxiliares ────────────────────────────────────────────────────
 
@@ -184,23 +185,23 @@ function collectMachineUpdates(machine, { agentVersion, metrics }) {
 
 const WOL_PROTECTED = ['wol_confirmed', 'testing', 'bios_needed'];
 
-function getUpdatedWolStatus(machine, wolEnabled) {
+async function getUpdatedWolStatus(machine, wolEnabled) {
   if (wolEnabled === undefined) return machine.wol_status;
   if (WOL_PROTECTED.includes(machine.wol_status)) return machine.wol_status;
   const newStatus = wolEnabled ? 'driver_enabled' : 'driver_disabled';
   if (newStatus !== machine.wol_status) {
-    db.setWolStatus(machine.id, newStatus);
+    await db.setWolStatus(machine.id, newStatus);
     return newStatus;
   }
   return machine.wol_status;
 }
 
-function updateHardwareInfo(machineId, machine, { motherboard, osVersion, wolEnabled }) {
+async function updateHardwareInfo(machineId, machine, { motherboard, osVersion, wolEnabled }) {
   if (typeof motherboard === 'string' && motherboard && !machine.motherboard) {
-    db.updateMachine(machineId, { motherboard });
+    await db.updateMachine(machineId, { motherboard });
   }
   if (typeof osVersion === 'string' && osVersion && osVersion !== machine.os_version) {
-    db.updateMachine(machineId, { os_version: osVersion });
+    await db.updateMachine(machineId, { os_version: osVersion });
   }
   return getUpdatedWolStatus(machine, wolEnabled);
 }
@@ -220,25 +221,25 @@ function broadcastMachineUpdate(machine, metrics, osVersion, currentWolStatus) {
 
 function fmtMetric(v) { return v != null ? v.toFixed(1) : 'N/A'; }
 
-function processHeartbeatDr(machineId, drStatus, drLastOk) {
+async function processHeartbeatDr(machineId, drStatus, drLastOk) {
   const drUpdate = { setup: drStatus.setup || 'not_installed' };
   if (drStatus.veeam_version) drUpdate.version = drStatus.veeam_version;
   if (drStatus.storage_gb != null) drUpdate.storageGb = drStatus.storage_gb;
   if (drStatus.last_backup_at && drStatus.last_backup_at !== drLastOk) {
     if (drStatus.last_backup_ok) {
       drUpdate.lastOk = drStatus.last_backup_at;
-      db.insertDRBackup(machineId, { backedAt: drStatus.last_backup_at, status: 'ok', storageGb: drStatus.storage_gb, durationMin: drStatus.duration_min });
+      await db.insertDRBackup(machineId, { backedAt: drStatus.last_backup_at, status: 'ok', storageGb: drStatus.storage_gb, durationMin: drStatus.duration_min });
     } else {
-      db.insertDRBackup(machineId, { backedAt: drStatus.last_backup_at, status: 'failed', errorMsg: drStatus.error_msg });
+      await db.insertDRBackup(machineId, { backedAt: drStatus.last_backup_at, status: 'failed', errorMsg: drStatus.error_msg });
     }
   }
-  db.updateMachineDRStatus(machineId, drUpdate);
+  await db.updateMachineDRStatus(machineId, drUpdate);
   broadcast('dr_update', { machineId, drStatus });
 }
 
 // POST /api/heartbeat
 // Recebe metricas do agente. Requer token valido.
-router.post('/heartbeat', agentAuth, (req, res) => {
+router.post('/heartbeat', agentAuth, asyncHandler(async (req, res) => {
   const machine = req.machine;
   const { metrics, osVersion } = req.body;
 
@@ -249,19 +250,19 @@ router.post('/heartbeat', agentAuth, (req, res) => {
 
   try {
     if (machine.status === 'offline') clearOfflineCooldown(machine.id);
-    db.setMachineStatus(machine.id, 'online');
-    if (metrics) db.saveMetrics(machine.id, metrics);
+    await db.setMachineStatus(machine.id, 'online');
+    if (metrics) await db.saveMetrics(machine.id, metrics);
 
     const upd = collectMachineUpdates(machine, req.body);
-    if (Object.keys(upd).length) db.updateMachine(machine.id, upd);
+    if (Object.keys(upd).length) await db.updateMachine(machine.id, upd);
 
-    const currentWolStatus = updateHardwareInfo(machine.id, machine, req.body);
+    const currentWolStatus = await updateHardwareInfo(machine.id, machine, req.body);
 
     broadcastMachineUpdate(machine, metrics, osVersion, currentWolStatus);
 
     const drStatus = req.body.dr_status;
     if (drStatus) {
-      try { processHeartbeatDr(machine.id, drStatus, machine.dr_last_ok); }
+      try { await processHeartbeatDr(machine.id, drStatus, machine.dr_last_ok); }
       catch (err) { console.error('[heartbeat] DR status update error:', err.message); }
     }
 
@@ -271,13 +272,13 @@ router.post('/heartbeat', agentAuth, (req, res) => {
     console.error(`[Heartbeat] Erro para ${machine.id}:`, err.message);
     return res.status(500).json({ error: 'Erro interno' });
   }
-});
+}));
 
 // POST /api/metrics/hourly
 // Agente envia snapshot horário de métricas (24x/dia).
 // Usa agentAuthNoLimit: chamado 1x/hora, rate limit de 5s causaria rejeição no startup
 // quando heartbeat e snapshot disparam simultaneamente.
-router.post('/metrics/hourly', agentAuthNoLimit, (req, res) => {
+router.post('/metrics/hourly', agentAuthNoLimit, asyncHandler(async (req, res) => {
   const machine = req.machine;
   const { snapshotTs, cpuPct, ramPct, diskPct, cpuTempC } = req.body;
 
@@ -289,7 +290,7 @@ router.post('/metrics/hourly', agentAuthNoLimit, (req, res) => {
   }
 
   try {
-    insertMetricsHourly(machine.id, { snapshotTs: tsNum, cpuPct, ramPct, diskPct, cpuTempC });
+    await insertMetricsHourly(machine.id, { snapshotTs: tsNum, cpuPct, ramPct, diskPct, cpuTempC });
     const host = machine.hostname || machine.id;
     console.log(`[metrics/hourly] ${host}: ts=${tsNum} cpu=${fmtMetric(cpuPct)}% ram=${fmtMetric(ramPct)}% disk=${fmtMetric(diskPct)}% temp=${fmtMetric(cpuTempC)}°C`);
     return res.json({ ok: true });
@@ -298,11 +299,11 @@ router.post('/metrics/hourly', agentAuthNoLimit, (req, res) => {
     console.error(`[metrics/hourly] ${host}: ${err.message}`);
     return res.status(500).json({ error: 'Erro interno' });
   }
-});
+}));
 
 // POST /api/offline-event
 // Agente reporta evento de queda: quando reconecta após gap > 10 min.
-router.post('/offline-event', agentAuth, (req, res) => {
+router.post('/offline-event', agentAuth, asyncHandler(async (req, res) => {
   const machine = req.machine;
   const { offlineAt, onlineAt, durationMin } = req.body;
 
@@ -311,18 +312,18 @@ router.post('/offline-event', agentAuth, (req, res) => {
   }
 
   try {
-    insertOfflineEvent(machine.id, { offlineAt, onlineAt, durationMin });
+    await insertOfflineEvent(machine.id, { offlineAt, onlineAt, durationMin });
     console.log(`[offline-event] ${machine.id} offline ${Math.round(durationMin)} min (${offlineAt} → ${onlineAt})`);
     return res.json({ ok: true });
   } catch (err) {
     console.error('[offline-event]', err.message);
     return res.status(500).json({ error: 'Erro interno' });
   }
-});
+}));
 
 // GET /api/commands/:machineId
 // Retorna comandos pendentes para o agente. Requer token.
-router.get('/commands/:machineId', agentAuthNoLimit, (req, res) => {
+router.get('/commands/:machineId', agentAuthNoLimit, asyncHandler(async (req, res) => {
   const machine = req.machine;
 
   if (machine.id !== req.params.machineId) {
@@ -330,39 +331,39 @@ router.get('/commands/:machineId', agentAuthNoLimit, (req, res) => {
   }
 
   try {
-    const commands = db.getPendingCommands(machine.id);
+    const commands = await db.getPendingCommands(machine.id);
     return res.json({ commands });
   } catch (err) {
     console.error(`[Commands] Erro para ${machine.id}:`, err.message);
     return res.status(500).json({ error: 'Erro interno' });
   }
-});
+}));
 
 // ── Ack post-processors ───────────────────────────────────────────────────────
 
-function postProcessNfceIndex(machineId, message) {
+async function postProcessNfceIndex(machineId, message) {
   try {
     const result = JSON.parse(message);
     if (Array.isArray(result.records) && result.records.length > 0) {
-      db.upsertNFCeRecords(machineId, result.records);
+      await db.upsertNFCeRecords(machineId, result.records);
       console.log(`[NFCe] ${machineId} day=${result.day}: ${result.records.length} registros indexados`);
       // Fire-and-forget — não trava a indexação nem o ACK por causa de envio
       // de e-mail (rede). Falha de envio fica logada, nunca lançada pra cima.
       for (const r of result.records) {
-        maybeAutoSendDanfe(machineId, r);
+        maybeAutoSendDanfe(machineId, r).catch(e => console.error('[NFCe] auto-envio falhou:', e.message));
       }
     }
     // Marca o dia como processado mesmo sem registros (loja fechada, feriado) —
     // é o que permite pular esse dia em reindexações futuras.
     if (result.month && result.day) {
-      db.markNFCeDayIndexed(machineId, `${result.month}-${result.day}`, result.records?.length || 0);
+      await db.markNFCeDayIndexed(machineId, `${result.month}-${result.day}`, result.records?.length || 0);
     }
   } catch (e) {
     console.error('[NFCe] Falha ao indexar registros:', e.message);
   }
 }
 
-function handleNfceFindNotFound(emailRow) {
+async function handleNfceFindNotFound(emailRow) {
   const retryDelays = [15, 45, 90, 180];
   if (emailRow.retry_count < retryDelays.length) {
     const baseDelay = retryDelays[emailRow.retry_count];
@@ -372,19 +373,19 @@ function handleNfceFindNotFound(emailRow) {
     const retryTime = Date.now() + baseDelay * 60000;
     const nextAt = new Date(Math.max(retryTime, leadExpiry)).toISOString();
     const waitMin = Math.round((Math.max(retryTime, leadExpiry) - Date.now()) / 60000);
-    db.ncrUpdate(emailRow.id, { retry_count: emailRow.retry_count + 1, next_retry_at: nextAt });
+    await db.ncrUpdate(emailRow.id, { retry_count: emailRow.retry_count + 1, next_retry_at: nextAt });
     console.log(`[NCR] Pedido #${emailRow.order_ref} — retry ${emailRow.retry_count + 1} agendado em ${waitMin}min`);
   } else {
-    db.ncrUpdate(emailRow.id, { danfe_found: 0 });
+    await db.ncrUpdate(emailRow.id, { danfe_found: 0 });
     ncrMonitor.sendNcrResultEmail(emailRow, { found: false }).catch(e =>
       console.error('[NCR] Falha ao enviar alerta:', e.message)
     );
   }
 }
 
-function postProcessNfceFind(commandId, machineId, success, message) {
+async function postProcessNfceFind(commandId, machineId, success, message) {
   try {
-    const emailRow = db.ncrGetByCommandId(commandId);
+    const emailRow = await db.ncrGetByCommandId(commandId);
     if (!emailRow || emailRow.notified_at) return;
     let found = false;
     let result = { found: false };
@@ -392,26 +393,26 @@ function postProcessNfceFind(commandId, machineId, success, message) {
       try { result = JSON.parse(message); found = !!result.found; } catch (_) {}
     }
     if (found) {
-      db.ncrUpdate(emailRow.id, { danfe_found: 1, danfe_chave: result.chave, xml_b64: result.xml_b64 });
+      await db.ncrUpdate(emailRow.id, { danfe_found: 1, danfe_chave: result.chave, xml_b64: result.xml_b64 });
       ncrMonitor.sendNcrResultEmail(emailRow, result).catch(e =>
         console.error('[NCR] Falha ao enviar email confirmação:', e.message)
       );
     } else {
-      handleNfceFindNotFound(emailRow);
+      await handleNfceFindNotFound(emailRow);
     }
   } catch (e) {
     console.error('[NCR] Falha ao processar ACK aloha-find-nfce:', e.message);
   }
 }
 
-function postProcessNfceMonths(machineId, message) {
+async function postProcessNfceMonths(machineId, message) {
   try {
     const { months } = JSON.parse(message);
     if (!Array.isArray(months)) return;
     if (months.length === 0) {
       console.warn(`[NFCe] ${machineId}: aloha-list-nfce-months retornou 0 meses — pasta XML vazia ou caminho ausente em C:\\Bootdrv\\AlohaFiscal\\ServerData\\XML`);
     }
-    const indexedDays = db.getIndexedDayKeysSet(machineId);
+    const indexedDays = await db.getIndexedDayKeysSet(machineId);
     const todayKey    = db.todayDayKey();
 
     let total = 0, skipped = 0;
@@ -421,7 +422,7 @@ function postProcessNfceMonths(machineId, message) {
       for (const day of (days || [])) {
         const dayKey = `${monthKey}-${day}`;
         if (indexedDays.has(dayKey) && dayKey !== todayKey) { skipped++; continue; }
-        db.createCommand(machineId, 'aloha-index-nfce-day', { month: monthKey, day });
+        await db.createCommand(machineId, 'aloha-index-nfce-day', { month: monthKey, day });
         total++;
       }
     }
@@ -432,18 +433,18 @@ function postProcessNfceMonths(machineId, message) {
 }
 
 const ACK_POST_PROCESSORS = {
-  'aloha-index-nfce-day':   (commandId, machineId, success, message) => { if (success !== false && message) postProcessNfceIndex(machineId, message); },
-  'aloha-find-nfce':        (commandId, machineId, success, message) => postProcessNfceFind(commandId, machineId, success, message),
-  'aloha-list-nfce-months': (commandId, machineId, success, message) => { if (success !== false && message) postProcessNfceMonths(machineId, message); },
-  'get_agent_log':          (commandId, machineId, success, message) => {
+  'aloha-index-nfce-day':   async (commandId, machineId, success, message) => { if (success !== false && message) await postProcessNfceIndex(machineId, message); },
+  'aloha-find-nfce':        async (commandId, machineId, success, message) => postProcessNfceFind(commandId, machineId, success, message),
+  'aloha-list-nfce-months': async (commandId, machineId, success, message) => { if (success !== false && message) await postProcessNfceMonths(machineId, message); },
+  'get_agent_log':          async (commandId, machineId, success, message) => {
     if (success !== false && message)
-      db.addEvent(machineId, 'agent_log_retrieved', `Diagnóstico reading_miss — log do agente (últimas linhas):\n${message.slice(0, 5000)}`);
+      await db.addEvent(machineId, 'agent_log_retrieved', `Diagnóstico reading_miss — log do agente (últimas linhas):\n${message.slice(0, 5000)}`);
   },
 };
 
 // POST /api/commands/ack
 // Agente confirma execucao de um comando.
-router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
+router.post('/commands/ack', agentAuthNoLimit, asyncHandler(async (req, res) => {
   const { commandId, success, message } = req.body;
 
   if (!commandId) {
@@ -451,20 +452,20 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
   }
 
   try {
-    const cmd = db.getCommandById(commandId);
-    db.ackCommand(commandId, req.machine.id, success !== false, message || '');
+    const cmd = await db.getCommandById(commandId);
+    await db.ackCommand(commandId, req.machine.id, success !== false, message || '');
 
     if (cmd) {
       const processor = ACK_POST_PROCESSORS[cmd.type];
-      if (processor) processor(commandId, req.machine.id, success, message);
+      if (processor) await processor(commandId, req.machine.id, success, message);
     }
 
     broadcast('command:acked', { commandId, machineId: req.machine.id, success: success !== false, message: message || '' });
 
     if (success !== false) {
-      db.addEvent(req.machine.id, 'command_ok', `Comando ${commandId} executado: ${message || 'OK'}`);
+      await db.addEvent(req.machine.id, 'command_ok', `Comando ${commandId} executado: ${message || 'OK'}`);
     } else {
-      db.addEvent(req.machine.id, 'command_fail', `Comando ${commandId} falhou: ${message || ''}`);
+      await db.addEvent(req.machine.id, 'command_fail', `Comando ${commandId} falhou: ${message || ''}`);
     }
 
     return res.json({ ok: true });
@@ -472,15 +473,15 @@ router.post('/commands/ack', agentAuthNoLimit, (req, res) => {
     console.error('[Ack] Erro:', err.message);
     return res.status(500).json({ error: 'Erro interno' });
   }
-});
+}));
 
-function _upsertServiceEntries(machineId, services) {
+async function _upsertServiceEntries(machineId, services) {
   let written = 0;
   for (const svc of services) {
     if (typeof svc.name !== 'string' || !svc.name) continue;
     if (svc.status !== 'running' && svc.status !== 'stopped') continue;
     const restartOk = svc.lastRestartOk != null ? (svc.lastRestartOk ? 1 : 0) : null;
-    db.upsertServiceStatus(machineId, svc.name, svc.status, svc.lastRestartAt || null, restartOk);
+    await db.upsertServiceStatus(machineId, svc.name, svc.status, svc.lastRestartAt || null, restartOk);
     written++;
   }
   return written;
@@ -489,7 +490,7 @@ function _upsertServiceEntries(machineId, services) {
 // POST /api/machines/:id/service-status
 // Agente BOH reporta status dos serviços NCR Voyix a cada 60s.
 // Usa agentAuthNoLimit para evitar conflito com o rate-limit de 5s do heartbeat.
-router.post('/machines/:id/service-status', agentAuthNoLimit, (req, res) => {
+router.post('/machines/:id/service-status', agentAuthNoLimit, asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (req.machine.id !== id) return res.status(403).json({ error: 'Token não corresponde ao machineId' });
 
@@ -499,14 +500,14 @@ router.post('/machines/:id/service-status', agentAuthNoLimit, (req, res) => {
   }
 
   try {
-    const written = _upsertServiceEntries(id, services);
+    const written = await _upsertServiceEntries(id, services);
     if (written === 0) return res.status(400).json({ error: 'Nenhuma entrada válida em services' });
     return res.json({ ok: true });
   } catch (err) {
     console.error('[ServiceStatus] Erro:', err.message);
     return res.status(500).json({ error: 'Erro interno' });
   }
-});
+}));
 
 module.exports = router;
 module.exports.validateHeartbeat    = validateHeartbeat;

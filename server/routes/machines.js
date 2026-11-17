@@ -2,30 +2,32 @@
 
 const express        = require('express');
 const router         = express.Router();
-const db             = require('../db');
+const db             = require('../db-pg');
 const { broadcast }  = require('../services/websocket');
 const { adminAuth }  = require('../middleware/adminAuth');
+const { asyncHandler } = require('../middleware/asyncHandler');
 
 // GET /api/machines
-router.get('/', (req, res) => {
+router.get('/', asyncHandler(async (req, res) => {
   try {
-    const machines = db.getAllMachines().map(parseMachine);
+    const all = await db.getAllMachines();
+    const machines = all.map(parseMachine);
     res.json(machines);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/machines/:id
-router.get('/:id', (req, res) => {
-  const m = db.getMachineById(req.params.id);
+router.get('/:id', asyncHandler(async (req, res) => {
+  const m = await db.getMachineById(req.params.id);
   if (!m) return res.status(404).json({ error: 'Maquina nao encontrada' });
   res.json(parseMachine(m));
-});
+}));
 
 // GET /api/machines/:id/aloha — ultimo scan de C:\Bootdrv
-router.get('/:id/aloha', (req, res) => {
-  const scan = db.getLastAlohaScan(req.params.id);
+router.get('/:id/aloha', asyncHandler(async (req, res) => {
+  const scan = await db.getLastAlohaScan(req.params.id);
   if (!scan) return res.json(null);
   try {
     const data = JSON.parse(scan.result);
@@ -33,12 +35,12 @@ router.get('/:id/aloha', (req, res) => {
   } catch {
     res.json(null);
   }
-});
+}));
 
 // GET /api/machines/:id/metrics?hours=24
-router.get('/:id/metrics', (req, res) => {
+router.get('/:id/metrics', asyncHandler(async (req, res) => {
   const hours = parseInt(req.query.hours) || 24;
-  const data  = db.getMetrics(req.params.id, Math.min(hours, 168)); // max 7 dias
+  const data  = await db.getMetrics(req.params.id, Math.min(hours, 168)); // max 7 dias
   res.json(data.map(m => ({
     ts:         m.ts,
     cpuPct:     m.cpu_pct,
@@ -50,18 +52,18 @@ router.get('/:id/metrics', (req, res) => {
     cpuTempC:   m.cpu_temp_c,
     ips:        parseJSON(m.ips, []),
   })));
-});
+}));
 
 // GET /api/machines/:id/events
-router.get('/:id/events', (req, res) => {
+router.get('/:id/events', asyncHandler(async (req, res) => {
   const limit = parseInt(req.query.limit) || 100;
-  res.json(db.getEvents(req.params.id, limit));
-});
+  res.json(await db.getEvents(req.params.id, limit));
+}));
 
 // GET /api/machines/:id/commands
-router.get('/:id/commands', (req, res) => {
-  res.json(db.getCommandHistory(req.params.id));
-});
+router.get('/:id/commands', asyncHandler(async (req, res) => {
+  res.json(await db.getCommandHistory(req.params.id));
+}));
 
 // ── Helpers for POST /:id/commands ───────────────────────────────────────────
 
@@ -78,12 +80,12 @@ function getCriticalCheckError(machine, type, confirm) {
   return null;
 }
 
-function handleWolSetup(machine, params) {
+async function handleWolSetup(machine, params) {
   const now         = new Date().toISOString();
   const wolTargetId = params?.targetId || machine.id;
-  db.setWolStatus(wolTargetId, 'testing', now);
-  db.addEvent(wolTargetId, 'wol_testing', `WoL iniciado via relay ${machine.id}`);
-  const target = db.getMachineById(wolTargetId);
+  await db.setWolStatus(wolTargetId, 'testing', now);
+  await db.addEvent(wolTargetId, 'wol_testing', `WoL iniciado via relay ${machine.id}`);
+  const target = await db.getMachineById(wolTargetId);
   if (target) {
     broadcast('machine:update', {
       machineId:   wolTargetId,
@@ -99,8 +101,8 @@ function handleWolSetup(machine, params) {
 
 // POST /api/machines/:id/commands
 // Envia um comando para a maquina (reboot, shutdown, wol, cancel-shutdown)
-router.post('/:id/commands', (req, res) => {
-  const machine = db.getMachineById(req.params.id);
+router.post('/:id/commands', asyncHandler(async (req, res) => {
+  const machine = await db.getMachineById(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 
   const { type, params } = req.body;
@@ -115,23 +117,23 @@ router.post('/:id/commands', (req, res) => {
   if (critError) return res.status(409).json(critError);
 
   try {
-    const commandId = db.createCommand(machine.id, type, params || {});
+    const commandId = await db.createCommand(machine.id, type, params || {});
 
-    if (type === 'wol') handleWolSetup(machine, params);
+    if (type === 'wol') await handleWolSetup(machine, params);
 
-    db.addEvent(machine.id, `command_sent`, `Comando ${type} enviado (id: ${commandId})`);
+    await db.addEvent(machine.id, `command_sent`, `Comando ${type} enviado (id: ${commandId})`);
 
     console.log(`[Command] ${type} enviado para ${machine.id} (cmd: ${commandId})`);
     res.status(201).json({ commandId, machineId: machine.id, type, status: 'pending' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // PUT /api/machines/:id
 // Atualiza nome, localidade, critica
-router.put('/:id', (req, res) => {
-  const machine = db.getMachineById(req.params.id);
+router.put('/:id', asyncHandler(async (req, res) => {
+  const machine = await db.getMachineById(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 
   const { displayName, location, critica, subnet, mac } = req.body;
@@ -143,17 +145,17 @@ router.put('/:id', (req, res) => {
   if (subnet      !== undefined) fields.subnet         = subnet;
   if (mac         !== undefined) fields.mac            = mac;
 
-  db.updateMachine(req.params.id, fields);
+  await db.updateMachine(req.params.id, fields);
   res.json({ ok: true });
-});
+}));
 
 // DELETE /api/machines/:id
-router.delete('/:id', (req, res) => {
-  const machine = db.getMachineById(req.params.id);
+router.delete('/:id', asyncHandler(async (req, res) => {
+  const machine = await db.getMachineById(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
-  db.deleteMachine(req.params.id);
+  await db.deleteMachine(req.params.id);
   res.json({ ok: true });
-});
+}));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -205,7 +207,7 @@ async function pollCommandResult(commandId, deadline) {
   const POLL_MS = 500;
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, POLL_MS));
-    const cmd = db.getCommandResult(commandId);
+    const cmd = await db.getCommandResult(commandId);
     if (cmd && cmd.status === 'acked') {
       return { failed: false, output: cmd.result || '' };
     }
@@ -216,8 +218,8 @@ async function pollCommandResult(commandId, deadline) {
   return null;
 }
 
-router.post('/:id/run', adminAuth, async (req, res) => {
-  const machine = db.getMachineById(req.params.id);
+router.post('/:id/run', adminAuth, asyncHandler(async (req, res) => {
+  const machine = await db.getMachineById(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 
   const { script } = req.body;
@@ -225,7 +227,7 @@ router.post('/:id/run', adminAuth, async (req, res) => {
     return res.status(400).json({ error: 'script obrigatorio' });
   }
 
-  const commandId  = db.createCommand(machine.id, 'run_powershell', { script });
+  const commandId  = await db.createCommand(machine.id, 'run_powershell', { script });
   const TIMEOUT_MS = 35_000;
   const deadline   = Date.now() + TIMEOUT_MS;
 
@@ -240,7 +242,7 @@ router.post('/:id/run', adminAuth, async (req, res) => {
     return res.status(500).json({ success: false, output: pollResult.output, commandId });
   }
   return res.json({ success: true, output: pollResult.output, commandId });
-});
+}));
 
 function parseJSON(str, fallback) {
   try { return JSON.parse(str); } catch { return fallback; }

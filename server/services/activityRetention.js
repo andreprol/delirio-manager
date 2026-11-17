@@ -1,14 +1,14 @@
 'use strict';
 
-const db     = require('../db');
+const db     = require('../db-pg');
 const logger = require('./logger');
 
 const RETENTION_DAYS = 90;
 const COMMANDS_RETENTION_DAYS = 30;
 
-function runPurgeOnce() {
+async function runPurgeOnce() {
   try {
-    const removed = db.purgeActivityLog(RETENTION_DAYS);
+    const removed = await db.purgeActivityLog(RETENTION_DAYS);
     if (removed > 0) {
       logger.info(`[ActivityRetention] ${removed} linhas de activity_log removidas (> ${RETENTION_DAYS}d)`);
     }

@@ -9,7 +9,7 @@
 const express = require('express');
 const request = require('supertest');
 
-jest.mock('../db', () => ({
+jest.mock('../db-pg', () => ({
   getInsights:     jest.fn(() => []),
   markInsightRead: jest.fn(),
 }));

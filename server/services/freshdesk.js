@@ -2,7 +2,7 @@
 'use strict';
 
 const https = require('https');
-const db    = require('../db');
+const db    = require('../db-pg');
 
 function loadConfig() {
   try { return require('../config.json').freshdesk || {}; }
@@ -104,12 +104,12 @@ async function syncAll() {
   }
 
   const tiTickets = allTickets.filter(isTiTicket).map(mapTicket);
-  db.upsertFreshdeskTickets(tiTickets);
+  await db.upsertFreshdeskTickets(tiTickets);
 
   // Limpar registros antigos que não passam mais no filtro
-  const d = db.getDb();
-  d.prepare("DELETE FROM freshdesk_cache WHERE lower(store_name) IN ('manutenção','manutencao')").run();
-  d.prepare("UPDATE freshdesk_cache SET store_name = 'Assembleia' WHERE store_name = 'Assembléia'").run();
+  const pool = db.getPool();
+  await pool.query("DELETE FROM freshdesk_cache WHERE lower(store_name) IN ('manutenção','manutencao')");
+  await pool.query("UPDATE freshdesk_cache SET store_name = 'Assembleia' WHERE store_name = 'Assembléia'");
 
   return tiTickets.length;
 }
@@ -118,7 +118,7 @@ async function syncAll() {
 async function syncIfStale(storeName) {
   const cfg = loadConfig();
   const cacheHours = cfg.cache_hours || 4;
-  const ageHours = db.getFreshdeskCacheAge(storeName);
+  const ageHours = await db.getFreshdeskCacheAge(storeName);
   if (ageHours < cacheHours) return { synced: false, cached: true };
   const count = await syncAll();
   return { synced: true, count };

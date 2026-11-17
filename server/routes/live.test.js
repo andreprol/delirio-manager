@@ -3,13 +3,13 @@
 const express = require('express');
 const request = require('supertest');
 
-jest.mock('../db', () => ({
+jest.mock('../db-pg', () => ({
   getMachineById:      jest.fn(),
-  createLiveSession:   jest.fn(() => 'session-1'),
+  createLiveSession:   jest.fn().mockResolvedValue('session-1'),
   getLiveSession:      jest.fn(),
-  endLiveSession:      jest.fn(),
-  setLiveSessionRecorded: jest.fn(),
-  createCommand:       jest.fn(() => 'cmd-1'),
+  endLiveSession:      jest.fn().mockResolvedValue(undefined),
+  setLiveSessionRecorded: jest.fn().mockResolvedValue(undefined),
+  createCommand:       jest.fn().mockResolvedValue('cmd-1'),
 }));
 
 jest.mock('../services/liveSessionRelay', () => ({
@@ -47,8 +47,8 @@ describe('POST /api/live/:machineId/start', () => {
 
   it('400 com mode inválido', async () => {
     process.env.ADMIN_SECRET = 'segredo-123';
-    const db = require('../db');
-    db.getMachineById.mockReturnValue({ id: 'm1' });
+    const db = require('../db-pg');
+    db.getMachineById.mockResolvedValue({ id: 'm1' });
     const app = makeApp();
     const res = await request(app).post('/api/live/m1/start')
       .set('x-admin-secret', 'segredo-123')
@@ -58,8 +58,8 @@ describe('POST /api/live/:machineId/start', () => {
 
   it('404 quando a máquina não existe', async () => {
     process.env.ADMIN_SECRET = 'segredo-123';
-    const db = require('../db');
-    db.getMachineById.mockReturnValue(null);
+    const db = require('../db-pg');
+    db.getMachineById.mockResolvedValue(null);
     const app = makeApp();
     const res = await request(app).post('/api/live/m1/start')
       .set('x-admin-secret', 'segredo-123')
@@ -69,9 +69,9 @@ describe('POST /api/live/:machineId/start', () => {
 
   it('200, cria sessão, registra os dois tokens no relay, manda só o companionToken pro agente, e devolve só o dashboardToken na resposta', async () => {
     process.env.ADMIN_SECRET = 'segredo-123';
-    const db = require('../db');
+    const db = require('../db-pg');
     const relay = require('../services/liveSessionRelay');
-    db.getMachineById.mockReturnValue({ id: 'm1' });
+    db.getMachineById.mockResolvedValue({ id: 'm1' });
     const app = makeApp();
 
     const res = await request(app).post('/api/live/m1/start')
@@ -148,9 +148,9 @@ describe('POST /api/live/:sessionId/file/upload-url — resposta do serviço', (
   });
 
   it('200 com uploadUrl/downloadUrl quando tudo ok', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     const blobSas = require('../services/blobSas');
-    db.getLiveSession.mockReturnValue({ id: 's1', machine_id: 'm1' });
+    db.getLiveSession.mockResolvedValue({ id: 's1', machine_id: 'm1' });
     blobSas.generateFileTransferUrls.mockReturnValue({
       uploadUrl: 'https://acc.blob.core.windows.net/live-transfer/x?sas',
       downloadUrl: 'https://acc.blob.core.windows.net/live-transfer/x?sas2',
@@ -167,9 +167,9 @@ describe('POST /api/live/:sessionId/file/upload-url — resposta do serviço', (
   });
 
   it('500 quando blobSas lança erro inesperado (ex: config ausente)', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     const blobSas = require('../services/blobSas');
-    db.getLiveSession.mockReturnValue({ id: 's1', machine_id: 'm1' });
+    db.getLiveSession.mockResolvedValue({ id: 's1', machine_id: 'm1' });
     blobSas.generateFileTransferUrls.mockImplementation(() => {
       throw new Error('blobStorage não configurado em config.json (accountName/accountKey)');
     });
@@ -194,8 +194,8 @@ describe('POST /api/live/:sessionId/file/upload-url — validação de sessão',
   // Achado do code-reviewer: sessionId nunca era checado contra uma sessão
   // viva antes de emitir SAS -- mesmo guard que /stop já tinha.
   it('404 quando a sessão não existe', async () => {
-    const db = require('../db');
-    db.getLiveSession.mockReturnValue(null);
+    const db = require('../db-pg');
+    db.getLiveSession.mockResolvedValue(null);
     const app = makeApp();
     const res = await request(app)
       .post('/api/live/nao-existe/file/upload-url')
@@ -239,9 +239,9 @@ describe('POST /api/live/:sessionId/file/download-url — resposta do serviço',
   });
 
   it('200 com uploadUrl/downloadUrl quando tudo ok, sem fileSize no corpo', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     const blobSas = require('../services/blobSas');
-    db.getLiveSession.mockReturnValue({ id: 's1', machine_id: 'm1' });
+    db.getLiveSession.mockResolvedValue({ id: 's1', machine_id: 'm1' });
     blobSas.generateFileTransferUrls.mockClear();
     blobSas.generateFileTransferUrls.mockReturnValue({
       uploadUrl: 'https://acc.blob.core.windows.net/live-transfer/y?sas',
@@ -260,9 +260,9 @@ describe('POST /api/live/:sessionId/file/download-url — resposta do serviço',
   });
 
   it('500 quando blobSas lança erro inesperado (ex: config ausente)', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     const blobSas = require('../services/blobSas');
-    db.getLiveSession.mockReturnValue({ id: 's1', machine_id: 'm1' });
+    db.getLiveSession.mockResolvedValue({ id: 's1', machine_id: 'm1' });
     blobSas.generateFileTransferUrls.mockImplementation(() => {
       throw new Error('blobStorage não configurado em config.json (accountName/accountKey)');
     });
@@ -282,8 +282,8 @@ describe('POST /api/live/:sessionId/file/download-url — validação de sessão
   });
 
   it('404 quando a sessão não existe', async () => {
-    const db = require('../db');
-    db.getLiveSession.mockReturnValue(null);
+    const db = require('../db-pg');
+    db.getLiveSession.mockResolvedValue(null);
     const app = makeApp();
     const res = await request(app)
       .post('/api/live/nao-existe/file/download-url')
@@ -296,8 +296,8 @@ describe('POST /api/live/:sessionId/file/download-url — validação de sessão
 describe('POST /api/live/:sessionId/stop', () => {
   it('404 quando a sessão não existe', async () => {
     process.env.ADMIN_SECRET = 'segredo-123';
-    const db = require('../db');
-    db.getLiveSession.mockReturnValue(null);
+    const db = require('../db-pg');
+    db.getLiveSession.mockResolvedValue(null);
     const app = makeApp();
     const res = await request(app).post('/api/live/session-x/stop')
       .set('x-admin-secret', 'segredo-123')
@@ -307,8 +307,8 @@ describe('POST /api/live/:sessionId/stop', () => {
 
   it('200, encerra sessão e envia comando de stop', async () => {
     process.env.ADMIN_SECRET = 'segredo-123';
-    const db = require('../db');
-    db.getLiveSession.mockReturnValue({ id: 'session-1', machine_id: 'm1', ended_at: null });
+    const db = require('../db-pg');
+    db.getLiveSession.mockResolvedValue({ id: 'session-1', machine_id: 'm1', ended_at: null });
     const app = makeApp();
 
     const res = await request(app).post('/api/live/session-1/stop')

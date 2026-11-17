@@ -3,6 +3,7 @@
 const path    = require('path');
 const fs      = require('fs');
 const express = require('express');
+const { asyncHandler } = require('./middleware/asyncHandler');
 
 const zamakService    = require('./services/zamak');
 
@@ -57,23 +58,23 @@ app.use((req, res, next) => {
 });
 
 // ── Health Check ──────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => {
-  const { getDb } = require('./db');
-  const db = getDb();
+app.get('/health', asyncHandler(async (req, res) => {
+  const { getPool } = require('./db-pg');
+  const pool = getPool();
 
-  const machines = db.prepare(`
+  const { rows: [machines] } = await pool.query(`
     SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN status = 'online'  THEN 1 ELSE 0 END) AS online,
       SUM(CASE WHEN status = 'offline' THEN 1 ELSE 0 END) AS offline
     FROM machines
-  `).get();
+  `);
 
-  const alertRulesEnabled = db
-    .prepare('SELECT COUNT(*) AS c FROM alerts WHERE enabled = 1').get().c;
+  const { rows: [alertRow] } = await pool.query('SELECT COUNT(*) AS c FROM alerts WHERE enabled = 1');
+  const alertRulesEnabled = Number(alertRow.c);
 
-  const pendingCommands = db
-    .prepare("SELECT COUNT(*) AS c FROM commands WHERE status = 'pending'").get().c;
+  const { rows: [cmdRow] } = await pool.query("SELECT COUNT(*) AS c FROM commands WHERE status = 'pending'");
+  const pendingCommands = Number(cmdRow.c);
 
   const mem = process.memoryUsage();
   const uptimeSec = Math.round(process.uptime());
@@ -84,9 +85,9 @@ app.get('/health', (req, res) => {
     uptime:   uptimeSec,
     uptimeHuman: logger.formatUptime(uptimeSec),
     machines: {
-      total:   machines.total   ?? 0,
-      online:  machines.online  ?? 0,
-      offline: machines.offline ?? 0,
+      total:   Number(machines.total)   || 0,
+      online:  Number(machines.online)  || 0,
+      offline: Number(machines.offline) || 0,
     },
     alertRulesEnabled,
     pendingCommands,
@@ -96,25 +97,25 @@ app.get('/health', (req, res) => {
     },
     timestamp: new Date().toISOString(),
   });
-});
+}));
 
 // ── Status integrações ────────────────────────────────────────────────────────
-app.get('/api/status/integrations', (req, res) => {
-  const { getIntegrationsStatus } = require('./db');
+app.get('/api/status/integrations', asyncHandler(async (req, res) => {
+  const { getIntegrationsStatus } = require('./db-pg');
   const { isMsGraphConfigured } = require('./services/nfce-mailer');
   const { isWhatsappConfigured } = require('./services/nfce-whatsapp');
-  const status = getIntegrationsStatus();
+  const status = await getIntegrationsStatus();
   status.zamak.syncing = zamakService.isSyncing();
   status.msGraph  = { configured: isMsGraphConfigured() };
   status.whatsapp = { configured: isWhatsappConfigured() };
   res.json(status);
-});
+}));
 
 // ── Diagnóstico de medições horárias ─────────────────────────────────────────
 // GET /api/metrics/hourly/status — mostra leituras 24h + última medição por máquina
-app.get('/api/metrics/hourly/status', (req, res) => {
-  const { getHourlyMetricsDiag } = require('./db');
-  const rows = getHourlyMetricsDiag();
+app.get('/api/metrics/hourly/status', asyncHandler(async (req, res) => {
+  const { getHourlyMetricsDiag } = require('./db-pg');
+  const rows = await getHourlyMetricsDiag();
   const now = Math.floor(Date.now() / 1000);
   const result = rows.map(r => ({
     id:            r.id,
@@ -131,7 +132,7 @@ app.get('/api/metrics/hourly/status', (req, res) => {
   }));
   const noReadings = result.filter(r => r.readings24h === 0).length;
   res.json({ total: result.length, noReadings, machines: result });
-});
+}));
 
 // ── Rotas ─────────────────────────────────────────────────────────────────────
 app.use('/api',           agentRoutes);

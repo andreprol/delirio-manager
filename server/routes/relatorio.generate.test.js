@@ -10,7 +10,7 @@
 const express = require('express');
 const request = require('supertest');
 
-jest.mock('../db', () => ({
+jest.mock('../db-pg', () => ({
   getRecentReportRun: jest.fn(() => null),
   saveReportRun:       jest.fn(() => 42),
   getTopics:           jest.fn(() => []),
@@ -85,7 +85,7 @@ describe('POST /api/relatorio/generate — happy path e dedup', () => {
   it('gera normalmente e chama a API quando não há relatório recente', async () => {
     process.env.INTERNAL_API_KEY = 'segredo-123';
     const app = makeApp();
-    const db = require('../db');
+    const db = require('../db-pg');
     const reportEngine = require('../services/reportEngine');
     db.getRecentReportRun.mockReturnValue(null);
 
@@ -102,7 +102,7 @@ describe('POST /api/relatorio/generate — happy path e dedup', () => {
   it('2ª chamada pra mesma loja+mês dentro da janela NÃO chama a API de novo', async () => {
     process.env.INTERNAL_API_KEY = 'segredo-123';
     const app = makeApp();
-    const db = require('../db');
+    const db = require('../db-pg');
     const reportEngine = require('../services/reportEngine');
     db.getRecentReportRun.mockReturnValue({
       id: 7, store_name: 'Loja', month: '2026-10', score_total: 80,
@@ -128,7 +128,7 @@ describe('POST /api/relatorio/generate — happy path e dedup', () => {
   it('coluna ai_recommendations corrompida não derruba a resposta cacheada', async () => {
     process.env.INTERNAL_API_KEY = 'segredo-123';
     const app = makeApp();
-    const db = require('../db');
+    const db = require('../db-pg');
     db.getRecentReportRun.mockReturnValue({
       id: 9, store_name: 'Loja', month: '2026-10', score_total: 80,
       docx_path: null, pdf_path: null,

@@ -7,8 +7,9 @@ const router   = express.Router();
 const path     = require('path');
 const fs       = require('fs');
 const crypto   = require('crypto');
-const db       = require('../db');
+const db       = require('../db-pg');
 const { broadcast } = require('../services/websocket');
+const { asyncHandler } = require('../middleware/asyncHandler');
 
 const PUBLIC_DIR    = path.join(__dirname, '..', 'public');
 const VERSION_FILE  = path.join(PUBLIC_DIR, 'version.json');
@@ -73,7 +74,7 @@ router.post('/publish', express.raw({ type: 'application/octet-stream', limit: '
 
 // POST /api/update/broadcast — envia comando de update para todas as maquinas online
 // Body: { targetVersion: "1.1.0" } (opcional, usa versao atual se omitido)
-router.post('/broadcast', (req, res) => {
+router.post('/broadcast', asyncHandler(async (req, res) => {
   const info = readVersionInfo();
   const version = req.body?.targetVersion || info.version;
 
@@ -81,7 +82,7 @@ router.post('/broadcast', (req, res) => {
     return res.status(404).json({ error: 'Nenhum binario publicado ainda. Publique primeiro.' });
   }
 
-  const machines = db.getAllMachines().filter(m => m.status === 'online');
+  const machines = (await db.getAllMachines()).filter(m => m.status === 'online');
   if (machines.length === 0) {
     return res.json({ ok: true, sent: 0, message: 'Nenhuma maquina online no momento.' });
   }
@@ -89,7 +90,7 @@ router.post('/broadcast', (req, res) => {
   let sent = 0;
   for (const m of machines) {
     try {
-      db.createCommand(m.id, 'update', {
+      await db.createCommand(m.id, 'update', {
         version,
         sha256: info.sha256,
       });
@@ -101,21 +102,21 @@ router.post('/broadcast', (req, res) => {
   broadcast('update:broadcast', { version, sent, total: machines.length });
 
   res.json({ ok: true, sent, total: machines.length, version });
-});
+}));
 
 // POST /api/update/machine/:id — envia update para maquina especifica
-router.post('/machine/:id', (req, res) => {
-  const machine = db.getMachineById(req.params.id);
+router.post('/machine/:id', asyncHandler(async (req, res) => {
+  const machine = await db.getMachineById(req.params.id);
   if (!machine) return res.status(404).json({ error: 'Maquina nao encontrada' });
 
   const info = readVersionInfo();
-  db.createCommand(machine.id, 'update', {
+  await db.createCommand(machine.id, 'update', {
     version: info.version,
     sha256:  info.sha256,
   });
 
   res.json({ ok: true, machineId: machine.id, version: info.version });
-});
+}));
 
 // ── Upload do installer do dashboard ──────────────────────────────────────
 

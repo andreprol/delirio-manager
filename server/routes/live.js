@@ -12,25 +12,26 @@
 const express   = require('express');
 const router    = express.Router();
 const crypto    = require('crypto');
-const db        = require('../db');
+const db        = require('../db-pg');
 const logger    = require('../services/logger');
 const relay     = require('../services/liveSessionRelay');
 const { adminAuth } = require('../middleware/adminAuth');
 const { generateFileTransferUrls, MAX_FILE_BYTES } = require('../services/blobSas');
+const { asyncHandler } = require('../middleware/asyncHandler');
 
 // POST /api/live/:machineId/start  { mode: 'normal'|'shadow' }
-router.post('/:machineId/start', adminAuth, (req, res) => {
+router.post('/:machineId/start', adminAuth, asyncHandler(async (req, res) => {
   const { mode } = req.body || {};
   if (mode !== 'normal' && mode !== 'shadow') {
     return res.status(400).json({ error: "mode deve ser 'normal' ou 'shadow'" });
   }
 
-  const machine = db.getMachineById(req.params.machineId);
+  const machine = await db.getMachineById(req.params.machineId);
   if (!machine) {
     return res.status(404).json({ error: 'Máquina não encontrada' });
   }
 
-  const sessionId      = db.createLiveSession(machine.id, mode);
+  const sessionId      = await db.createLiveSession(machine.id, mode);
   const companionToken = crypto.randomBytes(32).toString('hex');
   const dashboardToken = crypto.randomBytes(32).toString('hex');
 
@@ -38,11 +39,11 @@ router.post('/:machineId/start', adminAuth, (req, res) => {
   relay.registerSession(sessionId, { machineId: machine.id, mode, companionToken, dashboardToken });
 
   // só o companionToken vai pro agente, via comando enfileirado
-  db.createCommand(machine.id, 'start-live-session', { sessionId, mode, companionToken });
+  await db.createCommand(machine.id, 'start-live-session', { sessionId, mode, companionToken });
 
   // só o dashboardToken volta na resposta — companionToken nunca aparece aqui
   res.json({ ok: true, sessionId, mode, dashboardToken });
-});
+}));
 
 // POST /api/live/:sessionId/file/upload-url  { fileName, fileSize }
 // Gera SAS de upload (escrita) + download (leitura) pro MESMO blob, pra
@@ -53,7 +54,7 @@ router.post('/:machineId/start', adminAuth, (req, res) => {
 // qualquer erro que blobSas ainda lançar depois dessa validação (ex:
 // blobStorage ausente do config.json) é problema do SERVIDOR, não do
 // cliente.
-router.post('/:sessionId/file/upload-url', adminAuth, (req, res) => {
+router.post('/:sessionId/file/upload-url', adminAuth, asyncHandler(async (req, res) => {
   const { fileName, fileSize } = req.body || {};
   if (!fileName || typeof fileSize !== 'number') {
     return res.status(400).json({ error: 'fileName e fileSize (number) sao obrigatorios' });
@@ -64,7 +65,7 @@ router.post('/:sessionId/file/upload-url', adminAuth, (req, res) => {
   // Achado do code-reviewer: sem isto, qualquer chamador com X-Admin-Secret
   // recebia SAS válidas pra um sessionId inexistente/já finalizado (mesmo
   // guard que /stop já tinha).
-  const session = db.getLiveSession(req.params.sessionId);
+  const session = await db.getLiveSession(req.params.sessionId);
   if (!session) {
     return res.status(404).json({ error: 'Sessão não encontrada' });
   }
@@ -79,7 +80,7 @@ router.post('/:sessionId/file/upload-url', adminAuth, (req, res) => {
     logger.error('[FileTransfer] upload-url falhou', { fileName, sessionId: session.id, error: err.message });
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // POST /api/live/:sessionId/file/download-url  { fileName }
 // Mesmo par de SAS (upload+download pro MESMO blob) que /file/upload-url,
@@ -92,12 +93,12 @@ router.post('/:sessionId/file/upload-url', adminAuth, (req, res) => {
 // é conhecido quando o companion abre o arquivo pra ler — generateFileTransferUrls
 // tolera fileSize ausente (a checagem de MAX_FILE_BYTES simplesmente não
 // dispara pra undefined), então não precisa de variante própria no serviço.
-router.post('/:sessionId/file/download-url', adminAuth, (req, res) => {
+router.post('/:sessionId/file/download-url', adminAuth, asyncHandler(async (req, res) => {
   const { fileName } = req.body || {};
   if (!fileName) {
     return res.status(400).json({ error: 'fileName é obrigatório' });
   }
-  const session = db.getLiveSession(req.params.sessionId);
+  const session = await db.getLiveSession(req.params.sessionId);
   if (!session) {
     return res.status(404).json({ error: 'Sessão não encontrada' });
   }
@@ -113,23 +114,23 @@ router.post('/:sessionId/file/download-url', adminAuth, (req, res) => {
     logger.error('[FileTransfer] download-url falhou', { fileName, sessionId: session.id, error: err.message });
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // POST /api/live/:sessionId/stop  { recorded?: boolean }
-router.post('/:sessionId/stop', adminAuth, (req, res) => {
-  const session = db.getLiveSession(req.params.sessionId);
+router.post('/:sessionId/stop', adminAuth, asyncHandler(async (req, res) => {
+  const session = await db.getLiveSession(req.params.sessionId);
   if (!session) {
     return res.status(404).json({ error: 'Sessão não encontrada' });
   }
 
   if (req.body && req.body.recorded) {
-    db.setLiveSessionRecorded(session.id);
+    await db.setLiveSessionRecorded(session.id);
   }
-  db.endLiveSession(session.id);
+  await db.endLiveSession(session.id);
   relay.unregisterSession(session.id);
-  db.createCommand(session.machine_id, 'stop-live-session', { sessionId: session.id });
+  await db.createCommand(session.machine_id, 'stop-live-session', { sessionId: session.id });
 
   res.json({ ok: true });
-});
+}));
 
 module.exports = router;

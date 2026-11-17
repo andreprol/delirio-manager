@@ -171,7 +171,7 @@ function buildEmailHtml(machines, dtBRT) {
 
 async function sendServiceStatusEmail() {
   const logger = require('./logger');
-  const { getAllMachines, getServiceStatusBOH } = require('../db');
+  const { getAllMachines, getServiceStatusBOH } = require('../db-pg');
 
   try {
     const cfg = loadGraphConfig();
@@ -180,13 +180,14 @@ async function sendServiceStatusEmail() {
       return;
     }
 
-    const allBOH = getAllMachines().filter(m => m.hostname?.toUpperCase().endsWith('BOH'));
+    const allMachines = await getAllMachines();
+    const allBOH = allMachines.filter(m => m.hostname?.toUpperCase().endsWith('BOH'));
     if (!allBOH.length) {
       logger.info('[ServiceStatusEmail] Nenhuma máquina BOH registrada');
       return;
     }
 
-    const statusRows = getServiceStatusBOH();
+    const statusRows = await getServiceStatusBOH();
     const machines   = buildMachineMap(statusRows, allBOH);
 
     const now    = new Date();

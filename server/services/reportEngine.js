@@ -3,7 +3,7 @@
 
 const path   = require('path');
 const fs     = require('fs');
-const db     = require('../db');
+const db     = require('../db-pg');
 const logger = require('./logger');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,31 +53,35 @@ function detectRecurrences(history) {
     .map(([desc, count]) => `"${desc}..." (${count}x nos últimos 6 meses)`);
 }
 
-function buildStoreContext(storeName, month) {
-  const openTopics  = db.getTopics(storeName);
-  const history     = db.getTopicsHistory(storeName, 6);
+async function buildStoreContext(storeName, month) {
+  const openTopics  = await db.getTopics(storeName);
+  const history     = await db.getTopicsHistory(storeName, 6);
   const recurrences = detectRecurrences(history);
 
   // Freshdesk — ALL tickets (sem filtro de mês para o relatório)
-  const rawDb = db.getDb();
-  const fdActive = rawDb.prepare(
+  const pool = db.getPool();
+  const { rows: fdActive } = await pool.query(
     `SELECT ticket_id, title, status, priority, created_at
-     FROM freshdesk_cache WHERE store_name = ? AND status IN ('open','pending')
-     ORDER BY created_at DESC`
-  ).all(storeName);
+     FROM freshdesk_cache WHERE store_name = $1 AND status IN ('open','pending')
+     ORDER BY created_at DESC`,
+    [storeName]
+  );
 
-  const fdClosed = rawDb.prepare(
+  const { rows: fdClosed } = await pool.query(
     `SELECT ticket_id, title, status, priority, created_at, resolved_at
-     FROM freshdesk_cache WHERE store_name = ? AND status IN ('resolved','closed')
-     ORDER BY resolved_at DESC LIMIT 50`
-  ).all(storeName);
+     FROM freshdesk_cache WHERE store_name = $1 AND status IN ('resolved','closed')
+     ORDER BY resolved_at DESC LIMIT 50`,
+    [storeName]
+  );
 
-  const fdTotal = rawDb.prepare(
-    `SELECT COUNT(*) as n FROM freshdesk_cache WHERE store_name = ?`
-  ).get(storeName)?.n || 0;
+  const { rows: [fdTotalRow] } = await pool.query(
+    `SELECT COUNT(*) as n FROM freshdesk_cache WHERE store_name = $1`,
+    [storeName]
+  );
+  const fdTotal = Number(fdTotalRow?.n) || 0;
 
   // Métricas DM — média mensal via machine_metrics_hourly (tabela correta para relatórios)
-  const rawMachineData = db.getMachineDataForMonth(storeName, month);
+  const rawMachineData = await db.getMachineDataForMonth(storeName, month);
   const machineData = rawMachineData.map(m => ({
     name:       m.hostname,
     isCritical: /^(TERM|BOH)/i.test(m.hostname),
@@ -90,25 +94,26 @@ function buildStoreContext(storeName, month) {
   }));
 
   // SO fora de suporte — usa os_version real (coletado desde agente v1.5.11)
-  const win10Rows = rawDb.prepare(
-    `SELECT hostname FROM machines WHERE location = ? AND os_version LIKE '%Windows 10%'`
-  ).all(storeName);
+  const { rows: win10Rows } = await pool.query(
+    `SELECT hostname FROM machines WHERE location = $1 AND os_version LIKE '%Windows 10%'`,
+    [storeName]
+  );
   const win10Machines         = win10Rows.map(m => m.hostname);
   const win10CriticalMachines = win10Machines.filter(h => /^(TERM|BOH)/i.test(h));
   const win10NormalMachines   = win10Machines.filter(h => !/^(TERM|BOH)/i.test(h));
 
-  const recentFeedback = db.getRecentFeedback(storeName, 5);
+  const recentFeedback = await db.getRecentFeedback(storeName, 5);
 
   // Métricas horárias ponderadas do mês do relatório
-  const weightedMetrics  = db.getWeightedMetricsForStore(storeName, month);
+  const weightedMetrics  = await db.getWeightedMetricsForStore(storeName, month);
   // Eventos offline do mês do relatório
-  const offlineEventCount = db.getOfflineEventsForStore(storeName, month);
+  const offlineEventCount = await db.getOfflineEventsForStore(storeName, month);
   // Máquinas sem nenhuma medição horária no mês (offline total ou agente v1.5.12)
-  const machinesWithoutMetrics = db.getMachinesWithoutMetrics(storeName, month);
+  const machinesWithoutMetrics = await db.getMachinesWithoutMetrics(storeName, month);
 
   // Dados Zamak / N-able (cache, pode estar vazio se nunca sincronizado)
-  const zamak = db.getZamakSummaryForStore(storeName);
-  const zamakAge = db.getZamakCacheAge();
+  const zamak = await db.getZamakSummaryForStore(storeName);
+  const zamakAge = await db.getZamakCacheAge();
   const zamakSynced = zamakAge < Infinity && zamakAge < 48; // considera válido se < 48h
 
   return {

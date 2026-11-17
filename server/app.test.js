@@ -12,23 +12,22 @@ const fs      = require('fs');
 // ── Mocks de dependências externas ───────────────────────────────────────────
 // jest.mock é hoisted automaticamente — não precisa preceder os requires
 
-jest.mock('./db', () => ({
+jest.mock('./db-pg', () => ({
   getMachineByToken:    jest.fn(),
   registerMachine:      jest.fn(),
   getAllMachines:        jest.fn(() => []),
   getMachineById:       jest.fn(),
   getIntegrationsStatus: jest.fn(() => ({ zamak: { syncing: false } })),
-  getDb: jest.fn(() => ({
-    prepare: jest.fn((sql) => ({
-      get: jest.fn(() => {
-        // /health — machines summary query
-        if (sql.includes('online')) return { total: 10, online: 7, offline: 3 };
-        // /health — alertRulesEnabled + pendingCommands
-        return { c: 5 };
-      }),
-      all: jest.fn(() => []),
-      run: jest.fn(),
-    })),
+  getHourlyMetricsDiag: jest.fn(() => []),
+  // /health usa getPool().query(...) direto (não as 142 funções wrapped) --
+  // ver app.js. SQL de machines summary usa COUNT/SUM (vem como string do
+  // driver pg de verdade, mas aqui simulamos como number mesmo — a rota já
+  // faz Number() em cima, então funciona com qualquer um dos dois).
+  getPool: jest.fn(() => ({
+    query: jest.fn((sql) => {
+      if (sql.includes('online')) return Promise.resolve({ rows: [{ total: 10, online: 7, offline: 3 }] });
+      return Promise.resolve({ rows: [{ c: 5 }] });
+    }),
   })),
   setMachineStatus:     jest.fn(),
   saveMetrics:          jest.fn(),
@@ -93,7 +92,7 @@ process.env.CLOCK_PROXY_URL   = 'http://127.0.0.1:34521';
 
 // Importa app depois dos mocks
 const app = require('./app');
-const db  = require('./db');
+const db  = require('./db-pg');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@
 
 const path = require('path');
 const fs   = require('fs');
-const db   = require('../db');
+const db   = require('../db-pg');
 const { sendAlert } = require('./resendAlert');
 
 const POLL_INTERVAL_MS     = 2 * 60 * 1000;  // 2 minutos
@@ -63,7 +63,7 @@ async function sendHealthAlert(stage, detail) {
 
 async function checkAckTimeouts() {
   const cutoff = new Date(Date.now() - ACK_TIMEOUT_MINUTES * 60000).toISOString();
-  const timedOut = db.ncrGetAckTimedOut(cutoff);
+  const timedOut = await db.ncrGetAckTimedOut(cutoff);
   if (timedOut.length === 0) return;
   const sample = timedOut[0];
   const detail = timedOut.length === 1
@@ -211,13 +211,13 @@ function parseLeadMinutes(payload) {
   return entry.interval; // Minutes (default)
 }
 
-function resolveMachineForPayload(enterpriseUnitId, storeName) {
+async function resolveMachineForPayload(enterpriseUnitId, storeName) {
   const bohHostname = resolveBoh(enterpriseUnitId, storeName);
-  const machine = bohHostname ? db.getMachineByHostname(bohHostname) : null;
+  const machine = bohHostname ? await db.getMachineByHostname(bohHostname) : null;
   return { bohHostname: bohHostname || null, machineId: machine ? machine.id : null };
 }
 
-function parseNcrEmail(msg) {
+async function parseNcrEmail(msg) {
   try {
     const html = msg.body?.content || '';
     const stripped = html
@@ -237,7 +237,7 @@ function parseNcrEmail(msg) {
       .filter(Boolean);
     const dateBRT          = parseDateBrt(payload, msg);
     const leadMinutes      = parseLeadMinutes(payload);
-    const { bohHostname, machineId } = resolveMachineForPayload(enterpriseUnitId, storeName);
+    const { bohHostname, machineId } = await resolveMachineForPayload(enterpriseUnitId, storeName);
 
     return {
       order_ref:          String(orderRef),
@@ -260,12 +260,12 @@ function parseNcrEmail(msg) {
 
 async function dispatchNcrCheck(emailRow) {
   const products = JSON.parse(emailRow.products_json || '[]');
-  const commandId = db.createCommand(emailRow.machine_id, 'aloha-find-nfce', {
+  const commandId = await db.createCommand(emailRow.machine_id, 'aloha-find-nfce', {
     date:     emailRow.date_brt,
     total:    emailRow.total_value,
     products,
   });
-  db.ncrUpdate(emailRow.id, { command_id: commandId });
+  await db.ncrUpdate(emailRow.id, { command_id: commandId });
   console.log(`[NCR] Pedido #${emailRow.order_ref} → comando ${commandId} enviado para ${emailRow.boh_hostname}`);
 }
 
@@ -472,7 +472,7 @@ async function sendStoreUnresolvableAlert(row) {
   } catch (e) {
     console.error('[NCR] sendStoreUnresolvableAlert erro:', e.message);
   } finally {
-    db.ncrUpdate(row.id, { danfe_found: -1, notified_at: new Date().toISOString() });
+    await db.ncrUpdate(row.id, { danfe_found: -1, notified_at: new Date().toISOString() });
   }
 }
 
@@ -520,7 +520,7 @@ async function sendNcrResultEmail(emailRow, result) {
     throw new Error(`sendMail falhou: ${r.status} — ${txt.slice(0, 200)}`);
   }
 
-  db.ncrUpdate(emailRow.id, { notified_at: new Date().toISOString() });
+  await db.ncrUpdate(emailRow.id, { notified_at: new Date().toISOString() });
   console.log(`[NCR] Email enviado — Pedido #${orderRef} found=${found}`);
 }
 
@@ -552,7 +552,7 @@ async function fetchNewNcrEmails(token) {
 // ── Retry de pedidos sem NFC-e ────────────────────────────────────────────────
 
 async function processRetries() {
-  const rows = db.ncrGetPendingRetries();
+  const rows = await db.ncrGetPendingRetries();
   for (const row of rows) {
     try {
       await dispatchNcrCheck(row);
@@ -576,22 +576,22 @@ function loadNcrSince() {
 
 async function processNcrEmail(msg, since) {
   if (since && new Date(msg.receivedDateTime) < since) return 0;
-  if (db.ncrGetByMessageId(msg.id)) return 0;
+  if (await db.ncrGetByMessageId(msg.id)) return 0;
 
-  const parsed = parseNcrEmail(msg);
+  const parsed = await parseNcrEmail(msg);
   if (!parsed) {
     console.warn('[NCR] Não foi possível parsear email id:', msg.id);
     return 0;
   }
 
-  const changes = db.ncrInsertEmail({
+  const changes = await db.ncrInsertEmail({
     message_id:  msg.id,
     received_at: msg.receivedDateTime,
     ...parsed,
   });
 
   if (changes > 0) {
-    const row = db.ncrGetByMessageId(msg.id);
+    const row = await db.ncrGetByMessageId(msg.id);
     if (row && row.machine_id) {
       await dispatchNcrCheck(row);
       return 1;

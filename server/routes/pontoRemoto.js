@@ -10,7 +10,7 @@ const express = require('express');
 const crypto  = require('crypto');
 const router  = express.Router();
 
-const db = require('../db');
+const db = require('../db-pg');
 const { hashPassword, verifyPassword } = require('../services/password');
 const { adminAuth } = require('../middleware/adminAuth');
 const {
@@ -19,6 +19,7 @@ const {
 const { STORE_GEOFENCE } = require('../config/storeGeofence');
 const { isWithinGeofence } = require('../services/geofence');
 const { normalizeCpf, isValidCpfFormat } = require('../services/cpf');
+const { asyncHandler } = require('../middleware/asyncHandler');
 
 // ─── Rate limit de login por CPF+IP — mesmo espírito do limite em /api/register ─
 const LOGIN_WINDOW_MS    = 15 * 60 * 1000;
@@ -50,7 +51,7 @@ function clearLoginAttempts(key) {
 
 // ─── Login ────────────────────────────────────────────────────────────────────
 // POST /api/ponto-remoto/login  { cpf, senha }
-router.post('/login', (req, res) => {
+router.post('/login', asyncHandler(async (req, res) => {
   const { senha } = req.body || {};
   const cpf = normalizeCpf(req.body?.cpf);
   if (!cpf || !senha) return res.status(400).json({ error: 'cpf e senha são obrigatórios' });
@@ -60,7 +61,7 @@ router.post('/login', (req, res) => {
     return res.status(429).json({ error: 'Muitas tentativas. Tente novamente em alguns minutos.' });
   }
 
-  const employee = db.getRemoteEmployeeByCpf(cpf);
+  const employee = await db.getRemoteEmployeeByCpf(cpf);
   const valid = !!employee && !!employee.active && verifyPassword(senha, employee.password_hash);
   if (!valid) {
     recordLoginAttempt(rateKey);
@@ -70,7 +71,7 @@ router.post('/login', (req, res) => {
 
   const token = crypto.randomBytes(32).toString('hex');
   const now   = new Date();
-  db.createRemoteSession({
+  await db.createRemoteSession({
     tokenHash:  hashToken(token),
     employeeId: employee.id,
     createdAt:  now.toISOString(),
@@ -79,14 +80,14 @@ router.post('/login', (req, res) => {
 
   issueSessionCookie(res, token);
   res.json({ ok: true, name: employee.name, store: employee.store });
-});
+}));
 
 // POST /api/ponto-remoto/logout
-router.post('/logout', employeeAuth, (req, res) => {
-  db.deleteRemoteSession(req.sessionTokenHash);
+router.post('/logout', employeeAuth, asyncHandler(async (req, res) => {
+  await db.deleteRemoteSession(req.sessionTokenHash);
   clearSessionCookie(res);
   res.json({ ok: true });
-});
+}));
 
 // GET /api/ponto-remoto/me — identifica a sessão atual (pro front-end saber
 // quem está logado sem guardar nome/loja no client entre reloads).
@@ -96,7 +97,7 @@ router.get('/me', employeeAuth, (req, res) => {
 
 // ─── Bater ponto ────────────────────────────────────────────────────────────────
 // POST /api/ponto-remoto/clock  { tipo: 'in'|'out', lat?, lng?, accuracy? }
-router.post('/clock', employeeAuth, (req, res) => {
+router.post('/clock', employeeAuth, asyncHandler(async (req, res) => {
   const { tipo, lat, lng, accuracy } = req.body || {};
   if (tipo !== 'in' && tipo !== 'out') {
     return res.status(400).json({ error: "tipo deve ser 'in' ou 'out'" });
@@ -104,7 +105,7 @@ router.post('/clock', employeeAuth, (req, res) => {
 
   const withinGeofence = isWithinGeofence(STORE_GEOFENCE[req.employee.store], lat, lng);
 
-  const entry = db.insertRemoteTimeEntry({
+  const entry = await db.insertRemoteTimeEntry({
     employeeId: req.employee.id,
     type: tipo,
     serverTs: new Date().toISOString(),
@@ -118,16 +119,16 @@ router.post('/clock', employeeAuth, (req, res) => {
   });
 
   res.status(201).json({ ok: true, entry });
-});
+}));
 
 // GET /api/ponto-remoto/my-entries
-router.get('/my-entries', employeeAuth, (req, res) => {
-  res.json({ entries: db.listRemoteTimeEntriesForEmployee(req.employee.id) });
-});
+router.get('/my-entries', employeeAuth, asyncHandler(async (req, res) => {
+  res.json({ entries: await db.listRemoteTimeEntriesForEmployee(req.employee.id) });
+}));
 
 // ─── Admin ──────────────────────────────────────────────────────────────────────
 // POST /api/ponto-remoto/admin/employees  { cpf, name, store, senha }
-router.post('/admin/employees', adminAuth, (req, res) => {
+router.post('/admin/employees', adminAuth, asyncHandler(async (req, res) => {
   const { name, store, senha } = req.body || {};
   if (!req.body?.cpf || !name || !store || !senha) {
     return res.status(400).json({ error: 'cpf, name, store e senha são obrigatórios' });
@@ -137,44 +138,44 @@ router.post('/admin/employees', adminAuth, (req, res) => {
   }
 
   const cpf = normalizeCpf(req.body.cpf);
-  if (db.getRemoteEmployeeByCpf(cpf)) {
+  if (await db.getRemoteEmployeeByCpf(cpf)) {
     return res.status(409).json({ error: 'CPF já cadastrado' });
   }
 
-  const employee = db.createRemoteEmployee({ cpf, name, store, passwordHash: hashPassword(senha) });
+  const employee = await db.createRemoteEmployee({ cpf, name, store, passwordHash: hashPassword(senha) });
   res.status(201).json({
     ok: true,
     employee: { id: employee.id, cpf: employee.cpf, name: employee.name, store: employee.store, active: true },
   });
-});
+}));
 
 // GET /api/ponto-remoto/admin/employees
-router.get('/admin/employees', adminAuth, (req, res) => {
-  res.json({ employees: db.listRemoteEmployees() });
-});
+router.get('/admin/employees', adminAuth, asyncHandler(async (req, res) => {
+  res.json({ employees: await db.listRemoteEmployees() });
+}));
 
 // PATCH /api/ponto-remoto/admin/employees/:id  { active }
-router.patch('/admin/employees/:id', adminAuth, (req, res) => {
+router.patch('/admin/employees/:id', adminAuth, asyncHandler(async (req, res) => {
   const { active } = req.body || {};
   if (typeof active !== 'boolean') return res.status(400).json({ error: 'active (boolean) é obrigatório' });
 
-  const employee = db.getRemoteEmployeeById(req.params.id);
+  const employee = await db.getRemoteEmployeeById(req.params.id);
   if (!employee) return res.status(404).json({ error: 'Funcionário não encontrado' });
 
-  db.setRemoteEmployeeActive(req.params.id, active);
+  await db.setRemoteEmployeeActive(req.params.id, active);
   res.json({ ok: true });
-});
+}));
 
 // GET /api/ponto-remoto/admin/entries?employeeId=
-router.get('/admin/entries', adminAuth, (req, res) => {
+router.get('/admin/entries', adminAuth, asyncHandler(async (req, res) => {
   const { employeeId } = req.query;
-  res.json({ entries: db.listAllRemoteTimeEntries({ employeeId: employeeId || null }) });
-});
+  res.json({ entries: await db.listAllRemoteTimeEntries({ employeeId: employeeId || null }) });
+}));
 
 // POST /api/ponto-remoto/admin/entries/:id/correct  { tipo, timestamp, motivo }
 // Nunca edita o registro original — insere uma correção nova com corrects_id.
-router.post('/admin/entries/:id/correct', adminAuth, (req, res) => {
-  const original = db.getRemoteTimeEntryById(req.params.id);
+router.post('/admin/entries/:id/correct', adminAuth, asyncHandler(async (req, res) => {
+  const original = await db.getRemoteTimeEntryById(req.params.id);
   if (!original) return res.status(404).json({ error: 'Registro não encontrado' });
 
   const { tipo, timestamp, motivo } = req.body || {};
@@ -185,7 +186,7 @@ router.post('/admin/entries/:id/correct', adminAuth, (req, res) => {
     return res.status(400).json({ error: "tipo deve ser 'in' ou 'out'" });
   }
 
-  const entry = db.insertRemoteTimeEntry({
+  const entry = await db.insertRemoteTimeEntry({
     employeeId: original.employee_id,
     type: tipo,
     serverTs: timestamp,
@@ -199,6 +200,6 @@ router.post('/admin/entries/:id/correct', adminAuth, (req, res) => {
   });
 
   res.status(201).json({ ok: true, entry });
-});
+}));
 
 module.exports = router;

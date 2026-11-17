@@ -16,7 +16,7 @@ const EMPLOYEE = {
   active: 1,
 };
 
-jest.mock('../db', () => ({
+jest.mock('../db-pg', () => ({
   getRemoteEmployeeByCpf:  jest.fn(),
   getRemoteEmployeeById:   jest.fn(),
   createRemoteSession:     jest.fn(),
@@ -31,7 +31,7 @@ jest.mock('../db', () => ({
   getRemoteTimeEntryById:  jest.fn(),
 }));
 
-const db = require('../db');
+const db = require('../db-pg');
 
 function makeApp() {
   const router = require('./pontoRemoto');

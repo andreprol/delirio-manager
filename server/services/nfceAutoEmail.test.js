@@ -14,7 +14,7 @@
 function freshModule(configOverride) {
   jest.resetModules();
   jest.mock('fs');
-  jest.mock('../db', () => ({
+  jest.mock('../db-pg', () => ({
     claimAutoEmail:      jest.fn(() => true),
     markAutoEmailSent:   jest.fn(),
     markAutoEmailFailed: jest.fn(),
@@ -28,7 +28,7 @@ function freshModule(configOverride) {
 
   return {
     fs,
-    db: require('../db'),
+    db: require('../db-pg'),
     generateDanfePdf: require('./danfe').generateDanfePdf,
     sendDanfeEmail:   require('./nfce-mailer').sendDanfeEmail,
     ...require('./nfceAutoEmail'),

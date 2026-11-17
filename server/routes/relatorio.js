@@ -6,7 +6,8 @@ const path     = require('path');
 const fs       = require('fs');
 const multer   = require('multer');
 const router   = express.Router();
-const db       = require('../db');
+const db       = require('../db-pg');
+const { asyncHandler } = require('../middleware/asyncHandler');
 const freshdesk = require('../services/freshdesk');
 const { buildStoreContext, callClaude, parseClaudeScore, generateDocx, generatePdf } = require('../services/reportEngine');
 const { sendSimpleEmail } = require('../services/nfce-mailer');
@@ -125,31 +126,33 @@ router.post('/photos', (req, res) => {
 // GET /api/relatorio/stores
 // Retorna todas as lojas com score mais recente e contagem de tópicos abertos
 // ?force=true → força sync Freshdesk antes de retornar
-router.get('/stores', async (req, res) => {
+router.get('/stores', asyncHandler(async (req, res) => {
   try {
     if (req.query.force === 'true') {
       await freshdesk.syncAll().catch(e => console.warn('[stores] Freshdesk sync failed:', e.message));
     }
-    const { countMap, scoreMap } = db.getStoresOverview();
+    const { countMap, scoreMap } = await db.getStoresOverview();
     // Pegar lista de lojas únicas de machines + topics
     // Mapa canônico: normalizado (sem acento, minúsculo) → nome de exibição
     // Prioridade: freshdesk_cache > report_topics > machines
     // Assim "Assembleia" (freshdesk) prevalece sobre "Assembléia" (machines)
     const stripAccents = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
     const canonical = new Map();
-    db.getAllMachines().forEach(m => {
+    const allMachines = await db.getAllMachines();
+    allMachines.forEach(m => {
       if (m.location) {
         const k = stripAccents(m.location);
         if (!canonical.has(k)) canonical.set(k, m.location);
       }
     });
-    db.getDb().prepare('SELECT DISTINCT store_name FROM report_topics').all()
-      .forEach(r => {
-        const k = stripAccents(r.store_name);
-        if (!canonical.has(k)) canonical.set(k, r.store_name);
-      });
-    db.getDb().prepare('SELECT DISTINCT store_name FROM freshdesk_cache WHERE store_name IS NOT NULL').all()
-      .forEach(r => { canonical.set(stripAccents(r.store_name), r.store_name); }); // freshdesk tem prioridade
+    const pool = db.getPool();
+    const { rows: topicStoreRows } = await pool.query('SELECT DISTINCT store_name FROM report_topics');
+    topicStoreRows.forEach(r => {
+      const k = stripAccents(r.store_name);
+      if (!canonical.has(k)) canonical.set(k, r.store_name);
+    });
+    const { rows: fdStoreRows } = await pool.query('SELECT DISTINCT store_name FROM freshdesk_cache WHERE store_name IS NOT NULL');
+    fdStoreRows.forEach(r => { canonical.set(stripAccents(r.store_name), r.store_name); }); // freshdesk tem prioridade
 
     const storeSet = new Set(canonical.values());
     storeSet.delete('Temporário');
@@ -157,11 +160,11 @@ router.get('/stores', async (req, res) => {
     storeSet.delete('Manutenção');
     storeSet.delete('Manutencao');
 
-    const freshdeskRows = db.getDb().prepare(
+    const { rows: freshdeskRows } = await pool.query(
       `SELECT store_name, COUNT(*) as n FROM freshdesk_cache WHERE store_name IS NOT NULL GROUP BY store_name`
-    ).all();
+    );
     const freshdeskMap = {};
-    freshdeskRows.forEach(r => { freshdeskMap[stripAccents(r.store_name)] = r.n; });
+    freshdeskRows.forEach(r => { freshdeskMap[stripAccents(r.store_name)] = Number(r.n); });
 
     const stores = [...storeSet].sort().map(name => ({
       name,
@@ -174,22 +177,22 @@ router.get('/stores', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/relatorio/topics/:store
-router.get('/topics/:store', (req, res) => {
+router.get('/topics/:store', asyncHandler(async (req, res) => {
   try {
-    const topics = db.getTopics(decodeURIComponent(req.params.store));
+    const topics = await db.getTopics(decodeURIComponent(req.params.store));
     // Parsear photo_path como JSON array (pode ser null, string URL única ou JSON array)
     const parsed = topics.map(t => ({ ...t, photo_paths: parsePhotoPaths(t.photo_path) }));
     res.json(parsed);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // POST /api/relatorio/topics
-router.post('/topics', (req, res) => {
+router.post('/topics', asyncHandler(async (req, res) => {
   try {
     const { store_name, description, severity, machine_mention, photo_paths, created_by } = req.body;
     if (!store_name || !description || !severity) {
@@ -197,15 +200,15 @@ router.post('/topics', (req, res) => {
     }
     // Guardar array de URLs como JSON string no campo photo_path
     const photo_path = photo_paths && photo_paths.length ? JSON.stringify(photo_paths) : null;
-    const topic = db.createTopic({ store_name, description, severity, machine_mention, photo_path, created_by });
+    const topic = await db.createTopic({ store_name, description, severity, machine_mention, photo_path, created_by });
     res.status(201).json({ ...topic, photo_paths: photo_paths || [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // PUT /api/relatorio/topics/:id — editar tópico existente
-router.put('/topics/:id', (req, res) => {
+router.put('/topics/:id', asyncHandler(async (req, res) => {
   try {
     const { description, severity, machine_mention } = req.body;
     if (!description || !severity) {
@@ -217,27 +220,27 @@ router.put('/topics/:id', (req, res) => {
       const pp = req.body.photo_paths;
       photo_path = pp && pp.length ? JSON.stringify(pp) : null;
     }
-    const topic = db.updateTopic(Number(req.params.id), { description, severity, machine_mention, photo_path });
+    const topic = await db.updateTopic(Number(req.params.id), { description, severity, machine_mention, photo_path });
     if (!topic) return res.status(404).json({ error: 'Tópico não encontrado' });
     res.json({ ...topic, photo_paths: parsePhotoPaths(topic.photo_path) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // DELETE /api/relatorio/topics/:id  — soft delete → history
-router.delete('/topics/:id', (req, res) => {
+router.delete('/topics/:id', asyncHandler(async (req, res) => {
   try {
-    const result = db.resolveTopic(Number(req.params.id));
+    const result = await db.resolveTopic(Number(req.params.id));
     if (!result) return res.status(404).json({ error: 'Tópico não encontrado' });
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // PATCH /api/relatorio/topics/:id/move — mover tópico para outra loja
-router.patch('/topics/:id/move', (req, res) => {
+router.patch('/topics/:id/move', asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'id inválido' });
@@ -245,16 +248,16 @@ router.patch('/topics/:id/move', (req, res) => {
     if (!store_name || typeof store_name !== 'string') {
       return res.status(400).json({ error: 'store_name é obrigatório' });
     }
-    const topic = db.moveTopic(id, store_name.trim());
+    const topic = await db.moveTopic(id, store_name.trim());
     if (!topic) return res.status(404).json({ error: 'Tópico não encontrado' });
     res.json({ ...topic, photo_paths: parsePhotoPaths(topic.photo_path) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // POST /api/relatorio/topics/:id/replicate — replicar tópico para outras lojas
-router.post('/topics/:id/replicate', (req, res) => {
+router.post('/topics/:id/replicate', asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'id inválido' });
@@ -264,31 +267,31 @@ router.post('/topics/:id/replicate', (req, res) => {
     }
     const sanitized = target_stores.map(s => String(s).trim()).filter(Boolean);
     if (!sanitized.length) return res.status(400).json({ error: 'target_stores sem valores válidos' });
-    const result = db.replicateTopic(id, sanitized);
+    const result = await db.replicateTopic(id, sanitized);
     if (!result) return res.status(404).json({ error: 'Tópico não encontrado' });
     res.status(201).json({ created: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // POST /api/relatorio/generate
 // Protegido: dispara chamada paga à API da Anthropic + geração de DOCX/PDF.
-router.post('/generate', internalAuth, async (req, res) => {
+router.post('/generate', internalAuth, asyncHandler(async (req, res) => {
   try {
     const { store, month } = req.body;
     if (!store || !month) return res.status(400).json({ error: 'store e month são obrigatórios' });
 
     // 0. Dedup: já existe relatório recente pra essa loja+mês? Devolve ele em
     //    vez de pagar a API de novo (evita duplo-clique, retry do cliente, etc).
-    const recent = db.getRecentReportRun(store, month, REPORT_DEDUP_WINDOW_MIN);
+    const recent = await db.getRecentReportRun(store, month, REPORT_DEDUP_WINDOW_MIN);
     if (recent) return res.json(buildCachedResponse(recent));
 
     // 1. Sync Freshdesk se cache vencido
     await freshdesk.syncIfStale(store).catch(e => console.warn('[relatorio] Freshdesk sync failed:', e.message));
 
     // 2. Montar contexto
-    const ctx = buildStoreContext(store, month);
+    const ctx = await buildStoreContext(store, month);
 
     // 3. Chamar Claude
     const aiRaw   = await callClaude(ctx);
@@ -299,7 +302,7 @@ router.post('/generate', internalAuth, async (req, res) => {
     const pdfPath  = await generatePdf(docxPath).catch(() => null);
 
     // 5. Salvar run
-    const runId = db.saveReportRun({
+    const runId = await db.saveReportRun({
       store_name:        store,
       month,
       ...scores,
@@ -325,65 +328,69 @@ router.post('/generate', internalAuth, async (req, res) => {
     console.error('[relatorio/generate]', err);
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // POST /api/relatorio/feedback
-router.post('/feedback', (req, res) => {
+router.post('/feedback', asyncHandler(async (req, res) => {
   try {
     const { store_name, month, feedback_text, report_run_id } = req.body;
     if (!store_name || !month || !feedback_text) {
       return res.status(400).json({ error: 'store_name, month e feedback_text são obrigatórios' });
     }
-    db.saveFeedback({ store_name, month, feedback_text, report_run_id });
+    await db.saveFeedback({ store_name, month, feedback_text, report_run_id });
     res.json({ saved: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/relatorio/freshdesk/:store — tickets visíveis na UI
-router.get('/freshdesk/:store', async (req, res) => {
+router.get('/freshdesk/:store', asyncHandler(async (req, res) => {
   try {
     const store = decodeURIComponent(req.params.store);
     await freshdesk.syncIfStale(store).catch(() => {});
-    const active = db.getDb().prepare(
+    const pool = db.getPool();
+    const { rows: active } = await pool.query(
       `SELECT ticket_id, title, status, priority, created_at
        FROM freshdesk_cache
-       WHERE store_name = ? AND status IN ('open','pending')
-       ORDER BY created_at DESC`
-    ).all(store);
-    const closed = db.getDb().prepare(
+       WHERE store_name = $1 AND status IN ('open','pending')
+       ORDER BY created_at DESC`,
+      [store]
+    );
+    const { rows: closed } = await pool.query(
       `SELECT ticket_id, title, status, priority, created_at, resolved_at
        FROM freshdesk_cache
-       WHERE store_name = ? AND status IN ('resolved','closed')
-       ORDER BY resolved_at DESC LIMIT 20`
-    ).all(store);
+       WHERE store_name = $1 AND status IN ('resolved','closed')
+       ORDER BY resolved_at DESC LIMIT 20`,
+      [store]
+    );
     res.json({ active, closed });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/relatorio/history/:store
-router.get('/history/:store', (req, res) => {
+router.get('/history/:store', asyncHandler(async (req, res) => {
   try {
-    const history = db.getReportHistory(decodeURIComponent(req.params.store));
+    const history = await db.getReportHistory(decodeURIComponent(req.params.store));
     res.json(history);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/relatorio/freshdesk-debug
 // Diagnóstico: mostra config, cache atual e tenta sync forçado
-router.get('/freshdesk-debug', async (req, res) => {
+router.get('/freshdesk-debug', asyncHandler(async (req, res) => {
   try {
     let cfg = {};
     try { cfg = require('../config.json').freshdesk || {}; } catch {}
 
+    const pool = db.getPool();
     // Cache atual
-    const cached = db.getDb().prepare('SELECT COUNT(*) as total FROM freshdesk_cache').get();
-    const sample = db.getDb().prepare('SELECT * FROM freshdesk_cache LIMIT 5').all();
+    const { rows: [cached] } = await pool.query('SELECT COUNT(*) as total FROM freshdesk_cache');
+    const { rows: sample } = await pool.query('SELECT * FROM freshdesk_cache LIMIT 5');
 
     // Tentar sync forçado e capturar resultado bruto
     let syncResult = null;
@@ -395,18 +402,18 @@ router.get('/freshdesk-debug', async (req, res) => {
     }
 
     // Após sync, ver o que ficou no cache
-    const afterSync = db.getDb().prepare('SELECT COUNT(*) as total FROM freshdesk_cache').get();
-    const afterSample = db.getDb().prepare('SELECT store_name, status, title FROM freshdesk_cache LIMIT 10').all();
+    const { rows: [afterSync] } = await pool.query('SELECT COUNT(*) as total FROM freshdesk_cache');
+    const { rows: afterSample } = await pool.query('SELECT store_name, status, title FROM freshdesk_cache LIMIT 10');
 
     res.json({
       config: { domain: cfg.domain, api_key_set: !!cfg.api_key, api_key_length: (cfg.api_key || '').length },
-      cache_before: { total: cached.total, sample },
+      cache_before: { total: Number(cached.total), sample },
       sync: syncResult !== null ? { count: syncResult } : { error: syncError },
-      cache_after: { total: afterSync.total, sample: afterSample },
+      cache_after: { total: Number(afterSync.total), sample: afterSample },
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 module.exports = router;

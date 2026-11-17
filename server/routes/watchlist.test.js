@@ -3,11 +3,11 @@
 const express = require('express');
 const request = require('supertest');
 
-jest.mock('../db', () => ({
-  getWatchlistKeywords:      jest.fn(() => []),
-  createWatchlistKeyword:    jest.fn(() => 1),
-  setWatchlistKeywordActive: jest.fn(),
-  deleteWatchlistKeyword:    jest.fn(),
+jest.mock('../db-pg', () => ({
+  getWatchlistKeywords:      jest.fn().mockResolvedValue([]),
+  createWatchlistKeyword:    jest.fn().mockResolvedValue(1),
+  setWatchlistKeywordActive: jest.fn().mockResolvedValue(undefined),
+  deleteWatchlistKeyword:    jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../services/websocket', () => ({
@@ -58,8 +58,8 @@ describe('autenticação — todas as rotas exigem X-Admin-Secret', () => {
 
 describe('GET /api/watchlist', () => {
   it('lista as keywords', async () => {
-    const db = require('../db');
-    db.getWatchlistKeywords.mockReturnValue([{ id: 1, keyword: 'vaga', active: 1 }]);
+    const db = require('../db-pg');
+    db.getWatchlistKeywords.mockResolvedValue([{ id: 1, keyword: 'vaga', active: 1 }]);
     const app = makeApp();
     const res = await request(app).get('/api/watchlist').set('x-admin-secret', ADMIN_SECRET);
     expect(res.status).toBe(200);
@@ -76,7 +76,7 @@ describe('POST /api/watchlist', () => {
   });
 
   it('400 e não cria quando keyword não é string', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     db.createWatchlistKeyword.mockClear();
     const app = makeApp();
     const res = await request(app).post('/api/watchlist')
@@ -86,7 +86,7 @@ describe('POST /api/watchlist', () => {
   });
 
   it('201 e cria a keyword quando válida', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     const app = makeApp();
     const res = await request(app).post('/api/watchlist')
       .set('x-admin-secret', ADMIN_SECRET).send({ keyword: 'vaga de emprego' });
@@ -97,7 +97,7 @@ describe('POST /api/watchlist', () => {
 
 describe('PUT /api/watchlist/:id', () => {
   it('ativa/desativa a keyword', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     const app = makeApp();
     const res = await request(app).put('/api/watchlist/1')
       .set('x-admin-secret', ADMIN_SECRET).send({ active: false });
@@ -106,7 +106,7 @@ describe('PUT /api/watchlist/:id', () => {
   });
 
   it('400 e não atualiza quando active não é boolean', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     db.setWatchlistKeywordActive.mockClear();
     const app = makeApp();
     const res = await request(app).put('/api/watchlist/1')
@@ -118,7 +118,7 @@ describe('PUT /api/watchlist/:id', () => {
 
 describe('DELETE /api/watchlist/:id', () => {
   it('remove a keyword', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     const app = makeApp();
     const res = await request(app).delete('/api/watchlist/1')
       .set('x-admin-secret', ADMIN_SECRET);

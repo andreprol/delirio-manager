@@ -8,7 +8,8 @@ const express = require('express');
 const https   = require('https');
 const http    = require('http');
 const router  = express.Router();
-const db      = require('../db');
+const db      = require('../db-pg');
+const { asyncHandler } = require('../middleware/asyncHandler');
 
 const CLOCK_PROXY_URL   = process.env.CLOCK_PROXY_URL   || 'http://192.168.17.252:4321';
 const CLOCK_PROXY_TOKEN = process.env.CLOCK_PROXY_TOKEN || '';
@@ -114,11 +115,11 @@ router.post('/offboard', async (req, res) => {
   try {
     const result = await callClockProxy('/rh/offboard', buildOffboardPayload(cpf, employeeName, triggeredBy));
     // Log de auditoria LGPD — evidência para ANPD
-    db.logClockOffboard(buildOffboardSuccessLog(cpf, employeeName, triggeredBy, timestamp, result));
+    await db.logClockOffboard(buildOffboardSuccessLog(cpf, employeeName, triggeredBy, timestamp, result));
     res.json(result);
   } catch (err) {
     // Log de falha também é importante para auditoria
-    db.logClockOffboard(buildOffboardFailureLog(cpf, employeeName, triggeredBy, timestamp, err));
+    await db.logClockOffboard(buildOffboardFailureLog(cpf, employeeName, triggeredBy, timestamp, err));
     res.status(502).json({
       error:   'Falha ao conectar com o clock-proxy',
       detail:  err.message,
@@ -129,10 +130,10 @@ router.post('/offboard', async (req, res) => {
 
 // GET /api/rh/offboard-log
 // Retorna o histórico de offboardings LGPD (auditoria)
-router.get('/offboard-log', (req, res) => {
+router.get('/offboard-log', asyncHandler(async (req, res) => {
   const limit = parseInt(req.query.limit) || 100;
-  res.json(db.getClockOffboardLog(limit));
-});
+  res.json(await db.getClockOffboardLog(limit));
+}));
 
 // GET /api/rh/clocks/status
 // Verifica acessibilidade de todos os relógios (~5s)
@@ -214,7 +215,7 @@ router.post('/enroll', async (req, res) => {
     // clock-proxy retorna 202 + { jobId, status:'running' }
     return res.status(202).json({ jobId: result.jobId, status: 'running', cpf, name, triggeredBy });
   } catch (err) {
-    db.logClockOperation({
+    await db.logClockOperation({
       operation: 'enroll', cpf, employeeName: name,
       triggeredBy: triggeredBy || 'delirio-manager-rh',
       timestamp: new Date().toISOString(), success: false, total: 0, okCount: 0, failedCount: -1,
@@ -243,11 +244,11 @@ function buildEnrollLogPayload(result, triggeredBy) {
   };
 }
 
-function processEnrollCompletion(result, jobId, triggeredBy) {
+async function processEnrollCompletion(result, jobId, triggeredBy) {
   _loggedEnrollJobs.add(jobId);
-  db.logClockOperation(buildEnrollLogPayload(result, triggeredBy));
+  await db.logClockOperation(buildEnrollLogPayload(result, triggeredBy));
   if (result.ref1) {
-    db.registerRef1({ ref1: result.ref1, cpf: result.cpf || '', name: result.name || '' });
+    await db.registerRef1({ ref1: result.ref1, cpf: result.cpf || '', name: result.name || '' });
   }
 }
 
@@ -263,7 +264,7 @@ router.get('/enroll/:jobId', async (req, res) => {
     }
     // Loga uma única vez quando o job completa
     if (result.status === 'done' && !_loggedEnrollJobs.has(req.params.jobId)) {
-      processEnrollCompletion(result, req.params.jobId, req.query.triggeredBy);
+      await processEnrollCompletion(result, req.params.jobId, req.query.triggeredBy);
     }
     res.json(result);
   } catch (err) {
@@ -273,14 +274,14 @@ router.get('/enroll/:jobId', async (req, res) => {
 
 // GET /api/rh/next-ref1
 // Retorna o próximo Ref1 disponível, considerando todos que já foram utilizados (mesmo removidos).
-router.get('/next-ref1', (req, res) => {
+router.get('/next-ref1', asyncHandler(async (req, res) => {
   try {
-    const maxFromRegistry = db.getMaxRef1();
+    const maxFromRegistry = await db.getMaxRef1();
     res.json({ nextRef1: String(maxFromRegistry + 1) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // PUT /api/rh/employee
 // Atualiza cartão NFC de funcionário em todos os relógios
@@ -300,7 +301,7 @@ router.put('/employee', async (req, res) => {
   try {
     const result = await callClockProxy('/rh/employee', { cpf, ref2, clockIps }, 'PUT');
 
-    db.logClockOperation({
+    await db.logClockOperation({
       operation:    'update_card',
       cpf,
       employeeName: '',
@@ -339,11 +340,11 @@ router.post('/employees/refresh', async (req, res) => {
 
 // GET /api/rh/operation-log
 // Retorna log de todas as operações (enroll, update_card, offboard)
-router.get('/operation-log', (req, res) => {
+router.get('/operation-log', asyncHandler(async (req, res) => {
   const limit     = parseInt(req.query.limit)     || 100;
   const operation = req.query.operation           || null;
-  res.json(db.getClockOperationLog(limit, operation));
-});
+  res.json(await db.getClockOperationLog(limit, operation));
+}));
 
 // GET /api/rh/lgpd-info
 // Retorna o caminho UNC da pasta LGPD para o Electron abrir no Windows Explorer

@@ -1,11 +1,12 @@
 'use strict';
 
-const { getMachineByToken } = require('../db');
+const { getMachineByToken } = require('../db-pg');
+const { asyncHandler } = require('./asyncHandler');
 
 // Rate limit simples: 1 heartbeat a cada 5s por machineId
 const lastSeen = new Map();
 
-function agentAuth(req, res, next) {
+const agentAuth = asyncHandler(async (req, res, next) => {
   const auth = req.headers['authorization'] || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
 
@@ -13,7 +14,7 @@ function agentAuth(req, res, next) {
     return res.status(401).json({ error: 'Token ausente' });
   }
 
-  const machine = getMachineByToken(token);
+  const machine = await getMachineByToken(token);
   if (!machine) {
     return res.status(401).json({ error: 'Token invalido' });
   }
@@ -29,20 +30,20 @@ function agentAuth(req, res, next) {
 
   req.machine = machine;
   next();
-}
+});
 
 // Middleware para rotas do agente que nao precisam de rate limit (ex: commands poll)
-function agentAuthNoLimit(req, res, next) {
+const agentAuthNoLimit = asyncHandler(async (req, res, next) => {
   const auth  = req.headers['authorization'] || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
 
   if (!token) return res.status(401).json({ error: 'Token ausente' });
 
-  const machine = getMachineByToken(token);
+  const machine = await getMachineByToken(token);
   if (!machine) return res.status(401).json({ error: 'Token invalido' });
 
   req.machine = machine;
   next();
-}
+});
 
 module.exports = { agentAuth, agentAuthNoLimit };

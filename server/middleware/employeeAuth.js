@@ -6,7 +6,8 @@
 // só o hash SHA-256 fica no banco — um leak do banco não dá o token em si.
 
 const crypto = require('crypto');
-const { getRemoteSession, getRemoteEmployeeById } = require('../db');
+const { getRemoteSession, getRemoteEmployeeById } = require('../db-pg');
+const { asyncHandler } = require('./asyncHandler');
 
 const SESSION_TTL_MS  = 12 * 60 * 60 * 1000; // 12h
 const SESSION_COOKIE  = 'pr_session';
@@ -49,17 +50,17 @@ function clearSessionCookie(res) {
   );
 }
 
-function employeeAuth(req, res, next) {
+const employeeAuth = asyncHandler(async (req, res, next) => {
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
   if (!token) return res.status(401).json({ error: 'Não autenticado' });
 
   const tokenHash = hashToken(token);
-  const session = getRemoteSession(tokenHash);
+  const session = await getRemoteSession(tokenHash);
   if (!session || new Date(session.expires_at).getTime() < Date.now()) {
     return res.status(401).json({ error: 'Sessão inválida ou expirada' });
   }
 
-  const employee = getRemoteEmployeeById(session.employee_id);
+  const employee = await getRemoteEmployeeById(session.employee_id);
   if (!employee || !employee.active) {
     return res.status(401).json({ error: 'Funcionário inativo' });
   }
@@ -67,7 +68,7 @@ function employeeAuth(req, res, next) {
   req.employee        = employee;
   req.sessionTokenHash = tokenHash;
   next();
-}
+});
 
 module.exports = {
   employeeAuth,

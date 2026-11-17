@@ -3,16 +3,32 @@
 
 const express = require('express');
 const router  = express.Router();
-const db      = require('../db');
+const db      = require('../db-pg');
 const zamak   = require('../services/zamak');
+const { asyncHandler } = require('../middleware/asyncHandler');
+
+// COUNT/SUM sobre INTEGER vem como bigint-string via driver pg -- sempre
+// Number() (mesma lição de sempre, ver db-pg.js countQuery).
+function numifyByStoreRow(r) {
+  return {
+    ...r,
+    total_devices:   Number(r.total_devices),
+    patch_critical:  Number(r.patch_critical),
+    patch_high:      Number(r.patch_high),
+    patch_total:     Number(r.patch_total),
+    threats_active:  Number(r.threats_active),
+    failing_checks:  Number(r.failing_checks),
+    devices_offline: Number(r.devices_offline),
+  };
+}
 
 // GET /api/zamak/status — resumo do cache por loja
-router.get('/status', (req, res) => {
+router.get('/status', asyncHandler(async (req, res) => {
   try {
-    const age  = db.getZamakCacheAge();
-    const rawDb = db.getDb();
+    const age  = await db.getZamakCacheAge();
+    const pool = db.getPool();
 
-    const byStore = rawDb.prepare(`
+    const { rows: byStoreRaw } = await pool.query(`
       SELECT
         store_name,
         COUNT(*) AS total_devices,
@@ -26,16 +42,18 @@ router.get('/status', (req, res) => {
       FROM zamak_device_cache
       GROUP BY store_name
       ORDER BY store_name
-    `).all();
+    `);
+    const byStore = byStoreRaw.map(numifyByStoreRow);
 
-    const discrepancies = rawDb.prepare(
+    const { rows: discrepancies } = await pool.query(
       `SELECT type, device_name, store_name, detail, detected_at
        FROM zamak_discrepancies ORDER BY type, store_name`
-    ).all();
+    );
 
-    const unmapped = rawDb.prepare(
+    const { rows: unmappedRows } = await pool.query(
       `SELECT DISTINCT site_name FROM zamak_device_cache WHERE store_name IS NULL`
-    ).all().map(r => r.site_name);
+    );
+    const unmapped = unmappedRows.map(r => r.site_name);
 
     res.json({
       cacheAgeHours:  age === Infinity ? null : Math.round(age * 10) / 10,
@@ -47,7 +65,7 @@ router.get('/status', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // POST /api/zamak/sync — dispara sync manual
 router.post('/sync', async (req, res) => {
@@ -60,56 +78,57 @@ router.post('/sync', async (req, res) => {
 });
 
 // GET /api/zamak/discrepancies
-router.get('/discrepancies', (req, res) => {
+router.get('/discrepancies', asyncHandler(async (req, res) => {
   try {
-    const rows = db.getDb().prepare(
+    const { rows } = await db.getPool().query(
       `SELECT * FROM zamak_discrepancies ORDER BY type, store_name, device_name`
-    ).all();
+    );
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/zamak/threats?store=X — lista ameaças MAV individuais
-router.get('/threats', (req, res) => {
+router.get('/threats', asyncHandler(async (req, res) => {
   try {
-    const rows = db.getZamakThreats(req.query.store || null);
+    const rows = await db.getZamakThreats(req.query.store || null);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/zamak/performance?store=X
-router.get('/performance', (req, res) => {
+router.get('/performance', asyncHandler(async (req, res) => {
   try {
-    const rows = db.getZamakPerformance(req.query.store || null);
+    const rows = await db.getZamakPerformance(req.query.store || null);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/zamak/outages?store=X
-router.get('/outages', (req, res) => {
+router.get('/outages', asyncHandler(async (req, res) => {
   try {
-    const rows = db.getZamakOutages(req.query.store || null);
+    const rows = await db.getZamakOutages(req.query.store || null);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/zamak/discrepancies/report — gera DOCX de discrepâncias
-router.get('/discrepancies/report', async (req, res) => {
+router.get('/discrepancies/report', asyncHandler(async (req, res) => {
   try {
-    const rawDb = db.getDb();
-    const rows = rawDb.prepare(
+    const pool = db.getPool();
+    const { rows } = await pool.query(
       `SELECT type, device_name, store_name, detail FROM zamak_discrepancies ORDER BY type, store_name, device_name`
-    ).all();
+    );
 
-    const lastSync = rawDb.prepare(`SELECT MAX(cached_at) AS ts FROM zamak_device_cache`).get()?.ts || 'N/A';
+    const { rows: [lastSyncRow] } = await pool.query(`SELECT MAX(cached_at) AS ts FROM zamak_device_cache`);
+    const lastSync = lastSyncRow?.ts || 'N/A';
 
     const zamakOnly = rows.filter(r => r.type === 'zamak_only');
     const dmOnly    = rows.filter(r => r.type === 'dm_only');
@@ -202,6 +221,6 @@ router.get('/discrepancies/report', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 module.exports = router;

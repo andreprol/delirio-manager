@@ -17,7 +17,7 @@
 
 const fs   = require('fs');
 const path = require('path');
-const db   = require('../db');
+const db   = require('../db-pg');
 const { generateDanfePdf } = require('./danfe');
 const { sendDanfeEmail }   = require('./nfce-mailer');
 
@@ -79,15 +79,15 @@ async function maybeAutoSendDanfe(machineId, record) {
   if (!email) return;
 
   const chave = record.chave;
-  if (!db.claimAutoEmail(chave, machineId, email)) return; // já reivindicada
+  if (!(await db.claimAutoEmail(chave, machineId, email))) return; // já reivindicada
 
   try {
     const pdf = await generateDanfePdf(record.danfe);
     await sendDanfeEmail({ danfe: record.danfe, pdfBuffer: pdf, toEmail: email });
-    db.markAutoEmailSent(chave);
+    await db.markAutoEmailSent(chave);
     console.log(`[NFCe AutoEmail] Enviada automaticamente: chave=${chave}`);
   } catch (e) {
-    db.markAutoEmailFailed(chave, e.message);
+    await db.markAutoEmailFailed(chave, e.message);
     console.error('[NFCe AutoEmail] Falha ao enviar:', e.message);
   }
 }

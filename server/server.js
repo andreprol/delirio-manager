@@ -54,7 +54,6 @@ server.listen(PORT, () => {
   alertEngine.start();
   insightEngine.start();
   zamakService.scheduleDailySync();
-  _scheduleWalCheckpoint();
   if (process.env.FEATURE_LIVE_ACCESS === 'true') {
     activityRetention.scheduleDailyPurge();
   }
@@ -108,7 +107,7 @@ function _scheduleHourlyMetricsMonitor() {
         getHourlyMetricsDiag,
         insertReadingMiss,
         createCommand,
-      } = require('./db');
+      } = require('./db-pg');
       const { checkAll: alertCheckAll } = require('./services/alertEngine');
 
       const nowTs    = Math.floor(Date.now() / 1000);
@@ -117,10 +116,10 @@ function _scheduleHourlyMetricsMonitor() {
       const threshold = nowTs - window;
 
       // Máquinas online sem leitura nos últimos 65 min
-      const onlineMissing = getMachinesOnlineMissingReading(threshold);
+      const onlineMissing = await getMachinesOnlineMissingReading(threshold);
 
       // Todas as máquinas para capturar offline sem leitura também
-      const allDiag = getHourlyMetricsDiag();
+      const allDiag = await getHourlyMetricsDiag();
       const offlineMissing = allDiag.filter(r =>
         r.status === 'offline' &&
         (!r.last_snapshot_ts || r.last_snapshot_ts < threshold)
@@ -130,7 +129,7 @@ function _scheduleHourlyMetricsMonitor() {
 
       // Registra leituras perdidas — offline (causa esperada)
       for (const m of offlineMissing) {
-        insertReadingMiss(m.id, {
+        await insertReadingMiss(m.id, {
           expectedHour:  hourTs,
           machineStatus: 'offline',
           agentVersion:  m.agent_version,
@@ -146,13 +145,13 @@ function _scheduleHourlyMetricsMonitor() {
 
       // Registra + diagnostica leituras perdidas — online (problema real)
       const { broadcast } = require('./services/websocket');
-      const { addEvent }  = require('./db');
+      const { addEvent }  = require('./db-pg');
 
       for (const m of onlineMissing) {
         const diagnosis = _diagnose(m, nowTs);
         const name      = m.display_name || m.hostname;
 
-        insertReadingMiss(m.id, {
+        await insertReadingMiss(m.id, {
           expectedHour:  hourTs,
           machineStatus: 'online',
           agentVersion:  m.agent_version,
@@ -161,9 +160,9 @@ function _scheduleHourlyMetricsMonitor() {
         });
 
         // Solicita log do agente para diagnóstico — processado no ACK de get_agent_log
-        createCommand(m.id, 'get_agent_log', { lines: 100 });
+        await createCommand(m.id, 'get_agent_log', { lines: 100 });
 
-        addEvent(m.id, 'reading_miss',
+        await addEvent(m.id, 'reading_miss',
           `Leitura horária perdida — ${name} online mas sem snapshot. ${diagnosis}`);
 
         broadcast('alert', {
@@ -204,19 +203,6 @@ function _scheduleHourlyMetricsMonitor() {
   setTimeout(_checkHour, 5 * 60 * 1000);
 }
 
-// ── WAL checkpoint diário — previne crescimento ilimitado do WAL ─────────────
-function _scheduleWalCheckpoint() {
-  const { getDb } = require('./db');
-  setInterval(() => {
-    try {
-      getDb().pragma('wal_checkpoint(TRUNCATE)');
-      logger.info('[WAL] Checkpoint concluído');
-    } catch (e) {
-      logger.error('[WAL] Checkpoint falhou', { error: e.message });
-    }
-  }, 24 * 60 * 60 * 1000); // 24h
-}
-
 // ── NF-Ce indexer — a cada 15min para servidores BOH ─────────────────────────
 // Era 1x/dia às 23:00; passou a rodar a cada 15min (09/11/2026) pra feature
 // de auto-envio de DANFE por e-mail (encomendas) detectar notas novas rápido.
@@ -232,24 +218,25 @@ setTimeout(() => {
 }, 2 * 60 * 1000);
 
 async function _triggerNFCeIndexing(now) {
-  const { getAllMachines, createCommand, getIndexedDayKeysSet, todayDayKey } = require('./db');
+  const { getAllMachines, createCommand, getIndexedDayKeysSet, todayDayKey } = require('./db-pg');
   const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const today = now.getDate();
   const todayKey = todayDayKey();
 
-  const boh = getAllMachines().filter(m =>
+  const allMachines = await getAllMachines();
+  const boh = allMachines.filter(m =>
     m.hostname?.toUpperCase().endsWith('BOH') && m.status === 'online'
   );
   if (!boh.length) return;
 
   let totalSent = 0, totalSkipped = 0;
   for (const machine of boh) {
-    const indexedDays = getIndexedDayKeysSet(machine.id);
+    const indexedDays = await getIndexedDayKeysSet(machine.id);
     for (let d = 1; d <= today; d++) {
       const day    = String(d).padStart(2, '0');
       const dayKey = `${month}-${day}`;
       if (indexedDays.has(dayKey) && dayKey !== todayKey) { totalSkipped++; continue; }
-      createCommand(machine.id, 'aloha-index-nfce-day', { month, day });
+      await createCommand(machine.id, 'aloha-index-nfce-day', { month, day });
       totalSent++;
     }
   }
@@ -260,21 +247,22 @@ async function _triggerNFCeIndexing(now) {
 // Sem isso o scan só rodava 1x (ao expandir a loja pela 1a vez no dashboard) e
 // nunca mais se atualizava sozinho — card ficava com dado de meses atrás.
 function _scheduleAlohaScanRefresh() {
-  const { getAllMachines, createCommand } = require('./db');
+  const { getAllMachines, createCommand } = require('./db-pg');
   const INTERVAL_MS = 4 * 60 * 60 * 1000; // 4h — scan é leve (só lista pastas, não abre XML)
 
-  function _refresh() {
-    const boh = getAllMachines().filter(m =>
+  async function _refresh() {
+    const allMachines = await getAllMachines();
+    const boh = allMachines.filter(m =>
       m.hostname?.toUpperCase().endsWith('BOH') && m.status === 'online'
     );
     for (const machine of boh) {
-      createCommand(machine.id, 'aloha-scan', {});
+      await createCommand(machine.id, 'aloha-scan', {});
     }
     if (boh.length) logger.info('[AlohaScan] Refresh automático disparado', { lojas: boh.length });
   }
 
-  setTimeout(_refresh, 5 * 60 * 1000); // 5 min após boot — aguarda agentes reconectarem
-  setInterval(_refresh, INTERVAL_MS);
+  setTimeout(() => { _refresh().catch(e => logger.error('[AlohaScan] Erro no refresh', { error: e.message })); }, 5 * 60 * 1000);
+  setInterval(() => { _refresh().catch(e => logger.error('[AlohaScan] Erro no refresh', { error: e.message })); }, INTERVAL_MS);
 }
 _scheduleAlohaScanRefresh();
 

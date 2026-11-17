@@ -3,7 +3,7 @@
 const path   = require('path');
 const fs     = require('fs');
 const crypto = require('crypto');
-const db     = require('../db');
+const db     = require('../db-pg');
 const { broadcast } = require('./websocket');
 
 function loadConfig() {
@@ -40,7 +40,7 @@ async function runNow() {
     return 0;
   }
 
-  const machines = db.getAllMachines();
+  const machines = await db.getAllMachines();
   let totalGenerated = 0;
 
   for (const machine of machines) {
@@ -72,7 +72,7 @@ async function fetchClaudeResponse(cfg, prompt) {
   }
 }
 
-function persistInsights(machine, machineInsights) {
+async function persistInsights(machine, machineInsights) {
   let saved = 0;
   for (const insight of machineInsights) {
     if (!insight.pattern || !insight.severity) continue;
@@ -80,7 +80,7 @@ function persistInsights(machine, machineInsights) {
       .createHash('sha256')
       .update(`${machine.id}:${insight.pattern.slice(0, 80)}`)
       .digest('hex');
-    db.saveInsight({
+    await db.saveInsight({
       machineId:   machine.id,
       severity:    insight.severity,
       pattern:     insight.pattern,
@@ -104,21 +104,22 @@ function persistInsights(machine, machineInsights) {
 // tabela" — perda silenciosa do restante do backlog sempre que ele exceder
 // o LIMIT (achado de review). O recorte pro prompt (mais recente = sinal
 // mais relevante) acontece depois, em JS, sem afetar o cursor.
-function fetchNewEvents(machine) {
+async function fetchNewEvents(machine) {
   const lastWinId     = machine.last_win_event_id || 0;
   const lastOfflineId = machine.last_offline_event_id || 0;
+  const pool = db.getPool();
 
-  const events = db.getDb().prepare(`
+  const { rows: events } = await pool.query(`
     SELECT id, event_id, source, level, translation, event_time
-    FROM win_events WHERE machine_id = ? AND id > ?
+    FROM win_events WHERE machine_id = $1 AND id > $2
     ORDER BY id DESC
-  `).all(machine.id, lastWinId);
+  `, [machine.id, lastWinId]);
 
-  const offlineEvents = db.getDb().prepare(`
+  const { rows: offlineEvents } = await pool.query(`
     SELECT id, ts, type, details FROM events
-    WHERE machine_id = ? AND type = 'offline' AND id > ?
+    WHERE machine_id = $1 AND type = 'offline' AND id > $2
     ORDER BY id DESC
-  `).all(machine.id, lastOfflineId);
+  `, [machine.id, lastOfflineId]);
 
   // Cursor cobre o backlog inteiro buscado acima — nunca fica maior que o
   // que de fato foi visto, então nenhum evento pode ser marcado "já
@@ -145,7 +146,7 @@ async function analyzeMachine(machine, cfg) {
   // Cursor incremental: só processa evento com id MAIOR que o já visto na
   // última rodada (evita reenviar ~96% de dados repetidos a cada ciclo —
   // bug real que custou US$107,62 num dia só no projeto JARVIS, mesmo padrão).
-  const { events, offlineEvents, maxWinId, maxOfflineId } = fetchNewEvents(machine);
+  const { events, offlineEvents, maxWinId, maxOfflineId } = await fetchNewEvents(machine);
 
   if (events.length === 0 && offlineEvents.length === 0) return 0;
 
@@ -186,9 +187,9 @@ Se não houver padrões relevantes, retorne: {"insights":[]}`;
 
   // Só avança o cursor depois de uma análise bem-sucedida (mesmo que 0 insights
   // relevantes tenham sido encontrados — isso é um resultado válido).
-  db.updateMachineInsightCursor(machine.id, { lastWinEventId: maxWinId, lastOfflineEventId: maxOfflineId });
+  await db.updateMachineInsightCursor(machine.id, { lastWinEventId: maxWinId, lastOfflineEventId: maxOfflineId });
 
-  return persistInsights(machine, parsed.insights || []);
+  return await persistInsights(machine, parsed.insights || []);
 }
 
 function buildContext(name, events, offlineEvents) {

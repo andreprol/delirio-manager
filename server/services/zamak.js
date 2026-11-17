@@ -2,7 +2,7 @@
 'use strict';
 
 const https = require('https');
-const db    = require('../db');
+const db    = require('../db-pg');
 
 function loadConfig() {
   try { return require('../config.json').zamak || {}; }
@@ -446,7 +446,7 @@ async function _syncAllInner() {
   const allDevices      = await fetchAllDevices(server, apiKey, clientId, log);
   const failingByDevice = await buildFailingByDevice(server, apiKey, clientId, log);
 
-  const allDmMachines = db.getAllMachines();
+  const allDmMachines = await db.getAllMachines();
   const rows = [], threatRows = [], perfRows = [], outageRows = [];
 
   for (const device of allDevices) {
@@ -469,13 +469,13 @@ async function _syncAllInner() {
     rows.push(buildDeviceRow(device, did, siteId, siteName, storeName, patches, threatsActive, failingByDevice, dmMatch, now));
   }
 
-  db.upsertZamakDevices(rows);
-  db.replaceZamakThreats(threatRows);
-  db.replaceZamakPerformance(perfRows);
-  db.replaceZamakOutages(outageRows);
+  await db.upsertZamakDevices(rows);
+  await db.replaceZamakThreats(threatRows);
+  await db.replaceZamakPerformance(perfRows);
+  await db.replaceZamakOutages(outageRows);
 
   const discrepancies = buildDiscrepancies(rows, allDmMachines, now);
-  db.replaceZamakDiscrepancies(discrepancies);
+  await db.replaceZamakDiscrepancies(discrepancies);
 
   const summary = { devices: rows.length, discrepancies: discrepancies.length, unmappedSites, log };
   log.push(`✅ Sync concluído: ${rows.length} dispositivos, ${discrepancies.length} discrepâncias`);
@@ -487,7 +487,7 @@ async function _syncAllInner() {
 }
 
 async function syncIfStale(hours = 6) {
-  const age = db.getZamakCacheAge();
+  const age = await db.getZamakCacheAge();
   if (age >= hours) return syncAll();
   return null;
 }
@@ -501,7 +501,7 @@ async function syncPerfAndOutages() {
   const { server, apiKey } = cfg;
   const now = new Date().toISOString();
 
-  const cachedDevices = db.getZamakCachedDeviceIds();
+  const cachedDevices = await db.getZamakCachedDeviceIds();
   if (!cachedDevices.length) throw new Error('Nenhum device no cache. Execute sync completo primeiro (botão Atualizar).');
 
   const log = [];
@@ -516,8 +516,8 @@ async function syncPerfAndOutages() {
     outageRows.push(...await fetchDeviceOutages(server, apiKey, did, name, storeName, log, now));
   }
 
-  db.replaceZamakPerformance(perfRows);
-  db.replaceZamakOutages(outageRows);
+  await db.replaceZamakPerformance(perfRows);
+  await db.replaceZamakOutages(outageRows);
 
   const errors = log.filter(l => /^(Perf|Outages) .+:/.test(l)).length;
   return {

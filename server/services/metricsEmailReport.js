@@ -4,7 +4,7 @@
 
 const path = require('path');
 const fs   = require('fs');
-const db   = require('../db');
+const db   = require('../db-pg');
 
 // Carrega config msGraph do config.json
 function loadGraphConfig() {
@@ -202,7 +202,7 @@ async function sendDailyMetricsEmail() {
     return;
   }
 
-  const rows = db.getDailyMetricsSummary();
+  const rows = await db.getDailyMetricsSummary();
   const dtBRT = new Date().toLocaleString('pt-BR', {
     timeZone: 'America/Sao_Paulo',
     day: '2-digit', month: '2-digit', year: 'numeric',
@@ -211,9 +211,8 @@ async function sendDailyMetricsEmail() {
 
   // Leituras perdidas do dia (máquinas online com miss registrado nas últimas 24h)
   const todayStr = new Date().toISOString().slice(0, 10);
-  const misses   = (() => {
-    try { return db.getReadingMissesForDate(todayStr); } catch { return []; }
-  })();
+  let misses;
+  try { misses = await db.getReadingMissesForDate(todayStr); } catch { misses = []; }
 
   const noReadings  = rows.filter(r => r.readings_24h === 0).length;
   const onlineMisses = misses.filter(m => m.machine_status === 'online').length;

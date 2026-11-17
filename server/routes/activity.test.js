@@ -3,11 +3,11 @@
 const express = require('express');
 const request = require('supertest');
 
-jest.mock('../db', () => ({
+jest.mock('../db-pg', () => ({
   getMachineByToken:          jest.fn(),
-  insertActivityLog:          jest.fn(() => ({ id: 42, capturedAt: '2026-10-23T12:00:00.000Z' })),
-  getActiveWatchlistKeywords: jest.fn(() => []),
-  createCommand:              jest.fn(() => 'cmd-id-1'),
+  insertActivityLog:          jest.fn().mockResolvedValue({ id: 42, capturedAt: '2026-10-23T12:00:00.000Z' }),
+  getActiveWatchlistKeywords: jest.fn().mockResolvedValue([]),
+  createCommand:              jest.fn().mockResolvedValue('cmd-id-1'),
 }));
 
 function makeApp() {
@@ -27,8 +27,8 @@ describe('POST /api/activity', () => {
   });
 
   it('401 com token inválido', async () => {
-    const db = require('../db');
-    db.getMachineByToken.mockReturnValue(null);
+    const db = require('../db-pg');
+    db.getMachineByToken.mockResolvedValue(null);
     const app = makeApp();
     const res = await request(app).post('/api/activity')
       .set('Authorization', 'Bearer tok-invalido')
@@ -37,8 +37,8 @@ describe('POST /api/activity', () => {
   });
 
   it('400 quando windowTitle ou processName não são string', async () => {
-    const db = require('../db');
-    db.getMachineByToken.mockReturnValue({ id: 'm1' });
+    const db = require('../db-pg');
+    db.getMachineByToken.mockResolvedValue({ id: 'm1' });
     db.insertActivityLog.mockClear();
     const app = makeApp();
     const res = await request(app).post('/api/activity')
@@ -49,9 +49,9 @@ describe('POST /api/activity', () => {
   });
 
   it('salva o log e não dispara comando quando não bate watchlist', async () => {
-    const db = require('../db');
-    db.getMachineByToken.mockReturnValue({ id: 'm1' });
-    db.getActiveWatchlistKeywords.mockReturnValue([{ id: 1, keyword: 'vaga' }]);
+    const db = require('../db-pg');
+    db.getMachineByToken.mockResolvedValue({ id: 'm1' });
+    db.getActiveWatchlistKeywords.mockResolvedValue([{ id: 1, keyword: 'vaga' }]);
     db.createCommand.mockClear();
     const app = makeApp();
 
@@ -65,9 +65,9 @@ describe('POST /api/activity', () => {
   });
 
   it('dispara capture-screenshot quando bate a watchlist', async () => {
-    const db = require('../db');
-    db.getMachineByToken.mockReturnValue({ id: 'm1' });
-    db.getActiveWatchlistKeywords.mockReturnValue([{ id: 1, keyword: 'vaga' }]);
+    const db = require('../db-pg');
+    db.getMachineByToken.mockResolvedValue({ id: 'm1' });
+    db.getActiveWatchlistKeywords.mockResolvedValue([{ id: 1, keyword: 'vaga' }]);
     const app = makeApp();
 
     const res = await request(app).post('/api/activity')

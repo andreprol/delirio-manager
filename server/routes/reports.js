@@ -3,13 +3,14 @@
 const express        = require('express');
 const router         = express.Router();
 const PDFDocument    = require('pdfkit');
-const db             = require('../db');
+const db             = require('../db-pg');
 const { getBiosGuide } = require('../services/wolBiosGuide');
+const { asyncHandler } = require('../middleware/asyncHandler');
 
 // GET /api/reports/bios — JSON com todas as máquinas bios_needed
-router.get('/bios', (req, res) => {
+router.get('/bios', asyncHandler(async (req, res) => {
   try {
-    const machines = db.getMachinesBiosNeeded().map(m => {
+    const machines = (await db.getMachinesBiosNeeded()).map(m => {
       const guide = getBiosGuide(m.motherboard);
       return {
         id:           m.id,
@@ -28,12 +29,12 @@ router.get('/bios', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET /api/reports/bios/pdf — PDF para download
-router.get('/bios/pdf', (req, res) => {
+router.get('/bios/pdf', asyncHandler(async (req, res) => {
   try {
-    const machines = db.getMachinesBiosNeeded().map(m => {
+    const machines = (await db.getMachinesBiosNeeded()).map(m => {
       const guide = getBiosGuide(m.motherboard);
       // pdfkit + Helvetica nao suporta unicode arrows — substituir por >
       const biosPath = (guide.path || '').replace(/\s*→\s*/g, ' > ');
@@ -155,6 +156,6 @@ router.get('/bios/pdf', (req, res) => {
   } catch (err) {
     if (!res.headersSent) res.status(500).json({ error: err.message });
   }
-});
+}));
 
 module.exports = router;

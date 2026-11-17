@@ -1,6 +1,6 @@
 'use strict';
 
-jest.mock('../db', () => ({
+jest.mock('../db-pg', () => ({
   purgeActivityLog: jest.fn(() => 3),
   purgeOrphanCommands: jest.fn(async () => 0),
   purgeOldTerminalCommands: jest.fn(async () => 0),
@@ -14,27 +14,26 @@ const {
 afterEach(() => stop());
 
 describe('runPurgeOnce', () => {
-  it('chama purgeActivityLog com 90 dias e retorna quantas linhas removeu', () => {
-    const db = require('../db');
-    const removed = runPurgeOnce();
+  it('chama purgeActivityLog com 90 dias e retorna quantas linhas removeu', async () => {
+    const db = require('../db-pg');
+    const removed = await runPurgeOnce();
     expect(db.purgeActivityLog).toHaveBeenCalledWith(RETENTION_DAYS);
     expect(removed).toBe(3);
   });
 
-  it('erro no purge não lança — retorna 0 e segue', () => {
-    const db = require('../db');
+  it('erro no purge não lança — retorna 0 e segue', async () => {
+    const db = require('../db-pg');
     db.purgeActivityLog.mockImplementationOnce(() => {
       throw new Error('disco cheio');
     });
-    let removed;
-    expect(() => { removed = runPurgeOnce(); }).not.toThrow();
+    const removed = await runPurgeOnce();
     expect(removed).toBe(0);
   });
 });
 
 describe('runCommandsPurgeOnce', () => {
   it('chama purgeOrphanCommands e purgeOldTerminalCommands (com COMMANDS_RETENTION_DAYS) e retorna o resultado', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     db.purgeOrphanCommands.mockResolvedValueOnce(56171);
     db.purgeOldTerminalCommands.mockResolvedValueOnce(120);
 
@@ -46,7 +45,7 @@ describe('runCommandsPurgeOnce', () => {
   });
 
   it('erro no purge de órfãos não lança — retorna zeros e segue (sem chamar o purge de antigos)', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     db.purgeOrphanCommands.mockRejectedValueOnce(new Error('disco cheio'));
     db.purgeOldTerminalCommands.mockClear();
 
@@ -57,7 +56,7 @@ describe('runCommandsPurgeOnce', () => {
   });
 
   it('erro no purge de antigos não lança — retorna zeros e segue', async () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     db.purgeOldTerminalCommands.mockRejectedValueOnce(new Error('disco cheio'));
 
     const result = await runCommandsPurgeOnce();
@@ -68,7 +67,7 @@ describe('runCommandsPurgeOnce', () => {
 
 describe('scheduleDailyPurge / stop', () => {
   it('roda o purge imediatamente no boot', () => {
-    const db = require('../db');
+    const db = require('../db-pg');
     db.purgeActivityLog.mockClear();
     db.purgeOrphanCommands.mockClear();
     scheduleDailyPurge();
@@ -87,7 +86,7 @@ describe('scheduleDailyPurge / stop', () => {
       stop();
       // Avança bem além de 24h — se o timer não foi cancelado, isso chamaria
       // purgeActivityLog de novo e o teste falharia na contagem abaixo.
-      const db = require('../db');
+      const db = require('../db-pg');
       const callsAfterStop = db.purgeActivityLog.mock.calls.length;
       jest.advanceTimersByTime(25 * 60 * 60 * 1000);
       expect(db.purgeActivityLog.mock.calls.length).toBe(callsAfterStop);

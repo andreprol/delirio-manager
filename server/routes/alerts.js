@@ -2,15 +2,16 @@
 
 const express = require('express');
 const router  = express.Router();
-const db      = require('../db');
+const db      = require('../db-pg');
+const { asyncHandler } = require('../middleware/asyncHandler');
 
 // GET /api/alerts
-router.get('/', (req, res) => {
-  res.json(db.getAlerts(req.query.machineId || null).map(parseAlert));
-});
+router.get('/', asyncHandler(async (req, res) => {
+  res.json((await db.getAlerts(req.query.machineId || null)).map(parseAlert));
+}));
 
 // POST /api/alerts
-router.post('/', (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const { machineId, type, threshold, durationMins, channels } = req.body;
 
   const validTypes = ['offline', 'cpu_high', 'temp_high', 'disk_low', 'reboot', 'shutdown'];
@@ -18,15 +19,15 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: `Tipo invalido. Validos: ${validTypes.join(', ')}` });
   }
 
-  const id = db.createAlert({ machineId, type, threshold, durationMins, channels });
+  const id = await db.createAlert({ machineId, type, threshold, durationMins, channels });
   res.status(201).json({ id });
-});
+}));
 
 // DELETE /api/alerts/:id
-router.delete('/:id', (req, res) => {
-  db.deleteAlert(parseInt(req.params.id));
+router.delete('/:id', asyncHandler(async (req, res) => {
+  await db.deleteAlert(parseInt(req.params.id));
   res.json({ ok: true });
-});
+}));
 
 function parseAlert(a) {
   return {
