@@ -58,7 +58,19 @@ func clearLastError() {
 }
 
 const (
-	srcCopy      = 0x00CC0020
+	srcCopy = 0x00CC0020
+	// captureBlt (CAPTUREBLT): inclui qualquer janela/overlay composto por
+	// cima da tela no resultado do BitBlt -- sem essa flag, conteúdo
+	// renderizado via DWM/hardware acima da superfície GDI clássica sai
+	// preto mesmo com BitBlt retornando sucesso. Achado 17/11/2026 ao vivo
+	// (AUXILIAR-ASS): depois de corrigir os 2 bugs reais de BI_BITFIELDS
+	// (commits 3411395/123290a), a captura na desktop "Winlogon" passou a
+	// funcionar sem erro mas devolvia pixels pretos -- DXGI Desktop
+	// Duplication tentado como alternativa (commit b9f7c64) nem conseguiu
+	// inicializar (DXGI_ERROR_NOT_CURRENTLY_AVAILABLE em EnumOutputs).
+	// srcCopy|captureBlt é a combinação documentada pra esse exato cenário,
+	// nunca testada antes nesta base de código.
+	captureBlt   = 0x40000000
 	biRGB        = 0
 	biBitfields  = 3
 	dibRGBColors = 0
@@ -137,7 +149,7 @@ func captureScreenJPEG(quality int) ([]byte, error) {
 	defer procSelectObject.Call(hdcMem, hOld) //nolint:errcheck
 
 	clearLastError()
-	ret, _, lastErr := procBitBlt.Call(hdcMem, 0, 0, width, height, hdcScreen, 0, 0, srcCopy)
+	ret, _, lastErr := procBitBlt.Call(hdcMem, 0, 0, width, height, hdcScreen, 0, 0, srcCopy|captureBlt)
 	if ret == 0 {
 		return nil, fmt.Errorf("BitBlt falhou (tela %dx%d): %w", width, height, lastErr)
 	}
