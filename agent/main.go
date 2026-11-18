@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.10.3" // fix: BI_BITFIELDS com mascaras de cor zeradas (driver da desktop "Winlogon" nao preenche, apesar da doc da Microsoft) -- fallback pra BI_RGB forcado em vez de erro permanente. Achado testando 1.10.2 ao vivo na AUXILIAR-ASS (ver linha acima)
+	Version            = "1.10.4" // feat: tenta DXGI no modo session-zero (desktop "Winlogon"), fallback automatico pro GDI -- experimento, GDI (1.10.3) captura sem erro mas com pixels pretos de verdade nessa tela, hipotese de composicao via DWM
 )
 
 func main() {
