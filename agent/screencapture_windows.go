@@ -59,18 +59,15 @@ func clearLastError() {
 
 const (
 	srcCopy = 0x00CC0020
-	// captureBlt (CAPTUREBLT): inclui qualquer janela/overlay composto por
-	// cima da tela no resultado do BitBlt -- sem essa flag, conteúdo
-	// renderizado via DWM/hardware acima da superfície GDI clássica sai
-	// preto mesmo com BitBlt retornando sucesso. Achado 17/11/2026 ao vivo
-	// (AUXILIAR-ASS): depois de corrigir os 2 bugs reais de BI_BITFIELDS
-	// (commits 3411395/123290a), a captura na desktop "Winlogon" passou a
-	// funcionar sem erro mas devolvia pixels pretos -- DXGI Desktop
-	// Duplication tentado como alternativa (commit b9f7c64) nem conseguiu
-	// inicializar (DXGI_ERROR_NOT_CURRENTLY_AVAILABLE em EnumOutputs).
-	// srcCopy|captureBlt é a combinação documentada pra esse exato cenário,
-	// nunca testada antes nesta base de código.
-	captureBlt   = 0x40000000
+	// CAPTUREBLT (0x40000000) foi tentado 17/11/2026 pra resolver pixels
+	// pretos na desktop "Winlogon" (commit 3f1d74c) -- REVERTIDO no mesmo
+	// dia: achado AO VIVO que a flag quebrava a captura NORMAL (usuário já
+	// logado, companion, AUXILIAR-ASS) também, produzindo tela preta numa
+	// sessão que sempre funcionou antes. Regressão real num driver
+	// específico, não resolveu o problema original (Winlogon continuou
+	// preto mesmo com a flag). Nunca reativar sem investigar por que esse
+	// driver reage mal a ela -- ver
+	// feedback/project_delirio_acesso_remoto_session_zero na memória.
 	biRGB        = 0
 	biBitfields  = 3
 	dibRGBColors = 0
@@ -149,7 +146,7 @@ func captureScreenJPEG(quality int) ([]byte, error) {
 	defer procSelectObject.Call(hdcMem, hOld) //nolint:errcheck
 
 	clearLastError()
-	ret, _, lastErr := procBitBlt.Call(hdcMem, 0, 0, width, height, hdcScreen, 0, 0, srcCopy|captureBlt)
+	ret, _, lastErr := procBitBlt.Call(hdcMem, 0, 0, width, height, hdcScreen, 0, 0, srcCopy)
 	if ret == 0 {
 		return nil, fmt.Errorf("BitBlt falhou (tela %dx%d): %w", width, height, lastErr)
 	}
