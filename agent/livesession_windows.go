@@ -317,14 +317,18 @@ func runLiveSessionWithReconnect(sessionID, wsURL, mode string, stopCh <-chan st
 var selectLiveSessionCapturerFn = selectLiveSessionCapturer
 
 // selectLiveSessionCapturer escolhe o capturer certo pra sessão: sessionZero
-// sempre usa sessionZeroScreenCapturer (GDI + anexa à desktop ativa a cada
-// frame, ver screencapture_sessionzero_windows.go) -- nunca newScreenCapturerFn
-// (DXGI), que não tem comportamento documentado/testado contra a secure
-// desktop (login/UAC). Fora do modo session-zero, comportamento idêntico a
-// antes desta feature existir.
+// usa newSessionZeroCapturerFn (DXGI com fallback automático pro GDI já
+// validado, ver screencapture_sessionzero_windows.go) -- até 17/11/2026
+// usava SEMPRE GDI de propósito (DXGI contra secure desktop não era
+// documentado/testado); confirmado ao vivo que GDI captura sem erro mas com
+// pixels pretos na desktop "Winlogon" (Windows 11), hipótese de composição
+// via DWM -- DXGI tentado como experimento, com o MESMO fallback automático
+// que o capturer normal já usa, nunca regredindo pro que já funcionava.
+// Fora do modo session-zero, comportamento idêntico a antes desta feature
+// existir.
 func selectLiveSessionCapturer(sessionZero bool) (capturer screenCapturer, backend string) {
 	if sessionZero {
-		return sessionZeroScreenCapturer{}, "session-zero-gdi"
+		return newSessionZeroCapturerFn()
 	}
 	return newScreenCapturerFn()
 }

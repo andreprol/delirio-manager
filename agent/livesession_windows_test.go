@@ -181,28 +181,39 @@ func TestReadLiveSessionInputNonNormalModeConsumesAllMessages(t *testing.T) {
 	}
 }
 
-// TestSelectLiveSessionCapturer: sessionZero=true tem que usar SEMPRE
-// sessionZeroScreenCapturer (GDI + desktop ativa), nunca newScreenCapturerFn
-// (DXGI, sem garantia nenhuma contra a secure desktop) -- e sessionZero=false
-// tem que continuar usando newScreenCapturerFn, comportamento idêntico a
-// antes desta feature existir.
+// TestSelectLiveSessionCapturer: sessionZero=true usa newSessionZeroCapturerFn
+// (DXGI com fallback pro GDI, ver screencapture_sessionzero_windows.go),
+// nunca newScreenCapturerFn (seletor da sessão NORMAL, GDI/DXGI pra sessão
+// interativa comum) -- e sessionZero=false continua usando newScreenCapturerFn,
+// comportamento idêntico a antes desta feature existir.
 func TestSelectLiveSessionCapturer(t *testing.T) {
 	originalNewScreenCapturer := newScreenCapturerFn
-	t.Cleanup(func() { newScreenCapturerFn = originalNewScreenCapturer })
-	var newScreenCapturerCalled bool
+	originalNewSessionZeroCapturer := newSessionZeroCapturerFn
+	t.Cleanup(func() {
+		newScreenCapturerFn = originalNewScreenCapturer
+		newSessionZeroCapturerFn = originalNewSessionZeroCapturer
+	})
+	var newScreenCapturerCalled, newSessionZeroCapturerCalled bool
 	newScreenCapturerFn = func() (screenCapturer, string) {
 		newScreenCapturerCalled = true
 		return gdiScreenCapturer{}, "gdi"
 	}
+	newSessionZeroCapturerFn = func() (screenCapturer, string) {
+		newSessionZeroCapturerCalled = true
+		return sessionZeroScreenCapturer{}, "session-zero-gdi"
+	}
 
-	t.Run("sessionZero=true usa sessionZeroScreenCapturer, não newScreenCapturerFn", func(t *testing.T) {
-		newScreenCapturerCalled = false
+	t.Run("sessionZero=true usa newSessionZeroCapturerFn, não newScreenCapturerFn", func(t *testing.T) {
+		newScreenCapturerCalled, newSessionZeroCapturerCalled = false, false
 		capturer, backend := selectLiveSessionCapturer(true)
 		if _, ok := capturer.(sessionZeroScreenCapturer); !ok {
 			t.Errorf("capturer = %T, want sessionZeroScreenCapturer", capturer)
 		}
 		if backend != "session-zero-gdi" {
 			t.Errorf("backend = %q, want session-zero-gdi", backend)
+		}
+		if !newSessionZeroCapturerCalled {
+			t.Error("newSessionZeroCapturerFn deveria ter sido chamado em modo session-zero")
 		}
 		if newScreenCapturerCalled {
 			t.Error("newScreenCapturerFn não deveria ter sido chamado em modo session-zero")
