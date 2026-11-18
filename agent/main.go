@@ -16,7 +16,7 @@ const (
 	ServiceName        = "DelirioAgent"
 	ServiceDisplayName = "Delirio Manager Agent"
 	ServiceDescription = "Agente de monitoramento Delirio Tropical. Coleta metricas do sistema e executa comandos remotos autorizados pelo servidor central."
-	Version            = "1.10.5" // fix: BitBlt sem CAPTUREBLT -- pixels pretos na desktop "Winlogon" mesmo sem erro. DXGI (1.10.4) nem inicializava nessa desktop (DXGI_ERROR_NOT_CURRENTLY_AVAILABLE); CAPTUREBLT inclui overlay composto via DWM/hardware no resultado do BitBlt
+	Version            = "1.10.6" // revert: CAPTUREBLT (1.10.5) quebrava a captura NORMAL (usuario logado, companion) numa maquina real -- regressao, nao resolveu o problema original (Winlogon continuava preto mesmo com a flag). Voltou pro srcCopy puro
 )
 
 func main() {
