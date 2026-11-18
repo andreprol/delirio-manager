@@ -13,6 +13,7 @@ const sendBrowseRemoteFolderMock = vi.fn()
 const abandonBrowseRemoteFolderMock = vi.fn()
 const sendClipboardGetFileMock = vi.fn()
 const sendClipboardGetSequenceMock = vi.fn()
+const reconnectMock = vi.fn()
 let lastUseLiveSessionArgs = null
 
 vi.mock('../hooks/useLiveSession', () => ({
@@ -30,13 +31,21 @@ vi.mock('../hooks/useLiveSession', () => ({
       abandonBrowseRemoteFolder: abandonBrowseRemoteFolderMock,
       sendClipboardGetFile: sendClipboardGetFileMock,
       sendClipboardGetSequence: sendClipboardGetSequenceMock,
+      reconnect: reconnectMock,
     }
   },
 }))
 
 vi.mock('../api', () => ({
   api: {
+    // getMachine/live.start: reconexão persistente através de reboot (ver
+    // status 'waiting-for-machine', LiveSessionWindow.jsx) -- default
+    // 'offline' pra nenhum teste existente (que nunca entra nesse status)
+    // disparar o polling sem querer; os testes dedicados sobrescrevem com
+    // mockResolvedValueOnce/mockImplementation.
+    getMachine: vi.fn().mockResolvedValue({ status: 'offline' }),
     live: {
+      start: vi.fn().mockResolvedValue({ sessionId: 's-new', dashboardToken: 'tok-new', mode: 'normal' }),
       stop: vi.fn().mockResolvedValue({ ok: true }),
       getFileUploadUrl: vi.fn().mockResolvedValue({ uploadUrl: 'https://blob/x?sas-up', downloadUrl: 'https://blob/x?sas-down' }),
       getFileDownloadUrl: vi.fn().mockResolvedValue({ uploadUrl: 'https://blob/y?sas-up', downloadUrl: 'https://blob/y?sas-down' }),
@@ -116,6 +125,118 @@ describe('LiveSessionWindow', () => {
     fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
     act(() => { lastUseLiveSessionArgs.onStatusChange('reconnecting') })
     expect(screen.getByText(/Reconectando à máquina remota/i)).toBeInTheDocument()
+  })
+
+  // ── Reconexão persistente através de reboot (status 'waiting-for-machine') ──
+  // 17/11/2026, ver project_delirio_acesso_remoto_session_zero na memória --
+  // igualar o comportamento da Zamak: a mesma janela acompanha a máquina
+  // reiniciando, sem erro visível, reconectando sozinha.
+  it('status "waiting-for-machine" mostra "Aguardando a máquina voltar...", distinto de erro', () => {
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+    act(() => { lastUseLiveSessionArgs.onStatusChange('waiting-for-machine') })
+    expect(screen.getByText(/Aguardando a máquina voltar/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Conexão perdida/i)).not.toBeInTheDocument()
+  })
+
+  it('"waiting-for-machine": detecta a máquina online, abre sessão nova e chama reconnect()', async () => {
+    api.getMachine.mockResolvedValueOnce({ status: 'online' })
+    render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    await act(async () => {
+      lastUseLiveSessionArgs.onStatusChange('waiting-for-machine')
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(api.getMachine).toHaveBeenCalledWith('m1')
+    expect(api.live.start).toHaveBeenCalledWith('m1', 'normal')
+    // a sessão NOVA (sessionId/token do mock de api.live.start) tem que
+    // chegar nas props do hook ANTES de reconnect() ser chamado -- senão
+    // reconnect() reabriria com o sessionId/token VELHO (inválido, foi
+    // isso que causou o 'waiting-for-machine' em primeiro lugar).
+    expect(lastUseLiveSessionArgs.sessionId).toBe('s-new')
+    expect(lastUseLiveSessionArgs.dashboardToken).toBe('tok-new')
+    expect(reconnectMock).toHaveBeenCalled()
+  })
+
+  it('"waiting-for-machine": ignora falha transitória de rede no poll e tenta de novo', async () => {
+    vi.useFakeTimers()
+    try {
+      api.getMachine
+        .mockRejectedValueOnce(new Error('falha de rede transitória'))
+        .mockResolvedValueOnce({ status: 'online' })
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onStatusChange('waiting-for-machine')
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(api.getMachine).toHaveBeenCalledTimes(1) // 1ª falhou
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000) // próximo poll agendado
+      })
+
+      expect(api.getMachine).toHaveBeenCalledTimes(2) // tentou de novo, não desistiu na 1ª falha
+      expect(api.live.start).toHaveBeenCalledWith('m1', 'normal')
+      expect(reconnectMock).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('"waiting-for-machine": estoura o teto de tempo sem a máquina voltar e vira erro de verdade', async () => {
+    vi.useFakeTimers()
+    try {
+      // sempre offline -- nunca acha motivo pra reconectar sozinho.
+      api.getMachine.mockResolvedValue({ status: 'offline' })
+      render(<LiveSessionWindow />)
+      fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+      await act(async () => {
+        lastUseLiveSessionArgs.onStatusChange('waiting-for-machine')
+        await Promise.resolve()
+      })
+      expect(screen.getByText(/Aguardando a máquina voltar/i)).toBeInTheDocument()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(9 * 60 * 1000) // além do teto de ~8min
+      })
+
+      expect(screen.getByText(/Conexão perdida/i)).toBeInTheDocument()
+      expect(reconnectMock).not.toHaveBeenCalled()
+      expect(api.live.start).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('"waiting-for-machine": desmontar a janela cancela o polling (não chama api.live.start mesmo se o poll em voo achar a máquina online depois)', async () => {
+    // Promise controlada manualmente -- achado 🟡 do code-reviewer: o
+    // teste anterior usava o default 'offline' do mock, então o branch
+    // que chama api.live.start nunca seria alcançado mesmo SEM o guard de
+    // token, provando nada sobre o cancelamento de verdade. Aqui o poll
+    // fica pendurado no await até depois do unmount, e SÓ ENTÃO resolve
+    // pra 'online' -- se o guard (currentWaitingTokenRef) não existisse, a
+    // asserção abaixo falharia.
+    let resolveGetMachine
+    api.getMachine.mockReturnValueOnce(new Promise((resolve) => { resolveGetMachine = resolve }))
+
+    const { unmount } = render(<LiveSessionWindow />)
+    fireLiveSessionInit({ sessionId: 's1', machineId: 'm1', mode: 'normal', dashboardToken: 'tok', serverUrl: 'https://s.example.com' })
+
+    act(() => { lastUseLiveSessionArgs.onStatusChange('waiting-for-machine') })
+    unmount()
+    resolveGetMachine({ status: 'online' })
+
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() })
+
+    expect(api.live.start).not.toHaveBeenCalled()
   })
 
   // Regressão achada em produção: esta janela é um BrowserWindow/processo

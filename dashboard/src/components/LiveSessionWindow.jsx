@@ -30,6 +30,16 @@ const ctrlCRemoteClipboardDelayMs = 400
 // clipboardDownloadTimeoutRef.
 const clipboardDownloadTimeoutMs = 30000
 
+// waitingForMachineTimeoutMs/waitingForMachinePollMs: status
+// 'waiting-for-machine' (reconexão persistente através de reboot, ver
+// pendingAutoReconnectRef abaixo) -- 8min é generoso pro boot completo
+// normal (2-3min) + alguma folga pra Windows Update ocasional (já visto
+// levar ~15-20min em casos raros, mas não dá pra deixar o operador
+// esperando indefinidamente por um caso raro; se estourar, mostra erro de
+// verdade e o operador decide).
+const waitingForMachineTimeoutMs = 8 * 60 * 1000
+const waitingForMachinePollMs = 5000
+
 // Lista fixa pro botão de emergência "Liberar teclas travadas" — não
 // depende do rastreamento de heldKeysRef (que só sabe o que ESTA janela
 // viu desde que foi aberta); solta por garantia as modificadoras mais
@@ -426,13 +436,92 @@ export function LiveSessionWindow() {
     }
   }, [recoverFromBrowseRemote])
 
-  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendBrowseRemoteFolder, abandonBrowseRemoteFolder, sendClipboardGetFile, sendClipboardGetSequence } = useLiveSession({
+  // ── Reconexão persistente através de reboot (status 'waiting-for-machine') ──
+  // Achado 17/11/2026 (ver project_delirio_acesso_remoto_session_zero na
+  // memória): a Zamak acompanha a máquina reiniciando na MESMA janela, sem
+  // nunca mostrar erro -- nosso Dashboard desistia de vez ("Conexão
+  // perdida") em qualquer queda terminal, inclusive reboot, exigindo fechar
+  // e abrir a janela na mão. pendingAutoReconnectRef sinaliza pro efeito
+  // logo abaixo do useLiveSession (watch em `session`) chamar reconnect()
+  // assim que a sessão NOVA (sessionId/token) já estiver nas props do
+  // hook -- precisa de 2 passos separados porque setSession() só reflete
+  // na próxima render, e reconnect() só deve usar o `connect` do hook já
+  // fechado sobre os valores novos.
+  const pendingAutoReconnectRef = useRef(false)
+  // currentWaitingTokenRef: cada chamada de startWaitingForMachinePoll cria
+  // seu PRÓPRIO token (objeto novo); um poll/await só continua agindo
+  // enquanto este ref ainda apontar pra ELE especificamente -- invalidado
+  // na hora (sem depender de timing de cleanup de efeito) por uma chamada
+  // NOVA (2 quedas em sequência) ou pelo desmonte do componente. Achado 🟠
+  // do code-reviewer: a versão anterior usava 1 ref booleano único
+  // compartilhado entre chamadas sucessivas, que deixava uma corrida real
+  // entre a chamada ANTIGA (ainda em voo num await) terminando DEPOIS da
+  // NOVA já ter resetado o guard pra "ativo" de novo.
+  const currentWaitingTokenRef = useRef(null)
+
+  // startWaitingForMachinePoll é chamado IMPERATIVAMENTE direto de
+  // handleStatusChange, nunca via useEffect reagindo ao VALOR de `status`
+  // -- achado 🔴 CRÍTICO do code-reviewer: um useEffect com dep [status]
+  // só reexecuta quando o valor MUDA. Se a sessão nova obtida aqui caducar
+  // de novo com outro código retry-eligible antes de conectar (bem
+  // plausível logo após um boot, com a rede da loja ainda instabilizando),
+  // o status iria 'waiting-for-machine' -> 'waiting-for-machine' de novo
+  // (mesmo valor) e o efeito NUNCA rodaria uma 2ª vez -- a janela ficaria
+  // travada pra sempre em "Aguardando a máquina voltar...", exatamente o
+  // modo de falha (fechar+reabrir na mão) que esta feature existe pra
+  // eliminar. Chamar direto do callback, sempre, não depende de diff de
+  // valor do React.
+  const startWaitingForMachinePoll = useCallback(() => {
+    const token = {}
+    currentWaitingTokenRef.current = token
+    const deadline = Date.now() + waitingForMachineTimeoutMs
+
+    async function poll() {
+      if (currentWaitingTokenRef.current !== token) return
+      if (Date.now() > deadline) {
+        setStatus('error')
+        return
+      }
+      try {
+        const machine = await api.getMachine(sessionRef.current.machineId)
+        if (currentWaitingTokenRef.current !== token) return
+        if (machine.status === 'online') {
+          const resp = await api.live.start(sessionRef.current.machineId, sessionRef.current.mode)
+          if (currentWaitingTokenRef.current !== token) return
+          pendingAutoReconnectRef.current = true
+          setSession((s) => ({ ...s, sessionId: resp.sessionId, dashboardToken: resp.dashboardToken, mode: resp.mode }))
+          return // achou e já disparou a sessão nova -- não agenda mais poll
+        }
+      } catch {
+        // falha transitória de rede/API durante o poll -- ignora e tenta
+        // de novo no próximo tick, só o teto acima decide quando desistir.
+      }
+      if (currentWaitingTokenRef.current === token) {
+        setTimeout(poll, waitingForMachinePollMs)
+      }
+    }
+    poll()
+  }, [])
+
+  const handleStatusChange = useCallback((newStatus) => {
+    setStatus(newStatus)
+    if (newStatus === 'waiting-for-machine') startWaitingForMachinePoll()
+  }, [startWaitingForMachinePoll])
+
+  // Desmontar (janela fechada pelo operador) invalida qualquer poll em
+  // voo -- sem isso, um poll/api.live.start ainda em andamento poderia
+  // chamar setSession num componente já desmontado (warning do React).
+  useEffect(() => {
+    return () => { currentWaitingTokenRef.current = null }
+  }, [])
+
+  const { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendBrowseRemoteFolder, abandonBrowseRemoteFolder, sendClipboardGetFile, sendClipboardGetSequence, reconnect } = useLiveSession({
     serverUrl: session?.serverUrl,
     sessionId: session?.sessionId,
     dashboardToken: session?.dashboardToken,
     mode: session?.mode,
     canvasRef,
-    onStatusChange: setStatus,
+    onStatusChange: handleStatusChange,
     onFileTransferStatus: handleFileTransferStatus,
     onSessionInfo: handleSessionInfo,
     onRemoteDirListing: handleRemoteDirListing,
@@ -441,6 +530,18 @@ export function LiveSessionWindow() {
     onRemoteFolderPickResult: handleRemoteFolderPickResult,
   })
   sendListRemoteDirRef.current = sendListRemoteDir
+
+  // 2º passo da reconexão persistente (ver startWaitingForMachinePoll
+  // acima): setSession() só reflete nas props do useLiveSession na
+  // PRÓXIMA render -- este efeito, disparado por essa mudança de
+  // `session`, chama reconnect() só então, garantindo que o `connect`
+  // interno do hook já está fechado sobre o sessionId/dashboardToken
+  // NOVOS (não os antigos, que foram o motivo do 'waiting-for-machine').
+  useEffect(() => {
+    if (!pendingAutoReconnectRef.current) return
+    pendingAutoReconnectRef.current = false
+    reconnect()
+  }, [session, reconnect])
 
   // requestLocalDir (painel esquerdo, FileBrowserModal) -- list-local-dir é
   // puro IPC (Electron, sem round-trip de rede), por isso não passa pelo
@@ -1279,6 +1380,7 @@ export function LiveSessionWindow() {
           {status === 'connected' ? 'Conectado'
             : status === 'error' ? 'Conexão perdida'
             : status === 'reconnecting' ? 'Reconectando à máquina remota...'
+            : status === 'waiting-for-machine' ? 'Aguardando a máquina voltar...'
             : 'Conectando...'}
         </span>
         {recording && <span style={{ color: '#ef4444' }}>⏺ Gravando {recordingSecs}s</span>}

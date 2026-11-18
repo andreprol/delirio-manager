@@ -331,14 +331,13 @@ describe('useLiveSession', () => {
     expect(FakeWebSocket.instances).toHaveLength(4)
   })
 
-  // TERMINAL_CLOSE_CODES: quando o PRÓPRIO relay recusa a conexão ou encerra
-  // a sessão de propósito, reconectar pra sempre não ajuda -- a sessão em si
-  // já era. Só aí desiste de verdade. Parametrizado pelos 6 códigos reais
-  // (ver liveSessionRelay.js) -- achado do code-reviewer: testar só 4000
-  // deixava os outros sem cobertura nenhuma. 4005 (companion caiu
-  // inesperadamente, 12/11/2026) é terminal pelo mesmo motivo que 4004:
-  // reconectar não ajuda numa sessão sem companion nenhum do outro lado.
-  it.each([4000, 4001, 4002, 4003, 4004, 4005])('não reconecta quando o fechamento é terminal (código %i)', (code) => {
+  // HARD_TERMINAL_CLOSE_CODES: nenhum resolve reconectando, seja porque o
+  // relay recusou/encerrou de propósito (4002/4003/4004) ou porque a sessão
+  // ainda existe com um token incompatível (4001 -- não é o que acontece
+  // num reboot, ver comentário em HARD_TERMINAL_CLOSE_CODES acima). Os
+  // outros 2 códigos "terminais" do relay (4000/4005) têm teste PRÓPRIO
+  // logo abaixo (grupo RETRY_ELIGIBLE, comportamento diferente).
+  it.each([4001, 4002, 4003, 4004])('não reconecta e vira erro de verdade quando o fechamento é terminal de verdade (código %i)', (code) => {
     vi.useFakeTimers()
     const canvasRef = makeCanvasRef()
     const onStatusChange = vi.fn()
@@ -353,6 +352,65 @@ describe('useLiveSession', () => {
     expect(FakeWebSocket.instances).toHaveLength(1) // não tentou reconectar
     expect(onStatusChange).toHaveBeenCalledWith('error')
     expect(onStatusChange).not.toHaveBeenCalledWith('disconnected')
+    expect(onStatusChange).not.toHaveBeenCalledWith('waiting-for-machine')
+  })
+
+  // 17/11/2026: 4000 (sessão não existe mais) e 4005 (companion caiu com a
+  // sessão ainda registrada) viraram RETRY_ELIGIBLE -- plausivelmente a
+  // MÁQUINA reiniciou, não um blip de rede nem um erro de verdade. O hook
+  // em si NÃO reconecta sozinho nesse caso (reconectar no MESMO sessionId
+  // não resolveria, o servidor já descartou a sessão) -- só reporta
+  // 'waiting-for-machine' e deixa o chamador (LiveSessionWindow, ver
+  // reconnect()) decidir o que fazer a partir daí.
+  //
+  // 4001 (token inválido) FICA DE FORA desse grupo de propósito (achado 🔴
+  // do code-reviewer, ver HARD_TERMINAL_CLOSE_CODES acima): 4001 só é
+  // emitido quando a sessão AINDA EXISTE no servidor com um token
+  // diferente do apresentado -- não é o que acontece num reboot (reboot
+  // leva a 4000/4005). Tratar como retry abriria uma 2ª sessão enquanto a
+  // antiga (token incompatível) continua viva, mascarando um bug real.
+  it.each([4000, 4005])('reporta waiting-for-machine (não error) quando o fechamento é elegível pra retry (código %i)', (code) => {
+    vi.useFakeTimers()
+    const canvasRef = makeCanvasRef()
+    const onStatusChange = vi.fn()
+    renderHook(() => useLiveSession({
+      serverUrl: 'https://s.example.com', sessionId: 's1', dashboardToken: 'tok', mode: 'shadow', canvasRef, onStatusChange,
+    }))
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    act(() => { FakeWebSocket.instances[0]._closeFromServer(code) })
+    act(() => { vi.advanceTimersByTime(60000) })
+
+    expect(FakeWebSocket.instances).toHaveLength(1) // o hook em si não reconecta sozinho
+    expect(onStatusChange).toHaveBeenCalledWith('waiting-for-machine')
+    expect(onStatusChange).not.toHaveBeenCalledWith('error')
+    expect(onStatusChange).not.toHaveBeenCalledWith('disconnected')
+  })
+
+  it('reconnect() dispara uma nova conexão usando os parâmetros ATUAIS (mesmo depois de waiting-for-machine)', () => {
+    vi.useFakeTimers()
+    const canvasRef = makeCanvasRef()
+    const onStatusChange = vi.fn()
+    const { result, rerender } = renderHook(
+      ({ sessionId, dashboardToken }) => useLiveSession({
+        serverUrl: 'https://s.example.com', sessionId, dashboardToken, mode: 'shadow', canvasRef, onStatusChange,
+      }),
+      { initialProps: { sessionId: 's1', dashboardToken: 'tok1' } },
+    )
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    act(() => { FakeWebSocket.instances[0]._closeFromServer(4005) })
+    expect(onStatusChange).toHaveBeenCalledWith('waiting-for-machine')
+    expect(FakeWebSocket.instances).toHaveLength(1) // ainda não reconectou sozinho
+
+    // simula LiveSessionWindow obtendo uma sessão NOVA (api.live.start) e
+    // atualizando as props antes de chamar reconnect()
+    rerender({ sessionId: 's2', dashboardToken: 'tok2' })
+    act(() => { result.current.reconnect() })
+
+    expect(FakeWebSocket.instances).toHaveLength(2) // reconnect() abriu um WS novo
+    expect(FakeWebSocket.instances[1].url).toContain('sessionId=s2')
+    expect(FakeWebSocket.instances[1].url).toContain('token=tok2')
   })
 
   it('para de reconectar quando o componente desmonta (usuário fechou a janela)', () => {

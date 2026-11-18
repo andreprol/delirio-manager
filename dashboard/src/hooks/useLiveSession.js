@@ -31,25 +31,46 @@ const RECONNECT_DELAY_MS = 3000
 // 3s assim que uma conexão abre com sucesso.
 const RECONNECT_DELAY_MAX_MS = 30000
 
-// TERMINAL_CLOSE_CODES são os códigos que o PRÓPRIO relay usa (ver
-// liveSessionRelay.js) quando recusa a conexão ou encerra a sessão de
-// propósito — sessão não existe mais (4000), token inválido (4001), role
-// inválido (4002), conexão substituída por uma janela mais nova pro mesmo
-// sessionId (4003), sessão encerrada explicitamente via POST /stop
-// (4004 — achado do code-reviewer: sem isso, um /stop disparado de outro
-// lugar nunca fechava o socket do dashboard, que ficava "Conectado" pra
-// sempre com o último frame congelado), ou companion caiu inesperadamente
-// com a sessão ainda registrada (4005 — achado real em produção
-// 12/11/2026: sem tratar como terminal, o dashboard tentaria reconectar pra
-// sempre numa sessão que não tem mais companion nenhum do outro lado —
-// reconectar não resolve, precisa abrir uma sessão NOVA). Nenhum desses se
-// resolve tentando de novo (a sessão em si já era, não é um blip de rede) —
-// qualquer OUTRO código (1006 abnormal closure, 1001 going away, etc.) é
-// tratado como queda transitória e tenta reconectar, já que o relay mantém
-// a sessão viva no servidor independente do socket do dashboard cair (ver
-// attachDashboardSocket/scheduleUnlockOnDashboardDisconnect) — só precisa
-// reabrir o WS com o mesmo sessionId/token, o servidor reataca sozinho.
-const TERMINAL_CLOSE_CODES = new Set([4000, 4001, 4002, 4003, 4004, 4005])
+// Códigos que o PRÓPRIO relay usa (ver liveSessionRelay.js) quando recusa a
+// conexão ou encerra a sessão de propósito — nenhum deles se resolve
+// reconectando no MESMO sessionId (a sessão em si já era, não é um blip de
+// rede). Qualquer OUTRO código (1006 abnormal closure, 1001 going away,
+// etc.) é tratado como queda transitória e tenta reconectar, já que o relay
+// mantém a sessão viva no servidor independente do socket do dashboard cair
+// (ver attachDashboardSocket/scheduleUnlockOnDashboardDisconnect) — só
+// precisa reabrir o WS com o mesmo sessionId/token, o servidor reataca
+// sozinho.
+//
+// 17/11/2026: separados em 2 grupos (eram 1 TERMINAL_CLOSE_CODES só) —
+// achado testando reconexão persistente através de reboot (ver
+// project_delirio_acesso_remoto_session_zero na memória): sessão não existe
+// mais (4000) e companion caiu com a sessão ainda registrada (4005) são
+// exatamente o que acontece quando a MÁQUINA reinicia — vale esperar ela
+// voltar e abrir uma sessão NOVA sozinho, em vez de desistir de vez.
+//
+// Token inválido (4001) NÃO entra nesse grupo (achado 🔴 do code-reviewer,
+// revisado contra server/services/liveSessionRelay.js: 4001 só é emitido
+// quando a sessão AINDA EXISTE no registro do servidor e o token
+// apresentado não bate com o dela — não é o que acontece num reboot
+// (reboot derruba o companion → grace expira → sessão é REMOVIDA → 4000,
+// ou 4005 dentro da grace). Tratar 4001 como "espera e abre sessão nova"
+// abriria uma 2ª sessão pro mesmo machineId enquanto a sessão ANTIGA
+// (token incompatível) continua viva no servidor, mascarando um bug real
+// de auth/estado do cliente em vez de expor como erro visível.
+//
+// role inválido (4002) é bug de CLIENTE (nunca deveria acontecer de
+// verdade, retry não resolveria nada); sessão substituída por janela mais
+// nova (4003) é INTENCIONAL — retry brigaria com a janela nova; parada
+// explícita via POST /stop (4004) tem que ser respeitada, nunca
+// ressuscitada sozinha. Esses 3 (+4001) continuam terminais de verdade
+// ('error').
+const HARD_TERMINAL_CLOSE_CODES = new Set([4001, 4002, 4003, 4004])
+// RETRY_ELIGIBLE_CLOSE_CODES: quem decide O QUE FAZER com isso é o
+// chamador (ver status 'waiting-for-machine' em LiveSessionWindow.jsx,
+// que faz polling de GET /api/machines/:id e abre uma sessão nova quando a
+// máquina voltar) -- esta camada de socket só reporta o fato, não a
+// política de retry.
+const RETRY_ELIGIBLE_CLOSE_CODES = new Set([4000, 4005])
 
 // useLiveSession conecta no WS /live como role=dashboard, desenha cada frame
 // recebido no canvas apontado por canvasRef, e expõe sendInput pra mandar
@@ -216,14 +237,25 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     }
     ws.onclose = (event) => {
       if (!mountedRef.current) return
-      if (TERMINAL_CLOSE_CODES.has(event.code)) {
+      if (HARD_TERMINAL_CLOSE_CODES.has(event.code)) {
         // Achado real em produção (André, 11/11/2026): antes só tentava
         // reconectar 1x e desistia pra sempre — qualquer 2ª queda (comum em
         // rede de loja instável) deixava a sessão morta até fechar e reabrir
         // a janela manualmente. Agora só desiste de verdade quando o PRÓPRIO
-        // servidor recusou de propósito (ver TERMINAL_CLOSE_CODES) — qualquer
-        // outra queda tenta pra sempre, até o componente desmontar.
+        // servidor recusou de propósito e não faz sentido nenhum retentar
+        // (ver HARD_TERMINAL_CLOSE_CODES) — qualquer outra queda tenta pra
+        // sempre, até o componente desmontar.
         notifyStatus('error')
+        return
+      }
+      if (RETRY_ELIGIBLE_CLOSE_CODES.has(event.code)) {
+        // Sessão/token genuinamente inválidos ou companion sumiu --
+        // plausivelmente a MÁQUINA reiniciou, não um blip de rede. Reabrir
+        // o MESMO sessionId não resolve (o servidor já descartou essa
+        // sessão) -- quem decide o que fazer a partir daqui é o chamador
+        // (status 'waiting-for-machine', ver LiveSessionWindow.jsx), não
+        // esta camada de socket.
+        notifyStatus('waiting-for-machine')
         return
       }
       notifyStatus('disconnected')
@@ -268,6 +300,18 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     hasConnectedRef.current = true
     connect()
   }, [serverUrl, sessionId, dashboardToken, connect])
+
+  // reconnect: pro caso 'waiting-for-machine' (ver RETRY_ELIGIBLE_CLOSE_CODES
+  // acima) -- o chamador (LiveSessionWindow.jsx) obtém um sessionId/token
+  // NOVO (api.live.start de novo) e atualiza as props deste hook; connect()
+  // já reflete os valores novos (closure via useCallback), mas o efeito de
+  // conexão inicial acima nunca dispara de novo sozinho (hasConnectedRef já
+  // é true desde a 1ª conexão) -- reconnect chama connect() explicitamente,
+  // resetando o backoff (é uma sessão NOVA, não uma continuação da anterior).
+  const reconnect = useCallback(() => {
+    reconnectAttemptsRef.current = 0
+    connect()
+  }, [connect])
 
   const sendInput = useCallback((msg) => {
     if (modeRef.current !== 'normal') return
@@ -374,5 +418,5 @@ export function useLiveSession({ serverUrl, sessionId, dashboardToken, mode, can
     sendInput({ type: 'clipboard-get-sequence', requestId: clipboardSequenceRequestIdRef.current })
   }, [sendInput])
 
-  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendBrowseRemoteFolder, abandonBrowseRemoteFolder, sendClipboardGetFile, sendClipboardGetSequence }
+  return { sendInput, sendMouseEvent, sendKeyEvent, sendClipboardPaste, sendFileTransfer, sendFileDownload, sendListRemoteDir, sendBrowseRemoteFolder, abandonBrowseRemoteFolder, sendClipboardGetFile, sendClipboardGetSequence, reconnect }
 }
