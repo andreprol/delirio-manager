@@ -132,12 +132,60 @@ describe('server.js', () => {
       expect(services.dbSizeMonitor.scheduleDailyMonitor).toHaveBeenCalledTimes(1);
     });
 
-    it('leaderElection.start() roda antes de whenFirstAttemptSettled()', async () => {
+    it('leaderElection.start() roda antes de whenFirstAttemptSettled() (ordem)', async () => {
       const { listenCb, leaderElection } = loadServer();
       listenCb();
       await flush();
       expect(leaderElection.start.mock.invocationCallOrder[0])
         .toBeLessThan(leaderElection.whenFirstAttemptSettled.mock.invocationCallOrder[0]);
+    });
+  });
+
+  // Jobs embutidos em server.js que despacham comandos pra frota / gravam no
+  // banco: só o líder roda (spec "Restrições" — evita comando duplicado nas
+  // ~130 máquinas com 2 instâncias). Disparados pelos próprios timers do
+  // server.js: NFC-e 1a rodada em 2min, scan Aloha e monitor horário em 5min.
+  describe('leader guard — jobs embutidos em server.js', () => {
+    const SIX_MIN = 6 * 60 * 1000;
+
+    async function bootAndRunTimers(isLeader) {
+      const ctx = loadServer({ isLeader });
+      ctx.listenCb();            // agenda o monitor horário
+      await flush();
+      jest.advanceTimersByTime(SIX_MIN);
+      await flush(50);
+      return ctx;
+    }
+
+    function commandsOfType(db, type) {
+      return db.createCommand.mock.calls.filter(c => c[1] === type);
+    }
+
+    it('lider: indexacao NFC-e, scan Aloha e monitor horario rodam (controle positivo)', async () => {
+      const { db } = await bootAndRunTimers(true);
+      expect(commandsOfType(db, 'aloha-index-nfce-day').length).toBeGreaterThan(0);
+      expect(commandsOfType(db, 'aloha-scan')).toHaveLength(1);
+      expect(db.getMachinesOnlineMissingReading).toHaveBeenCalled();
+    });
+
+    it('nao-lider: _triggerNFCeIndexing nao enfileira aloha-index-nfce-day', async () => {
+      const { db } = await bootAndRunTimers(false);
+      expect(commandsOfType(db, 'aloha-index-nfce-day')).toHaveLength(0);
+      expect(db.getIndexedDayKeysSet).not.toHaveBeenCalled();
+    });
+
+    it('nao-lider: refresh do scan Aloha nao enfileira aloha-scan', async () => {
+      const { db } = await bootAndRunTimers(false);
+      expect(commandsOfType(db, 'aloha-scan')).toHaveLength(0);
+      expect(db.getAllMachines).not.toHaveBeenCalled();
+    });
+
+    it('nao-lider: monitor horario nao consulta, nao grava miss nem cria comando', async () => {
+      const { db } = await bootAndRunTimers(false);
+      expect(db.getMachinesOnlineMissingReading).not.toHaveBeenCalled();
+      expect(db.getHourlyMetricsDiag).not.toHaveBeenCalled();
+      expect(db.insertReadingMiss).not.toHaveBeenCalled();
+      expect(commandsOfType(db, 'get_agent_log')).toHaveLength(0);
     });
   });
 });

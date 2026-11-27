@@ -122,6 +122,8 @@ function _scheduleHourlyMetricsMonitor() {
   }
 
   async function _checkHour() {
+    if (!leaderElection.isLeader()) return;
+
     try {
       const {
         getMachinesOnlineMissingReading,
@@ -239,6 +241,8 @@ setTimeout(() => {
 }, 2 * 60 * 1000);
 
 async function _triggerNFCeIndexing(now) {
+  if (!leaderElection.isLeader()) return;
+
   const { getAllMachines, createCommand, getIndexedDayKeysSet, todayDayKey } = require('./db-pg');
   const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const today = now.getDate();
@@ -272,6 +276,8 @@ function _scheduleAlohaScanRefresh() {
   const INTERVAL_MS = 4 * 60 * 60 * 1000; // 4h — scan é leve (só lista pastas, não abre XML)
 
   async function _refresh() {
+    if (!leaderElection.isLeader()) return;
+
     const allMachines = await getAllMachines();
     const boh = allMachines.filter(m =>
       m.hostname?.toUpperCase().endsWith('BOH') && m.status === 'online'
