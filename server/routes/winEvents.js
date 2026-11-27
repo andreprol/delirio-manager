@@ -15,7 +15,10 @@ router.post('/win-events', asyncHandler(async (req, res) => {
   }
 
   const machine = await db.getMachineByToken(token);
-  if (!machine || machine.id !== machineId) {
+  // Mesmo ruling de routes/agent.js -- aceita o new_id pendente de re-key
+  // (Task 4, machineRekeyWorker.js) enquanto a Fase B não comitou
+  // machines.id.
+  if (!machine || (machine.id !== machineId && machine.pending_rekey_new_id !== machineId)) {
     return res.status(401).json({ error: 'Token inválido' });
   }
 

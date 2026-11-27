@@ -326,7 +326,11 @@ router.post('/offline-event', agentAuth, asyncHandler(async (req, res) => {
 router.get('/commands/:machineId', agentAuthNoLimit, asyncHandler(async (req, res) => {
   const machine = req.machine;
 
-  if (machine.id !== req.params.machineId) {
+  // machine.id ainda pode ser o UUID ANTIGO enquanto a Fase B do re-key
+  // assíncrono (Task 4, machineRekeyWorker.js) não comitou machines.id --
+  // o agente já usa o novo UUID (pending_rekey_new_id) desde que
+  // registerMachine respondeu 201, sem esperar o worker.
+  if (machine.id !== req.params.machineId && machine.pending_rekey_new_id !== req.params.machineId) {
     return res.status(403).json({ error: 'Token nao corresponde ao machineId' });
   }
 
@@ -492,7 +496,11 @@ async function _upsertServiceEntries(machineId, services) {
 // Usa agentAuthNoLimit para evitar conflito com o rate-limit de 5s do heartbeat.
 router.post('/machines/:id/service-status', agentAuthNoLimit, asyncHandler(async (req, res) => {
   const { id } = req.params;
-  if (req.machine.id !== id) return res.status(403).json({ error: 'Token não corresponde ao machineId' });
+  // Mesmo ruling de /commands/:machineId acima -- aceita o new_id pendente
+  // de re-key (Task 4) enquanto a Fase B não comitou machines.id.
+  if (req.machine.id !== id && req.machine.pending_rekey_new_id !== id) {
+    return res.status(403).json({ error: 'Token não corresponde ao machineId' });
+  }
 
   const { services } = req.body;
   if (!Array.isArray(services) || services.length === 0) {
