@@ -12,6 +12,7 @@
 const http = require('http');
 const { sendAlert } = require('./resendAlert');
 const logger = require('./logger');
+const leaderElection = require('./leaderElection');
 
 const POLL_INTERVAL_MS    = 5 * 60 * 1000;  // 5 min — mesma cadência do infra/watchdog.sh
 const BACKOFF_INTERVAL_MS = 30 * 60 * 1000; // cadência enquanto em circuit-breaker (proxy down)
@@ -93,6 +94,8 @@ async function handleSuccess(body) {
 }
 
 async function checkOnce(port) {
+  if (!leaderElection.isLeader()) return;
+
   let result;
   try {
     result = await fetchClocksStatus(port);
