@@ -46,36 +46,18 @@ if (!process.env.CLOCK_PROXY_TOKEN) {
   }).catch(e => logger.error('[Boot] Falha ao enviar alerta de CLOCK_PROXY_TOKEN ausente', { error: e.message }));
 }
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   logger.info('Delirio Manager Server iniciado', {
     version: '1.0.0',
     port:    PORT,
     db:      process.env.DATABASE_URL ? 'postgres' : '(DATABASE_URL ausente)',
     health:  `http://localhost:${PORT}/health`,
   });
-  // leaderElection.start() tem que ser a PRIMEIRA chamada de serviço aqui —
-  // alguns serviços abaixo (zamakService, dbSizeMonitor, activityRetention)
-  // disparam uma chamada imediata de "catch up se atrasado" de forma síncrona
-  // no boot, antes de qualquer await ceder o controle. leaderElection.start()
-  // dispara um tryAcquire() assíncrono que não terá resolvido a tempo dessas
-  // chamadas imediatas — isso não elimina a corrida, só minimiza a janela
-  // (ver plano 2026-11-27-leader-election-and-healthz, Task 2).
+  // leaderElection.start() tem que ser a PRIMEIRA chamada de serviço aqui.
   leaderElection.start();
   alertEngine.start();
   insightEngine.start();
-  zamakService.scheduleDailySync();
-  if (process.env.FEATURE_LIVE_ACCESS === 'true') {
-    activityRetention.scheduleDailyPurge();
-  }
   metricsEmail.scheduleDailyMetricsEmail();
-  // FEATURE_DB_SIZE_MONITOR: achado do code-reviewer (17/11/2026) -- feature
-  // nova que manda e-mail de produção automaticamente sem nenhum kill switch,
-  // violando a convenção do projeto (CLAUDE.md "Feature Flags"). Default
-  // false (zero value) -- ligar manualmente no ecosystem.config.js da VM
-  // depois de confirmar que o snapshot/alerta rodam como esperado.
-  if (process.env.FEATURE_DB_SIZE_MONITOR === 'true') {
-    dbSizeMonitor.scheduleDailyMonitor();
-  }
   if (process.env.NCR_MONITOR_ENABLED === 'false') {
     logger.info('NCR monitor desabilitado via NCR_MONITOR_ENABLED=false');
   } else {
@@ -86,6 +68,27 @@ server.listen(PORT, () => {
   _scheduleHourlyMetricsMonitor();
   rhHealthMonitor.start(PORT);
   logger.info('RH health monitor iniciado', { interval: '5min' });
+
+  // zamakService, activityRetention e dbSizeMonitor disparam um "catch up se
+  // atrasado" IMEDIATO e síncrono ao serem agendados, que checa isLeader().
+  // isLeader() é false até a 1ª tentativa de lock voltar do Postgres (pelo
+  // menos 1 round-trip) — sem esperar, esse catch-up seria SEMPRE pulado no
+  // boot (ex.: cache Zamak ficava até ~48h velho após restart). Por isso só
+  // esses três esperam; os serviços acima não têm catch-up imediato e sobem
+  // sem atraso. whenFirstAttemptSettled() nunca rejeita.
+  await leaderElection.whenFirstAttemptSettled();
+  zamakService.scheduleDailySync();
+  if (process.env.FEATURE_LIVE_ACCESS === 'true') {
+    activityRetention.scheduleDailyPurge();
+  }
+  // FEATURE_DB_SIZE_MONITOR: achado do code-reviewer (17/11/2026) -- feature
+  // nova que manda e-mail de produção automaticamente sem nenhum kill switch,
+  // violando a convenção do projeto (CLAUDE.md "Feature Flags"). Default
+  // false (zero value) -- ligar manualmente no ecosystem.config.js da VM
+  // depois de confirmar que o snapshot/alerta rodam como esperado.
+  if (process.env.FEATURE_DB_SIZE_MONITOR === 'true') {
+    dbSizeMonitor.scheduleDailyMonitor();
+  }
 });
 
 // ── Monitor autônomo de leituras horárias ────────────────────────────────────

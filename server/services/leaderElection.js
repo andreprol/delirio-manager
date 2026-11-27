@@ -30,6 +30,11 @@ const RETRY_INTERVAL_MS = 30000;
 let client = null;
 let leaderFlag = false;
 let retryTimer = null;
+// Promise da 1ª tentativa disparada por start() — sempre resolve (nunca
+// rejeita: o .catch() do start() já engole/loga o erro). Exposta via
+// whenFirstAttemptSettled() pra quem precisa SABER se é líder antes de
+// decidir (ex.: catch-ups imediatos no boot em server.js).
+let firstAttempt = null;
 
 async function tryAcquire() {
   if (client === null) {
@@ -51,7 +56,7 @@ async function tryAcquire() {
 }
 
 function start() {
-  tryAcquire().catch(err => logger.error('[leaderElection] falha ao tentar adquirir lock', { error: err.message }));
+  firstAttempt = tryAcquire().catch(err => logger.error('[leaderElection] falha ao tentar adquirir lock', { error: err.message }));
 
   retryTimer = setInterval(() => {
     if (leaderFlag) return; // quem já é líder não precisa redisputar
@@ -73,4 +78,12 @@ function isLeader() {
   return leaderFlag;
 }
 
-module.exports = { start, stop, isLeader };
+// Resolve quando a 1ª tentativa de start() terminou (ganhando o lock, perdendo
+// ou falhando) — a partir daí isLeader() reflete a disputa real, não o `false`
+// inicial. start() continua fire-and-forget; isto é só um sinal opcional.
+// Chamado antes de start(): resolve na hora (nunca pendura quem esquecer).
+function whenFirstAttemptSettled() {
+  return (firstAttempt || Promise.resolve()).then(() => undefined);
+}
+
+module.exports = { start, stop, isLeader, whenFirstAttemptSettled };

@@ -78,6 +78,57 @@ describe('leaderElection', () => {
     expect(leaderElection.isLeader()).toBe(false);
   });
 
+  describe('whenFirstAttemptSettled()', () => {
+    // Deferred controlável: a Promise só resolve quando o teste mandar,
+    // simulando um round-trip de rede que ainda não voltou.
+    function deferred() {
+      let resolve, reject;
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    }
+
+    it('resolve imediatamente se chamado antes de start() (nunca pendura)', async () => {
+      await expect(leaderElection.whenFirstAttemptSettled()).resolves.toBeUndefined();
+    });
+
+    it('so resolve depois que connect() e query() da 1a tentativa resolveram', async () => {
+      const connectD = deferred();
+      const queryD   = deferred();
+      const fake = makeFakeClient({ acquired: true });
+      fake.connect.mockReturnValue(connectD.promise);
+      fake.query.mockReturnValue(queryD.promise);
+      Client.mockImplementation(() => fake);
+
+      leaderElection.start();
+      let settled = false;
+      leaderElection.whenFirstAttemptSettled().then(() => { settled = true; });
+
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(settled).toBe(false); // connect ainda pendente
+
+      connectD.resolve();
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(fake.query).toHaveBeenCalled();
+      expect(settled).toBe(false); // query ainda pendente
+
+      queryD.resolve({ rows: [{ acquired: true }] });
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(settled).toBe(true);
+      expect(leaderElection.isLeader()).toBe(true); // já sabe o resultado quando resolve
+    });
+
+    it('resolve (nao rejeita) mesmo quando a 1a tentativa falha', async () => {
+      const fake = makeFakeClient();
+      fake.connect.mockRejectedValue(new Error('ECONNREFUSED'));
+      Client.mockImplementation(() => fake);
+
+      leaderElection.start();
+
+      await expect(leaderElection.whenFirstAttemptSettled()).resolves.toBeUndefined();
+      expect(leaderElection.isLeader()).toBe(false);
+    });
+  });
+
   it('stop() encerra a conexao e isLeader() volta a false', async () => {
     const fake = makeFakeClient({ acquired: true });
     Client.mockImplementation(() => fake);
