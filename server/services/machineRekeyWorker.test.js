@@ -334,21 +334,31 @@ describeDb('machineRekeyWorker (Fase B)', () => {
 
   it('🔴 achado real do revisor (2ª rodada): erro determinístico (não só travamento por tempo) também respeita MAX_ATTEMPTS -- vira failed, não martela pra sempre', async () => {
     const hostname = `WORKER-DETERR-${crypto.randomUUID().slice(0, 8)}`;
-    // old_id === new_id força cloneMachineRow a tentar inserir uma linha com
-    // id que JÁ EXISTE (a própria linha antiga) -- erro determinístico e
-    // permanente (nunca se autorresolve por idempotência, ao contrário do
-    // teste acima), ideal pra provar que o catch de runCycleOnce também
-    // aplica MAX_ATTEMPTS, não só _reclaimStuckJobs.
-    const sameId = trackMachine(crypto.randomUUID());
-    await insertMachine(sameId, hostname);
+    const oldId = trackMachine(crypto.randomUUID());
+    const newId = trackMachine(crypto.randomUUID());
+    await insertMachine(oldId, hostname);
     const { rows } = await db.getPool().query(
-      `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status) VALUES ($1,$1,$2,'pending') RETURNING id`,
-      [sameId, hostname]
+      `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status) VALUES ($1,$2,$3,'pending') RETURNING id`,
+      [oldId, newId, hostname]
     );
     const jobId = rows[0].id;
 
-    for (let i = 0; i < 6; i++) {
-      await worker.runCycleOnce(hostname).catch(() => {}); // runCycleOnce relança o erro -- ignora aqui, só o estado final importa
+    // Força um erro determinístico e repetível no passo de migração em lote
+    // (depois do clone, que já tem seu próprio teste de idempotência acima)
+    // -- spy em vez de um cenário real de borda: `old_id === new_id`
+    // (tentado antes) não funciona como erro de verdade, porque
+    // cloneMachineRow trata `newId` já existente como idempotente e segue
+    // adiante sem falhar (a mesma linha acaba sendo deletada e recriada
+    // como "nova", um resultado degenerado, não um erro). Isso prova o
+    // catch de runCycleOnce (não só _reclaimStuckJobs) aplicando
+    // MAX_ATTEMPTS pra QUALQUER erro repetido, como o brief original pedia.
+    const spy = jest.spyOn(db, 'updateMachineIdInBatches').mockRejectedValue(new Error('erro forçado pelo teste'));
+    try {
+      for (let i = 0; i < 6; i++) {
+        await worker.runCycleOnce(hostname).catch(() => {}); // runCycleOnce relança o erro -- ignora aqui, só o estado final importa
+      }
+    } finally {
+      spy.mockRestore();
     }
 
     const { rows: after } = await db.getPool().query(

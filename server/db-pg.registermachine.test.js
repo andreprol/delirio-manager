@@ -283,8 +283,13 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       expect(rows[0].status).toBe('processing'); // _rekeyAndMergeMachine não tocou o status
       expect(rows[0].new_id).toBe(claimedNewId); // nunca sobrescrito pra otherNewId
 
-      // Limpeza: completa o job (como se o worker tivesse continuado
-      // normalmente com o new_id que já tinha clonado).
+      // Limpeza: o 'processing' simulado acima nunca foi um claim de
+      // verdade (_claimNextJob nunca rodou, cloneMachineRow nunca clonou a
+      // linha) -- runWorkerUntilDone ficaria esperando pra sempre (o job
+      // não é 'pending', e `claimed_at=now()` é recente demais pra
+      // _reclaimStuckJobs considerar travado). Reseta pra 'pending' antes
+      // de deixar o worker processar de verdade.
+      await db.getPool().query(`UPDATE machine_rekey_queue SET status='pending' WHERE hostname=$1`, [hostname]);
       await runWorkerUntilDone(hostname);
     });
 
