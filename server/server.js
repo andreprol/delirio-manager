@@ -18,6 +18,7 @@ const { createUpgradeRouter } = require('./services/upgradeRouter');
 const activityRetention  = require('./services/activityRetention');
 const dbSizeMonitor       = require('./services/dbSizeMonitor');
 const leaderElection      = require('./services/leaderElection');
+const machineRekeyWorker  = require('./services/machineRekeyWorker');
 
 const PORT = process.env.PORT || 3847;
 
@@ -68,6 +69,8 @@ server.listen(PORT, async () => {
   _scheduleHourlyMetricsMonitor();
   rhHealthMonitor.start(PORT);
   logger.info('RH health monitor iniciado', { interval: '5min' });
+  machineRekeyWorker.start();
+  logger.info('Machine rekey worker iniciado (Fase B assincrona)', { interval: '10s' });
 
   // zamakService, activityRetention e dbSizeMonitor disparam um "catch up se
   // atrasado" IMEDIATO e síncrono ao serem agendados, que checa isLeader().
@@ -301,6 +304,7 @@ process.on('SIGTERM', async () => {
   rhHealthMonitor.stop();
   activityRetention.stop();
   dbSizeMonitor.stop();
+  machineRekeyWorker.stop();
   await leaderElection.stop();
   server.close(() => process.exit(0));
 });
