@@ -214,29 +214,33 @@ async function _finalizeRekey({ id: jobId, old_id: oldId, new_id: newId, hostnam
       return;
     }
 
-    await _syncMutableFields(client, oldMachine, effectiveNewId);
-
     // Resíduo: linhas escritas entre o pré-processamento em lote (fora
     // desta transação) e agora ainda apontam pra oldId -- janela de
     // segundos, UPDATE direto nas 15, sem lote (deve ser pouquíssimas
-    // linhas).
+    // linhas). PRECISA rodar antes do DELETE da linha antiga abaixo --
+    // senão o cascade do DELETE apagaria esse resíduo em vez de preservá-lo.
     for (const table of ALL_CHILD_TABLES) {
       await client.query(`UPDATE ${table} SET machine_id=$1 WHERE machine_id=$2`, [effectiveNewId, oldId]);
     }
 
-    await _removeDuplicateMachines(client, hostname, effectiveNewId);
-
-    // Achado do revisor: o desenho antigo não checava rowCount depois do
-    // UPDATE que trocava a PK. Aqui o equivalente é o DELETE da linha
-    // antiga -- se vier 0, algo apagou `oldId` entre o FOR UPDATE acima e
-    // agora (não deveria ser possível dentro da mesma transação/lock) --
-    // melhor abortar (rollback, job volta pra 'pending' no catch de
-    // runCycleOnce) do que marcar 'done' silenciosamente sobre um estado
-    // inesperado.
+    // DELETE da linha antiga ANTES de sincronizar os campos mutáveis na
+    // nova: `token` é UNIQUE NOT NULL, e `oldMachine.token` (capturado
+    // acima) é o token REAL que `_syncMutableFields` vai copiar pra
+    // `effectiveNewId` -- se a linha antiga ainda existir com esse mesmo
+    // token no momento desse UPDATE, a constraint UNIQUE rejeita na hora
+    // (não-deferrable, checada por statement, não no commit). 🔴 Achado ao
+    // vivo validando a fix-wave contra Postgres de dev real: a ordem
+    // original (sync primeiro, delete depois) sempre violava
+    // `machines_token_key`. Resíduo já migrado acima, então o cascade deste
+    // DELETE agora encontra 0 linhas filhas (ou quase) -- rápido mesmo com
+    // `activity_log` em 23GB.
     const { rowCount: deletedOld } = await client.query('DELETE FROM machines WHERE id=$1', [oldId]);
     if (deletedOld === 0) {
       throw new Error(`esperava deletar machines.id=${oldId}, mas rowCount=0 (linha some entre o FOR UPDATE e agora?)`);
     }
+
+    await _syncMutableFields(client, oldMachine, effectiveNewId);
+    await _removeDuplicateMachines(client, hostname, effectiveNewId);
 
     await client.query(
       `UPDATE machine_rekey_queue SET status='done', completed_at=now() WHERE id=$1`,
