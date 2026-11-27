@@ -171,6 +171,19 @@ async function _syncMutableFields(client, oldMachine, newId) {
 // algum numa tabela dada); o que importa é o DELETE da própria linha
 // duplicada, coberto pelo DELETE de `machines` abaixo (cascade cuida das 10
 // tabelas com FK).
+//
+// 🟡 Limitação conhecida (achado real do revisor, 2ª rodada, não corrigida):
+// isso roda DENTRO da transação final de _finalizeRekey, sob o `FOR UPDATE`
+// da linha antiga -- se uma duplicata tiver histórico grande em
+// activity_log/nfce_index, o DELETE dela (linha 183) dispara o MESMO padrão
+// de cascade longo que o CRÍTICO original apontava, ainda que só pra essa
+// duplicata, não pra `oldId`/`newId` do re-key principal (que já migraram
+// em lote, fora de transação, antes daqui). Duplicatas reais tendem a ser
+// pequenas (resíduo de reinstalações falhas, não máquinas com histórico de
+// produção completo), mas isso não é garantido pelo código. Fix futuro, se
+// necessário: migrar/apagar os filhos de cada duplicata em lote (mesmo
+// padrão de updateMachineIdInBatches/deleteInBatches) ANTES desta
+// transação, não durante.
 async function _removeDuplicateMachines(client, hostname, survivorId) {
   const { rows: dupes } = await client.query(
     `SELECT id FROM machines WHERE UPPER(hostname) = UPPER($1) AND id != $2`,
@@ -194,10 +207,15 @@ async function _finalizeRekey({ id: jobId, old_id: oldId, new_id: newId, hostnam
   await db.withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext(upper($1)))', [hostname]);
 
-    // Relê new_id da fila -- pode ter sido atualizado por uma Fase A
-    // concorrente depois do claim (o job ainda estava 'processing' quando
-    // um novo registerMachine chegou pro mesmo hostname) -- o new_id mais
-    // recente é o que deve prevalecer, não o capturado no claim.
+    // Relê new_id da fila por defesa (não deveria mais divergir do `newId`
+    // capturado no claim: _rekeyAndMergeMachine, db-pg.js, agora só
+    // sobrescreve new_id com `AND status='pending'` no próprio UPDATE --
+    // uma Fase A concorrente nunca muda new_id depois que o worker já
+    // reclamou o job e clonou a linha pra esse id, fechando o achado real
+    // do revisor na 2ª rodada: antes, a condição era um `if` em JS sobre um
+    // status já lido, não uma guarda no SQL, e podia sobrescrever new_id
+    // DEPOIS do clone -- o dedup abaixo apagaria, com cascade, o clone já
+    // migrado). Mantido como cinto-e-suspensório, sem custo.
     const { rows: queueRows } = await client.query(
       'SELECT new_id FROM machine_rekey_queue WHERE id=$1', [jobId]
     );
@@ -282,18 +300,28 @@ async function runCycleOnce(hostnameFilter) {
     });
     return { processed: true, job };
   } catch (err) {
-    // Volta pra 'pending' e incrementa attempts -- deixa o próximo ciclo
-    // tentar de novo, em vez de ficar presa em 'processing' pra sempre (o
-    // que bloquearia o hostname via UNIQUE parcial, inclusive pra novas
-    // chamadas de registerMachine). Erro imediato sempre volta pra
-    // 'pending' (nunca 'failed' direto -- isso só acontece via
-    // _reclaimStuckJobs, pro caso "travado por muito tempo").
-    logger.error('[MachineRekeyWorker] erro ao processar job, devolvendo pra pending', {
+    // Volta pra 'pending' (ou 'failed' depois de MAX_ATTEMPTS) e incrementa
+    // attempts -- deixa o próximo ciclo tentar de novo, em vez de ficar
+    // presa em 'processing' pra sempre (o que bloquearia o hostname via
+    // UNIQUE parcial, inclusive pra novas chamadas de registerMachine). 🔴
+    // Achado real do revisor (2ª rodada): antes deste fix, só
+    // _reclaimStuckJobs aplicava MAX_ATTEMPTS -- um erro IMEDIATO (ex: o
+    // antigo bug de machines_token_key, ou qualquer falha determinística
+    // que aconteça rápido o bastante pra nunca ficar 'processing' por mais
+    // de STUCK_THRESHOLD_MS) nunca batia esse teto e martelava o mesmo erro
+    // a cada 10s pra sempre. Mesmo CASE WHEN de _reclaimStuckJobs.
+    logger.error('[MachineRekeyWorker] erro ao processar job, devolvendo pra pending/failed', {
       error: err.message, hostname: job.hostname, jobId: job.id,
     });
     await db.getPool()
-      .query(`UPDATE machine_rekey_queue SET status='pending', attempts=attempts+1 WHERE id=$1`, [job.id])
-      .catch(e => logger.error('[MachineRekeyWorker] falha ao reverter job pra pending', { error: e.message }));
+      .query(
+        `UPDATE machine_rekey_queue
+         SET status = CASE WHEN attempts + 1 >= $2 THEN 'failed' ELSE 'pending' END,
+             attempts = attempts + 1
+         WHERE id=$1`,
+        [job.id, MAX_ATTEMPTS]
+      )
+      .catch(e => logger.error('[MachineRekeyWorker] falha ao reverter job pra pending/failed', { error: e.message }));
     throw err;
   }
 }

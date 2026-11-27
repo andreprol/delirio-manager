@@ -251,6 +251,43 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       await runWorkerUntilDone(hostname); // limpeza -- processa o job antes do afterEach
     });
 
+    it('🔴 achado real do revisor (2ª rodada): job já "processing" (worker já clonou) não tem new_id sobrescrito por uma 2ª chamada de registerMachine', async () => {
+      const hostname = `REKEY-PROCESSING-${crypto.randomUUID().slice(0, 8)}`;
+      const oldId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+
+      const claimedNewId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: claimedNewId, hostname, agentVersion: '2.0' });
+
+      // Simula o worker tendo reclamado o job (_claimNextJob marca
+      // 'processing' sem o advisory lock desta transação) -- igual
+      // aconteceria de verdade entre o SELECT e o UPDATE condicional de
+      // _rekeyAndMergeMachine.
+      await db.getPool().query(
+        `UPDATE machine_rekey_queue SET status='processing', claimed_at=now() WHERE hostname=$1`,
+        [hostname]
+      );
+
+      // 2ª chamada concorrente (agente reinstalou de novo antes do worker
+      // terminar) -- antes do fix, o UPDATE de new_id rodava incondicional
+      // (JS checava um status já lido, stale), sobrescrevendo o new_id que
+      // o worker JÁ tinha clonado -- o dedup da transação final então
+      // apagaria (com cascade) esse clone, perdendo o histórico já migrado.
+      const otherNewId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: otherNewId, hostname, agentVersion: '3.0' });
+
+      const { rows } = await db.getPool().query(
+        'SELECT new_id, status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe('processing'); // _rekeyAndMergeMachine não tocou o status
+      expect(rows[0].new_id).toBe(claimedNewId); // nunca sobrescrito pra otherNewId
+
+      // Limpeza: completa o job (como se o worker tivesse continuado
+      // normalmente com o new_id que já tinha clonado).
+      await runWorkerUntilDone(hostname);
+    });
+
     it('hostname em case diferente não cria 2 jobs ativos -- UNIQUE por UPPER(hostname) (Step 9/10 do brief, fix-wave pós-revisão)', async () => {
       const base = `CaseTest-${crypto.randomUUID().slice(0, 8)}`;
       const oldId = trackMachine(crypto.randomUUID());

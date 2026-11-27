@@ -522,7 +522,8 @@ async function _getMachinesCloneColumns() {
   if (_machinesColumnsCache) return _machinesColumnsCache;
   const { rows } = await getPool().query(
     `SELECT column_name FROM information_schema.columns
-     WHERE table_name='machines' AND column_name NOT IN ('id', 'token')
+     WHERE table_schema = current_schema() AND table_name='machines'
+       AND column_name NOT IN ('id', 'token')
      ORDER BY ordinal_position`
   );
   _machinesColumnsCache = rows.map(r => r.column_name);
@@ -543,12 +544,36 @@ async function _getMachinesCloneColumns() {
 //
 // Retorna false se `oldId` já não existir (máquina apagada durante a janela
 // pendente) -- o chamador deve marcar o job 'done' sem erro, nada a clonar.
-// Se `newId` já existir (ex: ciclo anterior clonou mas crashou antes do
-// DELETE final, job reclamado por _reclaimStuckJobs), o INSERT viola a PK e
-// lança erro -- propositalmente: cai no catch de runCycleOnce, reverte pra
-// 'pending'/incrementa attempts; limitação conhecida, não resolvida aqui
-// (cenário raro -- crash exatamente entre o clone e o DELETE final).
+// Idempotente se `newId` já existir (ciclo anterior clonou mas crashou antes
+// do DELETE final, job reclamado por _reclaimStuckJobs) -- ver comentário
+// dentro da função.
+//
+// 🟡 Limitação conhecida (achado real do revisor, 2ª rodada, não corrigida):
+// a partir deste clone, a linha `newId` fica visível pro resto do sistema
+// (listagens, `checkOffline`/alertEngine.js) até _finalizeRekey apagar
+// `oldId` -- `last_seen` do clone fica congelado no momento do clone, então
+// se a Fase B demorar mais que o threshold de "offline" de checkOffline
+// (hoje a Fase B é rápida -- segundos a poucos minutos mesmo com histórico
+// grande, já que a migração em lote não trava mais nada -- mas não há
+// garantia formal), pode disparar um alerta de "máquina offline" falso, e o
+// dashboard mostra o hostname duplicado enquanto isso. Fix futuro, se
+// necessário: excluir das consultas de listagem/stale os ids que são
+// `new_id` de um job `machine_rekey_queue` ainda ativo.
 async function cloneMachineRow(oldId, newId, placeholderToken) {
+  // Idempotente: se um ciclo anterior já clonou (erro/crash entre o clone e
+  // o DELETE final de _finalizeRekey, job reclamado por _reclaimStuckJobs),
+  // `newId` já existe em `machines` -- não tenta inserir de novo (violaria a
+  // PK), só confirma e segue. 🔴 Achado real do revisor (2ª rodada): sem
+  // isso, o INSERT falhava pra sempre em todo ciclo seguinte -- o catch de
+  // runCycleOnce só devolve pra 'pending'/incrementa attempts, nunca aplica
+  // MAX_ATTEMPTS (isso só acontecia em _reclaimStuckJobs), martelando o
+  // mesmo erro a cada 10s indefinidamente. Reaplicar o clone é seguro: os
+  // campos mutáveis da linha nova sempre são resincronizados a partir da
+  // linha antiga em _syncMutableFields, dentro da transação final, antes do
+  // DELETE -- o snapshot do clone nunca precisa estar atualizado.
+  const { rows: existingNew } = await getPool().query('SELECT 1 FROM machines WHERE id=$1', [newId]);
+  if (existingNew.length > 0) return true;
+
   const cols = await _getMachinesCloneColumns();
   const colList = cols.join(', ');
   const { rowCount } = await getPool().query(
@@ -1170,6 +1195,17 @@ async function registerMachine({ machineId, hostname, agentVersion }) {
     // (não só antes de entrar na transação) -- com o lock já adquirido,
     // nenhuma outra chamada pro mesmo hostname pode ter mudado o estado
     // entre uma checagem "de fora" e esta.
+    //
+    // 🟡 Limitação conhecida (achado real do revisor, 2ª rodada, não
+    // corrigida -- impacto baixo, autorrecuperável): se `machineId` for o
+    // `new_id` de um job de re-key ainda `pending`/`processing` (o worker já
+    // clonou a linha -- cloneMachineRow, Fase B), este caso bate aqui
+    // (`existing` encontra o clone) e devolve o token PLACEHOLDER dessa
+    // linha, não o token real do agente (que só migra em
+    // _finalizeRekey/_syncMutableFields). O agente usaria esse token até a
+    // próxima chamada autenticada tomar 401 (placeholder não bate com
+    // nenhum agente de verdade) e se re-registrar -- caminho sujo mas
+    // autolimitado (sem perda de dado, sem loop).
     const { rows: existingRows } = await client.query('SELECT * FROM machines WHERE id = $1', [machineId]);
     const existing = existingRows[0];
     if (existing) {
@@ -1263,15 +1299,26 @@ async function _rekeyAndMergeMachine(client, { oldId, canonicalToken, machineId,
       `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status) VALUES ($1, $2, $3, 'pending')`,
       [oldId, machineId, hostname]
     );
-  } else if (existingJob.status === 'pending') {
+  } else {
     // O agente reinstalou de novo antes do worker pegar o job velho (que
-    // nunca foi aplicado) -- o new_id mais recente prevalece.
-    await client.query(`UPDATE machine_rekey_queue SET new_id=$1 WHERE id=$2`, [machineId, existingJob.id]);
+    // nunca foi aplicado) -- o new_id mais recente prevalece. `AND
+    // status='pending'` no SQL (não um `if` em JS sobre o status já lido
+    // acima) é o que importa aqui: 🔴 achado real do revisor (2ª rodada) --
+    // entre o SELECT acima e este UPDATE, o worker pode ter reclamado o job
+    // (`_claimNextJob`, sem o advisory lock desta transação) e já clonado a
+    // linha pro new_id antigo. Um UPDATE sem essa guarda trocaria new_id
+    // SEM o worker saber, e o dedup da transação final apagaria (com
+    // cascade) o clone já migrado -- perda de histórico + trava o mesmo
+    // padrão que o CRÍTICO original. Com a guarda, se o status já virou
+    // 'processing' nesse intervalo, o UPDATE simplesmente não afeta nada
+    // (rowCount 0) -- deixa o worker terminar com o new_id que já clonou; a
+    // próxima chamada desse hostname, depois que a Fase B commitar
+    // machines.id, cai no caso 1 de registerMachine (UUID já conhecido).
+    await client.query(
+      `UPDATE machine_rekey_queue SET new_id=$1 WHERE id=$2 AND status='pending'`,
+      [machineId, existingJob.id]
+    );
   }
-  // existingJob.status === 'processing': não faz nada na fila -- deixa o
-  // worker terminar. A próxima chamada desse hostname, depois que a Fase B
-  // commitar machines.id, cai no caso 1 de registerMachine (UUID já
-  // conhecido), não passa mais por aqui.
 
   return {
     token: canonicalToken,

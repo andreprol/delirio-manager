@@ -197,17 +197,21 @@ describeDb('machineRekeyWorker (Fase B)', () => {
     const newId = trackMachine(crypto.randomUUID());
     await insertMachine(oldId, hostname);
 
-    // Algumas centenas de linhas em activity_log -- não precisa simular os
-    // 23GB reais do incidente, só garantir que o pré-processamento em lote
-    // tem trabalho de verdade pra fazer enquanto o heartbeat concorrente
-    // dispara. INSERT direto em 1 round-trip (não via db.insertActivityLog,
-    // que faz 1 SELECT de dedupe + 1 INSERT por chamada -- 200 chamadas
-    // sequenciais contra o Postgres de dev via rede real excediam o timeout
-    // de 5s do Jest só no SETUP, antes mesmo de medir o heartbeat).
+    // 2500 linhas em activity_log -- não precisa simular os 23GB reais do
+    // incidente, mas precisa ser mais que PURGE_BATCH_SIZE (1000, ver
+    // db-pg.js) pra garantir PELO MENOS 3 lotes com PURGE_BATCH_SLEEP_MS
+    // (100ms) entre eles -- 🔴 achado real do revisor (2ª rodada): com
+    // menos linhas (1 lote só), o pré-processamento podia terminar rápido
+    // demais, e o teste não provava nada sobre ausência de contenção
+    // DURANTE o lote (só mediria um heartbeat que corre antes/depois dele,
+    // por sorte de timing). INSERT direto em 1 round-trip (não via
+    // db.insertActivityLog, que faz 1 SELECT de dedupe + 1 INSERT por
+    // chamada -- chamadas sequenciais contra o Postgres de dev via rede
+    // real excediam o timeout de 5s do Jest só no SETUP).
     await db.getPool().query(
       `INSERT INTO activity_log (machine_id, window_title, process_name, captured_at)
        SELECT $1, 'Janela ' || g, 'app.exe', now() - (g || ' seconds')::interval
-       FROM generate_series(1, 200) AS g`,
+       FROM generate_series(1, 2500) AS g`,
       [oldId]
     );
 
@@ -297,6 +301,61 @@ describeDb('machineRekeyWorker (Fase B)', () => {
     // Máquina antiga nunca foi tocada -- o job falhou antes de qualquer claim.
     expect(await db.getMachineById(oldId)).toBeDefined();
     expect(await db.getMachineById(newId)).toBeUndefined();
+  });
+
+  it('🔴 achado real do revisor (2ª rodada): cloneMachineRow é idempotente -- job que crashou depois do clone (new_id já existe em machines) completa no próximo ciclo sem violar a PK', async () => {
+    const hostname = `WORKER-RECLONE-${crypto.randomUUID().slice(0, 8)}`;
+    const oldId = trackMachine(crypto.randomUUID());
+    const newId = trackMachine(crypto.randomUUID());
+    await insertMachine(oldId, hostname);
+
+    // Simula um ciclo anterior que clonou a linha (newId já existe em
+    // machines, com token placeholder -- exatamente o que cloneMachineRow
+    // produziria) e crashou/falhou antes do DELETE final de oldId. Antes do
+    // fix, o próximo cloneMachineRow(oldId, newId, ...) tentava inserir de
+    // novo e violava machines_id_pkey -- martelando o mesmo erro pra
+    // sempre (o catch de runCycleOnce nunca aplicava MAX_ATTEMPTS).
+    await db.getPool().query(
+      `INSERT INTO machines (id, hostname, token, registered_at, status) VALUES ($1,$2,$3,$4,'online')`,
+      [newId, hostname, crypto.randomUUID(), new Date().toISOString()]
+    );
+    await db.getPool().query(
+      `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status) VALUES ($1,$2,$3,'pending')`,
+      [oldId, newId, hostname]
+    );
+
+    await runUntilDone(hostname); // não deve lançar (nem martelar attempts)
+
+    expect(await db.getMachineById(oldId)).toBeUndefined();
+    const newMachine = await db.getMachineById(newId);
+    expect(newMachine).toBeDefined();
+    expect(newMachine.status).toBe('online'); // _syncMutableFields resincronizou a partir da linha antiga
+  });
+
+  it('🔴 achado real do revisor (2ª rodada): erro determinístico (não só travamento por tempo) também respeita MAX_ATTEMPTS -- vira failed, não martela pra sempre', async () => {
+    const hostname = `WORKER-DETERR-${crypto.randomUUID().slice(0, 8)}`;
+    // old_id === new_id força cloneMachineRow a tentar inserir uma linha com
+    // id que JÁ EXISTE (a própria linha antiga) -- erro determinístico e
+    // permanente (nunca se autorresolve por idempotência, ao contrário do
+    // teste acima), ideal pra provar que o catch de runCycleOnce também
+    // aplica MAX_ATTEMPTS, não só _reclaimStuckJobs.
+    const sameId = trackMachine(crypto.randomUUID());
+    await insertMachine(sameId, hostname);
+    const { rows } = await db.getPool().query(
+      `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status) VALUES ($1,$1,$2,'pending') RETURNING id`,
+      [sameId, hostname]
+    );
+    const jobId = rows[0].id;
+
+    for (let i = 0; i < 6; i++) {
+      await worker.runCycleOnce(hostname).catch(() => {}); // runCycleOnce relança o erro -- ignora aqui, só o estado final importa
+    }
+
+    const { rows: after } = await db.getPool().query(
+      'SELECT status, attempts FROM machine_rekey_queue WHERE id=$1', [jobId]
+    );
+    expect(after[0].status).toBe('failed'); // nunca ficou martelando 'pending' indefinidamente
+    expect(after[0].attempts).toBeGreaterThanOrEqual(5);
   });
 
   it('Step 6: idempotência -- rodar o worker de novo depois do job já done não duplica nem quebra', async () => {
