@@ -492,6 +492,73 @@ async function updateMachineIdInBatches(table, oldId, newId) {
   return total;
 }
 
+// 3 das 15 tabelas filhas de machines NÃO têm uma coluna `id` própria pra
+// servir de cursor de lote (`nfce_indexed_days`/`service_status` têm PK
+// composta machine_id+outra-coluna; `nfce_auto_email_log` tem PK em `chave`)
+// -- updateMachineIdInBatches acima quebraria nelas (`column "id" does not
+// exist`). Achado escrevendo a Fase B generalizada (fix-wave pós-revisão,
+// Task 4) -- o brief original assumia que todas as 15 tinham `id`. As 3 são
+// sempre pequenas (poucas linhas por máquina: dias indexados, serviços
+// monitorados, e-mails de nota auto-enviados), então um UPDATE direto (sem
+// lote, fora de transação como as demais) é seguro -- nunca é
+// `activity_log`/`nfce_index`.
+async function updateMachineIdDirect(table, oldId, newId) {
+  const { rowCount } = await getPool().query(
+    `UPDATE ${table} SET machine_id=$1 WHERE machine_id=$2`,
+    [newId, oldId]
+  );
+  return rowCount;
+}
+
+// Fase B do re-key assíncrono (clone-and-swap, fix-wave pós-revisão da Task
+// 4 -- ver seção "Revisão pós-implementação" do plano
+// 2026-11-27-registermachine-rekey-fix): descobre as colunas reais de
+// `machines` via information_schema em vez de hardcodar a lista -- sobrevive
+// a uma coluna nova no schema sem precisar mexer aqui. Cacheada: o schema de
+// `machines` não muda em runtime (só via migração, que exige restart).
+let _machinesColumnsCache = null;
+
+async function _getMachinesCloneColumns() {
+  if (_machinesColumnsCache) return _machinesColumnsCache;
+  const { rows } = await getPool().query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_name='machines' AND column_name NOT IN ('id', 'token')
+     ORDER BY ordinal_position`
+  );
+  _machinesColumnsCache = rows.map(r => r.column_name);
+  return _machinesColumnsCache;
+}
+
+// Clona a linha de `oldId` pra `newId` com um token placeholder (nunca usado
+// pra autenticar ninguém -- o token real só migra na transação final de
+// _finalizeRekey, machineRekeyWorker.js). Isso é o que resolve o CRÍTICO do
+// revisor: `newId` passa a existir em `machines` ANTES de qualquer UPDATE
+// nas 10 tabelas com FK, então updateMachineIdInBatches/updateMachineIdDirect
+// podem migrar as 15 tabelas filhas em lote sem nunca precisar trocar a PK
+// da linha antiga (que é o que travava o cascade residual segurando
+// heartbeats do mesmo agente). `colList` nunca vem de input externo -- é
+// sempre information_schema.columns filtrado por table_name='machines'
+// (literal fixo no código), mesma garantia de segurança de
+// deleteInBatches/updateMachineIdInBatches.
+//
+// Retorna false se `oldId` já não existir (máquina apagada durante a janela
+// pendente) -- o chamador deve marcar o job 'done' sem erro, nada a clonar.
+// Se `newId` já existir (ex: ciclo anterior clonou mas crashou antes do
+// DELETE final, job reclamado por _reclaimStuckJobs), o INSERT viola a PK e
+// lança erro -- propositalmente: cai no catch de runCycleOnce, reverte pra
+// 'pending'/incrementa attempts; limitação conhecida, não resolvida aqui
+// (cenário raro -- crash exatamente entre o clone e o DELETE final).
+async function cloneMachineRow(oldId, newId, placeholderToken) {
+  const cols = await _getMachinesCloneColumns();
+  const colList = cols.join(', ');
+  const { rowCount } = await getPool().query(
+    `INSERT INTO machines (id, token, ${colList})
+     SELECT $1, $2, ${colList} FROM machines WHERE id=$3`,
+    [newId, placeholderToken, oldId]
+  );
+  return rowCount > 0;
+}
+
 // Apaga comandos de machine_id que não existe mais em `machines` (órfãos).
 // Nunca apaga sem antes confirmar que `machines` tem pelo menos 1 linha --
 // ver mesmo comentário em db.js. COUNT(*) do Postgres devolve bigint, que o
@@ -1027,14 +1094,15 @@ async function markAutoEmailFailed(chave, error) {
 // SQLite revalidar isso ao religar `foreign_keys = ON`). Corrigido de
 // graça aqui: insights agora segue o re-key como as outras 9 tabelas com FK.
 
-// Tabelas com machine_id SEM FK pra machines -- precisam de UPDATE/DELETE
-// manual no re-key/dedup (Fase A aqui pras 3 pequenas -- ver
-// MACHINE_REKEY_PHASE_A_TABLES abaixo -- e Fase B em
-// services/machineRekeyWorker.js pras 2 restantes + dedup de duplicatas).
-// As 10 com FK (ver migração acima) seguem o UPDATE/DELETE de `machines`
-// automaticamente via ON UPDATE/DELETE CASCADE. Exportada (ver
-// module.exports) pra ser a única fonte de verdade dessa lista também em
-// machineRekeyWorker.js -- não mudar sem revisar os dois lugares.
+// Tabelas com machine_id SEM FK pra machines -- usadas pro DELETE manual de
+// duplicatas no dedup da Fase B (server/services/machineRekeyWorker.js,
+// _finalizeRekey). A migração de machine_id em si (clone-and-swap, fix-wave
+// pós-revisão da Task 4) trata estas 5 + as 10 com FK igualmente, em lote,
+// via ALL_CHILD_TABLES no worker -- esta lista aqui só serve pro dedup, que
+// precisa saber quais tabelas NÃO se limpam sozinhas via cascade ao apagar
+// a linha duplicada em `machines`. Exportada (ver module.exports) pra ser a
+// única fonte de verdade também em machineRekeyWorker.js -- não mudar sem
+// revisar os dois lugares.
 const MACHINE_CHILD_TABLES_NO_FK = ['metrics', 'commands', 'events', 'nfce_auto_email_log', 'service_status'];
 
 // Re-key de UUID (config.json corrompido/reinstall) + merge de duplicatas
@@ -1051,10 +1119,13 @@ const MACHINE_CHILD_TABLES_NO_FK = ['metrics', 'commands', 'events', 'nfce_auto_
 // transação/advisory lock por 1 a 71+ minutos sempre que activity_log (23GB)
 // ou nfce_index (7,5GB) tinham muita coisa pra cascadear, saturando o pool e
 // derrubando /api/healthz. `_rekeyAndMergeMachine` (abaixo) agora é só a
-// Fase A (rápida: 3 tabelas pequenas sem FK + enfileira em
-// machine_rekey_queue); a troca de `machines.id` + cascade + dedup de
-// duplicatas virou Fase B, em 2º plano, em
-// server/services/machineRekeyWorker.js. Ver comentário de
+// Fase A (rápida: NÃO toca tabela filha nenhuma, só atualiza a linha antiga
+// e enfileira em machine_rekey_queue); a Fase B, em 2º plano, em
+// server/services/machineRekeyWorker.js, virou clone-and-swap (fix-wave
+// pós-revisão: um 2º revisor achou que o design original -- trocar a PK da
+// linha existente -- ainda travava a linha antiga durante o cascade
+// residual, bloqueando heartbeat do MESMO agente de dentro do worker,
+// reproduzindo o incidente original). Ver comentário de
 // _rekeyAndMergeMachine pro detalhe da Fase A.
 //
 // Simplificação real sobre o original: o SQLite tinha um passo extra
@@ -1149,26 +1220,26 @@ async function registerMachine({ machineId, hostname, agentVersion }) {
 // pool e derrubando /api/healthz.
 //
 // Fase A (aqui, ainda dentro da transação/lock -- precisa ser rápida):
-//   1. migra só as 3 tabelas pequenas sem FK que sobraram (commands/events
-//      vão pra Fase B, junto de activity_log/nfce_index);
-//   2. marca a máquina ANTIGA (oldId -- machines.id só muda na Fase B) como
+//   1. marca a máquina ANTIGA (oldId -- machines.id só muda na Fase B) como
 //      online, já refletindo hostname/versão novos sem esperar o worker;
-//   3. enfileira (ou atualiza) 1 job em machine_rekey_queue -- idempotente
-//      por hostname (UNIQUE parcial da migração), sem race possível entre
-//      chamadas concorrentes do mesmo hostname porque já estamos sob o
-//      advisory lock dele.
-// NÃO toca machines.id, NÃO toca commands/events/activity_log/nfce_index,
-// NÃO remove duplicatas -- tudo isso é Fase B (server/services/
-// machineRekeyWorker.js). Deve ser da mesma ordem de grandeza (milissegundos)
-// que o UPDATE/INSERT de hoje nas tabelas pequenas, independente do tamanho
-// de activity_log/nfce_index.
-const MACHINE_REKEY_PHASE_A_TABLES = ['metrics', 'nfce_auto_email_log', 'service_status'];
-
+//   2. enfileira (ou atualiza) 1 job em machine_rekey_queue -- idempotente
+//      por hostname (UNIQUE parcial case-insensitive da migração), sem race
+//      possível entre chamadas concorrentes do mesmo hostname porque já
+//      estamos sob o advisory lock dele.
+// Fix-wave pós-revisão (ver seção "Revisão pós-implementação" do plano):
+// a Fase A deixou de tocar QUALQUER tabela filha (nem as 3 pequenas sem FK
+// que tocava antes) -- um revisor achou que isso deixava `events`/`commands`
+// escritos durante a janela pendente (via `machine.id`, que ainda é oldId)
+// nunca migrados, já que a Fase A só movia 3 das 5 tabelas sem FK e a Fase B
+// só migrava o que já existia no momento do claim. Agora TODAS as 15
+// tabelas filhas migram só na Fase B (clone-and-swap, server/services/
+// machineRekeyWorker.js, ALL_CHILD_TABLES), que inclui um passe de resíduo
+// final pra capturar qualquer escrita chegada durante a janela. NÃO toca
+// machines.id, NÃO toca nenhuma tabela filha, NÃO remove duplicatas -- tudo
+// isso é Fase B. Deve ser da mesma ordem de grandeza (milissegundos) que o
+// UPDATE de hoje em `machines`, independente do tamanho de
+// activity_log/nfce_index.
 async function _rekeyAndMergeMachine(client, { oldId, canonicalToken, machineId, hostname, agentVersion, now }) {
-  for (const t of MACHINE_REKEY_PHASE_A_TABLES) {
-    await client.query(`UPDATE ${t} SET machine_id=$1 WHERE machine_id=$2`, [machineId, oldId]);
-  }
-
   // Máquina "online" já na linha ANTIGA -- o agente já está usando `machineId`
   // (seu próprio UUID) desde que esta chamada responder 201, então o
   // dashboard precisa refletir presença/versão na hora, sem esperar a Fase B.
@@ -1178,8 +1249,12 @@ async function _rekeyAndMergeMachine(client, { oldId, canonicalToken, machineId,
     [hostname, agentVersion || '', now, now, oldId]
   );
 
+  // UPPER(hostname) -- bate com o novo índice único case-insensitive da
+  // migração (fix-wave pós-revisão): hostname chegando em case diferente
+  // ("Loja-1" vs "LOJA-1") precisa encontrar o MESMO job ativo, não criar
+  // um 2º concorrente.
   const { rows: existingJobs } = await client.query(
-    `SELECT id, status FROM machine_rekey_queue WHERE hostname=$1 AND status IN ('pending', 'processing') LIMIT 1`,
+    `SELECT id, status FROM machine_rekey_queue WHERE UPPER(hostname) = UPPER($1) AND status IN ('pending', 'processing') LIMIT 1`,
     [hostname]
   );
   const existingJob = existingJobs[0];
@@ -2508,7 +2583,8 @@ async function recordAlertsSent(rows) {
 }
 
 module.exports = {
-  getPool, closePool, withTransaction, updateMachineIdInBatches, MACHINE_CHILD_TABLES_NO_FK,
+  getPool, closePool, withTransaction, updateMachineIdInBatches, updateMachineIdDirect,
+  cloneMachineRow, MACHINE_CHILD_TABLES_NO_FK,
   recordDbSizeSnapshot, getLatestDbSizeByTable, getDbSizeGrowth, purgeDbSizeSnapshots,
   getTablesAlertedWithinDays, recordAlertsSent,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
