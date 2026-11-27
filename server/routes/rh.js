@@ -14,6 +14,13 @@ const { asyncHandler } = require('../middleware/asyncHandler');
 const CLOCK_PROXY_URL   = process.env.CLOCK_PROXY_URL   || 'http://192.168.17.252:4321';
 const CLOCK_PROXY_TOKEN = process.env.CLOCK_PROXY_TOKEN || '';
 
+// Conexao (VPN/rede da loja fora do ar) tem que falhar rapido -- so a RESPOSTA
+// (scan de funcionarios pode demorar minutos de verdade) justifica timeout longo.
+// Sem isso, um tunel caido prende o socket ate 300s por chamada e derruba o
+// servidor inteiro (ver project_delirio_manager_incidente_rh_healthmonitor_27_11.md).
+const CONNECT_TIMEOUT_MS  = 5000;
+const RESPONSE_TIMEOUT_MS = 300000;
+
 function callClockProxy(path, body, method = 'POST') {
   return new Promise((resolve, reject) => {
     const url     = new URL(CLOCK_PROXY_URL + path);
@@ -55,7 +62,24 @@ function callClockProxy(path, body, method = 'POST') {
     });
 
     req.on('error', reject);
-    req.setTimeout(300000, () => req.destroy(new Error('Timeout apos 300s')));
+
+    // Limpa no 'close' (nao so no 'connect') -- cobre tambem erro de rede
+    // explicito (ECONNREFUSED/ENETUNREACH) antes do socket conectar, que senao
+    // deixava o timer armado pra disparar depois num request ja morto.
+    let connectTimer = null;
+    const clearConnectTimer = () => {
+      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+    };
+    req.on('socket', (socket) => {
+      if (!socket.connecting) return;
+      connectTimer = setTimeout(() => {
+        req.destroy(new Error(`Timeout ao conectar em ${url.hostname}:${options.port} apos ${CONNECT_TIMEOUT_MS}ms`));
+      }, CONNECT_TIMEOUT_MS);
+      socket.once('connect', clearConnectTimer);
+    });
+    req.once('close', clearConnectTimer);
+
+    req.setTimeout(RESPONSE_TIMEOUT_MS, () => req.destroy(new Error(`Timeout apos ${RESPONSE_TIMEOUT_MS / 1000}s`)));
     if (!isGet) req.write(payload);
     req.end();
   });

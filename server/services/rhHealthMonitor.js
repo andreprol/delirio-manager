@@ -13,9 +13,11 @@ const http = require('http');
 const { sendAlert } = require('./resendAlert');
 const logger = require('./logger');
 
-const POLL_INTERVAL_MS  = 5 * 60 * 1000;  // 5 min — mesma cadência do infra/watchdog.sh
-const FAILURE_THRESHOLD = 2;              // falhas 502 consecutivas antes de alertar
-const ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min entre alertas do mesmo tipo
+const POLL_INTERVAL_MS    = 5 * 60 * 1000;  // 5 min — mesma cadência do infra/watchdog.sh
+const BACKOFF_INTERVAL_MS = 30 * 60 * 1000; // cadência enquanto em circuit-breaker (proxy down)
+const BACKOFF_THRESHOLD   = 3;              // falhas 502 consecutivas antes de espaçar as tentativas
+const FAILURE_THRESHOLD   = 2;              // falhas 502 consecutivas antes de alertar
+const ALERT_COOLDOWN_MS   = 30 * 60 * 1000; // 30 min entre alertas do mesmo tipo
 
 // Relógios com problema de hardware físico conhecido — não contam pro baseline
 // de "reachable esperado". Ver project_delirio_manager.md.
@@ -24,6 +26,7 @@ const KNOWN_BAD_CLOCK_IPS = ['192.168.13.151', '192.168.20.151']; // Città, Tij
 const state = {
   consecutiveConnFailures: 0,
   timer: null,
+  stopped: true,
 };
 
 function fetchClocksStatus(port) {
@@ -110,17 +113,36 @@ async function checkOnce(port) {
   return handleSuccess(body);
 }
 
+// Circuit breaker: com o proxy (VPN/rede da loja) persistentemente fora do ar,
+// espaça as tentativas em vez de insistir a cada 5min — não resolve o tunel,
+// só para de bater num alvo morto na mesma cadência (ver connect-timeout em
+// rh.js:callClockProxy, que já corta o custo por tentativa, isso aqui reduz a
+// frequência). Volta pra cadência normal assim que uma tentativa tiver sucesso.
+function scheduleNext(targetPort) {
+  if (state.stopped) return; // stop() chamado enquanto o checkOnce anterior estava em voo
+  const delay = state.consecutiveConnFailures >= BACKOFF_THRESHOLD
+    ? BACKOFF_INTERVAL_MS
+    : POLL_INTERVAL_MS;
+  state.timer = setTimeout(() => {
+    checkOnce(targetPort)
+      .catch(e => logger.error(`[RH-HEALTH] check erro: ${e.message}`))
+      .finally(() => scheduleNext(targetPort));
+  }, delay);
+  state.timer.unref();
+}
+
 function start(port) {
+  state.stopped = false;
   const targetPort = port || process.env.PORT || 3847;
-  checkOnce(targetPort).catch(e => logger.error(`[RH-HEALTH] check inicial erro: ${e.message}`));
-  state.timer = setInterval(() => {
-    checkOnce(targetPort).catch(e => logger.error(`[RH-HEALTH] check erro: ${e.message}`));
-  }, POLL_INTERVAL_MS);
+  checkOnce(targetPort)
+    .catch(e => logger.error(`[RH-HEALTH] check inicial erro: ${e.message}`))
+    .finally(() => scheduleNext(targetPort));
 }
 
 function stop() {
+  state.stopped = true;
   if (state.timer) {
-    clearInterval(state.timer);
+    clearTimeout(state.timer);
     state.timer = null;
   }
 }
