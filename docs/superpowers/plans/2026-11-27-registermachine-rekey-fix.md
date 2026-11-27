@@ -270,44 +270,106 @@ envolvida (hoje, sempre, já que `activity_log` cresce sem parar).
 - [ ] **Step 1**: criar uma tabela nova `machine_rekey_queue (old_id,
   new_id, hostname, status, created_at, completed_at)` via migration
   (tabela pequena, sem risco)
-- [ ] **Step 2**: reescrever `_rekeyAndMergeMachine` em duas fases —
+**Ruling (investigado ao vivo 27/11/2026, antes de dispatchar — resolve o
+Step 5 original, que ficava em aberto "builder confirma"):** 3 rotas
+comparam `machine.id` (PK interna, resolvida via `getMachineByToken` —
+só muda quando a Fase B commitar) direto contra o `machineId` que o
+PRÓPRIO AGENTE manda na URL/body (o UUID novo, já ativo no agente desde
+o instante em que `registerMachine` respondeu 201) — `agent.js:329`
+(`GET /api/commands/:machineId`), `agent.js:495`, `winEvents.js:18`. Sem
+ajuste, essas 3 rotas respondem 403 ("Token não corresponde ao
+machineId") pra QUALQUER máquina que re-chaveou enquanto a Fase B ainda
+não processou — ou seja, sempre, já que a Fase B é assíncrona por
+design. Isso quebraria o agente imediatamente depois de todo re-key —
+regressão pior que o travamento atual. Custo de estar errado: baixo
+(isolado a essas 3 comparações, teste de Task 4 cobre) — custo de
+ignorar: alto (volta o incidente, disfarçado de 403 em vez de timeout).
+Fix: `getMachineByToken` (único ponto usado pelos 3 call-sites, via
+`req.machine`) passa a trazer também `pending_rekey_new_id` (LEFT JOIN
+em `machine_rekey_queue` WHERE `old_id = machines.id` AND `status IN
+('pending','processing')`, no máx 1 linha por `old_id` dada a UNIQUE
+parcial abaixo); as 3 comparações trocam `machine.id !== params` por
+`machine.id !== params && machine.pending_rekey_new_id !== params`.
+
+- [ ] **Step 2**: migration cria `machine_rekey_queue` com schema exato:
+  ```sql
+  CREATE TABLE machine_rekey_queue (
+    id            SERIAL PRIMARY KEY,
+    old_id        UUID NOT NULL,
+    new_id        UUID NOT NULL,
+    hostname      TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'done')),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at  TIMESTAMPTZ
+  );
+  CREATE UNIQUE INDEX idx_rekey_queue_hostname_active ON machine_rekey_queue (hostname)
+    WHERE status IN ('pending', 'processing');
+  CREATE INDEX idx_rekey_queue_old_id_active ON machine_rekey_queue (old_id)
+    WHERE status IN ('pending', 'processing');
+  ```
+  O índice único parcial por `hostname` é a garantia de idempotência: um
+  segundo `registerMachine` pro MESMO hostname enquanto um job já está
+  `pending`/`processing` NUNCA insere linha nova — ver Step 3.
+- [ ] **Step 3**: reescrever `_rekeyAndMergeMachine` em duas fases —
   **Fase A (síncrona, ainda dentro da transação com o advisory lock,
   deve ser questão de milissegundos)**: atualiza as tabelas pequenas
   (`metrics`, `nfce_auto_email_log`, `service_status` + as 6 FK
   pequenas — a Fase A NÃO toca `machines.id` ainda, já que isso
-  dispara o cascade nas 2 tabelas grandes) e insere uma linha em
-  `machine_rekey_queue` com `status='pending'`. Responde sucesso pro
-  agente aqui — o agente já pode operar com o `machineId` novo pra
-  tudo que não depende de `machines.id` ter mudado de verdade ainda
-  (precisa confirmar com o André/checar rotas quais operações
-  realmente EXIGEM que `machines.id` já exista com o novo valor antes
-  de considerar "pronto" — se alguma rota crítica depende disso,
-  Fase A pode precisar ser síncrona até certo ponto, builder escala
-  esse achado antes de prosseguir cegamente)
-  **Fase B (worker separado, roda fora da transação/lock,
-  processa a fila)**: pega a próxima linha `pending` de
-  `machine_rekey_queue`, roda o `UPDATE machines SET id=$1 WHERE
-  id=$2` de verdade (dispara o cascade nas 10 FK tables, incluindo as
-  2 grandes — aqui sim pode demorar minutos, mas SEM segurar o
-  advisory lock do hostname e SEM bloquear nenhum heartbeat de
-  nenhuma outra máquina), roda os `UPDATE`/`DELETE` manuais em
-  `commands`/`events` (as 2 manuais grandes) em BATCHES pequenos
-  (mesmo padrão de `deleteInBatches` já usado em
-  `activityRetention.js`), marca `status='done'`
-- [ ] **Step 3**: escrever teste provando que Fase A completa em
+  dispara o cascade nas 2 tabelas grandes). Antes de inserir na fila,
+  `SELECT ... FOR UPDATE` em `machine_rekey_queue WHERE hostname=$1 AND
+  status IN ('pending','processing')` (já sob o advisory lock do
+  hostname, então sem race): se não existe linha, `INSERT ... status
+  ='pending'`; se existe com `status='pending'`, `UPDATE` só o `new_id`
+  pro valor recebido agora (agente reinstalou de novo antes do worker
+  pegar o job antigo — o `new_id` mais recente é o que deve prevalecer,
+  o antigo nunca chegou a ser aplicado); se existe com
+  `status='processing'`, NÃO toca na linha (deixa o worker terminar o
+  que já começou — o próximo `registerMachine` desse hostname, depois
+  que a Fase B commitar e `machines.id` já for o novo, cai no caso 1
+  normal — `UPDATE` direto, sem fila). Responde 201 pro agente
+  imediatamente após o commit da Fase A.
+  **Fase B (worker separado — reaproveita o padrão `setTimeout`
+  auto-reagendável + `isLeader()` de `rhHealthMonitor.js`/
+  `dbSizeMonitor.js`, roda fora de qualquer transação/lock HTTP,
+  processa 1 job por vez)**: pega o `pending` mais antigo, marca
+  `status='processing'` — **PRIMEIRO** faz `UPDATE` em lotes (helper
+  novo `updateInBatches`, mesmo padrão de `deleteInBatches` em
+  `db-pg.js:430`, reaproveitando `PURGE_BATCH_SIZE`/
+  `PURGE_BATCH_SLEEP_MS`) nas 4 tabelas grandes — `activity_log`,
+  `nfce_index` (FK, mas pré-processadas manualmente aqui pra não
+  depender do cascade pra elas), `events`, `commands` (manuais) —
+  `SET machine_id=$new WHERE machine_id=$old AND id IN (SELECT id
+  FROM <tabela> WHERE machine_id=$old LIMIT $batchSize)`, cedendo o
+  loop entre lotes. **SÓ DEPOIS**, numa transação curta, reaquire
+  `pg_advisory_xact_lock(hashtext(upper(hostname)))`: roda `UPDATE
+  machines SET id=$new WHERE id=$old` (o cascade agora só processa o
+  resíduo — linhas inseridas nas 4 tabelas grandes DURANTE a janela
+  entre o último lote e este UPDATE, não o histórico inteiro — por
+  isso rápido mesmo com `activity_log` em 23GB), atualiza
+  hostname/agent_version/last_seen/online_since/status na linha já
+  re-chaveada, roda o `UPDATE`/`DELETE` das 3 tabelas no-FK pequenas
+  restantes (`metrics`, `nfce_auto_email_log`, `service_status`) e os
+  `DELETE` de duplicatas (mesmo loop de `dupes` que já existe hoje),
+  marca `status='done', completed_at=now()`, COMMIT.
+- [ ] **Step 4**: aplicar o ruling acima — `getMachineByToken` traz
+  `pending_rekey_new_id`; as 3 comparações (`agent.js:329`,
+  `agent.js:495`, `winEvents.js:18`) aceitam os dois valores
+- [ ] **Step 5**: escrever teste provando que Fase A completa em
   milissegundos independente do tamanho de `activity_log`/`nfce_index`
   (mock/fixture simulando as tabelas grandes já populadas)
-- [ ] **Step 4**: escrever teste provando que Fase B processa a fila,
+- [ ] **Step 6**: escrever teste provando que Fase B processa a fila,
   é idempotente (retomável se o processo cair no meio — rodar duas
-  vezes seguidas no mesmo item `pending` não duplica nem corrompe) e
-  marca `done` só depois de TODAS as tabelas terem sido atualizadas
-- [ ] **Step 5**: decidir e documentar: enquanto a Fase B não processou
-  a fila pra uma máquina, `machines.id` ainda está com o valor ANTIGO —
-  qualquer leitura (dashboard, relatórios) que filtre por esse id
-  continua funcionando normalmente até lá (nada quebra, só demora um
-  pouco pra "assumir" o novo id oficialmente) — builder confirma que
-  nenhuma rota tem uma suposição escondida de que o re-key é sempre
-  instantâneo antes de fechar esta task
+  vezes seguidas no mesmo item `pending`/`processing` não duplica nem
+  corrompe) e marca `done` só depois de TODAS as tabelas terem sido
+  atualizadas
+- [ ] **Step 7**: teste cobrindo o ruling do Step 4 — `GET
+  /api/commands/:machineId` (ou rota equivalente) autentica com sucesso
+  usando o `new_id` enquanto o job ainda está `pending`/`processing`,
+  e continua autenticando com o `new_id` depois de `done`
+- [ ] **Step 8**: teste cobrindo a idempotência por hostname do Step 3 —
+  dois `registerMachine` concorrentes pro mesmo hostname (segundo
+  chamado com job já `pending`) resultam em 1 única linha na fila, com
+  o `new_id` do segundo chamado
 
 ## Task 5: Índice ausente + teto de timeout oficializado
 
