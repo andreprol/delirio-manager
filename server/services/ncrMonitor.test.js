@@ -419,3 +419,62 @@ describe('parseLeadMinutes', () => {
     })).toBe(60);
   });
 });
+
+// ── leader guard (tick + watchdog) ────────────────────────────────────────────
+// jest.useFakeTimers() em ambos — start()/startWatchdog() criam setInterval
+// reais (sem .unref()) que, sem fake timers, vazariam pro resto da suíte.
+describe('start / watchdog — leader guard', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('tick nao busca token/emails quando nao e o lider', async () => {
+    jest.useFakeTimers();
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const freshNcrMonitor = require('./ncrMonitor');
+    // mesma instancia de 'fs' que o ncrMonitor.js recem-exigido ve (o mock
+    // top-level do arquivo e outra instancia apos o resetModules) --
+    // precisa de msGraph.refreshToken configurado, senao tick() ja
+    // retornaria cedo por config ausente e o teste não provaria nada sobre
+    // o guard de lideranca.
+    const freshFs = require('fs');
+    freshFs.readFileSync.mockReturnValue(JSON.stringify({ msGraph: MS_GRAPH_CFG }));
+
+    freshNcrMonitor.start();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('watchdog nao alerta quando nao e o lider, mesmo com tick silencioso ha mais de 10min', async () => {
+    jest.useFakeTimers();
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const sendAlertMock = jest.fn().mockResolvedValue({ sent: true });
+    jest.doMock('./resendAlert', () => ({ sendAlert: sendAlertMock }));
+
+    // suprime só o setInterval do tick recorrente (POLL_INTERVAL_MS = 2min)
+    // -- senão ele re-seta health.lastTickAt a cada 2min e o watchdog nunca
+    // vê silêncio > WATCHDOG_MAX_SILENT (10min), mascarando o que este
+    // teste quer provar. O setInterval do watchdog (WATCHDOG_INTERVAL_MS =
+    // 5min) passa direto pro fake timer real.
+    const POLL_INTERVAL_MS = 2 * 60 * 1000;
+    const realSetInterval = global.setInterval;
+    jest.spyOn(global, 'setInterval').mockImplementation((fn, ms, ...args) => {
+      if (ms === POLL_INTERVAL_MS) return 0;
+      return realSetInterval(fn, ms, ...args);
+    });
+
+    const freshNcrMonitor = require('./ncrMonitor');
+    freshNcrMonitor.start(); // tick() imediato seta health.lastTickAt uma única vez
+    await Promise.resolve();
+
+    jest.advanceTimersByTime(20 * 60 * 1000); // > WATCHDOG_MAX_SILENT (10min)
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendAlertMock).not.toHaveBeenCalled();
+  });
+});
