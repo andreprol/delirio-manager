@@ -57,11 +57,18 @@ const state = {
 // `AND status='pending'` no UPDATE é defesa barata contra double-pick caso
 // dois workers rodem ao mesmo tempo -- não deveria acontecer com isLeader(),
 // mas custa nada garantir.
-async function _claimNextJob() {
+//
+// `hostnameFilter` existe só pra teste (ver runCycleOnce) -- em produção
+// nunca é passado.
+async function _claimNextJob(hostnameFilter) {
   const pool = db.getPool();
   const { rows } = await pool.query(
-    `SELECT id, old_id, new_id, hostname FROM machine_rekey_queue
-     WHERE status='pending' ORDER BY created_at ASC LIMIT 1`
+    hostnameFilter
+      ? `SELECT id, old_id, new_id, hostname FROM machine_rekey_queue
+         WHERE status='pending' AND hostname=$1 ORDER BY created_at ASC LIMIT 1`
+      : `SELECT id, old_id, new_id, hostname FROM machine_rekey_queue
+         WHERE status='pending' ORDER BY created_at ASC LIMIT 1`,
+    hostnameFilter ? [hostnameFilter] : []
   );
   const job = rows[0];
   if (!job) return null;
@@ -116,10 +123,21 @@ async function _finalizeRekey({ id: jobId, old_id: oldId, new_id: newId, hostnam
 // Processa 1 ciclo: pega o job pending mais antigo (se houver), pré-processa
 // em lotes (fora de transação) e finaliza (transação curta). Exportada pra
 // chamada direta em teste (não só via scheduleNext/setTimeout).
-async function runCycleOnce() {
+//
+// `hostnameFilter` (opcional, só teste): restringe a chamada ao job de um
+// hostname específico. 🔴 Achado rodando a suíte completa de verdade (não
+// dava pra ver num arquivo isolado): sem isso, múltiplos arquivos de teste
+// chamando runCycleOnce() em paralelo (processos Jest diferentes, mesmo
+// banco de dev compartilhado) podiam "roubar" o job de OUTRO arquivo --
+// _claimNextJob pega sempre o pending mais antigo GLOBALMENTE. Se o arquivo
+// que roubou terminasse (processo Jest encerrado) antes de concluir, o job
+// ficava preso em 'processing' pra sempre (o catch que reverte pra
+// 'pending' nunca rodava). Produção nunca passa este argumento -- o
+// scheduler real roda 1 processo por vez, sem esse risco.
+async function runCycleOnce(hostnameFilter) {
   if (!leaderElection.isLeader()) return { processed: false, reason: 'not-leader' };
 
-  const job = await _claimNextJob();
+  const job = await _claimNextJob(hostnameFilter);
   if (!job) return { processed: false, reason: 'no-pending-job' };
 
   try {

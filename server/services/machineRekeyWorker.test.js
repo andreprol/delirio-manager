@@ -63,16 +63,17 @@ describeDb('machineRekeyWorker (Fase B)', () => {
   }
 
   // Mesma cautela de db-pg.registermachine.test.js: Jest roda arquivos em
-  // paralelo contra a MESMA instância dev -- runCycleOnce() pega o pending
-  // GLOBALMENTE mais antigo, então drena até o NOSSO hostname ficar 'done'
-  // em vez de assumir que a 1ª chamada processou o nosso job.
+  // paralelo contra a MESMA instância dev -- passa hostname pra
+  // runCycleOnce() (filtro só de teste, ver comentário na própria função)
+  // pra nunca roubar o job de outro arquivo em voo, e ainda assim drena até
+  // o NOSSO hostname ficar 'done' em vez de assumir que a 1ª chamada processou.
   async function runUntilDone(hostname, { maxCycles = 20 } = {}) {
     for (let i = 0; i < maxCycles; i++) {
       const { rows } = await db.getPool().query(
         'SELECT status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
       );
       if (rows[0]?.status === 'done') return;
-      const result = await worker.runCycleOnce();
+      const result = await worker.runCycleOnce(hostname);
       if (!result.processed) break;
     }
     const { rows } = await db.getPool().query(

@@ -68,7 +68,7 @@ describeDb('GET /api/commands/:machineId -- ruling de pending_rekey_new_id (Step
         'SELECT status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
       );
       if (rows[0]?.status === 'done') return;
-      const result = await worker.runCycleOnce();
+      const result = await worker.runCycleOnce(hostname);
       if (!result.processed) break;
     }
     const { rows } = await db.getPool().query(

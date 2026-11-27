@@ -76,22 +76,25 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
     return id;
   }
 
-  // runCycleOnce() pega o job 'pending' GLOBALMENTE mais antigo (correto em
-  // produção -- não precisa saber de hostname, a UNIQUE parcial + advisory
-  // lock por hostname já isolam tudo). Jest roda arquivos de teste em
-  // paralelo (workers separados) contra a MESMA instância dev do Postgres,
-  // então uma única chamada pode acabar processando o job de OUTRO arquivo
-  // em voo -- em vez de assumir que a 1ª chamada processou o NOSSO job,
-  // drena ciclos até o nosso ficar 'done' (ou falha com uma mensagem clara
-  // em vez de um assert confuso).
+  // runCycleOnce() sem argumento pega o job 'pending' GLOBALMENTE mais
+  // antigo (correto em produção -- não precisa saber de hostname, a UNIQUE
+  // parcial + advisory lock por hostname já isolam tudo). Jest roda arquivos
+  // de teste em paralelo (workers separados) contra a MESMA instância dev
+  // do Postgres -- sem filtro, uma única chamada podia acabar roubando o job
+  // de OUTRO arquivo em voo e, se aquele processo terminasse no meio, deixar
+  // o job preso em 'processing' pra sempre (🔴 achado rodando a suíte
+  // completa de verdade). Por isso runCycleOnce(hostname) aqui -- filtro só
+  // de teste, nunca usado em produção. Ainda assim drena ciclos (em vez de
+  // assumir que a 1ª chamada bastou) e falha com mensagem clara se não
+  // ficar 'done' a tempo.
   async function runWorkerUntilDone(hostname, { maxCycles = 20 } = {}) {
     for (let i = 0; i < maxCycles; i++) {
       const { rows } = await db.getPool().query(
         'SELECT status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
       );
       if (rows[0]?.status === 'done') return;
-      const result = await machineRekeyWorker.runCycleOnce();
-      if (!result.processed) break; // sem mais jobs pending em nenhum hostname
+      const result = await machineRekeyWorker.runCycleOnce(hostname);
+      if (!result.processed) break; // sem job pending pra este hostname
     }
     const { rows } = await db.getPool().query(
       'SELECT status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
