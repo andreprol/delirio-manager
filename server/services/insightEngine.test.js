@@ -180,3 +180,24 @@ describeDb('analyzeMachine — cursor incremental', () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 });
+
+// Fora do describeDb de propósito: o guard de liderança faz runNow() voltar
+// antes de tocar no banco, então este teste não precisa de Postgres real
+// (mocka '../db-pg' inteiro) — roda mesmo sem DATABASE_URL setada.
+describe('runNow — leader guard', () => {
+  it('nao leva adiante o ciclo quando nao e o lider', async () => {
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const dbMock = { getAllMachines: jest.fn().mockResolvedValue([]) };
+    jest.doMock('../db-pg', () => dbMock);
+    jest.doMock('fs', () => ({
+      ...jest.requireActual('fs'),
+      readFileSync: jest.fn(() => JSON.stringify({ insights: { enabled: true, claude_api_key: 'test-key', interval_hours: 6 } })),
+    }));
+    const freshInsightEngine = require('./insightEngine');
+
+    await freshInsightEngine.runNow();
+
+    expect(dbMock.getAllMachines).not.toHaveBeenCalled();
+  });
+});

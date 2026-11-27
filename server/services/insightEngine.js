@@ -5,6 +5,7 @@ const fs     = require('fs');
 const crypto = require('crypto');
 const db     = require('../db-pg');
 const { broadcast } = require('./websocket');
+const leaderElection = require('./leaderElection');
 
 function loadConfig() {
   try {
@@ -34,6 +35,8 @@ function stop() {
 }
 
 async function runNow() {
+  if (!leaderElection.isLeader()) return 0;
+
   const cfg = loadConfig().insights || {};
   if (!cfg.claude_api_key) {
     console.log('[InsightEngine] Sem API key configurada.');
