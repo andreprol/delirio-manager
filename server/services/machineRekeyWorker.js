@@ -9,22 +9,30 @@
 // em produção. Este worker, em 2º plano, roda fora do request HTTP do
 // agente e fora do advisory lock compartilhado entre hostnames.
 //
-// 🔴 Achado rodando contra Postgres de dev de verdade (não dava pra saber só
-// lendo o código): NÃO é possível pré-processar `activity_log`/`nfce_index`
-// em lotes ANTES do `UPDATE machines SET id=...` -- as duas têm FK ATIVA pra
-// `machines(id)` (`ON UPDATE CASCADE ON DELETE CASCADE`), e o Postgres
-// recusa `UPDATE activity_log SET machine_id=$new WHERE ...` enquanto `$new`
-// ainda não existe como PK em `machines` (viola a própria FK que a tabela
-// tem). Só `events`/`commands` (tabelas manuais, SEM FK -- ver
-// `MACHINE_CHILD_TABLES_NO_FK`) podem ser pré-processadas assim. Pra
-// `activity_log`/`nfce_index`, o cascade do `UPDATE machines` continua
-// processando o histórico INTEIRO da máquina nessas 2 tabelas (não dá pra
-// evitar sem reescrever a FK pra DEFERRABLE ou usar uma linha placeholder --
-// fora de escopo aqui). Ainda é uma melhoria real: essa transação roda
-// isolada, em 2º plano, protegida por `statement_timeout=180000`, sem
-// segurar o advisory lock compartilhado nem bloquear o request HTTP do
-// agente nem o heartbeat de outras máquinas -- só não é mais "rápida
-// independente do volume" pra essas 2 tabelas especificamente.
+// 🔴 Fix-wave pós-revisão (27/11/2026, ver seção "Revisão pós-implementação"
+// do plano): a 1ª versão deste arquivo trocava a PK da linha existente
+// (`UPDATE machines SET id=$new WHERE id=$old`) dentro de uma transação que
+// segurava o advisory lock durante TODO o cascade residual de
+// `activity_log`/`nfce_index` -- um revisor independente (Opus) achou que
+// isso bloqueava qualquer `UPDATE machines SET ... WHERE id=$old`
+// concorrente do MESMO agente (heartbeat -- `setMachineStatus`/
+// `updateMachine`, routes/agent.js), reproduzindo o incidente original de
+// dentro do worker. Causa raiz: só é possível pré-processar em lote
+// tabelas SEM FK ativa pra `machines(id)` -- as 10 com FK exigem que o
+// `new_id` já exista em `machines` ANTES de qualquer UPDATE filho (senão
+// viola a própria FK).
+//
+// Novo desenho (clone-and-swap): clona a linha de `old_id` pra `new_id`
+// (token placeholder, `db.cloneMachineRow`) ANTES de tocar qualquer tabela
+// filha -- com `new_id` já existindo em `machines`, as 15 tabelas filhas
+// (10 com FK + 5 sem FK) podem ser pré-processadas em lote, fora de
+// transação, sem nenhum cascade disparar (cascade só dispara quando a PK
+// PAI muda, e ela não muda mais -- `new_id` nasce direto como uma linha
+// nova). Só depois, numa transação curta sob o advisory lock, sincroniza os
+// campos mutáveis mais recentes (captura heartbeats que escreveram na linha
+// antiga depois do clone), migra o resíduo recente (escrito entre o lote e
+// agora) e APAGA a linha antiga (cujo cascade, nesse ponto, já está vazio
+// ou quase vazio -- rápido mesmo com `activity_log` em 23GB).
 //
 // Processa 1 job por ciclo (nunca em paralelo -- jobs do MESMO hostname nunca
 // coexistem, por causa da UNIQUE parcial em machine_rekey_queue, mas jobs de
@@ -34,83 +42,200 @@
 // rhHealthMonitor.js/dbSizeMonitor.js.
 'use strict';
 
+const crypto = require('crypto');
 const db = require('../db-pg');
 const logger = require('./logger');
 const leaderElection = require('./leaderElection');
 
 const POLL_INTERVAL_MS = 10 * 1000; // 10s -- correção em 2º plano, não SLA de latência curta
+const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5min -- job 'processing' mais velho que isso foi abandonado (crash/SIGTERM/troca de líder no meio)
+const MAX_ATTEMPTS = 5; // depois disso, _reclaimStuckJobs() marca 'failed' em vez de devolver pra 'pending' -- para de martelar, fica pra investigação manual
 
-// Pré-processamento em lotes (fora de transação, cada lote é seu próprio
-// commit implícito) -- só `events`/`commands`: são as únicas 2 tabelas
-// grandes SEM FK ativa pra `machines(id)` (ver comentário do topo do
-// arquivo pra `activity_log`/`nfce_index`, que não podem passar por aqui).
-// Entram na Fase B (não na Fase A) por serem grandes o bastante (2,3GB/
-// 3,1GB) pra não fazer um UPDATE de tabela inteira de uma vez.
-const PHASE_B_BATCH_TABLES = ['events', 'commands'];
+// As 15 tabelas filhas de `machines` -- as 10 com FK ON UPDATE/DELETE CASCADE
+// (ver migração add-on-update-cascade-machine-fks.sql) MAIS as 5 sem FK
+// (db.MACHINE_CHILD_TABLES_NO_FK). Nenhuma fica de fora: com `new_id` já
+// clonado em `machines` (ver cloneMachineRow acima), migrar qualquer uma em
+// lote não dispara cascade nenhum -- só respeita a FK normalmente.
+// `events`/`commands` grandes primeiro de propósito (eram as únicas 2 que o
+// desenho antigo conseguia pré-processar; mantidas na frente por serem as
+// que mais importam pra latência).
+const ALL_CHILD_TABLES = [
+  'activity_log', 'nfce_index', 'events', 'commands',
+  'dr_backups', 'insights', 'live_sessions', 'machine_metrics_hourly',
+  'machine_offline_events', 'nfce_indexed_days', 'reading_miss_events', 'win_events',
+  'metrics', 'nfce_auto_email_log', 'service_status',
+];
+
+// 3 das 15 não têm uma coluna `id` própria (PK composta ou PK em outra
+// coluna -- ver comentário de `db.updateMachineIdDirect`) -- usam o UPDATE
+// direto (sem lote) em vez de updateMachineIdInBatches. Sempre pequenas,
+// nunca `activity_log`/`nfce_index`.
+const DIRECT_UPDATE_TABLES = new Set(['nfce_indexed_days', 'nfce_auto_email_log', 'service_status']);
+
+async function _migrateChildTablesInBatches(oldId, newId) {
+  for (const table of ALL_CHILD_TABLES) {
+    if (DIRECT_UPDATE_TABLES.has(table)) {
+      await db.updateMachineIdDirect(table, oldId, newId);
+    } else {
+      await db.updateMachineIdInBatches(table, oldId, newId);
+    }
+  }
+}
 
 const state = {
   timer: null,
   stopped: true,
 };
 
-// Pega o job pending mais antigo e marca como 'processing'. O
-// `AND status='pending'` no UPDATE é defesa barata contra double-pick caso
-// dois workers rodem ao mesmo tempo -- não deveria acontecer com isLeader(),
-// mas custa nada garantir.
+// Reset de jobs presos em 'processing' há mais de STUCK_THRESHOLD_MS --
+// crash/SIGTERM/troca de líder no meio de um ciclo deixava, antes desta
+// fix-wave, o hostname bloqueado pra sempre (a UNIQUE parcial por hostname
+// não permite um 2º job ativo). Incrementa `attempts`; a partir de
+// MAX_ATTEMPTS marca 'failed' em vez de 'pending' -- para de ser reclamado
+// automaticamente, fica pra investigação manual (não tem CHECK que impeça
+// 'failed' de novo virar 'pending' manualmente, se for o caso).
+async function _reclaimStuckJobs() {
+  const pool = db.getPool();
+  const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS).toISOString();
+  await pool.query(
+    `UPDATE machine_rekey_queue
+     SET status = CASE WHEN attempts + 1 >= $2 THEN 'failed' ELSE 'pending' END,
+         attempts = attempts + 1
+     WHERE status='processing' AND claimed_at < $1`,
+    [cutoff, MAX_ATTEMPTS]
+  );
+}
+
+// Claim atômico via FOR UPDATE SKIP LOCKED -- um único UPDATE já é atômico,
+// sem precisar de SELECT+UPDATE separados (o desenho antigo tinha uma
+// janela de race aí: achado real do revisor -- uma 2ª chamada de
+// registerMachine pro mesmo hostname podia atualizar `new_id` da fila entre
+// o SELECT e o UPDATE 'processing', e o worker aplicava o `new_id`
+// desatualizado; _finalizeRekey agora relê `new_id` da fila de novo, ver
+// abaixo). SKIP LOCKED substitui a checagem de double-pick via rowCount que
+// existia antes (não precisa mais -- se outro processo já travou essa
+// linha, o subselect simplesmente não a retorna).
 //
-// `hostnameFilter` existe só pra teste (ver runCycleOnce) -- em produção
-// nunca é passado.
+// `hostnameFilter` existe só pra teste -- em produção nunca é passado (ver
+// comentário de runCycleOnce).
 async function _claimNextJob(hostnameFilter) {
   const pool = db.getPool();
   const { rows } = await pool.query(
     hostnameFilter
-      ? `SELECT id, old_id, new_id, hostname FROM machine_rekey_queue
-         WHERE status='pending' AND hostname=$1 ORDER BY created_at ASC LIMIT 1`
-      : `SELECT id, old_id, new_id, hostname FROM machine_rekey_queue
-         WHERE status='pending' ORDER BY created_at ASC LIMIT 1`,
+      ? `UPDATE machine_rekey_queue SET status='processing', claimed_at=now()
+         WHERE id = (SELECT id FROM machine_rekey_queue WHERE status='pending' AND hostname=$1
+                     ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED)
+         RETURNING id, old_id, new_id, hostname`
+      : `UPDATE machine_rekey_queue SET status='processing', claimed_at=now()
+         WHERE id = (SELECT id FROM machine_rekey_queue WHERE status='pending'
+                     ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED)
+         RETURNING id, old_id, new_id, hostname`,
     hostnameFilter ? [hostnameFilter] : []
   );
-  const job = rows[0];
-  if (!job) return null;
-
-  const { rowCount } = await pool.query(
-    `UPDATE machine_rekey_queue SET status='processing' WHERE id=$1 AND status='pending'`,
-    [job.id]
-  );
-  if (rowCount === 0) return null; // outro worker pegou primeiro
-  return job;
+  return rows[0] || null;
 }
 
-// Transação final: troca machines.id (cascade cuida de `events`/`commands`
-// só pelo resíduo recente, já pré-processados em lotes acima -- mas de
-// `activity_log`/`nfce_index` pelo histórico INTEIRO da máquina, ver
-// comentário do topo do arquivo) + dedup de duplicatas + marca o job
-// 'done'. Sob o MESMO advisory lock por hostname que a Fase A usa --
-// serializa contra qualquer registerMachine concorrente desse hostname que
-// ainda não tenha visto o novo machines.id. Pode levar mais que
-// milissegundos agora (ainda protegido por statement_timeout=180000), mas
-// roda isolada, sem bloquear outros hostnames nem o request HTTP do agente.
+// Copia os campos mutáveis mais recentes da linha antiga pra nova -- captura
+// qualquer heartbeat que tenha atualizado a linha antiga depois do clone
+// (db.cloneMachineRow, que roda fora desta transação, antes do
+// pré-processamento em lote). Lista explícita (não todas as colunas --
+// id/token tratados à parte: token real migra agora, placeholder do clone
+// nunca é usado pra autenticar; registered_at nunca deveria mudar, por isso
+// não está na lista). Extraída de _finalizeRekey só pra caber no limite de
+// linhas por função do lint -- mesma transação/client do chamador.
+async function _syncMutableFields(client, oldMachine, newId) {
+  await client.query(
+    `UPDATE machines SET
+       token=$1, hostname=$2, display_name=$3, location=$4, subnet=$5,
+       ip_interno=$6, mac=$7, critica=$8, agent_version=$9, status=$10,
+       last_seen=$11, online_since=$12, wol_status=$13, wol_tested_at=$14,
+       motherboard=$15, dr_setup=$16, dr_last_ok=$17, dr_storage_gb=$18,
+       dr_version=$19, os_version=$20, last_hourly_at=$21,
+       wol_ever_confirmed=$22, last_win_event_id=$23, last_offline_event_id=$24
+     WHERE id=$25`,
+    [
+      oldMachine.token, oldMachine.hostname, oldMachine.display_name, oldMachine.location,
+      oldMachine.subnet, oldMachine.ip_interno, oldMachine.mac, oldMachine.critica,
+      oldMachine.agent_version, oldMachine.status, oldMachine.last_seen, oldMachine.online_since,
+      oldMachine.wol_status, oldMachine.wol_tested_at, oldMachine.motherboard, oldMachine.dr_setup,
+      oldMachine.dr_last_ok, oldMachine.dr_storage_gb, oldMachine.dr_version, oldMachine.os_version,
+      oldMachine.last_hourly_at, oldMachine.wol_ever_confirmed, oldMachine.last_win_event_id,
+      oldMachine.last_offline_event_id, newId,
+    ]
+  );
+}
+
+// Duplicatas: outros registros com o mesmo hostname, sobra de reinstalações
+// anteriores (mesma lógica de antes). rowCount check nos DELETE de filhos é
+// desnecessário (0 é um resultado normal -- a duplicata pode não ter filho
+// algum numa tabela dada); o que importa é o DELETE da própria linha
+// duplicada, coberto pelo DELETE de `machines` abaixo (cascade cuida das 10
+// tabelas com FK).
+async function _removeDuplicateMachines(client, hostname, survivorId) {
+  const { rows: dupes } = await client.query(
+    `SELECT id FROM machines WHERE UPPER(hostname) = UPPER($1) AND id != $2`,
+    [hostname, survivorId]
+  );
+  for (const { id: dupId } of dupes) {
+    for (const t of db.MACHINE_CHILD_TABLES_NO_FK) {
+      await client.query(`DELETE FROM ${t} WHERE machine_id=$1`, [dupId]);
+    }
+    await client.query('DELETE FROM machines WHERE id=$1', [dupId]);
+  }
+}
+
+// Transação final curta (substitui integralmente a troca de PK do desenho
+// antigo): sob o MESMO advisory lock por hostname que a Fase A usa --
+// serializa contra qualquer registerMachine concorrente desse hostname.
+// Só trava a linha ANTIGA (FOR UPDATE), e só por esta transação curta --
+// nunca pelo cascade inteiro, que é o que o CRÍTICO do revisor apontou no
+// desenho anterior.
 async function _finalizeRekey({ id: jobId, old_id: oldId, new_id: newId, hostname }) {
   await db.withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext(upper($1)))', [hostname]);
 
-    // Troca a PK -- UPDATE na MESMA linha física, não recria a linha: os
-    // outros campos (hostname, agent_version, status='online', ...) já
-    // setados pela Fase A continuam lá, não precisa repetir o UPDATE deles.
-    await client.query('UPDATE machines SET id=$1 WHERE id=$2', [newId, oldId]);
-
-    // Duplicatas: outros registros com o mesmo hostname, sobra de
-    // reinstalações anteriores (mesma lógica do _rekeyAndMergeMachine
-    // síncrono original, pré-Task 4).
-    const { rows: dupes } = await client.query(
-      `SELECT id FROM machines WHERE UPPER(hostname) = UPPER($1) AND id != $2`,
-      [hostname, newId]
+    // Relê new_id da fila -- pode ter sido atualizado por uma Fase A
+    // concorrente depois do claim (o job ainda estava 'processing' quando
+    // um novo registerMachine chegou pro mesmo hostname) -- o new_id mais
+    // recente é o que deve prevalecer, não o capturado no claim.
+    const { rows: queueRows } = await client.query(
+      'SELECT new_id FROM machine_rekey_queue WHERE id=$1', [jobId]
     );
-    for (const { id: dupId } of dupes) {
-      for (const t of db.MACHINE_CHILD_TABLES_NO_FK) {
-        await client.query(`DELETE FROM ${t} WHERE machine_id=$1`, [dupId]);
-      }
-      await client.query('DELETE FROM machines WHERE id=$1', [dupId]); // cascade cuida das 10 tabelas com FK
+    const effectiveNewId = queueRows[0]?.new_id || newId;
+
+    const { rows: oldRows } = await client.query(
+      'SELECT * FROM machines WHERE id=$1 FOR UPDATE', [oldId]
+    );
+    const oldMachine = oldRows[0];
+    if (!oldMachine) {
+      // Já foi apagada por outro caminho (dedup de uma chamada concorrente?)
+      // -- nada a sincronizar, só limpa a fila.
+      await client.query(`UPDATE machine_rekey_queue SET status='done', completed_at=now() WHERE id=$1`, [jobId]);
+      return;
+    }
+
+    await _syncMutableFields(client, oldMachine, effectiveNewId);
+
+    // Resíduo: linhas escritas entre o pré-processamento em lote (fora
+    // desta transação) e agora ainda apontam pra oldId -- janela de
+    // segundos, UPDATE direto nas 15, sem lote (deve ser pouquíssimas
+    // linhas).
+    for (const table of ALL_CHILD_TABLES) {
+      await client.query(`UPDATE ${table} SET machine_id=$1 WHERE machine_id=$2`, [effectiveNewId, oldId]);
+    }
+
+    await _removeDuplicateMachines(client, hostname, effectiveNewId);
+
+    // Achado do revisor: o desenho antigo não checava rowCount depois do
+    // UPDATE que trocava a PK. Aqui o equivalente é o DELETE da linha
+    // antiga -- se vier 0, algo apagou `oldId` entre o FOR UPDATE acima e
+    // agora (não deveria ser possível dentro da mesma transação/lock) --
+    // melhor abortar (rollback, job volta pra 'pending' no catch de
+    // runCycleOnce) do que marcar 'done' silenciosamente sobre um estado
+    // inesperado.
+    const { rowCount: deletedOld } = await client.query('DELETE FROM machines WHERE id=$1', [oldId]);
+    if (deletedOld === 0) {
+      throw new Error(`esperava deletar machines.id=${oldId}, mas rowCount=0 (linha some entre o FOR UPDATE e agora?)`);
     }
 
     await client.query(
@@ -120,44 +245,50 @@ async function _finalizeRekey({ id: jobId, old_id: oldId, new_id: newId, hostnam
   });
 }
 
-// Processa 1 ciclo: pega o job pending mais antigo (se houver), pré-processa
-// em lotes (fora de transação) e finaliza (transação curta). Exportada pra
+// Processa 1 ciclo: reclama jobs travados, pega o job pending mais antigo
+// (se houver), clona a linha pro new_id, pré-processa as 15 tabelas filhas
+// em lote (fora de transação) e finaliza (transação curta). Exportada pra
 // chamada direta em teste (não só via scheduleNext/setTimeout).
 //
 // `hostnameFilter` (opcional, só teste): restringe a chamada ao job de um
-// hostname específico. 🔴 Achado rodando a suíte completa de verdade (não
-// dava pra ver num arquivo isolado): sem isso, múltiplos arquivos de teste
-// chamando runCycleOnce() em paralelo (processos Jest diferentes, mesmo
-// banco de dev compartilhado) podiam "roubar" o job de OUTRO arquivo --
-// _claimNextJob pega sempre o pending mais antigo GLOBALMENTE. Se o arquivo
-// que roubou terminasse (processo Jest encerrado) antes de concluir, o job
-// ficava preso em 'processing' pra sempre (o catch que reverte pra
-// 'pending' nunca rodava). Produção nunca passa este argumento -- o
-// scheduler real roda 1 processo por vez, sem esse risco.
+// hostname específico -- evita que múltiplos arquivos de teste rodando em
+// paralelo (mesmo banco de dev compartilhado) "roubem" o job de outro
+// arquivo (_claimNextJob pegaria sempre o pending mais antigo GLOBALMENTE).
+// Produção nunca passa este argumento.
 async function runCycleOnce(hostnameFilter) {
   if (!leaderElection.isLeader()) return { processed: false, reason: 'not-leader' };
+  await _reclaimStuckJobs();
 
   const job = await _claimNextJob(hostnameFilter);
   if (!job) return { processed: false, reason: 'no-pending-job' };
 
   try {
-    for (const table of PHASE_B_BATCH_TABLES) {
-      await db.updateMachineIdInBatches(table, job.old_id, job.new_id);
+    const cloned = await db.cloneMachineRow(job.old_id, job.new_id, crypto.randomUUID());
+    if (!cloned) {
+      // old_id já não existe -- máquina apagada durante a janela pendente,
+      // nada a clonar/migrar. Marca o job 'done' sem erro.
+      await db.getPool().query(`UPDATE machine_rekey_queue SET status='done', completed_at=now() WHERE id=$1`, [job.id]);
+      return { processed: true, job, skipped: 'old_id_gone' };
     }
+
+    await _migrateChildTablesInBatches(job.old_id, job.new_id);
     await _finalizeRekey(job);
     logger.info('[MachineRekeyWorker] job concluido', {
       hostname: job.hostname, oldId: job.old_id, newId: job.new_id,
     });
     return { processed: true, job };
   } catch (err) {
-    // Volta pra 'pending' -- deixa o próximo ciclo tentar de novo, em vez de
-    // ficar presa em 'processing' pra sempre (o que bloquearia o hostname
-    // via UNIQUE parcial, inclusive pra novas chamadas de registerMachine).
+    // Volta pra 'pending' e incrementa attempts -- deixa o próximo ciclo
+    // tentar de novo, em vez de ficar presa em 'processing' pra sempre (o
+    // que bloquearia o hostname via UNIQUE parcial, inclusive pra novas
+    // chamadas de registerMachine). Erro imediato sempre volta pra
+    // 'pending' (nunca 'failed' direto -- isso só acontece via
+    // _reclaimStuckJobs, pro caso "travado por muito tempo").
     logger.error('[MachineRekeyWorker] erro ao processar job, devolvendo pra pending', {
       error: err.message, hostname: job.hostname, jobId: job.id,
     });
     await db.getPool()
-      .query(`UPDATE machine_rekey_queue SET status='pending' WHERE id=$1`, [job.id])
+      .query(`UPDATE machine_rekey_queue SET status='pending', attempts=attempts+1 WHERE id=$1`, [job.id])
       .catch(e => logger.error('[MachineRekeyWorker] falha ao reverter job pra pending', { error: e.message }));
     throw err;
   }
