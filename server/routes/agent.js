@@ -497,7 +497,8 @@ async function _upsertServiceEntries(machineId, services) {
 router.post('/machines/:id/service-status', agentAuthNoLimit, asyncHandler(async (req, res) => {
   const { id } = req.params;
   // Mesmo ruling de /commands/:machineId acima -- aceita o new_id pendente
-  // de re-key (Task 4) enquanto a Fase B não comitou machines.id.
+  // de re-key (Task 4) enquanto a Fase B não comitou machines.id, só pra
+  // fins de AUTORIZAÇÃO.
   if (req.machine.id !== id && req.machine.pending_rekey_new_id !== id) {
     return res.status(403).json({ error: 'Token não corresponde ao machineId' });
   }
@@ -508,7 +509,11 @@ router.post('/machines/:id/service-status', agentAuthNoLimit, asyncHandler(async
   }
 
   try {
-    const written = await _upsertServiceEntries(id, services);
+    // 🔴 Achado do revisor (fix-wave pós-revisão da Task 4): grava sempre
+    // com `req.machine.id` (o id que de fato existe em `machines` nesse
+    // momento), nunca com `id` (o id do payload/params) -- mesmo quando
+    // `id` bateu com `pending_rekey_new_id` só pra autorizar a request.
+    const written = await _upsertServiceEntries(req.machine.id, services);
     if (written === 0) return res.status(400).json({ error: 'Nenhuma entrada válida em services' });
     return res.json({ ok: true });
   } catch (err) {
