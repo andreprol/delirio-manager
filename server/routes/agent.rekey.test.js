@@ -1,14 +1,22 @@
 'use strict';
 
 /**
- * Step 7 do brief da Task 4 (plano 2026-11-27-registermachine-rekey-fix):
- * ruling das 3 rotas que comparam machine.id direto (ver routes/agent.js:
+ * Step 7/15 do brief da Task 4 (plano 2026-11-27-registermachine-rekey-fix):
+ * ruling das rotas que comparam machine.id direto (ver routes/agent.js:
  * GET /api/commands/:machineId e POST /api/machines/:id/service-status;
  * routes/winEvents.js: POST /api/win-events) -- enquanto a Fase B do re-key
  * assíncrono não comitou machines.id, o agente já está usando o novo UUID
- * (pending_rekey_new_id) desde que registerMachine respondeu 201. Testa a
- * rota mais simples (GET /api/commands/:machineId) real, contra Postgres
- * real (mesmo padrão describeDb de routes/aloha.test.js).
+ * (pending_rekey_new_id) desde que registerMachine respondeu 201. Testa
+ * contra Postgres real (mesmo padrão describeDb de routes/aloha.test.js).
+ *
+ * Fix-wave pós-revisão (Step 15): achado ALTO do revisor -- service-status e
+ * win-events aceitavam o new_id pendente pra AUTORIZAR a request, mas
+ * gravavam usando esse id do payload/params em vez de `machine.id` (o id
+ * que de fato existe em `machines` até a Fase B comitar) -- win_events tem
+ * FK ativa pra machines(id), então isso virava 500 (violação de FK) em vez
+ * do 401/403 esperado. Corrigido: as duas rotas gravam sempre com
+ * `machine.id` -- ver testes "service-status: grava com machine.id" e
+ * "win-events: grava com machine.id" abaixo.
  */
 
 const express = require('express');
@@ -24,7 +32,7 @@ if (!hasDb) {
   console.warn('[agent.rekey.test] DATABASE_URL não setada -- suite pulada (ver .env.postgres.example)');
 }
 
-describeDb('GET /api/commands/:machineId -- ruling de pending_rekey_new_id (Step 7)', () => {
+describeDb('rotas do agente -- ruling de pending_rekey_new_id (Step 7) e gravação com machine.id (Step 15)', () => {
   let db, worker, app;
   const createdMachineIds = [];
 
@@ -48,6 +56,7 @@ describeDb('GET /api/commands/:machineId -- ruling de pending_rekey_new_id (Step
       await pool.query('DELETE FROM events WHERE machine_id=$1', [id]);
       await pool.query('DELETE FROM nfce_auto_email_log WHERE machine_id=$1', [id]);
       await pool.query('DELETE FROM service_status WHERE machine_id=$1', [id]);
+      await pool.query('DELETE FROM win_events WHERE machine_id=$1', [id]);
       await pool.query('DELETE FROM deleted_machines WHERE id=$1', [id]);
       await pool.query('DELETE FROM machines WHERE id=$1', [id]);
     }
@@ -79,11 +88,16 @@ describeDb('GET /api/commands/:machineId -- ruling de pending_rekey_new_id (Step
     }
   }
 
+  // Monta as 2 rotas do agente (agent.js + winEvents.js) no mesmo app --
+  // reusado por todos os testes deste arquivo, inclusive os de Step 15
+  // (service-status/win-events) que precisam de winEvents.js.
   function makeApp() {
-    const router = require('./agent');
+    const agentRouter = require('./agent');
+    const winEventsRouter = require('./winEvents');
     const a = express();
     a.use(express.json());
-    a.use('/api', router);
+    a.use('/api', agentRouter);
+    a.use('/api', winEventsRouter);
     return a;
   }
 
@@ -128,5 +142,53 @@ describeDb('GET /api/commands/:machineId -- ruling de pending_rekey_new_id (Step
       .get(`/api/commands/${crypto.randomUUID()}`) // UUID aleatório, não relacionado
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(403);
+  });
+
+  it('service-status: grava com machine.id (oldId), nunca com o newId do path, durante a janela pendente', async () => {
+    const hostname = `REKEY-SVC-${crypto.randomUUID().slice(0, 8)}`;
+    const oldId = trackMachine(crypto.randomUUID());
+    const token = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+
+    const newId = trackMachine(crypto.randomUUID());
+    await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' }); // enfileira o re-key, machines.id ainda é oldId
+
+    app = makeApp();
+    const res = await request(app)
+      .post(`/api/machines/${newId}/service-status`) // agente já usa o newId no path
+      .set('Authorization', `Bearer ${token}`)
+      .send({ services: [{ name: 'NCRPOS', status: 'running' }] });
+
+    expect(res.status).toBe(200);
+
+    const { rows: onOld } = await db.getPool().query('SELECT 1 FROM service_status WHERE machine_id=$1', [oldId]);
+    expect(onOld).toHaveLength(1); // gravou com machine.id (oldId), não com newId do path
+    const { rows: onNew } = await db.getPool().query('SELECT 1 FROM service_status WHERE machine_id=$1', [newId]);
+    expect(onNew).toHaveLength(0);
+  });
+
+  it('win-events: grava com machine.id (oldId), nunca com o machineId do body, durante a janela pendente', async () => {
+    const hostname = `REKEY-WINEV-${crypto.randomUUID().slice(0, 8)}`;
+    const oldId = trackMachine(crypto.randomUUID());
+    const token = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+
+    const newId = trackMachine(crypto.randomUUID());
+    await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' }); // enfileira o re-key, machines.id ainda é oldId
+
+    app = makeApp();
+    const res = await request(app)
+      .post('/api/win-events')
+      .send({
+        machineId: newId, // agente já usa o newId no body
+        token,
+        events: [{ eventTime: new Date().toISOString(), eventId: 41, source: 'Kernel', level: 'Error', translation: 'teste' }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.saved).toBe(1);
+
+    const onOld = await db.getWinEvents(oldId, 'all');
+    expect(onOld).toHaveLength(1); // gravou com machine.id (oldId), não com o machineId do body
+    const onNew = await db.getWinEvents(newId, 'all');
+    expect(onNew).toHaveLength(0);
   });
 });

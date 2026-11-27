@@ -93,22 +93,66 @@ describeDb('machineRekeyWorker (Fase B)', () => {
     if (extra.location) await db.updateMachine(id, { location: extra.location });
   }
 
-  it('Step 6: processa 1 job pending -- migra em lote as tabelas grandes/sem FK (activity_log, nfce_index, events, commands), troca machines.id, remove duplicata e marca done', async () => {
+  // Pelo menos 1 linha em cada uma das 15 tabelas de ALL_CHILD_TABLES --
+  // inclui as 2 grandes com FK (activity_log/nfce_index, pré-processadas em
+  // lote agora que new_id é clonado antes de qualquer UPDATE filho, ver
+  // cloneMachineRow) e as 3 SEM coluna `id` própria (nfce_indexed_days,
+  // nfce_auto_email_log, service_status -- migradas via
+  // updateMachineIdDirect, não updateMachineIdInBatches).
+  async function seedAllChildTables(machineId) {
+    await db.insertActivityLog(machineId, 'Bloco de Notas', 'notepad.exe');
+    await db.upsertNFCeRecords(machineId, [{ chave: crypto.randomUUID(), n_nf: 1, dh_emi: '2026-01-01T00:00:00', v_nf: 10 }]);
+    await db.createCommand(machineId, 'ping', {});
+    await db.addEvent(machineId, 'teste', 'evento antes do re-key');
+    await db.saveInsight({ machineId, severity: 'warning', pattern: 'p', patternHash: crypto.randomUUID() });
+    await db.insertDRBackup(machineId, { backedAt: new Date().toISOString(), status: 'ok', storageGb: 1 });
+    await db.createLiveSession(machineId, 'normal');
+    await db.insertMetricsHourly(machineId, { snapshotTs: Math.floor(Date.now() / 1000), cpuPct: 1, ramPct: 1, diskPct: 1, cpuTempC: 40 });
+    await db.insertOfflineEvent(machineId, { offlineAt: new Date().toISOString(), onlineAt: new Date().toISOString(), durationMin: 5 });
+    await db.markNFCeDayIndexed(machineId, '2026-01-01', 3); // sem coluna id (PK composta machine_id+day_key)
+    await db.insertReadingMiss(machineId, { expectedHour: 10, machineStatus: 'offline' });
+    await db.saveMetrics(machineId, { cpuPct: 10 });
+    await db.claimAutoEmail(crypto.randomUUID(), machineId, 'loja@exemplo.com'); // sem coluna id (PK em `chave`)
+    await db.upsertServiceStatus(machineId, 'NCRPOS', 'running', null, null); // sem coluna id (PK composta machine_id+service_name)
+  }
+
+  // Confirma que as 15 tabelas migraram pro novo id -- 1 linha cada,
+  // incluindo as 3 sem coluna `id` (updateMachineIdDirect).
+  async function expectAllChildTablesMigrated(machineId) {
+    expect(await db.getActivityLog(machineId, 10)).toHaveLength(1);
+    const { rows: nfce } = await db.getPool().query('SELECT 1 FROM nfce_index WHERE machine_id=$1', [machineId]);
+    expect(nfce).toHaveLength(1);
+    expect(await db.getCommandHistory(machineId, 10)).toHaveLength(1);
+    expect(await db.getEvents(machineId, 10)).toHaveLength(1);
+    expect(await db.getInsights({ machineId })).toHaveLength(1);
+    const { rows: drBackups } = await db.getPool().query('SELECT 1 FROM dr_backups WHERE machine_id=$1', [machineId]);
+    expect(drBackups).toHaveLength(1);
+    const { rows: liveSessions } = await db.getPool().query('SELECT 1 FROM live_sessions WHERE machine_id=$1', [machineId]);
+    expect(liveSessions).toHaveLength(1);
+    const { rows: hourly } = await db.getPool().query('SELECT 1 FROM machine_metrics_hourly WHERE machine_id=$1', [machineId]);
+    expect(hourly).toHaveLength(1);
+    const { rows: offlineEvents } = await db.getPool().query('SELECT 1 FROM machine_offline_events WHERE machine_id=$1', [machineId]);
+    expect(offlineEvents).toHaveLength(1);
+    expect(await db.getIndexedDayKeysSet(machineId)).toEqual(new Set(['2026-01-01'])); // sem coluna id
+    const { rows: readingMiss } = await db.getPool().query('SELECT 1 FROM reading_miss_events WHERE machine_id=$1', [machineId]);
+    expect(readingMiss).toHaveLength(1);
+    expect(await db.getMetrics(machineId, 24)).toHaveLength(1);
+    const { rows: autoEmail } = await db.getPool().query('SELECT 1 FROM nfce_auto_email_log WHERE machine_id=$1', [machineId]);
+    expect(autoEmail).toHaveLength(1); // sem coluna id
+    const { rows: svcStatus } = await db.getPool().query('SELECT 1 FROM service_status WHERE machine_id=$1', [machineId]);
+    expect(svcStatus).toHaveLength(1); // sem coluna id
+  }
+
+  it('clone-and-swap: clona old_id -> new_id, migra em lote TODAS as 15 tabelas filhas (as 10 com FK + as 5 sem FK, incluindo as 3 sem coluna id), remove duplicata e marca done', async () => {
     const hostname = `WORKER-${crypto.randomUUID().slice(0, 8)}`;
     const oldId = trackMachine(crypto.randomUUID());
     const newId = trackMachine(crypto.randomUUID());
     await insertMachine(oldId, hostname);
-
-    // Popula as 2 tabelas grandes com FK (pré-processadas em lote por
-    // updateMachineIdInBatches) + as 2 sem FK que a Fase A deixa pra Fase B.
-    await db.insertActivityLog(oldId, 'Bloco de Notas', 'notepad.exe');
-    await db.upsertNFCeRecords(oldId, [{ chave: crypto.randomUUID(), n_nf: 1, dh_emi: '2026-01-01T00:00:00', v_nf: 10 }]);
-    await db.createCommand(oldId, 'ping', {});
-    await db.addEvent(oldId, 'teste', 'evento antes do re-key');
+    await seedAllChildTables(oldId);
 
     // Duplicata (sobra de reinstalação anterior) com filho COM FK
     // (win_events) e filho SEM FK (metrics) -- dedup é parte da MESMA
-    // transação de finalização (Step 3.5 do brief).
+    // transação de finalização.
     const dupId = crypto.randomUUID(); // não rastreado -- a própria Fase B deve apagar
     await insertMachine(dupId, hostname);
     await db.saveMetrics(dupId, { cpuPct: 77 });
@@ -117,7 +161,7 @@ describeDb('machineRekeyWorker (Fase B)', () => {
     }]);
 
     // Job enfileirado diretamente (sem passar pela Fase A de registerMachine
-    // -- Step 6 do brief pede cobertura isolada da Fase B).
+    // -- cobertura isolada da Fase B).
     await db.getPool().query(
       `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status) VALUES ($1,$2,$3,'pending')`,
       [oldId, newId, hostname]
@@ -125,18 +169,14 @@ describeDb('machineRekeyWorker (Fase B)', () => {
 
     await runUntilDone(hostname);
 
-    expect(await db.getMachineById(oldId)).toBeUndefined();
+    expect(await db.getMachineById(oldId)).toBeUndefined(); // linha antiga DELETADA (não re-chaveada no lugar)
     expect(await db.getMachineById(dupId)).toBeUndefined(); // duplicata removida
 
     const newMachine = await db.getMachineById(newId);
     expect(newMachine).toBeDefined();
     expect(newMachine.hostname).toBe(hostname);
 
-    expect(await db.getActivityLog(newId, 10)).toHaveLength(1);
-    const { rows: nfce } = await db.getPool().query('SELECT 1 FROM nfce_index WHERE machine_id=$1', [newId]);
-    expect(nfce).toHaveLength(1);
-    expect(await db.getCommandHistory(newId, 10)).toHaveLength(1);
-    expect(await db.getEvents(newId, 10)).toHaveLength(1);
+    await expectAllChildTablesMigrated(newId);
 
     // Filhos da duplicata -- nem migrados, nem sobrando (foram apagados
     // junto da duplicata, não junto da máquina sobrevivente).
@@ -149,6 +189,109 @@ describeDb('machineRekeyWorker (Fase B)', () => {
     );
     expect(queueRows).toHaveLength(1);
     expect(queueRows[0].status).toBe('done');
+  });
+
+  it('CRÍTICO (achado do revisor): heartbeat do MESMO agente não trava durante a Fase B -- nunca segura a linha old_id por mais que a transação final curta', async () => {
+    const hostname = `WORKER-HEARTBEAT-${crypto.randomUUID().slice(0, 8)}`;
+    const oldId = trackMachine(crypto.randomUUID());
+    const newId = trackMachine(crypto.randomUUID());
+    await insertMachine(oldId, hostname);
+
+    // Algumas centenas de linhas em activity_log -- não precisa simular os
+    // 23GB reais do incidente, só garantir que o pré-processamento em lote
+    // tem trabalho de verdade pra fazer enquanto o heartbeat concorrente
+    // dispara (títulos distintos pra não colidir com o dedupe de
+    // insertActivityLog).
+    for (let i = 0; i < 200; i++) {
+      await db.insertActivityLog(oldId, `Janela ${i}`, 'app.exe');
+    }
+
+    await db.getPool().query(
+      `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status) VALUES ($1,$2,$3,'pending')`,
+      [oldId, newId, hostname]
+    );
+
+    const cyclePromise = worker.runCycleOnce(hostname);
+
+    // 1 tick pro clone + início do pré-processamento em lote começarem
+    // antes de disparar o heartbeat concorrente (sem isso, corremos o risco
+    // de medir um heartbeat que terminou ANTES do ciclo nem começar a
+    // tocar a linha antiga).
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    const heartbeatStart = Date.now();
+    await db.setMachineStatus(oldId, 'online'); // mesmo UPDATE machines ... WHERE id=oldId que um heartbeat real dispara (routes/agent.js)
+    const heartbeatMs = Date.now() - heartbeatStart;
+
+    // O CRÍTICO do revisor: no desenho antigo (UPDATE machines SET id=...
+    // segurando o advisory lock durante TODO o cascade residual de
+    // activity_log/nfce_index), este UPDATE ficaria preso esperando o row
+    // lock da linha old_id -- reproduzindo o incidente original de dentro
+    // do worker. Limiar bem generoso (1s): no desenho novo, a linha antiga
+    // só é travada (FOR UPDATE) dentro da transação final CURTA, nunca
+    // durante o pré-processamento em lote.
+    expect(heartbeatMs).toBeLessThan(1000);
+
+    await cyclePromise; // garante que o ciclo termina de verdade, sem deixar promise solta
+    expect(await db.getMachineById(oldId)).toBeUndefined();
+    expect(await db.getMachineById(newId)).toBeDefined();
+  });
+
+  it('job preso em processing com claimed_at antigo é resetado pra pending e reclamado no mesmo ciclo', async () => {
+    const hostname = `WORKER-STUCK-${crypto.randomUUID().slice(0, 8)}`;
+    const oldId = trackMachine(crypto.randomUUID());
+    const newId = trackMachine(crypto.randomUUID());
+    await insertMachine(oldId, hostname);
+
+    const { rows } = await db.getPool().query(
+      `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status, claimed_at, attempts)
+       VALUES ($1,$2,$3,'processing', now() - interval '10 minutes', 0)
+       RETURNING id`,
+      [oldId, newId, hostname]
+    );
+    const jobId = rows[0].id;
+
+    // runCycleOnce(hostname) roda _reclaimStuckJobs() logo no início (antes
+    // do claim) -- o job preso vira 'pending' (attempts incrementado) e é
+    // reclamado na MESMA chamada, concluindo o re-key.
+    await runUntilDone(hostname);
+
+    const { rows: after } = await db.getPool().query(
+      'SELECT status, attempts FROM machine_rekey_queue WHERE id=$1', [jobId]
+    );
+    expect(after[0].status).toBe('done');
+    expect(after[0].attempts).toBeGreaterThanOrEqual(1);
+    expect(await db.getMachineById(newId)).toBeDefined();
+  });
+
+  it('job travado que já esgotou attempts vira failed -- para de ser reclamado automaticamente', async () => {
+    const hostname = `WORKER-FAILED-${crypto.randomUUID().slice(0, 8)}`;
+    const oldId = trackMachine(crypto.randomUUID());
+    const newId = trackMachine(crypto.randomUUID());
+    await insertMachine(oldId, hostname);
+
+    // attempts=4: a próxima reclamação (_reclaimStuckJobs, MAX_ATTEMPTS=5)
+    // incrementa pra 5 e marca 'failed' em vez de devolver pra 'pending'.
+    const { rows } = await db.getPool().query(
+      `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status, claimed_at, attempts)
+       VALUES ($1,$2,$3,'processing', now() - interval '10 minutes', 4)
+       RETURNING id`,
+      [oldId, newId, hostname]
+    );
+    const jobId = rows[0].id;
+
+    const result = await worker.runCycleOnce(hostname);
+    expect(result).toEqual({ processed: false, reason: 'no-pending-job' }); // virou 'failed', não 'pending' -- nada pra reclamar
+
+    const { rows: after } = await db.getPool().query(
+      'SELECT status, attempts FROM machine_rekey_queue WHERE id=$1', [jobId]
+    );
+    expect(after[0].status).toBe('failed');
+    expect(after[0].attempts).toBe(5);
+
+    // Máquina antiga nunca foi tocada -- o job falhou antes de qualquer claim.
+    expect(await db.getMachineById(oldId)).toBeDefined();
+    expect(await db.getMachineById(newId)).toBeUndefined();
   });
 
   it('Step 6: idempotência -- rodar o worker de novo depois do job já done não duplica nem quebra', async () => {

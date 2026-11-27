@@ -130,19 +130,17 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       expect(events.some(e => e.type === 'agent_installed')).toBe(true);
     });
 
-    it('caso 2: re-key por hostname -- Fase A enfileira e marca online rápido SEM tocar nas tabelas grandes/Fase B; Fase B migra filhos COM FK e SEM FK, preserva token', async () => {
+    it('caso 2: re-key por hostname -- Fase A enfileira e marca online rápido SEM tocar NENHUMA tabela filha; Fase B (clone-and-swap) migra todas, preserva token, apaga a linha antiga', async () => {
       const hostname = `REKEY-${crypto.randomUUID().slice(0, 8)}`;
       const oldId = trackMachine(crypto.randomUUID());
       const originalToken = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
 
-      // Popula filho COM FK (win_events), filho SEM FK da Fase A (metrics),
-      // o caso específico do `insights` (tinha FK mas NUNCA esteve na lista
+      // Popula filho COM FK (win_events), filho SEM FK (metrics), o caso
+      // específico do `insights` (tinha FK mas NUNCA esteve na lista
       // _MACHINE_CHILD_TABLES do SQLite original -- bug corrigido de graça
-      // no port original, ver comentário em registerMachine) e um filho SEM
-      // FK que agora é da Fase B (commands) -- usado abaixo pra provar que
-      // a Fase A nunca toca nele (Step 5 do brief: ela só toca
-      // metrics/nfce_auto_email_log/service_status/machines/
-      // machine_rekey_queue).
+      // no port original, ver comentário em registerMachine) e outro filho
+      // SEM FK (commands) -- usados abaixo pra provar que a Fase A (fix-wave
+      // pós-revisão, Step 10 do brief) não toca NENHUM deles, só a Fase B.
       await db.saveWinEvents(oldId, [{
         eventTime: new Date().toISOString(), eventId: 41, source: 'Kernel', level: 'Error', translation: 'Antes do re-key',
       }]);
@@ -155,17 +153,17 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       expect(returnedToken).toBe(originalToken); // token do canonical, já preservado na Fase A
 
       // ── Fase A (síncrona, dentro de registerMachine) já terminou ──
-      // machines.id AINDA é oldId -- só a Fase B troca isso.
+      // machines.id AINDA é oldId -- só a Fase B (clone-and-swap) troca isso.
       const oldMachineAfterPhaseA = await db.getMachineById(oldId);
       expect(oldMachineAfterPhaseA).toBeDefined();
       expect(oldMachineAfterPhaseA.agent_version).toBe('2.0'); // já refletido, sem esperar o worker
       expect(oldMachineAfterPhaseA.status).toBe('online');
-      expect(await db.getMachineById(newId)).toBeUndefined(); // a linha só passa a existir com esse id na Fase B
+      expect(await db.getMachineById(newId)).toBeUndefined(); // a linha só passa a existir com esse id na Fase B (clone)
 
-      // metrics (tabela pequena sem FK da Fase A) já migrou...
-      expect(await db.getMetrics(newId, 24)).toHaveLength(1);
-      // ...mas commands (Fase B) e os filhos COM FK (cascade, só acontece
-      // quando machines.id trocar na Fase B) continuam no oldId.
+      // NENHUMA tabela filha migrou ainda -- Fase A (pós fix-wave) não toca
+      // tabela filha nenhuma, nem as pequenas sem FK.
+      expect(await db.getMetrics(newId, 24)).toHaveLength(0);
+      expect(await db.getMetrics(oldId, 24)).toHaveLength(1);
       expect(await db.getCommandHistory(newId, 10)).toHaveLength(0);
       expect(await db.getCommandHistory(oldId, 10)).toHaveLength(1);
       expect(await db.getWinEvents(newId, 'all')).toHaveLength(0);
@@ -188,15 +186,15 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       // ── Fase B (worker, chamada direta -- não via setTimeout) ──
       await runWorkerUntilDone(hostname);
 
-      expect(await db.getMachineById(oldId)).toBeUndefined(); // oldId não existe mais (foi re-keyed pro newId)
+      expect(await db.getMachineById(oldId)).toBeUndefined(); // oldId não existe mais -- a linha foi DELETADA (clone-and-swap), não re-chaveada no lugar
 
       const newMachine = await db.getMachineById(newId);
       expect(newMachine.token).toBe(originalToken);
       expect(newMachine.agent_version).toBe('2.0');
 
-      expect(await db.getWinEvents(newId, 'all')).toHaveLength(1); // migrado via ON UPDATE CASCADE
-      expect(await db.getMetrics(newId, 24)).toHaveLength(1); // já migrado na Fase A, continua lá
-      expect(await db.getInsights({ machineId: newId })).toHaveLength(1); // migrado via ON UPDATE CASCADE
+      expect(await db.getWinEvents(newId, 'all')).toHaveLength(1); // migrado em lote (updateMachineIdInBatches, Fase B)
+      expect(await db.getMetrics(newId, 24)).toHaveLength(1); // migrado em lote (updateMachineIdDirect/InBatches, Fase B)
+      expect(await db.getInsights({ machineId: newId })).toHaveLength(1); // migrado em lote (Fase B)
       expect(await db.getCommandHistory(newId, 10)).toHaveLength(1); // migrado em lote pela Fase B (updateMachineIdInBatches)
 
       const { rows: queueAfter } = await db.getPool().query(
@@ -251,6 +249,31 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       expect(rows[0].new_id).toBe(machineId2); // o mais recente prevalece (machineId1 nunca foi aplicado)
 
       await runWorkerUntilDone(hostname); // limpeza -- processa o job antes do afterEach
+    });
+
+    it('hostname em case diferente não cria 2 jobs ativos -- UNIQUE por UPPER(hostname) (Step 9/10 do brief, fix-wave pós-revisão)', async () => {
+      const base = `CaseTest-${crypto.randomUUID().slice(0, 8)}`;
+      const oldId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: oldId, hostname: base, agentVersion: '1.0' });
+
+      const newId1 = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: newId1, hostname: base.toUpperCase(), agentVersion: '2.0' });
+
+      const newId2 = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: newId2, hostname: base.toLowerCase(), agentVersion: '3.0' });
+
+      // A coluna `hostname` da fila nunca é reescrita depois do 1º INSERT
+      // (só `new_id` é atualizado -- ver _rekeyAndMergeMachine) -- por isso
+      // o UPPER() na query, não o valor exato de `base`.
+      const { rows } = await db.getPool().query(
+        'SELECT old_id, new_id, hostname, status FROM machine_rekey_queue WHERE UPPER(hostname) = UPPER($1)', [base]
+      );
+      expect(rows).toHaveLength(1); // nunca 2 jobs ativos, mesmo com hostname chegando em case diferente
+      expect(rows[0].status).toBe('pending');
+      expect(rows[0].old_id).toBe(oldId);
+      expect(rows[0].new_id).toBe(newId2); // o mais recente prevalece (newId1 nunca foi aplicado)
+
+      await runWorkerUntilDone(base); // limpeza -- o hostname armazenado na fila é o original (base), nunca sobrescrito
     });
 
     it('2 chamadas concorrentes pro MESMO hostname (machineIds diferentes) não perdem nenhuma máquina/filho', async () => {
