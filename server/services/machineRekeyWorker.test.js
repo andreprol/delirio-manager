@@ -200,11 +200,16 @@ describeDb('machineRekeyWorker (Fase B)', () => {
     // Algumas centenas de linhas em activity_log -- não precisa simular os
     // 23GB reais do incidente, só garantir que o pré-processamento em lote
     // tem trabalho de verdade pra fazer enquanto o heartbeat concorrente
-    // dispara (títulos distintos pra não colidir com o dedupe de
-    // insertActivityLog).
-    for (let i = 0; i < 200; i++) {
-      await db.insertActivityLog(oldId, `Janela ${i}`, 'app.exe');
-    }
+    // dispara. INSERT direto em 1 round-trip (não via db.insertActivityLog,
+    // que faz 1 SELECT de dedupe + 1 INSERT por chamada -- 200 chamadas
+    // sequenciais contra o Postgres de dev via rede real excediam o timeout
+    // de 5s do Jest só no SETUP, antes mesmo de medir o heartbeat).
+    await db.getPool().query(
+      `INSERT INTO activity_log (machine_id, window_title, process_name, captured_at)
+       SELECT $1, 'Janela ' || g, 'app.exe', now() - (g || ' seconds')::interval
+       FROM generate_series(1, 200) AS g`,
+      [oldId]
+    );
 
     await db.getPool().query(
       `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status) VALUES ($1,$2,$3,'pending')`,

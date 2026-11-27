@@ -273,7 +273,12 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       expect(rows[0].old_id).toBe(oldId);
       expect(rows[0].new_id).toBe(newId2); // o mais recente prevalece (newId1 nunca foi aplicado)
 
-      await runWorkerUntilDone(base); // limpeza -- o hostname armazenado na fila é o original (base), nunca sobrescrito
+      // Limpeza -- _claimNextJob(hostnameFilter) compara hostname exato
+      // (case-sensitive), e a coluna armazenada na fila é o case da 2ª
+      // chamada (base.toUpperCase(), que criou a linha -- linha 265-267
+      // acima), nunca o `base` original. Passar `base` aqui faria o filtro
+      // nunca achar a linha (🔴 achado ao vivo: "status atual: undefined").
+      await runWorkerUntilDone(base.toUpperCase());
     });
 
     it('2 chamadas concorrentes pro MESMO hostname (machineIds diferentes) não perdem nenhuma máquina/filho', async () => {
