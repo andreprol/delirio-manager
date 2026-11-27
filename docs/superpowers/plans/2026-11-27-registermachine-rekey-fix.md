@@ -117,7 +117,7 @@ termina a tempo, e tenta de novo.
   instável lá causando reinstalls/reboots frequentes do agente — vale
   perguntar pro André se Città teve incidente de rede/hardware recente
 - **O que acontece com o agente enquanto o re-key nunca completa**: ele
-  争enta de novo no próximo heartbeat, criando uma NOVA tentativa
+  tenta de novo no próximo heartbeat, criando uma NOVA tentativa
   igualmente cara, sem nunca progredir — qualquer fix precisa quebrar
   esse ciclo, não só tornar uma tentativa mais rápida
 - **Replicar a correção de índice ausente da Task 3 do achado de hoje**
@@ -127,32 +127,97 @@ termina a tempo, e tenta de novo.
 
 ---
 
-## Task 1: Auditar por que `activity_log` tem 59M linhas em 3 meses
+## Task 1: Por que `activity_log` tem 59M linhas em 3 meses — RESPONDIDO
 
-**Pergunta do André, tem que responder antes de decidir o resto**: é
-taxa de escrita normal (polling de janela/processo) ou tem algo
-duplicando/logando demais?
+**Causa confirmada, não é bug de duplicação, é o próprio desenho**:
+`agent/companion.go:98-123` manda `POST /api/activity` a cada
+**4 segundos**, por máquina, o tempo todo — e `server/routes/activity.js:18`
+insere uma linha NOVA em `activity_log` em TODA chamada, sem checar se
+`windowTitle`/`processName` mudou desde a última. Alguém parado na
+mesma janela por 1 hora gera 900 linhas idênticas.
 
-- [ ] **Step 1**: calcular a taxa esperada — `59.040.708 / 130 máquinas
-  / ~90 dias = ~5.043 linhas/dia/máquina = ~3,5/min`. Comparar com o
-  intervalo de captura real do agente (ler `agent/` pra achar de quanto
-  em quanto tempo ele manda atividade de janela/processo)
-- [ ] **Step 2**: olhar uma amostra real de `activity_log` pra uma
-  máquina específica — tem linha duplicada/repetida sem mudança de
-  estado? Tem ruído (ex. heartbeat de erro logado como atividade)?
-- [ ] **Step 3**: confirmar se a retenção (`activityRetention.js`,
-  90 dias) está realmente rodando e com o parâmetro certo — hoje só
-  removeu "3 linhas" na última execução (log de hoje), o que é
-  suspeito baixo pra uma tabela desse tamanho rodando há 3 meses
-  (esperado: zero ainda faz sentido SE a retenção for exatamente 90
-  dias e o app tiver exatamente ~90 dias de vida — confirmar a data
-  real de início de produção antes de concluir)
-- [ ] **Step 4**: reportar pro André o veredito — "é esperado dado o
-  volume de agentes" vs "tem um bug jogando linha demais" — decisão
-  sobre reduzir frequência de captura ou agregar fica pra depois desse
-  veredito, não decidir sozinho
+Conta bate: `59.040.708 / 130 máquinas ≈ 454K linhas/máquina`. Num
+comércio com ~12h/dia de operação, isso é consistente com meses de
+captura sem dedupe — **não precisa de mais auditoria, a causa já está
+clara**: falta dedupe no insert. Vira a Task 2 abaixo (mover pro código,
+a parte que realmente dá pra consertar agora).
 
-## Task 2: Parar o loop ativo das máquinas presas
+- [ ] Confirmar com o André (não bloqueante pro resto): Città teve
+  mais reinstalls/reboots de agente que outras lojas no período? (pista
+  pro padrão geográfico achado na Task 3 de identificação das máquinas
+  presas, ver Review Focus) — pergunta assíncrona, não impede seguir
+
+## Task 2: Dedupe no insert de `activity_log` (resolve a causa da Task 1)
+
+**Produces:** `insertActivityLog` muda de assinatura (ver Interfaces) —
+Task 3/4 não dependem disso, é independente.
+
+- [ ] **Step 1: Escrever o teste que falha**
+
+Em `server/db-pg.test.js` (ou arquivo de teste equivalente de
+`insertActivityLog` já existente — verificar antes de criar um novo):
+
+```js
+it('nao insere linha nova quando windowTitle e processName sao iguais aos da ultima captura dessa maquina', async () => {
+  const first = await db.insertActivityLog(machineId, 'Chrome - abc', 'chrome.exe');
+  const second = await db.insertActivityLog(machineId, 'Chrome - abc', 'chrome.exe');
+  expect(second.id).toBe(first.id); // mesma linha, nao criou outra
+  const { rows } = await pool.query('SELECT count(*) c FROM activity_log WHERE machine_id=$1', [machineId]);
+  expect(Number(rows[0].c)).toBe(1);
+});
+
+it('insere linha nova quando windowTitle muda', async () => {
+  const first = await db.insertActivityLog(machineId, 'Chrome - abc', 'chrome.exe');
+  const second = await db.insertActivityLog(machineId, 'Excel - xyz', 'excel.exe');
+  expect(second.id).not.toBe(first.id);
+});
+```
+
+- [ ] **Step 2: Rodar e confirmar que falha**
+
+Run: `npx jest db-pg.test.js -t "dedupe"` (ou nome do describe
+correspondente)
+Expected: FAIL — hoje toda chamada cria linha nova
+
+- [ ] **Step 3: Implementar o dedupe em `insertActivityLog`
+  (`server/db-pg.js:1214`)**
+
+Schema atual confirmado (sem migration necessária): `activity_log
+(machine_id, window_title, process_name, captured_at)`. Antes do
+`INSERT`, buscar a última linha dessa `machine_id`
+(`SELECT id, window_title, process_name FROM activity_log WHERE
+machine_id=$1 ORDER BY captured_at DESC, id DESC LIMIT 1` — usa o
+índice existente em `machine_id`, não varre a tabela). Se
+`window_title` e `process_name` baterem com essa última linha, **não
+insere uma nova** — em vez disso faz
+`UPDATE activity_log SET captured_at=$1 WHERE id=$2` na MESMA linha
+(estende o "visto por último" sem criar coluna nova; `getActivityLog`
+já ordena por `captured_at`, continua funcionando igual). Se não
+houver linha anterior, ou os valores mudaram, insere normalmente como
+hoje. Retorno da função continua `{ id, capturedAt }` nos dois casos
+(builder decide se `id` no caso de update é o id da linha existente —
+deve ser).
+
+- [ ] **Step 4: Rodar e confirmar que passa**
+
+Run: `npx jest db-pg.test.js -t "dedupe"`
+Expected: PASS
+
+- [ ] **Step 5: Rodar a suíte completa do server**
+
+Run: `cd server && npx jest`
+Expected: PASS, nenhum teste existente quebrado (checar
+especialmente `activity.test.js`, que testa a rota que chama essa
+função)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add server/db-pg.js server/db-pg.test.js
+git commit -m "fix(server): dedupe insert de activity_log quando janela/processo nao muda"
+```
+
+## Task 3: Parar o loop ativo das máquinas presas
 
 - [ ] **Step 1**: reidentificar as 9 máquinas presas agora (os objids
   mudam a cada nova tentativa, repetir a query de hash reverso)
@@ -170,37 +235,81 @@ duplicando/logando demais?
   hostname numa janela curta, parar de tentar e alertar (em vez de
   martelar o banco a cada heartbeat)
 
-## Task 3: Tornar o re-key rápido independente do volume histórico
+## Task 4: Tornar o re-key rápido independente do volume histórico
 
 **A correção estrutural de verdade** — sem isso, qualquer máquina
 antiga/ativa vai travar de novo no dia que precisar re-key, não importa
-o que a Task 2 resolva.
+o que a Task 3 resolva (a Task 2/dedupe reduz o RITMO de crescimento
+futuro, mas o histórico já acumulado continua existindo e ainda precisa
+ser rekeyável sem travar).
 
-- [ ] **Step 1**: separar `_rekeyAndMergeMachine` em duas fases —
-  **Fase A (síncrona, na transação com o lock)**: só atualiza
-  `machines` em si + tabelas pequenas (`metrics`, `commands`, `events`,
-  `nfce_auto_email_log`, `service_status` — confirmar tamanho real de
-  cada uma antes de assumir "pequena"). Responde sucesso pro agente
-  assim que Fase A termina (deve ser questão de milissegundos).
-  **Fase B (assíncrona, fora da transação crítica)**: reescreve
-  `machine_id` nas tabelas grandes (`activity_log` em primeiro lugar)
-  em BATCHES pequenos (mesmo padrão de `deleteInBatches` já usado em
-  `activityRetention.js`), sem seguir o advisory lock do hostname
-  (já não precisa mais — o re-key "oficial" já aconteceu na Fase A)
-- [ ] **Step 2**: escrever teste provando que Fase A completa em
-  milissegundos mesmo com uma tabela `activity_log` de teste com
-  centenas de milhares de linhas simuladas pra aquela máquina
-- [ ] **Step 3**: escrever teste provando que Fase B eventualmente
-  migra todas as linhas (idempotente, retomável se o processo cair no
-  meio)
-- [ ] **Step 4**: decidir e documentar: enquanto a Fase B não termina
-  pra uma máquina, uma leitura de `activity_log` filtrando pelo UUID
-  NOVO não vai achar o histórico antigo (ele ainda está com o UUID
-  velho) — se isso importa pra alguma tela do dashboard, precisa de um
-  `UNION`/fallback temporário ou aceitar a janela de inconsistência
-  (builder decide com base no uso real da tela de atividade)
+**Tamanho real de cada tabela envolvida (medido ao vivo, 27/11/2026)** —
+isso MUDA o desenho original deste plano, não é só `activity_log`:
 
-## Task 4: Índice ausente + teto de timeout oficializado
+| Tabela | Linhas (aprox) | Tamanho | Tipo | Fase |
+|---|---|---|---|---|
+| `activity_log` | 59,0M | 23 GB | FK (cascade) | **B** |
+| `nfce_index` | 3,97M | 7,5 GB | FK (cascade) | **B** |
+| `events` | 83K | 3,1 GB | manual | **B** |
+| `commands` | 30K | 2,3 GB | manual | **B** |
+| `metrics` | 78K | 164 MB | manual | A |
+| `machine_metrics_hourly` | 298K | 101 MB | FK | A |
+| `reading_miss_events` | 40K | 14 MB | FK | A |
+| `insights` | 13,6K | 10 MB | FK (sem índice — Task 5) | A |
+| demais (6 tabelas) | <4K cada | <1,2 MB cada | FK/manual | A |
+
+**Achado importante que muda a arquitetura**: `activity_log` e
+`nfce_index` são FK com `ON UPDATE CASCADE` — o Postgres dispara a
+reescrita das DUAS junto com as outras 8 FK tables **na mesma instrução
+`UPDATE machines SET id=$1 WHERE id=$2`**, atomicamente, não dá pra
+"adiar só uma parte do cascade". Então não dá pra manter esse UPDATE
+síncrono e só adiar a tabela grande — **o UPDATE em `machines.id` em si
+precisa virar assíncrono** quando qualquer tabela grande estiver
+envolvida (hoje, sempre, já que `activity_log` cresce sem parar).
+
+- [ ] **Step 1**: criar uma tabela nova `machine_rekey_queue (old_id,
+  new_id, hostname, status, created_at, completed_at)` via migration
+  (tabela pequena, sem risco)
+- [ ] **Step 2**: reescrever `_rekeyAndMergeMachine` em duas fases —
+  **Fase A (síncrona, ainda dentro da transação com o advisory lock,
+  deve ser questão de milissegundos)**: atualiza as tabelas pequenas
+  (`metrics`, `nfce_auto_email_log`, `service_status` + as 6 FK
+  pequenas — a Fase A NÃO toca `machines.id` ainda, já que isso
+  dispara o cascade nas 2 tabelas grandes) e insere uma linha em
+  `machine_rekey_queue` com `status='pending'`. Responde sucesso pro
+  agente aqui — o agente já pode operar com o `machineId` novo pra
+  tudo que não depende de `machines.id` ter mudado de verdade ainda
+  (precisa confirmar com o André/checar rotas quais operações
+  realmente EXIGEM que `machines.id` já exista com o novo valor antes
+  de considerar "pronto" — se alguma rota crítica depende disso,
+  Fase A pode precisar ser síncrona até certo ponto, builder escala
+  esse achado antes de prosseguir cegamente)
+  **Fase B (worker separado, roda fora da transação/lock,
+  processa a fila)**: pega a próxima linha `pending` de
+  `machine_rekey_queue`, roda o `UPDATE machines SET id=$1 WHERE
+  id=$2` de verdade (dispara o cascade nas 10 FK tables, incluindo as
+  2 grandes — aqui sim pode demorar minutos, mas SEM segurar o
+  advisory lock do hostname e SEM bloquear nenhum heartbeat de
+  nenhuma outra máquina), roda os `UPDATE`/`DELETE` manuais em
+  `commands`/`events` (as 2 manuais grandes) em BATCHES pequenos
+  (mesmo padrão de `deleteInBatches` já usado em
+  `activityRetention.js`), marca `status='done'`
+- [ ] **Step 3**: escrever teste provando que Fase A completa em
+  milissegundos independente do tamanho de `activity_log`/`nfce_index`
+  (mock/fixture simulando as tabelas grandes já populadas)
+- [ ] **Step 4**: escrever teste provando que Fase B processa a fila,
+  é idempotente (retomável se o processo cair no meio — rodar duas
+  vezes seguidas no mesmo item `pending` não duplica nem corrompe) e
+  marca `done` só depois de TODAS as tabelas terem sido atualizadas
+- [ ] **Step 5**: decidir e documentar: enquanto a Fase B não processou
+  a fila pra uma máquina, `machines.id` ainda está com o valor ANTIGO —
+  qualquer leitura (dashboard, relatórios) que filtre por esse id
+  continua funcionando normalmente até lá (nada quebra, só demora um
+  pouco pra "assumir" o novo id oficialmente) — builder confirma que
+  nenhuma rota tem uma suposição escondida de que o re-key é sempre
+  instantâneo antes de fechar esta task
+
+## Task 5: Índice ausente + teto de timeout oficializado
 
 - [ ] **Step 1**: `CREATE INDEX CONCURRENTLY idx_insights_machine_id ON
   insights (machine_id);` (achado na investigação do Plano 2 Task 3,
@@ -213,7 +322,7 @@ o que a Task 2 resolva.
   também (mesma categoria de proteção, pra transação que abre e nunca
   faz nada)
 
-## Task 5: Monitoramento — nunca mais descobrir isso por acidente
+## Task 6: Monitoramento — nunca mais descobrir isso por acidente
 
 - [ ] **Step 1**: um alerta (reaproveitar `resendAlert.js`, mesmo
   padrão do `rhHealthMonitor`) quando alguma transação ficar "active"
