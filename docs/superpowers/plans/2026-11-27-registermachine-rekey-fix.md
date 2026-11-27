@@ -371,6 +371,137 @@ parcial abaixo); as 3 comparações trocam `machine.id !== params` por
   chamado com job já `pending`) resultam em 1 única linha na fila, com
   o `new_id` do segundo chamado
 
+### Revisão pós-implementação (27/11/2026) — redesenho da Fase B
+
+Implementado (Steps 1-8 acima), validado ao vivo contra Postgres de dev
+(corrigiu 4 bugs reais: tipo TEXT vs UUID, FK ativa impedindo o
+pré-processamento em lote de `activity_log`/`nfce_index`, teste
+pré-existente com hostname fixo, race entre arquivos de teste) e então
+revisado por um revisor independente (Opus). **O revisor achou 1 CRÍTICO
+real**: o design acima (Fase B faz `UPDATE machines SET id=$new WHERE
+id=$old` segurando o advisory lock durante TODO o cascade residual de
+`activity_log`/`nfce_index`) ainda reproduz o incidente original — só
+que de dentro do worker, não do request HTTP. Enquanto essa transação
+roda, o `UPDATE machines SET ... WHERE id=$old` de QUALQUER heartbeat
+do MESMO agente (`setMachineStatus`/`updateMachine` em
+`routes/agent.js:253,257`) fica bloqueado esperando o row lock da linha
+`old_id` — mesmo padrão de conexões presas no pool que derrubou
+`/api/healthz` em 27/11, só que agora a cada re-key, não só nos 9
+casos do incidente original.
+
+**Causa raiz do erro de desenho**: pré-processar em lote só funciona pra
+tabelas SEM FK (`events`/`commands`) porque elas não exigem que `new_id`
+já exista em `machines`. Para as tabelas COM FK (as 10, incluindo
+`activity_log`/`nfce_index`), a única forma de pré-processá-las em lote
+ANTES do UPDATE final é fazer `new_id` existir em `machines` ANTES
+delas — ou seja, **não trocar a PK da linha existente, e sim clonar a
+linha pra um novo id, migrar todos os filhos pro novo id em lotes (agora
+permitido, já que o novo id existe), e só então apagar a linha antiga**
+(cujo cascade de `DELETE`, nesse ponto, já está vazio ou quase vazio).
+
+Mais 4 achados reais do revisor, todos corrigidos pelo mesmo redesenho
+abaixo ou por ajustes pontuais:
+
+- **ALTO** — `events`/`commands` escritos durante a janela pendente
+  (`machine_id=old_id`, via `req.machine.id` nas rotas) nunca migram:
+  a Fase A só moveu as 3 tabelas pequenas pro novo id, a Fase B só
+  move o que já existia no momento do claim. Corrigido: nenhuma tabela
+  filha migra na Fase A (só a fila); a Fase B faz um passe final de
+  resíduo (Step 3 abaixo) que captura tudo que chegou durante a janela.
+- **ALTO** — `routes/winEvents.js:18` e a rota de `service-status`
+  (`routes/agent.js:507`, `_upsertServiceEntries`) aceitam
+  `pending_rekey_new_id` pra autorizar, mas gravam usando o id DA
+  REQUEST (o novo id) em vez de `machine.id` (o id que de fato existe
+  em `machines` até a Fase B comitar) — `win_events` tem FK ativa pra
+  `machines(id)`, então isso vira 500 (FK violation) em vez do 401
+  original. Corrigido: as duas rotas gravam com `machine.id`, nunca com
+  o id do payload/params.
+- **ALTO** — claim da fila (`_claimNextJob`) lê `new_id` num `SELECT`
+  separado do `UPDATE status='processing'`, sem lock — uma 2ª chamada de
+  `registerMachine` pro mesmo hostname pode atualizar `new_id` nesse meio
+  tempo (o `UPDATE` da Fase A não tem `AND status='pending'`) e o worker
+  aplica o `new_id` desatualizado. Corrigido: claim atômico via `UPDATE
+  ... WHERE id = (SELECT id FROM machine_rekey_queue WHERE status='pending'
+  ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`, e
+  `_finalizeRekey` relê `new_id` da fila (não do objeto `job` capturado no
+  claim) depois de adquirir o advisory lock.
+- **ALTO** — nenhum job preso em `'processing'` (crash, SIGTERM, restart,
+  troca de líder no meio) nunca se recupera — a UNIQUE parcial por
+  hostname trava esse hostname pra sempre. Corrigido: coluna
+  `claimed_at`; no início de cada ciclo (e no `start()`), `UPDATE
+  machine_rekey_queue SET status='pending' WHERE status='processing' AND
+  claimed_at < now() - interval '5 minutes'`.
+- **MÉDIO** — a UNIQUE parcial e o `SELECT` da Fase A comparam `hostname`
+  exato (case-sensitive), mas o resto do sistema usa `UPPER(hostname)` —
+  hostname chegando em case diferente cria um 2º job ativo pro mesmo
+  `old_id`. Corrigido: índice único em `UPPER(hostname)`, Fase A usa
+  `UPPER($1)` na checagem.
+- Sem `rowCount` check depois do `UPDATE machines SET id=...` original —
+  resolvido por construção no redesenho (o `UPDATE machines` virou
+  `DELETE FROM machines WHERE id=$old_id`, e o código checa `rowCount`
+  antes de prosseguir pro dedup).
+
+**Novo desenho da Fase B** (substitui integralmente o `_finalizeRekey`
+antigo — a Fase A muda só no que NÃO faz mais, ver abaixo):
+
+- [ ] **Step 9**: migração nova adiciona `claimed_at TIMESTAMPTZ` e
+  `attempts INTEGER NOT NULL DEFAULT 0` em `machine_rekey_queue`, e troca
+  `idx_rekey_queue_hostname_active` pra `UNIQUE (UPPER(hostname)) WHERE
+  status IN ('pending','processing')`
+- [ ] **Step 10**: Fase A (`_rekeyAndMergeMachine`) para de mover
+  QUALQUER tabela filha — só faz o UPDATE de estado na linha antiga
+  (hostname/agent_version/last_seen/online_since/status) e o
+  upsert idempotente na fila (agora comparando `UPPER(hostname)`).
+  `MACHINE_REKEY_PHASE_A_TABLES` deixa de existir.
+- [ ] **Step 11**: `_claimNextJob` vira atômico (`UPDATE ... WHERE id =
+  (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING *`), seta `claimed_at =
+  now()`. No início de `runCycleOnce`/`start()`, reset de jobs
+  `processing` com `claimed_at` velho (> 5min) de volta pra `pending`
+  (incrementando `attempts`); acima de `attempts >= 5`, marca `'failed'`
+  em vez de `'pending'` (job para de ser reclamado; fica pra
+  investigação manual — `'failed'` entra no CHECK constraint do Step 9).
+- [ ] **Step 12**: novo passo, fora de transação, ANTES de qualquer
+  outra coisa: clona a linha `old_id` pra `new_id` em `machines` — gera
+  um token placeholder (`crypto.randomUUID()`), descobre as colunas
+  reais de `machines` via `information_schema.columns` (nunca hardcoded
+  — sobrevive a uma coluna nova no schema sem precisar mexer aqui),
+  exclui `id`/`token` da lista, e roda `INSERT INTO machines (id, token,
+  <demais colunas>) SELECT $1, $2, <demais colunas> FROM machines WHERE
+  id=$3`. Se `old_id` já não existir (rowCount 0 — máquina apagada no
+  meio da janela), marca o job `'done'` sem erro e sai (nada a fazer).
+- [ ] **Step 13**: pré-processamento em lotes (`updateMachineIdInBatches`,
+  fora de transação) para TODAS as tabelas filhas agora — as 10 com FK
+  MAIS as 5 sem FK (`activity_log`/`nfce_index` incluídas, já que `new_id`
+  agora existe em `machines` e o `UPDATE <t> SET machine_id=new WHERE
+  machine_id=old` não dispara cascade nenhum, só respeita a FK
+  normalmente). Nenhuma tabela fica de fora.
+- [ ] **Step 14**: transação final curta, sob `pg_advisory_xact_lock
+  (hashtext(upper(hostname)))`: `SELECT new_id FROM machine_rekey_queue
+  WHERE id=$jobId` de novo (pega o valor mais recente, não o capturado no
+  claim — cobre o Achado ALTO do claim); `SELECT * FROM machines WHERE
+  id=$old_id FOR UPDATE` (trava a linha antiga só por esta transação
+  curta); copia pra `new_id` os campos mutáveis mais recentes da linha
+  antiga (token real, hostname, status, last_seen, online_since,
+  agent_version — a lista completa, não um subconjunto); roda MAIS UM
+  passe de `UPDATE <t> SET machine_id=new WHERE machine_id=old` (sem
+  lotes — deve ser só o resíduo chegado durante a janela entre o Step 13
+  e agora) nas 15 tabelas; processa duplicatas de hostname (mesma lógica
+  de antes, com `rowCount` check); `DELETE FROM machines WHERE
+  id=$old_id` (cascade agora vazio ou quase); marca o job `'done'`.
+- [ ] **Step 15**: `routes/winEvents.js` e `_upsertServiceEntries`
+  (`routes/agent.js`) passam a gravar com `machine.id`, nunca com o id
+  do payload/params — mesmo quando `machine.pending_rekey_new_id` bateu
+  com esse id pra fins de autorização.
+- [ ] **Step 16**: reescrever os testes das Fases A/B (Steps 5-8 antigos
+  ficam incorretos com o novo desenho — refletir o clone-and-swap) +
+  teste novo cobrindo: heartbeat do MESMO agente não trava durante a
+  Fase B (medir que o heartbeat completa em < 1s mesmo com a Fase B em
+  andamento — usar uma tabela pequena como proxy, não precisa simular
+  23GB de verdade); job preso em `'processing'` por > 5min é resetado
+  pro próximo ciclo; `winEvents`/`service-status` gravam com `machine.id`
+  durante a janela pendente, não com o id novo; `attempts` incrementa e
+  o job vira `'failed'` depois de 5 tentativas.
+
 ## Task 5: Índice ausente + teto de timeout oficializado
 
 - [ ] **Step 1**: `CREATE INDEX CONCURRENTLY idx_insights_machine_id ON
