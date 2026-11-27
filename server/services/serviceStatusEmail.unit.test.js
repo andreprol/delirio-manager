@@ -192,3 +192,40 @@ describe('_upsertServiceEntries — validação inline', () => {
     expect(valid[2].restartOk).toBeNull();
   });
 });
+
+// ── scheduleServiceStatusEmails — leader guard ────────────────────────────────
+// Único describe deste arquivo que exige o módulo real (os de cima
+// reimplementam a lógica pura isolada) — precisa do módulo de verdade pra
+// exercitar o callback do setInterval.
+describe('scheduleServiceStatusEmails — leader guard', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('nao envia o email quando nao e o lider, mesmo dentro da janela de envio (09:00 UTC)', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-24T08:59:30Z'));
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const getAllMachinesMock = jest.fn().mockResolvedValue([]);
+    jest.doMock('../db-pg', () => ({
+      getAllMachines:      getAllMachinesMock,
+      getServiceStatusBOH: jest.fn().mockResolvedValue([]),
+    }));
+    jest.doMock('fs', () => ({
+      ...jest.requireActual('fs'),
+      readFileSync: jest.fn(() => JSON.stringify({
+        msGraph: { clientId: 'c', clientSecret: 's', tenantId: 't', refreshToken: 'r' },
+      })),
+      writeFileSync: jest.fn(),
+    }));
+    const freshServiceStatusEmail = require('./serviceStatusEmail');
+
+    freshServiceStatusEmail.scheduleServiceStatusEmails();
+    jest.advanceTimersByTime(60 * 1000); // dispara o 1º tick do setInterval de 60s -> 09:00:30 UTC
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getAllMachinesMock).not.toHaveBeenCalled();
+  });
+});

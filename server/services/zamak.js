@@ -3,6 +3,7 @@
 
 const https = require('https');
 const db    = require('../db-pg');
+const leaderElection = require('./leaderElection');
 
 function loadConfig() {
   try { return require('../config.json').zamak || {}; }
@@ -487,6 +488,8 @@ async function _syncAllInner() {
 }
 
 async function syncIfStale(hours = 6) {
+  if (!leaderElection.isLeader()) return;
+
   const age = await db.getZamakCacheAge();
   if (age >= hours) return syncAll();
   return null;
@@ -585,6 +588,8 @@ async function sendSyncEmail(success, summary, error) {
 
 // ─── Agendador diário — 02:00 BRT (05:00 UTC) ─────────────────────────────────
 async function runDailySync() {
+  if (!leaderElection.isLeader()) return;
+
   console.log('[ZamakDaily] Iniciando sync performance+outages...');
   try {
     const summary = await syncPerfAndOutages();

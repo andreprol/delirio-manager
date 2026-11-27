@@ -2,12 +2,15 @@
 
 const db     = require('../db-pg');
 const logger = require('./logger');
+const leaderElection = require('./leaderElection');
 
 const RETENTION_DAYS = 90;
 const COMMANDS_RETENTION_DAYS = 30;
 const NCR_XML_RETENTION_DAYS = 7;
 
 async function runPurgeOnce() {
+  if (!leaderElection.isLeader()) return;
+
   try {
     const removed = await db.purgeActivityLog(RETENTION_DAYS);
     if (removed > 0) {
@@ -28,6 +31,8 @@ async function runPurgeOnce() {
 // em db-pg.js). 7 dias dá margem pra debugar e-mail não entregue sem
 // acumular pra sempre; a linha em si (order_ref/chave/valor) continua.
 async function runNcrXmlPurgeOnce() {
+  if (!leaderElection.isLeader()) return;
+
   try {
     const removed = await db.purgeNcrXmlPayloads(NCR_XML_RETENTION_DAYS);
     if (removed > 0) {
@@ -41,6 +46,8 @@ async function runNcrXmlPurgeOnce() {
 }
 
 async function runCommandsPurgeOnce() {
+  if (!leaderElection.isLeader()) return;
+
   try {
     const orphans = await db.purgeOrphanCommands();
     const old     = await db.purgeOldTerminalCommands(COMMANDS_RETENTION_DAYS);

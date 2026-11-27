@@ -4,6 +4,7 @@
 
 const path = require('path');
 const fs   = require('fs');
+const leaderElection = require('./leaderElection');
 
 const SERVICE_NAMES = [
   'NCR Voyix Takeout and Delivery',
@@ -232,6 +233,8 @@ function scheduleServiceStatusEmails() {
   const logger = require('./logger');
 
   setInterval(() => {
+    if (!leaderElection.isLeader()) return;
+
     const now     = new Date();
     const utcHour = now.getUTCHours();
     const utcMin  = now.getUTCMinutes();

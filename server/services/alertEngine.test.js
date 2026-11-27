@@ -13,7 +13,7 @@ describe('alertEngine', () => {
   let sendMailMock;
 
   // Configura e re-importa o módulo do zero em cada teste
-  function setupModule({ emailEnabled = false, offlineEnabled } = {}) {
+  function setupModule({ emailEnabled = false, offlineEnabled, isLeader = true } = {}) {
     jest.resetModules();
 
     sendMailMock  = jest.fn().mockResolvedValue({});
@@ -72,6 +72,10 @@ describe('alertEngine', () => {
         return jest.requireActual('fs').readFileSync(p, ...args);
       }),
     }));
+    // default: lider, preserva o comportamento de todos os testes já
+    // existentes abaixo — só o describe "checkAll — leader guard" pede
+    // isLeader: false.
+    jest.doMock('./leaderElection', () => ({ isLeader: () => isLeader }));
 
     alertEngine = require('./alertEngine');
   }
@@ -431,6 +435,23 @@ describe('alertEngine', () => {
 
     it('não lança exceção para machineId inexistente no cooldown', async () => {
       expect(() => alertEngine.clearOfflineCooldown('nao-existe')).not.toThrow();
+    });
+  });
+
+  // ── leader guard (não é líder → checkAll não faz nada) ───────────────────
+  describe('checkAll — leader guard', () => {
+    it('nao roda quando nao e o lider', async () => {
+      setupModule({ isLeader: false });
+      dbMock.getMachinesStale.mockReturnValue([{
+        id: 'mach-guard', hostname: 'PC-GUARD', display_name: 'PC Guard',
+        location: 'Loja', last_seen: '2026-07-10T20:00:00Z', online_since: null,
+      }]);
+
+      await alertEngine.checkAll();
+
+      expect(dbMock.getMachinesStale).not.toHaveBeenCalled();
+      expect(dbMock.setMachineStatus).not.toHaveBeenCalled();
+      expect(broadcastMock).not.toHaveBeenCalled();
     });
   });
 
