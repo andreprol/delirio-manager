@@ -165,10 +165,12 @@ describeDb('machineRekeyWorker (Fase B)', () => {
     const newMachineAfterFirst = await db.getMachineById(newId);
     expect(newMachineAfterFirst).toBeDefined();
 
-    // Chamar de novo com o job já 'done': _claimNextJob só enxerga
-    // status='pending', então não acha nada pra este hostname -- nunca
-    // reprocessa, nunca duplica a linha, nunca quebra.
-    await worker.runCycleOnce().catch(() => {});
+    // Chamar de novo com o MESMO filtro de hostname (nunca sem filtro: outro
+    // arquivo de teste em paralelo pode ter um job 'pending' em voo, e uma
+    // chamada sem filtro roubaria esse trabalho -- 🔴 reproduzido ao vivo).
+    // _claimNextJob(hostname) só enxerga status='pending' deste hostname,
+    // que já é 'done' -- nunca reprocessa, nunca duplica a linha, nunca quebra.
+    await worker.runCycleOnce(hostname).catch(() => {});
 
     const { rows } = await db.getPool().query(
       'SELECT status FROM machine_rekey_queue WHERE hostname=$1', [hostname]

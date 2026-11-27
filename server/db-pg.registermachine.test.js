@@ -215,12 +215,14 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
 
       await runWorkerUntilDone(hostname);
 
-      // Job já 'done' -- chamar o worker de novo (pode processar o job
-      // pending de outro hostname, se houver algum em voo; nunca o nosso de
-      // novo -- _claimNextJob só pega status='pending') não duplica nem
-      // quebra: continua existindo exatamente 1 linha pra este hostname,
-      // ainda 'done'.
-      await machineRekeyWorker.runCycleOnce().catch(() => {});
+      // Job já 'done' -- chamar o worker de novo com o MESMO filtro de
+      // hostname (nunca sem filtro aqui: outro arquivo de teste rodando em
+      // paralelo pode ter um job 'pending' em voo, e uma chamada sem filtro
+      // roubaria esse trabalho, deixando aquele outro teste ler 'processing'
+      // no meio de uma sequência de asserts -- 🔴 reproduzido ao vivo) não
+      // acha nada pra este hostname (já 'done'), não duplica nem quebra:
+      // continua existindo exatamente 1 linha pra este hostname, ainda 'done'.
+      await machineRekeyWorker.runCycleOnce(hostname).catch(() => {});
 
       const { rows } = await db.getPool().query(
         'SELECT status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
