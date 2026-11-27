@@ -251,7 +251,7 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       await runWorkerUntilDone(hostname); // limpeza -- processa o job antes do afterEach
     });
 
-    it('🔴 achado real do revisor (2ª rodada): job já "processing" (worker já clonou) não tem new_id sobrescrito por uma 2ª chamada de registerMachine', async () => {
+    it('🔴 achado real do revisor (2ª rodada): job já "processing" (worker já clonou) não tem new_id sobrescrito por uma 2ª chamada concorrente de registerMachine', async () => {
       const hostname = `REKEY-PROCESSING-${crypto.randomUUID().slice(0, 8)}`;
       const oldId = trackMachine(crypto.randomUUID());
       await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
@@ -259,29 +259,65 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       const claimedNewId = trackMachine(crypto.randomUUID());
       await db.registerMachine({ machineId: claimedNewId, hostname, agentVersion: '2.0' });
 
-      // Simula o worker tendo reclamado o job (_claimNextJob marca
-      // 'processing' sem o advisory lock desta transação) -- igual
-      // aconteceria de verdade entre o SELECT e o UPDATE condicional de
-      // _rekeyAndMergeMachine.
-      await db.getPool().query(
+      // 🟡 achado real do revisor (3ª rodada): a versão anterior deste teste
+      // marcava 'processing' ANTES de chamar registerMachine -- o SELECT da
+      // Fase A já lia 'processing' desde o início, então até o código ANTIGO
+      // (um `if` em JS sobre esse status já lido) passava sem o fix. Não
+      // provava a corrida real: SELECT lê 'pending', o claim grava
+      // 'processing' DEPOIS do SELECT mas ANTES do UPDATE condicional.
+      // Reproduz isso de verdade com uma 2ª conexão que trava a linha num
+      // BEGIN sem commit (igual o claim real faria), só libera depois que a
+      // chamada concorrente já estiver bloqueada esperando esse lock.
+      const claimClient = await db.getPool().connect();
+      await claimClient.query('BEGIN');
+      await claimClient.query(
         `UPDATE machine_rekey_queue SET status='processing', claimed_at=now() WHERE hostname=$1`,
         [hostname]
       );
 
       // 2ª chamada concorrente (agente reinstalou de novo antes do worker
-      // terminar) -- antes do fix, o UPDATE de new_id rodava incondicional
-      // (JS checava um status já lido, stale), sobrescrevendo o new_id que
-      // o worker JÁ tinha clonado -- o dedup da transação final então
-      // apagaria (com cascade) esse clone, perdendo o histórico já migrado.
+      // terminar) -- disparada sem esperar, igual uma corrida real. Antes do
+      // fix, o UPDATE de new_id rodava incondicional (JS checava um status
+      // já lido, stale), sobrescrevendo o new_id que o worker JÁ tinha
+      // clonado -- o dedup da transação final então apagaria (com cascade)
+      // esse clone, perdendo o histórico já migrado.
       const otherNewId = trackMachine(crypto.randomUUID());
-      await db.registerMachine({ machineId: otherNewId, hostname, agentVersion: '3.0' });
+      const concurrentCall = db.registerMachine({ machineId: otherNewId, hostname, agentVersion: '3.0' });
 
-      const { rows } = await db.getPool().query(
+      // Espera o UPDATE condicional da 2ª chamada travar no lock da linha
+      // (pg_stat_activity.wait_event_type='Lock') antes de soltar o claim --
+      // sem isso o teste teria uma corrida contra o próprio teste, voltando
+      // a não provar nada sobre a janela real.
+      const pool = db.getPool();
+      let locked = false;
+      for (let i = 0; i < 50 && !locked; i++) {
+        const { rows: waiting } = await pool.query(
+          `SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query ILIKE '%machine_rekey_queue SET new_id%'`
+        );
+        locked = waiting.length > 0;
+        if (!locked) await new Promise(r => setTimeout(r, 20));
+      }
+      // Se o loop acima nunca viu o lock, solta o claim antes do assert
+      // falhar -- senão a 2ª chamada (concurrentCall) ficaria travada pra
+      // sempre esperando um COMMIT que nunca viria, e a conexão do claim
+      // vazaria do pool com uma transação aberta.
+      if (!locked) {
+        await claimClient.query('ROLLBACK');
+        claimClient.release();
+      }
+      expect(locked).toBe(true); // confirma que a 2ª chamada estava mesmo esperando o lock, não terminou antes por timing
+
+      await claimClient.query('COMMIT');
+      claimClient.release();
+
+      await concurrentCall;
+
+      const { rows } = await pool.query(
         'SELECT new_id, status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
       );
       expect(rows).toHaveLength(1);
       expect(rows[0].status).toBe('processing'); // _rekeyAndMergeMachine não tocou o status
-      expect(rows[0].new_id).toBe(claimedNewId); // nunca sobrescrito pra otherNewId
+      expect(rows[0].new_id).toBe(claimedNewId); // nunca sobrescrito pra otherNewId, mesmo com o SELECT da Fase A tendo lido 'pending' antes do claim committar
 
       // Limpeza: o 'processing' simulado acima nunca foi um claim de
       // verdade (_claimNextJob nunca rodou, cloneMachineRow nunca clonou a
@@ -289,7 +325,7 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       // não é 'pending', e `claimed_at=now()` é recente demais pra
       // _reclaimStuckJobs considerar travado). Reseta pra 'pending' antes
       // de deixar o worker processar de verdade.
-      await db.getPool().query(`UPDATE machine_rekey_queue SET status='pending' WHERE hostname=$1`, [hostname]);
+      await pool.query(`UPDATE machine_rekey_queue SET status='pending' WHERE hostname=$1`, [hostname]);
       await runWorkerUntilDone(hostname);
     });
 

@@ -546,7 +546,9 @@ async function _getMachinesCloneColumns() {
 // pendente) -- o chamador deve marcar o job 'done' sem erro, nada a clonar.
 // Idempotente se `newId` já existir (ciclo anterior clonou mas crashou antes
 // do DELETE final, job reclamado por _reclaimStuckJobs) -- ver comentário
-// dentro da função.
+// dentro da função. 🔵 Exceção (achado real do revisor, 3ª rodada): nesse
+// caso de idempotência, retorna true direto, sem checar se `oldId` ainda
+// existe -- não dá problema porque _finalizeRekey trata `oldMachine` vazio.
 //
 // 🟡 Limitação conhecida (achado real do revisor, 2ª rodada, não corrigida):
 // a partir deste clone, a linha `newId` fica visível pro resto do sistema
@@ -1311,9 +1313,14 @@ async function _rekeyAndMergeMachine(client, { oldId, canonicalToken, machineId,
     // cascade) o clone já migrado -- perda de histórico + trava o mesmo
     // padrão que o CRÍTICO original. Com a guarda, se o status já virou
     // 'processing' nesse intervalo, o UPDATE simplesmente não afeta nada
-    // (rowCount 0) -- deixa o worker terminar com o new_id que já clonou; a
-    // próxima chamada desse hostname, depois que a Fase B commitar
-    // machines.id, cai no caso 1 de registerMachine (UUID já conhecido).
+    // (rowCount 0) -- deixa o worker terminar com o new_id que já clonou. O
+    // UUID rejeitado aqui (otherNewId) nunca chega a existir em `machines`
+    // (o worker finaliza com o new_id que ele clonou, não com este) -- 🔵
+    // achado real do revisor (3ª rodada): a próxima chamada desse hostname
+    // NÃO cai no caso 1 (UUID já conhecido). Ela abre um 2º re-key (do
+    // id resultante do 1º pra este otherNewId) -- autolimitado (converge
+    // sozinho), mas migra o histórico de novo. Custo aceito: mais raro que
+    // o cenário original, sem perda de dados.
     await client.query(
       `UPDATE machine_rekey_queue SET new_id=$1 WHERE id=$2 AND status='pending'`,
       [machineId, existingJob.id]
