@@ -17,6 +17,7 @@ const { initLiveRelay }  = require('./services/liveSessionRelay');
 const { createUpgradeRouter } = require('./services/upgradeRouter');
 const activityRetention  = require('./services/activityRetention');
 const dbSizeMonitor       = require('./services/dbSizeMonitor');
+const leaderElection      = require('./services/leaderElection');
 
 const PORT = process.env.PORT || 3847;
 
@@ -52,6 +53,14 @@ server.listen(PORT, () => {
     db:      process.env.DATABASE_URL ? 'postgres' : '(DATABASE_URL ausente)',
     health:  `http://localhost:${PORT}/health`,
   });
+  // leaderElection.start() tem que ser a PRIMEIRA chamada de serviço aqui —
+  // alguns serviços abaixo (zamakService, dbSizeMonitor, activityRetention)
+  // disparam uma chamada imediata de "catch up se atrasado" de forma síncrona
+  // no boot, antes de qualquer await ceder o controle. leaderElection.start()
+  // dispara um tryAcquire() assíncrono que não terá resolvido a tempo dessas
+  // chamadas imediatas — isso não elimina a corrida, só minimiza a janela
+  // (ver plano 2026-11-27-leader-election-and-healthz, Task 2).
+  leaderElection.start();
   alertEngine.start();
   insightEngine.start();
   zamakService.scheduleDailySync();
@@ -276,12 +285,13 @@ function _scheduleAlohaScanRefresh() {
 _scheduleAlohaScanRefresh();
 
 // ── Shutdown gracioso ─────────────────────────────────────────────────────────
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   logger.info('SIGTERM recebido — encerrando graciosamente');
   alertEngine.stop();
   insightEngine.stop();
   rhHealthMonitor.stop();
   activityRetention.stop();
   dbSizeMonitor.stop();
+  await leaderElection.stop();
   server.close(() => process.exit(0));
 });
