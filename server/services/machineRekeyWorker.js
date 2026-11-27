@@ -6,9 +6,25 @@
 // ON UPDATE CASCADE atomicamente nas 10 tabelas com FK -- incluindo
 // activity_log (59M linhas/23GB) e nfce_index (3,97M linhas/7,5GB) -- e
 // travava a transação/advisory lock de registerMachine por 1 a 71+ minutos
-// em produção. Este worker, em 2º plano, pré-processa as tabelas grandes em
-// lotes ANTES de trocar machines.id, deixando pro cascade só o resíduo
-// recente (rápido mesmo em tabelas de dezenas de GB).
+// em produção. Este worker, em 2º plano, roda fora do request HTTP do
+// agente e fora do advisory lock compartilhado entre hostnames.
+//
+// 🔴 Achado rodando contra Postgres de dev de verdade (não dava pra saber só
+// lendo o código): NÃO é possível pré-processar `activity_log`/`nfce_index`
+// em lotes ANTES do `UPDATE machines SET id=...` -- as duas têm FK ATIVA pra
+// `machines(id)` (`ON UPDATE CASCADE ON DELETE CASCADE`), e o Postgres
+// recusa `UPDATE activity_log SET machine_id=$new WHERE ...` enquanto `$new`
+// ainda não existe como PK em `machines` (viola a própria FK que a tabela
+// tem). Só `events`/`commands` (tabelas manuais, SEM FK -- ver
+// `MACHINE_CHILD_TABLES_NO_FK`) podem ser pré-processadas assim. Pra
+// `activity_log`/`nfce_index`, o cascade do `UPDATE machines` continua
+// processando o histórico INTEIRO da máquina nessas 2 tabelas (não dá pra
+// evitar sem reescrever a FK pra DEFERRABLE ou usar uma linha placeholder --
+// fora de escopo aqui). Ainda é uma melhoria real: essa transação roda
+// isolada, em 2º plano, protegida por `statement_timeout=180000`, sem
+// segurar o advisory lock compartilhado nem bloquear o request HTTP do
+// agente nem o heartbeat de outras máquinas -- só não é mais "rápida
+// independente do volume" pra essas 2 tabelas especificamente.
 //
 // Processa 1 job por ciclo (nunca em paralelo -- jobs do MESMO hostname nunca
 // coexistem, por causa da UNIQUE parcial em machine_rekey_queue, mas jobs de
@@ -24,11 +40,13 @@ const leaderElection = require('./leaderElection');
 
 const POLL_INTERVAL_MS = 10 * 1000; // 10s -- correção em 2º plano, não SLA de latência curta
 
-// Ordem de pré-processamento em lotes (fora de transação, cada lote é seu
-// próprio commit implícito) -- maior primeiro é arbitrário, mantém a ordem
-// da tabela de tamanhos do brief. `events`/`commands` entram aqui (Fase B),
-// NÃO na Fase A.
-const PHASE_B_BATCH_TABLES = ['activity_log', 'nfce_index', 'events', 'commands'];
+// Pré-processamento em lotes (fora de transação, cada lote é seu próprio
+// commit implícito) -- só `events`/`commands`: são as únicas 2 tabelas
+// grandes SEM FK ativa pra `machines(id)` (ver comentário do topo do
+// arquivo pra `activity_log`/`nfce_index`, que não podem passar por aqui).
+// Entram na Fase B (não na Fase A) por serem grandes o bastante (2,3GB/
+// 3,1GB) pra não fazer um UPDATE de tabela inteira de uma vez.
+const PHASE_B_BATCH_TABLES = ['events', 'commands'];
 
 const state = {
   timer: null,
@@ -56,11 +74,15 @@ async function _claimNextJob() {
   return job;
 }
 
-// Transação curta final: troca machines.id (cascade só do resíduo recente,
-// já que os lotes acima pré-processaram o grosso) + dedup de duplicatas +
-// marca o job 'done'. Sob o MESMO advisory lock por hostname que a Fase A
-// usa -- serializa contra qualquer registerMachine concorrente desse
-// hostname que ainda não tenha visto o novo machines.id.
+// Transação final: troca machines.id (cascade cuida de `events`/`commands`
+// só pelo resíduo recente, já pré-processados em lotes acima -- mas de
+// `activity_log`/`nfce_index` pelo histórico INTEIRO da máquina, ver
+// comentário do topo do arquivo) + dedup de duplicatas + marca o job
+// 'done'. Sob o MESMO advisory lock por hostname que a Fase A usa --
+// serializa contra qualquer registerMachine concorrente desse hostname que
+// ainda não tenha visto o novo machines.id. Pode levar mais que
+// milissegundos agora (ainda protegido por statement_timeout=180000), mas
+// roda isolada, sem bloquear outros hostnames nem o request HTTP do agente.
 async function _finalizeRekey({ id: jobId, old_id: oldId, new_id: newId, hostname }) {
   await db.withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext(upper($1)))', [hostname]);

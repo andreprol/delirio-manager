@@ -13,10 +13,15 @@
 -- enfileira aqui; Fase B (server/services/machineRekeyWorker.js, em 2º
 -- plano) pré-processa as tabelas grandes em lotes e só então troca
 -- machines.id (cascade residual, rápido).
+-- old_id/new_id sao TEXT, nao UUID: machines.id e TEXT no schema real deste
+-- projeto (nunca foi tipo uuid de verdade, so parece um por conter UUIDs
+-- gerados em texto) -- achado rodando esta migracao contra o Postgres de
+-- dev de verdade (erro "operator does not exist: uuid = text" no JOIN de
+-- getMachineByToken), corrigido antes do merge.
 CREATE TABLE machine_rekey_queue (
   id            SERIAL PRIMARY KEY,
-  old_id        UUID NOT NULL,
-  new_id        UUID NOT NULL,
+  old_id        TEXT NOT NULL,
+  new_id        TEXT NOT NULL,
   hostname      TEXT NOT NULL,
   status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'done')),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
