@@ -180,3 +180,63 @@ describeDb('analyzeMachine — cursor incremental', () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 });
+
+// Fora do describeDb de propósito: estes testes mockam '../db-pg' inteiro,
+// então rodam mesmo sem DATABASE_URL setada.
+//
+// O guard de liderança vive no tick agendado do setInterval (start()), não
+// dentro de runNow() — runNow() também é chamado pela rota manual
+// POST /api/insights/generate (gatilho autenticado, on-demand). Se o guard
+// estivesse em runNow(), uma chamada manual que caísse no follower
+// silenciosamente responderia {generated: 0} sem o caller conseguir
+// distinguir "nada pra gerar" de "esta instância não é a líder" (achado de
+// review). Por isso o 1º teste exercita o callback do setInterval
+// (scheduler), e o 2º prova que chamar runNow() direto (o caminho da rota
+// manual) continua funcionando mesmo numa instância não-líder.
+describe('start — scheduler leader guard', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('o tick agendado nao chama runNow quando nao e o lider', async () => {
+    jest.resetModules();
+    jest.useFakeTimers();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const dbMock = { getAllMachines: jest.fn().mockResolvedValue([]) };
+    jest.doMock('../db-pg', () => dbMock);
+    jest.doMock('fs', () => ({
+      ...jest.requireActual('fs'),
+      readFileSync: jest.fn(() => JSON.stringify({ insights: { enabled: true, claude_api_key: 'test-key', interval_hours: 6 } })),
+    }));
+    const freshInsightEngine = require('./insightEngine');
+
+    freshInsightEngine.start();
+    jest.advanceTimersByTime(6 * 60 * 60 * 1000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(dbMock.getAllMachines).not.toHaveBeenCalled();
+
+    freshInsightEngine.stop();
+  });
+});
+
+describe('runNow — chamada direta (rota manual) ignora liderança', () => {
+  it('leva o ciclo adiante mesmo quando a instancia nao e o lider', async () => {
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const dbMock = { getAllMachines: jest.fn().mockResolvedValue([]) };
+    jest.doMock('../db-pg', () => dbMock);
+    jest.doMock('fs', () => ({
+      ...jest.requireActual('fs'),
+      readFileSync: jest.fn(() => JSON.stringify({ insights: { enabled: true, claude_api_key: 'test-key', interval_hours: 6 } })),
+    }));
+    const freshInsightEngine = require('./insightEngine');
+
+    const result = await freshInsightEngine.runNow();
+
+    expect(dbMock.getAllMachines).toHaveBeenCalledTimes(1);
+    expect(result).toBe(0);
+  });
+});

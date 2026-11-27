@@ -7,6 +7,11 @@ jest.mock('../db-pg', () => ({
   purgeNcrXmlPayloads: jest.fn(async () => 0),
 }));
 
+// default: lider, preserva o comportamento de todos os testes já existentes
+// abaixo (nenhum deles mocka leaderElection) — só o describe "leader guard"
+// no fim do arquivo sobrescreve isso com seu próprio doMock + resetModules.
+jest.mock('./leaderElection', () => ({ isLeader: () => true }));
+
 const {
   runPurgeOnce, runCommandsPurgeOnce, runNcrXmlPurgeOnce, scheduleDailyPurge, stop,
   RETENTION_DAYS, COMMANDS_RETENTION_DAYS, NCR_XML_RETENTION_DAYS,
@@ -113,5 +118,58 @@ describe('scheduleDailyPurge / stop', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe('leader guard', () => {
+  it('runPurgeOnce nao purga activity_log quando nao e o lider', async () => {
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const purgeActivityLogMock = jest.fn();
+    jest.doMock('../db-pg', () => ({
+      purgeActivityLog: purgeActivityLogMock,
+      purgeOrphanCommands: jest.fn(), purgeOldTerminalCommands: jest.fn(), purgeNcrXmlPayloads: jest.fn(),
+    }));
+    const fresh = require('./activityRetention');
+
+    const result = await fresh.runPurgeOnce();
+
+    expect(purgeActivityLogMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
+  });
+
+  it('runCommandsPurgeOnce nao purga commands quando nao e o lider', async () => {
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const purgeOrphanCommandsMock = jest.fn();
+    const purgeOldTerminalCommandsMock = jest.fn();
+    jest.doMock('../db-pg', () => ({
+      purgeActivityLog: jest.fn(),
+      purgeOrphanCommands: purgeOrphanCommandsMock, purgeOldTerminalCommands: purgeOldTerminalCommandsMock,
+      purgeNcrXmlPayloads: jest.fn(),
+    }));
+    const fresh = require('./activityRetention');
+
+    const result = await fresh.runCommandsPurgeOnce();
+
+    expect(purgeOrphanCommandsMock).not.toHaveBeenCalled();
+    expect(purgeOldTerminalCommandsMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
+  });
+
+  it('runNcrXmlPurgeOnce nao purga xml_b64 quando nao e o lider', async () => {
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const purgeNcrXmlPayloadsMock = jest.fn();
+    jest.doMock('../db-pg', () => ({
+      purgeActivityLog: jest.fn(), purgeOrphanCommands: jest.fn(), purgeOldTerminalCommands: jest.fn(),
+      purgeNcrXmlPayloads: purgeNcrXmlPayloadsMock,
+    }));
+    const fresh = require('./activityRetention');
+
+    const result = await fresh.runNcrXmlPurgeOnce();
+
+    expect(purgeNcrXmlPayloadsMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
   });
 });

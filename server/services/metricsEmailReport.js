@@ -5,6 +5,7 @@
 const path = require('path');
 const fs   = require('fs');
 const db   = require('../db-pg');
+const leaderElection = require('./leaderElection');
 
 // Carrega config msGraph do config.json
 function loadGraphConfig() {
@@ -196,6 +197,8 @@ function buildEmailHtml(rows, dtBRT, misses) {
 }
 
 async function sendDailyMetricsEmail() {
+  if (!leaderElection.isLeader()) return;
+
   const cfg = loadGraphConfig();
   if (!cfg.tenantId || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
     console.warn('[MetricsEmail] Email não enviado — msGraph não configurado');

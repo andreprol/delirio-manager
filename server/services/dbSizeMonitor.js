@@ -12,6 +12,7 @@ const path   = require('path');
 const fs     = require('fs');
 const db     = require('../db-pg');
 const logger = require('./logger');
+const leaderElection = require('./leaderElection');
 
 const SNAPSHOT_RETENTION_DAYS = 180;
 const GROWTH_CHECK_WINDOW_DAYS = 7;
@@ -133,6 +134,8 @@ async function sendGrowthAlertEmail(rows) {
 }
 
 async function runSnapshotOnce() {
+  if (!leaderElection.isLeader()) return;
+
   try {
     const count = await db.recordDbSizeSnapshot();
     logger.info(`[DbSizeMonitor] snapshot gravado: ${count} tabela(s)`);
@@ -146,6 +149,8 @@ async function runSnapshotOnce() {
 }
 
 async function runGrowthCheckOnce() {
+  if (!leaderElection.isLeader()) return;
+
   try {
     const growth = await db.getDbSizeGrowth(GROWTH_CHECK_WINDOW_DAYS);
     const alertable = growth.filter(isAlertable);
@@ -180,6 +185,8 @@ async function runGrowthCheckOnce() {
 }
 
 async function runPurgeSnapshotsOnce() {
+  if (!leaderElection.isLeader()) return;
+
   try {
     const removed = await db.purgeDbSizeSnapshots(SNAPSHOT_RETENTION_DAYS);
     if (removed > 0) {

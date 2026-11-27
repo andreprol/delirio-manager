@@ -16,6 +16,11 @@ jest.mock('fs', () => ({
 
 global.fetch = jest.fn();
 
+// default: lider, preserva o comportamento de todos os testes já existentes
+// abaixo (nenhum deles mocka leaderElection) — só o describe "leader guard"
+// no fim do arquivo sobrescreve isso com seu próprio doMock + resetModules.
+jest.mock('./leaderElection', () => ({ isLeader: () => true }));
+
 const {
   runSnapshotOnce, runGrowthCheckOnce, runPurgeSnapshotsOnce, scheduleDailyMonitor, stop,
   isAlertable, formatBytes,
@@ -175,5 +180,58 @@ describe('scheduleDailyMonitor / stop', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe('leader guard', () => {
+  it('runSnapshotOnce nao grava snapshot quando nao e o lider', async () => {
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const recordDbSizeSnapshotMock = jest.fn();
+    jest.doMock('../db-pg', () => ({
+      recordDbSizeSnapshot: recordDbSizeSnapshotMock,
+      getDbSizeGrowth: jest.fn(), purgeDbSizeSnapshots: jest.fn(),
+      getTablesAlertedWithinDays: jest.fn(), recordAlertsSent: jest.fn(),
+    }));
+    const fresh = require('./dbSizeMonitor');
+
+    const result = await fresh.runSnapshotOnce();
+
+    expect(recordDbSizeSnapshotMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
+  });
+
+  it('runGrowthCheckOnce nao checa crescimento nem alerta quando nao e o lider', async () => {
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const getDbSizeGrowthMock = jest.fn();
+    jest.doMock('../db-pg', () => ({
+      recordDbSizeSnapshot: jest.fn(),
+      getDbSizeGrowth: getDbSizeGrowthMock, purgeDbSizeSnapshots: jest.fn(),
+      getTablesAlertedWithinDays: jest.fn(), recordAlertsSent: jest.fn(),
+    }));
+    const fresh = require('./dbSizeMonitor');
+
+    const result = await fresh.runGrowthCheckOnce();
+
+    expect(getDbSizeGrowthMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
+  });
+
+  it('runPurgeSnapshotsOnce nao purga snapshots antigos quando nao e o lider', async () => {
+    jest.resetModules();
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    const purgeDbSizeSnapshotsMock = jest.fn();
+    jest.doMock('../db-pg', () => ({
+      recordDbSizeSnapshot: jest.fn(), getDbSizeGrowth: jest.fn(),
+      purgeDbSizeSnapshots: purgeDbSizeSnapshotsMock,
+      getTablesAlertedWithinDays: jest.fn(), recordAlertsSent: jest.fn(),
+    }));
+    const fresh = require('./dbSizeMonitor');
+
+    const result = await fresh.runPurgeSnapshotsOnce();
+
+    expect(purgeDbSizeSnapshotsMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
   });
 });

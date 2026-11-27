@@ -19,6 +19,10 @@ describe('rhHealthMonitor', () => {
     // isola o estado module-level (consecutiveConnFailures) entre testes
     jest.resetModules();
     jest.doMock('./resendAlert', () => ({ sendAlert: jest.fn().mockResolvedValue({ sent: true }) }));
+    // default: lider, preserva o comportamento dos testes existentes — o
+    // teste de "nao e o lider" abaixo sobrescreve isso com seu proprio
+    // jest.doMock + jest.resetModules antes de dar require no monitor.
+    jest.doMock('./leaderElection', () => ({ isLeader: () => true }));
     monitor = require('./rhHealthMonitor');
     sendAlert = require('./resendAlert').sendAlert;
   });
@@ -177,5 +181,24 @@ describe('rhHealthMonitor', () => {
     await new Promise(r => setTimeout(r, 200));
 
     expect(sendAlert).not.toHaveBeenCalled();
+  });
+
+  it('nao leva adiante o check quando nao e o lider', async () => {
+    jest.doMock('./leaderElection', () => ({ isLeader: () => false }));
+    jest.resetModules();
+    const freshMonitor = require('./rhHealthMonitor');
+    const sendAlertFresh = require('./resendAlert').sendAlert;
+
+    mockServer = await startMock((req, res) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'CLOCK_PROXY_TOKEN nao configurado' }));
+    });
+    port = mockServer.address().port;
+
+    await freshMonitor.start(port);
+    await new Promise(r => setTimeout(r, 100));
+
+    expect(sendAlertFresh).not.toHaveBeenCalled();
+    freshMonitor.stop();
   });
 });

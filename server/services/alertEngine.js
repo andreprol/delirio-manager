@@ -6,6 +6,7 @@ const nodemailer = require('nodemailer');
 const db         = require('../db-pg');
 const { broadcast } = require('./websocket');
 const { getBiosGuide } = require('./wolBiosGuide');
+const leaderElection = require('./leaderElection');
 
 const CHECK_INTERVAL_MS = 30 * 1000;
 const OFFLINE_ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min entre alertas offline por máquina
@@ -104,6 +105,8 @@ async function sendDROverdueEmail(displayName, location, hoursAgo, lastOkISO) {
 }
 
 async function checkAll() {
+  if (!leaderElection.isLeader()) return;
+
   await checkOffline();
   await checkMetricThresholds();
   await checkWolTests();

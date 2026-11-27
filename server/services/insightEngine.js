@@ -5,6 +5,7 @@ const fs     = require('fs');
 const crypto = require('crypto');
 const db     = require('../db-pg');
 const { broadcast } = require('./websocket');
+const leaderElection = require('./leaderElection');
 
 function loadConfig() {
   try {
@@ -25,7 +26,15 @@ function start() {
   }
 
   const intervalMs = (cfg.interval_hours || 6) * 60 * 60 * 1000;
-  timer = setInterval(runNow, intervalMs);
+  // Guarda de liderança fica aqui no tick agendado, não dentro de runNow():
+  // runNow() também é chamado pela rota manual POST /api/insights/generate
+  // (gatilho autenticado, on-demand) — se o guard estivesse em runNow(), uma
+  // chamada manual que caísse no follower silenciosamente responderia
+  // {generated: 0} sem o caller conseguir distinguir "nada pra gerar" de
+  // "esta instância não é a líder" (achado de review).
+  timer = setInterval(() => {
+    if (leaderElection.isLeader()) runNow();
+  }, intervalMs);
   console.log(`[InsightEngine] Iniciado — intervalo: ${cfg.interval_hours || 6}h`);
 }
 

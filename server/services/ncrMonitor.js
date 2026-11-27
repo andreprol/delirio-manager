@@ -6,6 +6,7 @@ const path = require('path');
 const fs   = require('fs');
 const db   = require('../db-pg');
 const { sendAlert } = require('./resendAlert');
+const leaderElection = require('./leaderElection');
 
 const POLL_INTERVAL_MS     = 2 * 60 * 1000;  // 2 minutos
 const ALERT_THRESHOLD      = 3;              // falhas consecutivas antes de alertar
@@ -76,6 +77,8 @@ async function checkAckTimeouts() {
 
 function startWatchdog() {
   setInterval(async () => {
+    if (!leaderElection.isLeader()) return;
+
     const silentMs = Date.now() - health.lastTickAt;
     if (silentMs > WATCHDOG_MAX_SILENT) {
       await sendHealthAlert(
@@ -642,7 +645,12 @@ async function fetchEmailsTracked(token) {
 }
 
 async function tick() {
+  // Antes do guard: o loop está vivo mesmo quando só adia pro líder — senão,
+  // ao assumir a liderança, o watchdog veria lastTickAt velho e alertaria
+  // "Loop Silencioso" falso.
   health.lastTickAt = Date.now();
+
+  if (!leaderElection.isLeader()) return;
 
   const cfg = loadGraphConfig();
   if (!cfg.refreshToken) {

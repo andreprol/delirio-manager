@@ -26,6 +26,7 @@ const watchlistRoutes = require('./routes/watchlist');
 const activityRoutes  = require('./routes/activity');
 const liveRoutes      = require('./routes/live');
 const pontoRemotoRoutes = require('./routes/pontoRemoto');
+const healthzRoutes    = require('./routes/healthz');
 
 const logger  = require('./services/logger');
 const VERSION = '1.0.0';
@@ -150,6 +151,7 @@ app.use('/api/dr',        drRoutes);
 app.use('/api/relatorio', relatorioRoutes);
 app.use('/api/zamak',     zamakRoutes);
 app.use('/api/admin',     adminRoutes);
+app.use('/api/healthz',   healthzRoutes);
 
 if (process.env.FEATURE_LIVE_ACCESS === 'true') {
   // Ingestão do companion (agente, uma máquina por vez) — auth por token de
