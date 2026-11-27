@@ -1213,10 +1213,29 @@ async function deleteWatchlistKeyword(id) {
 
 async function insertActivityLog(machineId, windowTitle, processName) {
   const now = new Date().toISOString();
+  const safeWindowTitle = windowTitle || '';
+  const safeProcessName = processName || '';
+
+  // Dedupe: o companion reporta a cada poucos segundos mesmo sem mudança de
+  // janela/processo -- sem isso, alguém parado na mesma tela por 1h gera
+  // ~900 linhas idênticas (achado no incidente de 23/11, 59M linhas/23GB em
+  // 3 meses). Usa o índice composto idx_activity_log_machine_ts
+  // (machine_id, captured_at) -- mesma ordenação de getActivityLog.
+  const { rows: lastRows } = await getPool().query(
+    `SELECT id, window_title, process_name FROM activity_log
+     WHERE machine_id = $1 ORDER BY captured_at DESC, id DESC LIMIT 1`,
+    [machineId]
+  );
+  const last = lastRows[0];
+  if (last && last.window_title === safeWindowTitle && last.process_name === safeProcessName) {
+    await getPool().query('UPDATE activity_log SET captured_at = $1 WHERE id = $2', [now, last.id]);
+    return { id: last.id, capturedAt: now };
+  }
+
   const { rows } = await getPool().query(
     `INSERT INTO activity_log (machine_id, window_title, process_name, captured_at)
      VALUES ($1, $2, $3, $4) RETURNING id`,
-    [machineId, windowTitle || '', processName || '', now]
+    [machineId, safeWindowTitle, safeProcessName, now]
   );
   return { id: rows[0].id, capturedAt: now };
 }
