@@ -477,4 +477,36 @@ describe('start / watchdog — leader guard', () => {
 
     expect(sendAlertMock).not.toHaveBeenCalled();
   });
+
+  it('tick de nao-lider ainda atualiza lastTickAt: watchdog nao da falso alerta ao virar lider', async () => {
+    // Cenário: instância passa >10min como não-líder (ticks rodando, mas
+    // adiando pro líder) e então assume. O watchdog só deve alertar se o
+    // loop estiver travado de verdade — não por ter adiado corretamente.
+    jest.useFakeTimers();
+    jest.resetModules();
+    let leader = false;
+    jest.doMock('./leaderElection', () => ({ isLeader: () => leader }));
+    const sendAlertMock = jest.fn().mockResolvedValue({ sent: true });
+    jest.doMock('./resendAlert', () => ({ sendAlert: sendAlertMock }));
+
+    // Captura os callbacks de setInterval em vez de agendá-los, pra controlar
+    // a ordem exata: tick de não-líder primeiro, depois o watchdog já líder.
+    const POLL_INTERVAL_MS     = 2 * 60 * 1000;
+    const WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;
+    const intervals = {};
+    jest.spyOn(global, 'setInterval').mockImplementation((fn, ms) => { intervals[ms] = fn; return 0; });
+
+    const freshNcrMonitor = require('./ncrMonitor');
+    freshNcrMonitor.start(); // tick imediato (não-líder)
+    await Promise.resolve();
+
+    jest.setSystemTime(Date.now() + 20 * 60 * 1000); // > WATCHDOG_MAX_SILENT (10min)
+    intervals[POLL_INTERVAL_MS]();                   // tick de não-líder, agora
+    await Promise.resolve();
+
+    leader = true;
+    await intervals[WATCHDOG_INTERVAL_MS]();
+
+    expect(sendAlertMock).not.toHaveBeenCalled();
+  });
 });

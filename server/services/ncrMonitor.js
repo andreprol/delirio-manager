@@ -645,9 +645,12 @@ async function fetchEmailsTracked(token) {
 }
 
 async function tick() {
-  if (!leaderElection.isLeader()) return;
-
+  // Antes do guard: o loop está vivo mesmo quando só adia pro líder — senão,
+  // ao assumir a liderança, o watchdog veria lastTickAt velho e alertaria
+  // "Loop Silencioso" falso.
   health.lastTickAt = Date.now();
+
+  if (!leaderElection.isLeader()) return;
 
   const cfg = loadGraphConfig();
   if (!cfg.refreshToken) {
