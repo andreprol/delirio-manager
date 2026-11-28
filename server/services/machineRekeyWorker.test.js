@@ -15,6 +15,13 @@
 
 jest.mock('./leaderElection', () => ({ isLeader: () => true }));
 
+// Revisão final de branch (27/11/2026, ALTO 1a): mocka só o envio de
+// e-mail -- db-pg continua real (describeDb). Sem isso, os testes de job
+// 'failed' chamariam o sendAlert de verdade (que viraria no-op silencioso
+// sem resendApiKey/config.json, mas sem jeito de ASSERTAR que foi chamado
+// com os dados certos).
+jest.mock('./resendAlert', () => ({ sendAlert: jest.fn(async () => ({ sent: true })) }));
+
 const crypto = require('crypto');
 
 const hasDb = !!process.env.DATABASE_URL;
@@ -25,12 +32,17 @@ if (!hasDb) {
 }
 
 describeDb('machineRekeyWorker (Fase B)', () => {
-  let db, worker;
+  let db, worker, sendAlert;
   const createdMachineIds = [];
 
   beforeAll(() => {
     db = require('../db-pg');
     worker = require('./machineRekeyWorker');
+    sendAlert = require('./resendAlert').sendAlert;
+  });
+
+  beforeEach(() => {
+    sendAlert.mockClear();
   });
 
   afterEach(async () => {
@@ -301,6 +313,17 @@ describeDb('machineRekeyWorker (Fase B)', () => {
     // Máquina antiga nunca foi tocada -- o job falhou antes de qualquer claim.
     expect(await db.getMachineById(oldId)).toBeDefined();
     expect(await db.getMachineById(newId)).toBeUndefined();
+
+    // ALTO 1a (revisão final de branch, 27/11/2026): job virou 'failed' de
+    // verdade (via _reclaimStuckJobs) -- tem que alertar, senão a máquina
+    // fica "online" pro dashboard sem receber comando nenhum, em silêncio.
+    expect(sendAlert).toHaveBeenCalledTimes(1);
+    const alertCall = sendAlert.mock.calls[0][0];
+    expect(alertCall.source).toBe('MachineRekeyWorker');
+    expect(alertCall.cooldownKey).toBe(`rekey:failed:${hostname}`);
+    expect(alertCall.detail).toContain(hostname);
+    expect(alertCall.detail).toContain(String(jobId));
+    expect(alertCall.detail).toContain("status='pending'"); // menciona o comando SQL pra reverter manualmente
   });
 
   it('🔴 achado real do revisor (2ª rodada): cloneMachineRow é idempotente -- job que crashou depois do clone (new_id já existe em machines) completa no próximo ciclo sem violar a PK', async () => {
@@ -366,6 +389,16 @@ describeDb('machineRekeyWorker (Fase B)', () => {
     );
     expect(after[0].status).toBe('failed'); // nunca ficou martelando 'pending' indefinidamente
     expect(after[0].attempts).toBeGreaterThanOrEqual(5);
+
+    // ALTO 1a (revisão final de branch, 27/11/2026): este caminho vira
+    // 'failed' pelo `catch` de runCycleOnce (erro imediato), não por
+    // _reclaimStuckJobs -- tem que alertar aqui também. Pode ter sido
+    // chamado mais de 1x se MAX_ATTEMPTS foi cruzado mais de uma vez no
+    // loop acima, então checa só a ÚLTIMA chamada.
+    expect(sendAlert).toHaveBeenCalled();
+    const lastCall = sendAlert.mock.calls[sendAlert.mock.calls.length - 1][0];
+    expect(lastCall.source).toBe('MachineRekeyWorker');
+    expect(lastCall.cooldownKey).toBe(`rekey:failed:${hostname}`);
   });
 
   it('Step 6: idempotência -- rodar o worker de novo depois do job já done não duplica nem quebra', async () => {

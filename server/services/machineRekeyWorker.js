@@ -46,10 +46,16 @@ const crypto = require('crypto');
 const db = require('../db-pg');
 const logger = require('./logger');
 const leaderElection = require('./leaderElection');
+const { sendAlert } = require('./resendAlert');
 
 const POLL_INTERVAL_MS = 10 * 1000; // 10s -- correção em 2º plano, não SLA de latência curta
 const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5min -- job 'processing' mais velho que isso foi abandonado (crash/SIGTERM/troca de líder no meio)
 const MAX_ATTEMPTS = 5; // depois disso, _reclaimStuckJobs() marca 'failed' em vez de devolver pra 'pending' -- para de martelar, fica pra investigação manual
+
+// Mesma janela de cooldown usada pelos outros monitores desta branch
+// (rhHealthMonitor.js/longTransactionMonitor.js) -- evita espamar um e-mail
+// a cada ciclo (10s) enquanto o mesmo job continuar 'failed'.
+const ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min
 
 // As 15 tabelas filhas de `machines` -- as 10 com FK ON UPDATE/DELETE CASCADE
 // (ver migração add-on-update-cascade-machine-fks.sql) MAIS as 5 sem FK
@@ -87,6 +93,28 @@ const state = {
   stopped: true,
 };
 
+// Alerta quando um job de re-key esgota MAX_ATTEMPTS e vira 'failed' de
+// verdade (revisão final de branch, 27/11/2026, ALTO 1a). Até esta
+// fix-wave, isso acontecia em silêncio: `getMachineByToken` só resolvia
+// `pending_rekey_new_id` pra status 'pending'/'processing' (ver ALTO 1b),
+// então um job 'failed' fazia o agente (que já adotou o new_id desde o 201
+// da Fase A) tomar 403 pra sempre em /commands e /service-status -- máquina
+// "online" no dashboard, sem receber comando nenhum, sem ninguém saber.
+// `.catch()` aqui de propósito: falha ao ENVIAR o alerta nunca pode
+// interromper o worker nem mascarar o erro original que levou o job a
+// 'failed'.
+async function _alertJobFailed(jobId, hostname) {
+  await sendAlert({
+    source:      'MachineRekeyWorker',
+    stage:       'Job de re-key falhou definitivamente',
+    detail:      `Job de re-key pra hostname "${hostname}" (id ${jobId}) esgotou ${MAX_ATTEMPTS} tentativas e foi marcado 'failed'. A máquina continua "online" no dashboard mas NÃO recebe comandos (403 silencioso) até alguém investigar manualmente machine_rekey_queue e, se for o caso, resetar o job pra 'pending' (UPDATE machine_rekey_queue SET status='pending', attempts=0 WHERE id=${jobId}).`,
+    cooldownKey: `rekey:failed:${hostname}`,
+    cooldownMs:  ALERT_COOLDOWN_MS,
+  }).catch(e => logger.error('[MachineRekeyWorker] falha ao enviar alerta de job failed', {
+    error: e.message, jobId, hostname,
+  }));
+}
+
 // Reset de jobs presos em 'processing' há mais de STUCK_THRESHOLD_MS --
 // crash/SIGTERM/troca de líder no meio de um ciclo deixava, antes desta
 // fix-wave, o hostname bloqueado pra sempre (a UNIQUE parcial por hostname
@@ -94,16 +122,28 @@ const state = {
 // MAX_ATTEMPTS marca 'failed' em vez de 'pending' -- para de ser reclamado
 // automaticamente, fica pra investigação manual (não tem CHECK que impeça
 // 'failed' de novo virar 'pending' manualmente, se for o caso).
+//
+// 🔴 RETURNING status, hostname (revisão final de branch, 27/11/2026, ALTO
+// 1a): este é um UPDATE em LOTE -- pode afetar várias linhas numa única
+// chamada (vários jobs travados ao mesmo tempo). Sem o RETURNING não havia
+// como saber quais linhas de fato viraram 'failed' (vs. voltaram
+// 'pending') pra alertar sobre elas.
 async function _reclaimStuckJobs() {
   const pool = db.getPool();
   const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS).toISOString();
-  await pool.query(
+  const { rows } = await pool.query(
     `UPDATE machine_rekey_queue
      SET status = CASE WHEN attempts + 1 >= $2 THEN 'failed' ELSE 'pending' END,
          attempts = attempts + 1
-     WHERE status='processing' AND claimed_at < $1`,
+     WHERE status='processing' AND claimed_at < $1
+     RETURNING id, status, hostname`,
     [cutoff, MAX_ATTEMPTS]
   );
+  for (const row of rows) {
+    if (row.status === 'failed') {
+      await _alertJobFailed(row.id, row.hostname);
+    }
+  }
 }
 
 // Claim atômico via FOR UPDATE SKIP LOCKED -- um único UPDATE já é atômico,
@@ -313,15 +353,26 @@ async function runCycleOnce(hostnameFilter) {
     logger.error('[MachineRekeyWorker] erro ao processar job, devolvendo pra pending/failed', {
       error: err.message, hostname: job.hostname, jobId: job.id,
     });
-    await db.getPool()
+    // 🔴 RETURNING status (revisão final de branch, 27/11/2026, ALTO 1a):
+    // igual a _reclaimStuckJobs -- sem isso não dava pra saber se o
+    // resultado REAL deste UPDATE foi 'failed' (MAX_ATTEMPTS esgotado
+    // aqui, não só em _reclaimStuckJobs) pra alertar sobre isso.
+    const revertResult = await db.getPool()
       .query(
         `UPDATE machine_rekey_queue
          SET status = CASE WHEN attempts + 1 >= $2 THEN 'failed' ELSE 'pending' END,
              attempts = attempts + 1
-         WHERE id=$1`,
+         WHERE id=$1
+         RETURNING status`,
         [job.id, MAX_ATTEMPTS]
       )
-      .catch(e => logger.error('[MachineRekeyWorker] falha ao reverter job pra pending/failed', { error: e.message }));
+      .catch(e => {
+        logger.error('[MachineRekeyWorker] falha ao reverter job pra pending/failed', { error: e.message });
+        return null;
+      });
+    if (revertResult?.rows[0]?.status === 'failed') {
+      await _alertJobFailed(job.id, job.hostname);
+    }
     throw err;
   }
 }
