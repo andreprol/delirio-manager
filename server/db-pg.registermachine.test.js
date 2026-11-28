@@ -342,6 +342,35 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       await runWorkerUntilDone(hostname);
     });
 
+    it('ALTO 1b (revisão final de branch, 27/11/2026): job \'failed\' (MAX_ATTEMPTS esgotado) continua autorizando via pending_rekey_new_id -- getMachineByToken não some com ele', async () => {
+      // Antes do fix, o LEFT JOIN de getMachineByToken só aceitava
+      // 'pending'/'processing'. Um job 'failed' fazia pending_rekey_new_id
+      // voltar NULL, e o agente (já usando new_id desde o 201 da Fase A)
+      // tomava 403 pra sempre em /commands e /service-status -- sem
+      // alerta, sem recuperação automática (o agente só se re-registra em
+      // 401, nunca em 403). Incluir 'failed' no JOIN não resolve o re-key
+      // em si (fica mesmo pra investigação manual, ver o alerta em
+      // machineRekeyWorker.js), só estanca o sangramento.
+      const hostname = `REKEY-FAILED-${crypto.randomUUID().slice(0, 8)}`;
+      const oldId = trackMachine(crypto.randomUUID());
+      const { token } = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+
+      const newId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' });
+
+      // Simula o job já ter esgotado MAX_ATTEMPTS (mesmo estado final que
+      // _reclaimStuckJobs()/o catch de runCycleOnce() produzem) -- não
+      // precisa rodar o worker de verdade pra este teste, só o estado
+      // resultante na fila.
+      await db.getPool().query(
+        `UPDATE machine_rekey_queue SET status='failed', attempts=5 WHERE hostname=$1`, [hostname]
+      );
+
+      const machine = await db.getMachineByToken(token);
+      expect(machine.id).toBe(oldId); // machines.id nunca mudou -- o worker nunca completou
+      expect(machine.pending_rekey_new_id).toBe(newId); // continua resolvendo, mesmo com o job 'failed'
+    });
+
     it('hostname em case diferente não cria 2 jobs ativos -- UNIQUE por UPPER(hostname) (Step 9/10 do brief, fix-wave pós-revisão)', async () => {
       const base = `CaseTest-${crypto.randomUUID().slice(0, 8)}`;
       const oldId = trackMachine(crypto.randomUUID());
