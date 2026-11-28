@@ -170,16 +170,36 @@ async function withTransaction(fn) {
 // já está usando desde que registerMachine respondeu 201 (Fase A), mas que
 // ainda NÃO é machines.id (só a Fase B troca isso). routes/agent.js e
 // routes/winEvents.js usam este campo pra aceitar o novo UUID nessa janela,
-// sem esperar o worker. A UNIQUE parcial por hostname em machine_rekey_queue
-// garante no máximo 1 linha ativa por hostname -- e por construção da Fase A,
-// no máximo 1 old_id tem job ativo por vez -- então o LEFT JOIN nunca
-// multiplica linhas.
+// sem esperar o worker.
+//
+// 🔴 Inclui 'failed' no status aceito (revisão final de branch, 27/11/2026,
+// ALTO 1b): quando um job esgota MAX_ATTEMPTS e vira 'failed'
+// (machineRekeyWorker.js), ele sumia do JOIN original (só
+// 'pending'/'processing') e `pending_rekey_new_id` voltava NULL -- mas o
+// agente já adotou o new_id desde o 201 da Fase A, então passava a tomar
+// 403 pra sempre em /commands e /service-status (machine.id !== new_id E
+// pending_rekey_new_id !== new_id, ambos falsos), sem alerta, sem
+// recuperação automática. Incluir 'failed' aqui NÃO resolve o re-key
+// (nenhum job 'failed' é reclamado automaticamente -- fica pra investigação
+// manual, ver sendAlert em machineRekeyWorker.js), só estanca o sangramento:
+// o agente continua recebendo comandos normalmente enquanto isso não é
+// investigado.
+//
+// LEFT JOIN LATERAL + ORDER BY id DESC LIMIT 1 em vez de um LEFT JOIN
+// direto: pode haver MÚLTIPLOS jobs 'failed' ao longo do tempo pro mesmo
+// old_id (só 'pending'/'processing' têm a UNIQUE parcial por hostname --
+// 'failed' não), então um JOIN direto multiplicaria linhas do resultado
+// principal. A LATERAL pega sempre o job mais recente por old_id; nunca
+// duplica `machines`.
 async function getMachineByToken(token) {
   const { rows } = await getPool().query(
     `SELECT m.*, q.new_id AS pending_rekey_new_id
      FROM machines m
-     LEFT JOIN machine_rekey_queue q
-       ON q.old_id = m.id AND q.status IN ('pending', 'processing')
+     LEFT JOIN LATERAL (
+       SELECT new_id FROM machine_rekey_queue
+       WHERE old_id = m.id AND status IN ('pending', 'processing', 'failed')
+       ORDER BY id DESC LIMIT 1
+     ) q ON true
      WHERE m.token = $1`,
     [token]
   );
@@ -1190,7 +1210,7 @@ const MACHINE_CHILD_TABLES_NO_FK = ['metrics', 'commands', 'events', 'nfce_auto_
 async function registerMachine({ machineId, hostname, agentVersion }) {
   const now = new Date().toISOString();
 
-  const { token, event } = await withTransaction(async (client) => {
+  const { token, machineId: effectiveMachineId, event } = await withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext(upper($1)))', [hostname]);
 
     // 1. UUID já conhecido → atualiza normalmente. Reconferido AQUI DENTRO
@@ -1199,15 +1219,23 @@ async function registerMachine({ machineId, hostname, agentVersion }) {
     // entre uma checagem "de fora" e esta.
     //
     // 🟡 Limitação conhecida (achado real do revisor, 2ª rodada, não
-    // corrigida -- impacto baixo, autorrecuperável): se `machineId` for o
-    // `new_id` de um job de re-key ainda `pending`/`processing` (o worker já
-    // clonou a linha -- cloneMachineRow, Fase B), este caso bate aqui
-    // (`existing` encontra o clone) e devolve o token PLACEHOLDER dessa
-    // linha, não o token real do agente (que só migra em
-    // _finalizeRekey/_syncMutableFields). O agente usaria esse token até a
-    // próxima chamada autenticada tomar 401 (placeholder não bate com
-    // nenhum agente de verdade) e se re-registrar -- caminho sujo mas
-    // autolimitado (sem perda de dado, sem loop).
+    // corrigida -- impacto baixo, autorrecuperável; comentário corrigido na
+    // revisão final de branch, 27/11/2026 -- MÉDIO 2, a versão anterior
+    // descrevia o mecanismo errado): se `machineId` for o `new_id` de um job
+    // de re-key ainda `pending`/`processing` (o worker já clonou a linha --
+    // cloneMachineRow, Fase B), este caso bate aqui (`existing` encontra o
+    // clone) e devolve o token PLACEHOLDER dessa linha -- mas esse
+    // placeholder É um token real e único (gerado por cloneMachineRow,
+    // inserido em `machines`), não um valor inventado: ele AUTENTICA de
+    // verdade, e o agente segue fazendo heartbeat normalmente com ele até
+    // _finalizeRekey/_syncMutableFields trocar o token da linha pelo token
+    // real do canonical (só NESSE momento o agente toma 401 na chamada
+    // seguinte e se re-registra). Consequência real (notada pela revisão,
+    // não corrigida aqui -- fora de escopo desta fix-wave): _syncMutableFields
+    // sobrescreve `last_seen`/`status` do clone (atualizados enquanto o
+    // agente usava o placeholder) com os valores PARADOS da linha antiga --
+    // pode gerar um "offline" breve no dashboard logo depois do
+    // _finalizeRekey, mesmo a máquina estando online o tempo todo.
     const { rows: existingRows } = await client.query('SELECT * FROM machines WHERE id = $1', [machineId]);
     const existing = existingRows[0];
     if (existing) {
@@ -1216,7 +1244,7 @@ async function registerMachine({ machineId, hostname, agentVersion }) {
          WHERE id=$5`,
         [hostname, agentVersion || '', now, now, machineId]
       );
-      return { token: existing.token, event: null };
+      return { token: existing.token, event: null, machineId };
     }
 
     // 2. UUID desconhecido mas hostname conhecido → re-key assíncrono (Fase A
@@ -1240,11 +1268,25 @@ async function registerMachine({ machineId, hostname, agentVersion }) {
        VALUES ($1, $2, $3, 'Temporário', $4, $5, 'online', $6, $7, $8)`,
       [machineId, hostname, hostname, token2, agentVersion || '', now, now, now]
     );
-    return { token: token2, event: { type: 'agent_installed', details: `Agente v${agentVersion || '?'} registrado` } };
+    return { token: token2, event: { type: 'agent_installed', details: `Agente v${agentVersion || '?'} registrado` }, machineId };
   });
 
   if (event) await addEvent(machineId, event.type, event.details);
-  return token;
+  // 🔴 Revisão final de branch (27/11/2026, ALTO 2): registerMachine agora
+  // devolve { token, machineId } em vez de só `token` -- `machineId` é o id
+  // EFETIVO que o caller deve usar daqui em diante. Na maioria dos casos é
+  // o mesmo `machineId` recebido (casos 1 e 3, e o caminho normal do caso
+  // 2); só diverge no caminho de _rekeyAndMergeMachine quando um job
+  // concorrente de re-key já estava 'processing' pro mesmo hostname --
+  // nesse caso é `existingJob.new_id` (o id que o worker vai de fato
+  // aplicar), nunca o `machineId` recebido aqui, que acabou de ser
+  // rejeitado pela guarda `AND status='pending'` e NUNCA vai existir em
+  // `machines`. Quem ignorava esse retorno (POST /api/register,
+  // routes/agent.js) devolvia ao agente um machineId rejeitado -- o agente
+  // adota esse id e nunca mais recebe comando nenhum (403 silencioso), sem
+  // alerta, sem recuperação automática (mesmo sintoma do ALTO 1, por um
+  // caminho diferente).
+  return { token, machineId: effectiveMachineId };
 }
 
 // Fase A do re-key assíncrono (Task 4, plano 2026-11-27-registermachine-
@@ -1292,10 +1334,15 @@ async function _rekeyAndMergeMachine(client, { oldId, canonicalToken, machineId,
   // ("Loja-1" vs "LOJA-1") precisa encontrar o MESMO job ativo, não criar
   // um 2º concorrente.
   const { rows: existingJobs } = await client.query(
-    `SELECT id, status FROM machine_rekey_queue WHERE UPPER(hostname) = UPPER($1) AND status IN ('pending', 'processing') LIMIT 1`,
+    `SELECT id, status, new_id FROM machine_rekey_queue WHERE UPPER(hostname) = UPPER($1) AND status IN ('pending', 'processing') LIMIT 1`,
     [hostname]
   );
   const existingJob = existingJobs[0];
+  // machineId EFETIVO (revisão final de branch, 27/11/2026, ALTO 2): na
+  // maioria dos casos (sem job ativo, ou job ainda 'pending' quando o
+  // UPDATE abaixo roda) é o mesmo `machineId` recebido. Só diverge no
+  // `else` abaixo, se o UPDATE condicional afetar 0 linhas.
+  let effectiveMachineId = machineId;
   if (!existingJob) {
     await client.query(
       `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status) VALUES ($1, $2, $3, 'pending')`,
@@ -1321,14 +1368,28 @@ async function _rekeyAndMergeMachine(client, { oldId, canonicalToken, machineId,
     // id resultante do 1º pra este otherNewId) -- autolimitado (converge
     // sozinho), mas migra o histórico de novo. Custo aceito: mais raro que
     // o cenário original, sem perda de dados.
-    await client.query(
+    const { rowCount } = await client.query(
       `UPDATE machine_rekey_queue SET new_id=$1 WHERE id=$2 AND status='pending'`,
       [machineId, existingJob.id]
     );
+    // 🔴 ALTO 2 (revisão final de branch, 27/11/2026): o comentário acima já
+    // explicava que o UUID rejeitado "nunca chega a existir em machines",
+    // mas nada dizia ao CALLER qual id usar no lugar -- `registerMachine`
+    // sempre devolvia o `machineId` recebido, mesmo quando `rowCount` vem 0
+    // aqui, e `POST /api/register` respondia esse id rejeitado pro agente,
+    // que o adota e nunca mais recebe comando nenhum (403 pra sempre, sem
+    // alerta, sem recuperação automática -- mesmo sintoma do ALTO 1, por um
+    // caminho diferente). Quando `rowCount` é 0, o id que vale de verdade é
+    // `existingJob.new_id` (o que o worker já clonou e vai de fato
+    // finalizar em _finalizeRekey).
+    if (rowCount === 0) {
+      effectiveMachineId = existingJob.new_id;
+    }
   }
 
   return {
     token: canonicalToken,
+    machineId: effectiveMachineId,
     event: { type: 'agent_reregistered', details: `UUID atualizado (config recuperado de ${oldId.slice(0, 8)}): agente v${agentVersion || '?'}` },
   };
 }

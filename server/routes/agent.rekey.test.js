@@ -104,10 +104,10 @@ describeDb('rotas do agente -- ruling de pending_rekey_new_id (Step 7) e gravaç
   it('aceita o new_id pendente de re-key (200/404, nunca 403) enquanto a Fase B não comitou machines.id; depois de done, continua autenticando por machine.id direto', async () => {
     const hostname = `REKEY-ROUTE-${crypto.randomUUID().slice(0, 8)}`;
     const oldId = trackMachine(crypto.randomUUID());
-    const canonicalToken = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+    const { token: canonicalToken } = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
 
     const newId = trackMachine(crypto.randomUUID());
-    const returnedToken = await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' });
+    const { token: returnedToken } = await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' });
     expect(returnedToken).toBe(canonicalToken); // confirma que ainda estamos na janela do re-key pendente
 
     app = makeApp();
@@ -135,7 +135,7 @@ describeDb('rotas do agente -- ruling de pending_rekey_new_id (Step 7) e gravaç
   it('403 quando o machineId do path não bate nem com machine.id nem com pending_rekey_new_id', async () => {
     const hostname = `REKEY-ROUTE-WRONG-${crypto.randomUUID().slice(0, 8)}`;
     const oldId = trackMachine(crypto.randomUUID());
-    const token = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+    const { token } = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
 
     app = makeApp();
     const res = await request(app)
@@ -147,7 +147,7 @@ describeDb('rotas do agente -- ruling de pending_rekey_new_id (Step 7) e gravaç
   it('service-status: grava com machine.id (oldId), nunca com o newId do path, durante a janela pendente', async () => {
     const hostname = `REKEY-SVC-${crypto.randomUUID().slice(0, 8)}`;
     const oldId = trackMachine(crypto.randomUUID());
-    const token = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+    const { token } = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
 
     const newId = trackMachine(crypto.randomUUID());
     await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' }); // enfileira o re-key, machines.id ainda é oldId
@@ -169,7 +169,7 @@ describeDb('rotas do agente -- ruling de pending_rekey_new_id (Step 7) e gravaç
   it('win-events: grava com machine.id (oldId), nunca com o machineId do body, durante a janela pendente', async () => {
     const hostname = `REKEY-WINEV-${crypto.randomUUID().slice(0, 8)}`;
     const oldId = trackMachine(crypto.randomUUID());
-    const token = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+    const { token } = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
 
     const newId = trackMachine(crypto.randomUUID());
     await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' }); // enfileira o re-key, machines.id ainda é oldId

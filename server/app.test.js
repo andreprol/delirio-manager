@@ -199,7 +199,10 @@ describe('GET /api/status/integrations', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('POST /api/register', () => {
   beforeEach(() => {
-    db.registerMachine.mockReturnValue('tok-abc123');
+    // ALTO 2 (revisão final de branch, 27/11/2026): registerMachine agora
+    // devolve { token, machineId } em vez de só `token` -- ver
+    // routes/agent.js (destructuring de machineId: effectiveMachineId).
+    db.registerMachine.mockReturnValue({ token: 'tok-abc123', machineId: 'mach-001' });
   });
 
   it('201 + token quando payload válido', async () => {

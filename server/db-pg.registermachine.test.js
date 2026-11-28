@@ -107,10 +107,11 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
   describe('registerMachine', () => {
     it('caso 1: UUID já conhecido -- atualiza presença e devolve o token existente', async () => {
       const id = trackMachine(crypto.randomUUID());
-      const token1 = await db.registerMachine({ machineId: id, hostname: 'PDV-NOVO', agentVersion: '1.0' });
+      const { token: token1 } = await db.registerMachine({ machineId: id, hostname: 'PDV-NOVO', agentVersion: '1.0' });
 
-      const token2 = await db.registerMachine({ machineId: id, hostname: 'PDV-NOVO', agentVersion: '1.1' });
+      const { token: token2, machineId: effectiveMachineId } = await db.registerMachine({ machineId: id, hostname: 'PDV-NOVO', agentVersion: '1.1' });
       expect(token2).toBe(token1);
+      expect(effectiveMachineId).toBe(id); // ALTO 2: caso 1 sempre devolve o machineId recebido
 
       const m = await db.getMachineById(id);
       expect(m.agent_version).toBe('1.1');
@@ -119,7 +120,8 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
 
     it('caso 3: máquina genuinamente nova -- cria com location Temporário e dispara evento', async () => {
       const id = trackMachine(crypto.randomUUID());
-      const token = await db.registerMachine({ machineId: id, hostname: `NOVA-${id.slice(0, 8)}`, agentVersion: '1.0' });
+      const { token, machineId: effectiveMachineId } = await db.registerMachine({ machineId: id, hostname: `NOVA-${id.slice(0, 8)}`, agentVersion: '1.0' });
+      expect(effectiveMachineId).toBe(id); // ALTO 2: caso 3 sempre devolve o machineId recebido
 
       const m = await db.getMachineById(id);
       expect(m.token).toBe(token);
@@ -133,7 +135,7 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
     it('caso 2: re-key por hostname -- Fase A enfileira e marca online rápido SEM tocar NENHUMA tabela filha; Fase B (clone-and-swap) migra todas, preserva token, apaga a linha antiga', async () => {
       const hostname = `REKEY-${crypto.randomUUID().slice(0, 8)}`;
       const oldId = trackMachine(crypto.randomUUID());
-      const originalToken = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+      const { token: originalToken } = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
 
       // Popula filho COM FK (win_events), filho SEM FK (metrics), o caso
       // específico do `insights` (tinha FK mas NUNCA esteve na lista
@@ -149,8 +151,9 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       await db.createCommand(oldId, 'ping', {});
 
       const newId = trackMachine(crypto.randomUUID());
-      const returnedToken = await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' });
+      const { token: returnedToken, machineId: effectiveMachineId } = await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' });
       expect(returnedToken).toBe(originalToken); // token do canonical, já preservado na Fase A
+      expect(effectiveMachineId).toBe(newId); // ALTO 2: sem job concorrente 'processing', o efetivo é o machineId recebido
 
       // ── Fase A (síncrona, dentro de registerMachine) já terminou ──
       // machines.id AINDA é oldId -- só a Fase B (clone-and-swap) troca isso.
@@ -251,7 +254,7 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       await runWorkerUntilDone(hostname); // limpeza -- processa o job antes do afterEach
     });
 
-    it('🔴 achado real do revisor (2ª rodada): job já "processing" (worker já clonou) não tem new_id sobrescrito por uma 2ª chamada concorrente de registerMachine', async () => {
+    it('🔴 achado real do revisor (2ª rodada) + ALTO 2 (revisão final de branch, 27/11/2026): job já "processing" (worker já clonou) não tem new_id sobrescrito por uma 2ª chamada concorrente de registerMachine, e essa 2ª chamada devolve o machineId EFETIVO (o que o worker vai aplicar), nunca o id que acabou de ser rejeitado', async () => {
       const hostname = `REKEY-PROCESSING-${crypto.randomUUID().slice(0, 8)}`;
       const oldId = trackMachine(crypto.randomUUID());
       await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
@@ -310,14 +313,24 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       await claimClient.query('COMMIT');
       claimClient.release();
 
-      await concurrentCall;
+      const concurrentResult = await concurrentCall;
 
-      const { rows } = await pool.query(
-        'SELECT new_id, status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
-      );
+      const { rows } = await pool.query('SELECT new_id, status FROM machine_rekey_queue WHERE hostname=$1', [hostname]);
       expect(rows).toHaveLength(1);
       expect(rows[0].status).toBe('processing'); // _rekeyAndMergeMachine não tocou o status
       expect(rows[0].new_id).toBe(claimedNewId); // nunca sobrescrito pra otherNewId, mesmo com o SELECT da Fase A tendo lido 'pending' antes do claim committar
+
+      // ALTO 2: a 3ª chamada (concurrentCall, otherNewId) tem que devolver o
+      // machineId EFETIVO -- claimedNewId (o que o worker já clonou e vai
+      // de fato finalizar), nunca otherNewId (que acabou de ser rejeitado
+      // pela guarda `AND status='pending'` e NUNCA vai existir em
+      // `machines`). Antes deste fix, registerMachine só devolvia `token`
+      // -- um caller que confiasse no machineId do próprio payload (como
+      // POST /api/register fazia) devolveria otherNewId pro agente, que o
+      // adotaria e nunca mais receberia comando nenhum. otherNewId é um
+      // UUID gerado à parte -- diferente de claimedNewId por construção,
+      // então um único toBe já cobre as duas pontas.
+      expect(concurrentResult.machineId).toBe(claimedNewId);
 
       // Limpeza: o 'processing' simulado acima nunca foi um claim de
       // verdade (_claimNextJob nunca rodou, cloneMachineRow nunca clonou a
@@ -373,7 +386,7 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       const idA = trackMachine(crypto.randomUUID());
       const idB = trackMachine(crypto.randomUUID());
 
-      const [tokenA, tokenB] = await Promise.all([
+      const [resultA, resultB] = await Promise.all([
         db.registerMachine({ machineId: idA, hostname, agentVersion: 'A' }),
         db.registerMachine({ machineId: idB, hostname, agentVersion: 'B' }),
       ]);
@@ -381,7 +394,7 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       // As 2 chamadas devem ter concordado numa única máquina sobrevivente
       // com o MESMO token original -- nunca 2 máquinas "Temporário"
       // duplicadas nem a perda total do registro.
-      expect(tokenA).toBe(tokenB);
+      expect(resultA.token).toBe(resultB.token);
 
       const { rows } = await db.getPool().query(
         'SELECT id FROM machines WHERE UPPER(hostname) = UPPER($1)', [hostname]
