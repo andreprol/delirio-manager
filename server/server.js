@@ -17,6 +17,7 @@ const { initLiveRelay }  = require('./services/liveSessionRelay');
 const { createUpgradeRouter } = require('./services/upgradeRouter');
 const activityRetention  = require('./services/activityRetention');
 const dbSizeMonitor       = require('./services/dbSizeMonitor');
+const longTransactionMonitor = require('./services/longTransactionMonitor');
 const leaderElection      = require('./services/leaderElection');
 const machineRekeyWorker  = require('./services/machineRekeyWorker');
 
@@ -91,6 +92,15 @@ server.listen(PORT, async () => {
   // depois de confirmar que o snapshot/alerta rodam como esperado.
   if (process.env.FEATURE_DB_SIZE_MONITOR === 'true') {
     dbSizeMonitor.scheduleDailyMonitor();
+  }
+  // FEATURE_LONG_TXN_MONITOR: mesma situação do FEATURE_DB_SIZE_MONITOR acima
+  // -- feature nova que manda e-mail de produção automaticamente sem nenhum
+  // kill switch, exigindo flag pela convenção do projeto (CLAUDE.md "Feature
+  // Flags"). Default false (zero value) -- ligar manualmente no
+  // ecosystem.config.js da VM depois de confirmar que a detecção/alerta rodam
+  // como esperado.
+  if (process.env.FEATURE_LONG_TXN_MONITOR === 'true') {
+    longTransactionMonitor.start();
   }
 });
 

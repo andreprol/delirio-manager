@@ -2636,11 +2636,43 @@ async function recordAlertsSent(rows) {
   }
 }
 
+// getLongRunningTransactions: transações Postgres (pg_stat_activity) abertas
+// há mais de `thresholdMinutes` -- motivação real: `UPDATE machines SET id=$1
+// WHERE id=$2` (antes da Task 4 deste mesmo plano) segurava o lock da linha
+// durante o cascade de FK em activity_log/nfce_index, travando de 1 a 71+
+// minutos, derrubando /api/healthz e o pool de conexões -- só foi descoberto
+// quando alguém notou o sintoma, sem nenhum alerta próprio. Detecta qualquer
+// transação anormalmente longa (não só esse caso específico, já corrigido)
+// ANTES que ela vire outage -- ver services/longTransactionMonitor.js.
+async function getLongRunningTransactions(thresholdMinutes) {
+  const { rows } = await getPool().query(`
+    SELECT pid, usename, application_name, state, query,
+           EXTRACT(EPOCH FROM (now() - xact_start))::int AS xact_duration_seconds,
+           EXTRACT(EPOCH FROM (now() - query_start))::int AS query_duration_seconds
+    FROM pg_stat_activity
+    WHERE xact_start IS NOT NULL
+      AND now() - xact_start > ($1 || ' minutes')::interval
+      AND pid != pg_backend_pid()
+    ORDER BY xact_start ASC
+  `, [thresholdMinutes]);
+  // query truncada a 200 chars -- mesmo padrão de truncamento de ncrMonitor.js
+  // (pode conter literais de dados reais, não vaza payload gigante em log/e-mail).
+  return rows.map(r => ({
+    pid: r.pid,
+    usename: r.usename,
+    applicationName: r.application_name,
+    state: r.state,
+    query: typeof r.query === 'string' ? r.query.slice(0, 200) : r.query,
+    xactDurationSeconds: r.xact_duration_seconds,
+    queryDurationSeconds: r.query_duration_seconds,
+  }));
+}
+
 module.exports = {
   getPool, closePool, withTransaction, updateMachineIdInBatches, updateMachineIdDirect,
   cloneMachineRow, MACHINE_CHILD_TABLES_NO_FK,
   recordDbSizeSnapshot, getLatestDbSizeByTable, getDbSizeGrowth, purgeDbSizeSnapshots,
-  getTablesAlertedWithinDays, recordAlertsSent,
+  getTablesAlertedWithinDays, recordAlertsSent, getLongRunningTransactions,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
   deleteMachine, isDeletedMachine, updateMachine, setMachineStatus,
   getMachinesStale, setWolStatus, getMachinesWolTesting, getMachinesBiosNeeded,
