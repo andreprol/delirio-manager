@@ -2644,14 +2644,36 @@ async function recordAlertsSent(rows) {
 // quando alguém notou o sintoma, sem nenhum alerta próprio. Detecta qualquer
 // transação anormalmente longa (não só esse caso específico, já corrigido)
 // ANTES que ela vire outage -- ver services/longTransactionMonitor.js.
-async function getLongRunningTransactions(thresholdMinutes) {
-  const { rows } = await getPool().query(`
+//
+// `client` é opcional (default: pool compartilhado de getPool()). Achado 🟠
+// ALTO do code-reviewer (revisão independente, 27/11/2026): o monitor
+// (longTransactionMonitor.js) SEMPRE passa seu próprio pool isolado aqui,
+// nunca o compartilhado -- se esta query usasse o pool do app e esse pool
+// estivesse esgotado (exatamente o cenário que o monitor existe pra
+// detectar), a própria query do monitor ficaria pendurada esperando uma
+// conexão livre e o monitor nunca chegaria a alertar sobre nada.
+//
+// 🟡 Limitação conhecida (achado do mesmo review, sem fix de código possível
+// sem confirmar o role real de produção): `pg_stat_activity` só expõe
+// xact_start/state/query de sessões de OUTROS roles pra quem tem
+// `pg_read_all_stats` ou é superuser -- sem esse privilégio, essas colunas
+// vêm NULL pra sessão de qualquer role diferente do que está rodando esta
+// query, e `xact_start IS NOT NULL` descarta essa linha em silêncio. Ou seja,
+// este monitor só vê de verdade as transações do MESMO role da aplicação, a
+// menos que esse role tenha `pg_read_all_stats` concedido explicitamente --
+// confirmar isso em produção antes de contar que o monitor cobre uma
+// migração manual ou outro serviço rodando com um role diferente.
+async function getLongRunningTransactions(thresholdMinutes, client) {
+  const runner = client || getPool();
+  const { rows } = await runner.query(`
     SELECT pid, usename, application_name, state, query,
            EXTRACT(EPOCH FROM (now() - xact_start))::int AS xact_duration_seconds,
            EXTRACT(EPOCH FROM (now() - query_start))::int AS query_duration_seconds
     FROM pg_stat_activity
     WHERE xact_start IS NOT NULL
-      AND now() - xact_start > ($1 || ' minutes')::interval
+      AND backend_type = 'client backend'
+      AND datname = current_database()
+      AND now() - xact_start > make_interval(mins => $1::int)
       AND pid != pg_backend_pid()
     ORDER BY xact_start ASC
   `, [thresholdMinutes]);
