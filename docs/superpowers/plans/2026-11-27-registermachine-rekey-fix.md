@@ -540,3 +540,22 @@ sintoma de hoje.
 **Proporção**: plano nasceu de investigação ao vivo, não de spec
 prévia — tasks refletem exatamente o que foi encontrado, sem
 especulação além do que os dados mostraram.
+
+## Status final (28/11/2026) -- implementado, revisado, mergeado, deployado
+
+Todas as 4 tasks implementadas via subagent-driven-development, 5 rodadas de revisao
+independente (3 na Task 4, redesenho da Fase B em "clone-and-swap"; 2 na Task 6, monitor
+de transacao longa) + 1 revisao final de branch inteiro (achou 2 ALTO novos, so visiveis
+com as 4 tasks juntas -- ver PR) + 1 revisao de confirmacao do fix-wave resultante. PR
+[#22](https://github.com/andreprol/delirio-manager/pull/22) mergeado em `master` e
+deployado em producao no mesmo dia.
+
+Validacao em producao aconteceu ao vivo, por acidente feliz: ao retomar o trabalho pra
+seguir pro Plano 2, `/api/healthz` estava reportando `db:false`/timeout persistente.
+Investigacao achou 9 transacoes simultaneas `UPDATE machines SET id=$1 WHERE id=$2`
+travadas -- o EXATO codigo antigo que este plano corrige, reproduzindo o incidente
+original ao vivo, no momento exato em que o fix (ja revisado, so nao deployado ainda)
+estava disponivel. Migrations aplicadas manualmente em producao antes do merge, PR
+mergeado, deploy automatico via `ci-server.yml` rodou, `/api/healthz` confirmado
+`{"ok":true}` estavel. Detalhe completo da investigacao e do incidente na memoria:
+`project_delirio_registermachine_rekey_fix.md`.
