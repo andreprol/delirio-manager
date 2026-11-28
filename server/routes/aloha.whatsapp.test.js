@@ -41,7 +41,13 @@ beforeEach(async () => {
   machineId = crypto.randomUUID();
   createdMachineIds.push(machineId);
   chave = `chave-${crypto.randomUUID()}`;
-  await db.registerMachine({ machineId, hostname: 'LOJA1BOH', agentVersion: '1.0' });
+  // hostname único por teste (não fixo): hostname repetido bate no caminho de
+  // re-key assíncrono de registerMachine (Task 4) -- machines.id só troca
+  // pro machineId novo quando o worker (Fase B, fora deste teste) processar
+  // a fila, então o INSERT em nfce_index abaixo, que usa machineId direto,
+  // violaria a FK enquanto ainda não trocou. Hostname novo a cada teste
+  // garante o caminho "máquina genuinamente nova" (síncrono).
+  await db.registerMachine({ machineId, hostname: `LOJA1BOH-${machineId.slice(0, 8)}`, agentVersion: '1.0' });
   await db.upsertNFCeRecords(machineId, [{ chave, n_nf: 123, dh_emi: '2026-11-09T10:00:00', v_nf: 50, danfe: { nNF: '123' } }]);
 });
 

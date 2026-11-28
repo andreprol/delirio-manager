@@ -164,8 +164,45 @@ async function withTransaction(fn) {
 
 // ── Machines ──────────────────────────────────────────────────────────────────
 
+// pending_rekey_new_id: NULL quando a máquina não está no meio de um re-key
+// assíncrono (Task 4, ver _rekeyAndMergeMachine abaixo e
+// services/machineRekeyWorker.js); caso contrário, o novo UUID que o agente
+// já está usando desde que registerMachine respondeu 201 (Fase A), mas que
+// ainda NÃO é machines.id (só a Fase B troca isso). routes/agent.js e
+// routes/winEvents.js usam este campo pra aceitar o novo UUID nessa janela,
+// sem esperar o worker.
+//
+// 🔴 Inclui 'failed' no status aceito (revisão final de branch, 27/11/2026,
+// ALTO 1b): quando um job esgota MAX_ATTEMPTS e vira 'failed'
+// (machineRekeyWorker.js), ele sumia do JOIN original (só
+// 'pending'/'processing') e `pending_rekey_new_id` voltava NULL -- mas o
+// agente já adotou o new_id desde o 201 da Fase A, então passava a tomar
+// 403 pra sempre em /commands e /service-status (machine.id !== new_id E
+// pending_rekey_new_id !== new_id, ambos falsos), sem alerta, sem
+// recuperação automática. Incluir 'failed' aqui NÃO resolve o re-key
+// (nenhum job 'failed' é reclamado automaticamente -- fica pra investigação
+// manual, ver sendAlert em machineRekeyWorker.js), só estanca o sangramento:
+// o agente continua recebendo comandos normalmente enquanto isso não é
+// investigado.
+//
+// LEFT JOIN LATERAL + ORDER BY id DESC LIMIT 1 em vez de um LEFT JOIN
+// direto: pode haver MÚLTIPLOS jobs 'failed' ao longo do tempo pro mesmo
+// old_id (só 'pending'/'processing' têm a UNIQUE parcial por hostname --
+// 'failed' não), então um JOIN direto multiplicaria linhas do resultado
+// principal. A LATERAL pega sempre o job mais recente por old_id; nunca
+// duplica `machines`.
 async function getMachineByToken(token) {
-  const { rows } = await getPool().query('SELECT * FROM machines WHERE token = $1', [token]);
+  const { rows } = await getPool().query(
+    `SELECT m.*, q.new_id AS pending_rekey_new_id
+     FROM machines m
+     LEFT JOIN LATERAL (
+       SELECT new_id FROM machine_rekey_queue
+       WHERE old_id = m.id AND status IN ('pending', 'processing', 'failed')
+       ORDER BY id DESC LIMIT 1
+     ) q ON true
+     WHERE m.token = $1`,
+    [token]
+  );
   return rows[0];
 }
 
@@ -447,6 +484,126 @@ async function deleteInBatches(table, whereSql, params) {
 
 async function deleteCommandsInBatches(whereSql, params) {
   return deleteInBatches('commands', whereSql, params);
+}
+
+// Simétrico a deleteInBatches, mas fazendo UPDATE em vez de DELETE -- usado
+// pela Fase B do re-key assíncrono (server/services/machineRekeyWorker.js,
+// Task 4 do plano 2026-11-27-registermachine-rekey-fix) pra pré-processar em
+// lotes, FORA de qualquer transação, as tabelas grandes (activity_log,
+// nfce_index) e as duas sem FK que a Fase A deixa de lado (events, commands)
+// -- um UPDATE de tabela inteira travaria ON UPDATE CASCADE/locks por muito
+// tempo nas maiores (ver comentário da migração machine-rekey-queue). `table`
+// é sempre string literal fixa no código-fonte, nunca vinda de input externo
+// (mesma garantia de deleteInBatches).
+async function updateMachineIdInBatches(table, oldId, newId) {
+  const pool = getPool();
+  let total = 0;
+  for (;;) {
+    const { rowCount } = await pool.query(
+      `UPDATE ${table} SET machine_id=$1 WHERE id IN (
+        SELECT id FROM ${table} WHERE machine_id=$2 LIMIT $3
+      )`,
+      [newId, oldId, PURGE_BATCH_SIZE]
+    );
+    total += rowCount;
+    if (rowCount < PURGE_BATCH_SIZE) break;
+    await sleep(PURGE_BATCH_SLEEP_MS);
+  }
+  return total;
+}
+
+// 3 das 15 tabelas filhas de machines NÃO têm uma coluna `id` própria pra
+// servir de cursor de lote (`nfce_indexed_days`/`service_status` têm PK
+// composta machine_id+outra-coluna; `nfce_auto_email_log` tem PK em `chave`)
+// -- updateMachineIdInBatches acima quebraria nelas (`column "id" does not
+// exist`). Achado escrevendo a Fase B generalizada (fix-wave pós-revisão,
+// Task 4) -- o brief original assumia que todas as 15 tinham `id`. As 3 são
+// sempre pequenas (poucas linhas por máquina: dias indexados, serviços
+// monitorados, e-mails de nota auto-enviados), então um UPDATE direto (sem
+// lote, fora de transação como as demais) é seguro -- nunca é
+// `activity_log`/`nfce_index`.
+async function updateMachineIdDirect(table, oldId, newId) {
+  const { rowCount } = await getPool().query(
+    `UPDATE ${table} SET machine_id=$1 WHERE machine_id=$2`,
+    [newId, oldId]
+  );
+  return rowCount;
+}
+
+// Fase B do re-key assíncrono (clone-and-swap, fix-wave pós-revisão da Task
+// 4 -- ver seção "Revisão pós-implementação" do plano
+// 2026-11-27-registermachine-rekey-fix): descobre as colunas reais de
+// `machines` via information_schema em vez de hardcodar a lista -- sobrevive
+// a uma coluna nova no schema sem precisar mexer aqui. Cacheada: o schema de
+// `machines` não muda em runtime (só via migração, que exige restart).
+let _machinesColumnsCache = null;
+
+async function _getMachinesCloneColumns() {
+  if (_machinesColumnsCache) return _machinesColumnsCache;
+  const { rows } = await getPool().query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = current_schema() AND table_name='machines'
+       AND column_name NOT IN ('id', 'token')
+     ORDER BY ordinal_position`
+  );
+  _machinesColumnsCache = rows.map(r => r.column_name);
+  return _machinesColumnsCache;
+}
+
+// Clona a linha de `oldId` pra `newId` com um token placeholder (nunca usado
+// pra autenticar ninguém -- o token real só migra na transação final de
+// _finalizeRekey, machineRekeyWorker.js). Isso é o que resolve o CRÍTICO do
+// revisor: `newId` passa a existir em `machines` ANTES de qualquer UPDATE
+// nas 10 tabelas com FK, então updateMachineIdInBatches/updateMachineIdDirect
+// podem migrar as 15 tabelas filhas em lote sem nunca precisar trocar a PK
+// da linha antiga (que é o que travava o cascade residual segurando
+// heartbeats do mesmo agente). `colList` nunca vem de input externo -- é
+// sempre information_schema.columns filtrado por table_name='machines'
+// (literal fixo no código), mesma garantia de segurança de
+// deleteInBatches/updateMachineIdInBatches.
+//
+// Retorna false se `oldId` já não existir (máquina apagada durante a janela
+// pendente) -- o chamador deve marcar o job 'done' sem erro, nada a clonar.
+// Idempotente se `newId` já existir (ciclo anterior clonou mas crashou antes
+// do DELETE final, job reclamado por _reclaimStuckJobs) -- ver comentário
+// dentro da função. 🔵 Exceção (achado real do revisor, 3ª rodada): nesse
+// caso de idempotência, retorna true direto, sem checar se `oldId` ainda
+// existe -- não dá problema porque _finalizeRekey trata `oldMachine` vazio.
+//
+// 🟡 Limitação conhecida (achado real do revisor, 2ª rodada, não corrigida):
+// a partir deste clone, a linha `newId` fica visível pro resto do sistema
+// (listagens, `checkOffline`/alertEngine.js) até _finalizeRekey apagar
+// `oldId` -- `last_seen` do clone fica congelado no momento do clone, então
+// se a Fase B demorar mais que o threshold de "offline" de checkOffline
+// (hoje a Fase B é rápida -- segundos a poucos minutos mesmo com histórico
+// grande, já que a migração em lote não trava mais nada -- mas não há
+// garantia formal), pode disparar um alerta de "máquina offline" falso, e o
+// dashboard mostra o hostname duplicado enquanto isso. Fix futuro, se
+// necessário: excluir das consultas de listagem/stale os ids que são
+// `new_id` de um job `machine_rekey_queue` ainda ativo.
+async function cloneMachineRow(oldId, newId, placeholderToken) {
+  // Idempotente: se um ciclo anterior já clonou (erro/crash entre o clone e
+  // o DELETE final de _finalizeRekey, job reclamado por _reclaimStuckJobs),
+  // `newId` já existe em `machines` -- não tenta inserir de novo (violaria a
+  // PK), só confirma e segue. 🔴 Achado real do revisor (2ª rodada): sem
+  // isso, o INSERT falhava pra sempre em todo ciclo seguinte -- o catch de
+  // runCycleOnce só devolve pra 'pending'/incrementa attempts, nunca aplica
+  // MAX_ATTEMPTS (isso só acontecia em _reclaimStuckJobs), martelando o
+  // mesmo erro a cada 10s indefinidamente. Reaplicar o clone é seguro: os
+  // campos mutáveis da linha nova sempre são resincronizados a partir da
+  // linha antiga em _syncMutableFields, dentro da transação final, antes do
+  // DELETE -- o snapshot do clone nunca precisa estar atualizado.
+  const { rows: existingNew } = await getPool().query('SELECT 1 FROM machines WHERE id=$1', [newId]);
+  if (existingNew.length > 0) return true;
+
+  const cols = await _getMachinesCloneColumns();
+  const colList = cols.join(', ');
+  const { rowCount } = await getPool().query(
+    `INSERT INTO machines (id, token, ${colList})
+     SELECT $1, $2, ${colList} FROM machines WHERE id=$3`,
+    [newId, placeholderToken, oldId]
+  );
+  return rowCount > 0;
 }
 
 // Apaga comandos de machine_id que não existe mais em `machines` (órfãos).
@@ -984,9 +1141,15 @@ async function markAutoEmailFailed(chave, error) {
 // SQLite revalidar isso ao religar `foreign_keys = ON`). Corrigido de
 // graça aqui: insights agora segue o re-key como as outras 9 tabelas com FK.
 
-// Tabelas com machine_id SEM FK pra machines -- precisam de UPDATE/DELETE
-// manual no re-key/dedup abaixo. As 10 com FK (ver migração acima) seguem
-// o UPDATE/DELETE de `machines` automaticamente via ON UPDATE/DELETE CASCADE.
+// Tabelas com machine_id SEM FK pra machines -- usadas pro DELETE manual de
+// duplicatas no dedup da Fase B (server/services/machineRekeyWorker.js,
+// _finalizeRekey). A migração de machine_id em si (clone-and-swap, fix-wave
+// pós-revisão da Task 4) trata estas 5 + as 10 com FK igualmente, em lote,
+// via ALL_CHILD_TABLES no worker -- esta lista aqui só serve pro dedup, que
+// precisa saber quais tabelas NÃO se limpam sozinhas via cascade ao apagar
+// a linha duplicada em `machines`. Exportada (ver module.exports) pra ser a
+// única fonte de verdade também em machineRekeyWorker.js -- não mudar sem
+// revisar os dois lugares.
 const MACHINE_CHILD_TABLES_NO_FK = ['metrics', 'commands', 'events', 'nfce_auto_email_log', 'service_status'];
 
 // Re-key de UUID (config.json corrompido/reinstall) + merge de duplicatas
@@ -995,7 +1158,22 @@ const MACHINE_CHILD_TABLES_NO_FK = ['metrics', 'commands', 'events', 'nfce_auto_
 // equivalente em Postgres (não dá pra desligar a checagem globalmente, nem
 // precisa, por isso): ON UPDATE CASCADE propaga a mudança de PK automaticamente
 // pras 10 tabelas com FK; só as 5 sem FK (MACHINE_CHILD_TABLES_NO_FK) exigem
-// UPDATE manual aqui, igual ao original fazia pra todas as 14.
+// UPDATE manual, igual ao original fazia pra todas as 14.
+//
+// 🔴 Task 4 (plano 2026-11-27-registermachine-rekey-fix, incidente real
+// 27/11/2026): o `UPDATE machines SET id=...` que de fato troca a PK (e
+// dispara o cascade acima) NÃO roda mais aqui dentro -- travava esta mesma
+// transação/advisory lock por 1 a 71+ minutos sempre que activity_log (23GB)
+// ou nfce_index (7,5GB) tinham muita coisa pra cascadear, saturando o pool e
+// derrubando /api/healthz. `_rekeyAndMergeMachine` (abaixo) agora é só a
+// Fase A (rápida: NÃO toca tabela filha nenhuma, só atualiza a linha antiga
+// e enfileira em machine_rekey_queue); a Fase B, em 2º plano, em
+// server/services/machineRekeyWorker.js, virou clone-and-swap (fix-wave
+// pós-revisão: um 2º revisor achou que o design original -- trocar a PK da
+// linha existente -- ainda travava a linha antiga durante o cascade
+// residual, bloqueando heartbeat do MESMO agente de dentro do worker,
+// reproduzindo o incidente original). Ver comentário de
+// _rekeyAndMergeMachine pro detalhe da Fase A.
 //
 // Simplificação real sobre o original: o SQLite tinha um passo extra
 // (`DELETE FROM watchlist_matches WHERE activity_log_id IN (SELECT id FROM
@@ -1032,13 +1210,32 @@ const MACHINE_CHILD_TABLES_NO_FK = ['metrics', 'commands', 'events', 'nfce_auto_
 async function registerMachine({ machineId, hostname, agentVersion }) {
   const now = new Date().toISOString();
 
-  const { token, event } = await withTransaction(async (client) => {
+  const { token, machineId: effectiveMachineId, event } = await withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext(upper($1)))', [hostname]);
 
     // 1. UUID já conhecido → atualiza normalmente. Reconferido AQUI DENTRO
     // (não só antes de entrar na transação) -- com o lock já adquirido,
     // nenhuma outra chamada pro mesmo hostname pode ter mudado o estado
     // entre uma checagem "de fora" e esta.
+    //
+    // 🟡 Limitação conhecida (achado real do revisor, 2ª rodada, não
+    // corrigida -- impacto baixo, autorrecuperável; comentário corrigido na
+    // revisão final de branch, 27/11/2026 -- MÉDIO 2, a versão anterior
+    // descrevia o mecanismo errado): se `machineId` for o `new_id` de um job
+    // de re-key ainda `pending`/`processing` (o worker já clonou a linha --
+    // cloneMachineRow, Fase B), este caso bate aqui (`existing` encontra o
+    // clone) e devolve o token PLACEHOLDER dessa linha -- mas esse
+    // placeholder É um token real e único (gerado por cloneMachineRow,
+    // inserido em `machines`), não um valor inventado: ele AUTENTICA de
+    // verdade, e o agente segue fazendo heartbeat normalmente com ele até
+    // _finalizeRekey/_syncMutableFields trocar o token da linha pelo token
+    // real do canonical (só NESSE momento o agente toma 401 na chamada
+    // seguinte e se re-registra). Consequência real (notada pela revisão,
+    // não corrigida aqui -- fora de escopo desta fix-wave): _syncMutableFields
+    // sobrescreve `last_seen`/`status` do clone (atualizados enquanto o
+    // agente usava o placeholder) com os valores PARADOS da linha antiga --
+    // pode gerar um "offline" breve no dashboard logo depois do
+    // _finalizeRekey, mesmo a máquina estando online o tempo todo.
     const { rows: existingRows } = await client.query('SELECT * FROM machines WHERE id = $1', [machineId]);
     const existing = existingRows[0];
     if (existing) {
@@ -1047,10 +1244,11 @@ async function registerMachine({ machineId, hostname, agentVersion }) {
          WHERE id=$5`,
         [hostname, agentVersion || '', now, now, machineId]
       );
-      return { token: existing.token, event: null };
+      return { token: existing.token, event: null, machineId };
     }
 
-    // 2. UUID desconhecido mas hostname conhecido → re-key atômico
+    // 2. UUID desconhecido mas hostname conhecido → re-key assíncrono (Fase A
+    // aqui, Fase B em segundo plano -- ver _rekeyAndMergeMachine)
     const { rows: canonicalRows } = await client.query(
       `SELECT * FROM machines WHERE UPPER(hostname) = UPPER($1)
        ORDER BY CASE WHEN location != 'Temporário' THEN 0 ELSE 1 END,
@@ -1070,43 +1268,128 @@ async function registerMachine({ machineId, hostname, agentVersion }) {
        VALUES ($1, $2, $3, 'Temporário', $4, $5, 'online', $6, $7, $8)`,
       [machineId, hostname, hostname, token2, agentVersion || '', now, now, now]
     );
-    return { token: token2, event: { type: 'agent_installed', details: `Agente v${agentVersion || '?'} registrado` } };
+    return { token: token2, event: { type: 'agent_installed', details: `Agente v${agentVersion || '?'} registrado` }, machineId };
   });
 
   if (event) await addEvent(machineId, event.type, event.details);
-  return token;
+  // 🔴 Revisão final de branch (27/11/2026, ALTO 2): registerMachine agora
+  // devolve { token, machineId } em vez de só `token` -- `machineId` é o id
+  // EFETIVO que o caller deve usar daqui em diante. Na maioria dos casos é
+  // o mesmo `machineId` recebido (casos 1 e 3, e o caminho normal do caso
+  // 2); só diverge no caminho de _rekeyAndMergeMachine quando um job
+  // concorrente de re-key já estava 'processing' pro mesmo hostname --
+  // nesse caso é `existingJob.new_id` (o id que o worker vai de fato
+  // aplicar), nunca o `machineId` recebido aqui, que acabou de ser
+  // rejeitado pela guarda `AND status='pending'` e NUNCA vai existir em
+  // `machines`. Quem ignorava esse retorno (POST /api/register,
+  // routes/agent.js) devolvia ao agente um machineId rejeitado -- o agente
+  // adota esse id e nunca mais recebe comando nenhum (403 silencioso), sem
+  // alerta, sem recuperação automática (mesmo sintoma do ALTO 1, por um
+  // caminho diferente).
+  return { token, machineId: effectiveMachineId };
 }
 
-// Extraído de registerMachine (caso 2) só pra manter a função principal
-// legível -- segue rodando no `client` da mesma transação/lock, não é uma
-// unidade de trabalho independente.
+// Fase A do re-key assíncrono (Task 4, plano 2026-11-27-registermachine-
+// rekey-fix) -- ver migração machine-rekey-queue.sql pro contexto completo do
+// incidente real (27/11/2026): o re-key síncrono antigo (UPDATE machines
+// SET id=... dentro desta mesma transação/lock, cascade atômico nas 10
+// tabelas com FK -- incluindo activity_log 59M linhas/23GB e nfce_index
+// 3,97M linhas/7,5GB) travava essa transação, e o
+// pg_advisory_xact_lock(hashtext(upper(hostname))) que ela já segura
+// (registerMachine, acima), por 1 a 71+ minutos em produção, saturando o
+// pool e derrubando /api/healthz.
+//
+// Fase A (aqui, ainda dentro da transação/lock -- precisa ser rápida):
+//   1. marca a máquina ANTIGA (oldId -- machines.id só muda na Fase B) como
+//      online, já refletindo hostname/versão novos sem esperar o worker;
+//   2. enfileira (ou atualiza) 1 job em machine_rekey_queue -- idempotente
+//      por hostname (UNIQUE parcial case-insensitive da migração), sem race
+//      possível entre chamadas concorrentes do mesmo hostname porque já
+//      estamos sob o advisory lock dele.
+// Fix-wave pós-revisão (ver seção "Revisão pós-implementação" do plano):
+// a Fase A deixou de tocar QUALQUER tabela filha (nem as 3 pequenas sem FK
+// que tocava antes) -- um revisor achou que isso deixava `events`/`commands`
+// escritos durante a janela pendente (via `machine.id`, que ainda é oldId)
+// nunca migrados, já que a Fase A só movia 3 das 5 tabelas sem FK e a Fase B
+// só migrava o que já existia no momento do claim. Agora TODAS as 15
+// tabelas filhas migram só na Fase B (clone-and-swap, server/services/
+// machineRekeyWorker.js, ALL_CHILD_TABLES), que inclui um passe de resíduo
+// final pra capturar qualquer escrita chegada durante a janela. NÃO toca
+// machines.id, NÃO toca nenhuma tabela filha, NÃO remove duplicatas -- tudo
+// isso é Fase B. Deve ser da mesma ordem de grandeza (milissegundos) que o
+// UPDATE de hoje em `machines`, independente do tamanho de
+// activity_log/nfce_index.
 async function _rekeyAndMergeMachine(client, { oldId, canonicalToken, machineId, hostname, agentVersion, now }) {
-  for (const t of MACHINE_CHILD_TABLES_NO_FK) {
-    await client.query(`UPDATE ${t} SET machine_id=$1 WHERE machine_id=$2`, [machineId, oldId]);
-  }
-  // Re-key do registro principal -- ON UPDATE CASCADE propaga pras 10
-  // tabelas com FK automaticamente.
-  await client.query('UPDATE machines SET id=$1 WHERE id=$2', [machineId, oldId]);
+  // Máquina "online" já na linha ANTIGA -- o agente já está usando `machineId`
+  // (seu próprio UUID) desde que esta chamada responder 201, então o
+  // dashboard precisa refletir presença/versão na hora, sem esperar a Fase B.
   await client.query(
     `UPDATE machines SET hostname=$1, agent_version=$2, last_seen=$3, online_since=$4, status='online'
      WHERE id=$5`,
-    [hostname, agentVersion || '', now, now, machineId]
+    [hostname, agentVersion || '', now, now, oldId]
   );
 
-  // Remove todos os outros registros com mesmo hostname (duplicatas de registros anteriores)
-  const { rows: dupes } = await client.query(
-    `SELECT id FROM machines WHERE UPPER(hostname) = UPPER($1) AND id != $2`,
-    [hostname, machineId]
+  // UPPER(hostname) -- bate com o novo índice único case-insensitive da
+  // migração (fix-wave pós-revisão): hostname chegando em case diferente
+  // ("Loja-1" vs "LOJA-1") precisa encontrar o MESMO job ativo, não criar
+  // um 2º concorrente.
+  const { rows: existingJobs } = await client.query(
+    `SELECT id, status, new_id FROM machine_rekey_queue WHERE UPPER(hostname) = UPPER($1) AND status IN ('pending', 'processing') LIMIT 1`,
+    [hostname]
   );
-  for (const { id: dupId } of dupes) {
-    for (const t of MACHINE_CHILD_TABLES_NO_FK) {
-      await client.query(`DELETE FROM ${t} WHERE machine_id=$1`, [dupId]);
+  const existingJob = existingJobs[0];
+  // machineId EFETIVO (revisão final de branch, 27/11/2026, ALTO 2): na
+  // maioria dos casos (sem job ativo, ou job ainda 'pending' quando o
+  // UPDATE abaixo roda) é o mesmo `machineId` recebido. Só diverge no
+  // `else` abaixo, se o UPDATE condicional afetar 0 linhas.
+  let effectiveMachineId = machineId;
+  if (!existingJob) {
+    await client.query(
+      `INSERT INTO machine_rekey_queue (old_id, new_id, hostname, status) VALUES ($1, $2, $3, 'pending')`,
+      [oldId, machineId, hostname]
+    );
+  } else {
+    // O agente reinstalou de novo antes do worker pegar o job velho (que
+    // nunca foi aplicado) -- o new_id mais recente prevalece. `AND
+    // status='pending'` no SQL (não um `if` em JS sobre o status já lido
+    // acima) é o que importa aqui: 🔴 achado real do revisor (2ª rodada) --
+    // entre o SELECT acima e este UPDATE, o worker pode ter reclamado o job
+    // (`_claimNextJob`, sem o advisory lock desta transação) e já clonado a
+    // linha pro new_id antigo. Um UPDATE sem essa guarda trocaria new_id
+    // SEM o worker saber, e o dedup da transação final apagaria (com
+    // cascade) o clone já migrado -- perda de histórico + trava o mesmo
+    // padrão que o CRÍTICO original. Com a guarda, se o status já virou
+    // 'processing' nesse intervalo, o UPDATE simplesmente não afeta nada
+    // (rowCount 0) -- deixa o worker terminar com o new_id que já clonou. O
+    // UUID rejeitado aqui (otherNewId) nunca chega a existir em `machines`
+    // (o worker finaliza com o new_id que ele clonou, não com este) -- 🔵
+    // achado real do revisor (3ª rodada): a próxima chamada desse hostname
+    // NÃO cai no caso 1 (UUID já conhecido). Ela abre um 2º re-key (do
+    // id resultante do 1º pra este otherNewId) -- autolimitado (converge
+    // sozinho), mas migra o histórico de novo. Custo aceito: mais raro que
+    // o cenário original, sem perda de dados.
+    const { rowCount } = await client.query(
+      `UPDATE machine_rekey_queue SET new_id=$1 WHERE id=$2 AND status='pending'`,
+      [machineId, existingJob.id]
+    );
+    // 🔴 ALTO 2 (revisão final de branch, 27/11/2026): o comentário acima já
+    // explicava que o UUID rejeitado "nunca chega a existir em machines",
+    // mas nada dizia ao CALLER qual id usar no lugar -- `registerMachine`
+    // sempre devolvia o `machineId` recebido, mesmo quando `rowCount` vem 0
+    // aqui, e `POST /api/register` respondia esse id rejeitado pro agente,
+    // que o adota e nunca mais recebe comando nenhum (403 pra sempre, sem
+    // alerta, sem recuperação automática -- mesmo sintoma do ALTO 1, por um
+    // caminho diferente). Quando `rowCount` é 0, o id que vale de verdade é
+    // `existingJob.new_id` (o que o worker já clonou e vai de fato
+    // finalizar em _finalizeRekey).
+    if (rowCount === 0) {
+      effectiveMachineId = existingJob.new_id;
     }
-    await client.query('DELETE FROM machines WHERE id=$1', [dupId]); // cascade cuida das 10 tabelas com FK
   }
 
   return {
     token: canonicalToken,
+    machineId: effectiveMachineId,
     event: { type: 'agent_reregistered', details: `UUID atualizado (config recuperado de ${oldId.slice(0, 8)}): agente v${agentVersion || '?'}` },
   };
 }
@@ -1213,10 +1496,29 @@ async function deleteWatchlistKeyword(id) {
 
 async function insertActivityLog(machineId, windowTitle, processName) {
   const now = new Date().toISOString();
+  const safeWindowTitle = windowTitle || '';
+  const safeProcessName = processName || '';
+
+  // Dedupe: o companion reporta a cada poucos segundos mesmo sem mudança de
+  // janela/processo -- sem isso, alguém parado na mesma tela por 1h gera
+  // ~900 linhas idênticas (achado no incidente de 23/11, 59M linhas/23GB em
+  // 3 meses). Usa o índice composto idx_activity_log_machine_ts
+  // (machine_id, captured_at) -- mesma ordenação de getActivityLog.
+  const { rows: lastRows } = await getPool().query(
+    `SELECT id, window_title, process_name FROM activity_log
+     WHERE machine_id = $1 ORDER BY captured_at DESC, id DESC LIMIT 1`,
+    [machineId]
+  );
+  const last = lastRows[0];
+  if (last && last.window_title === safeWindowTitle && last.process_name === safeProcessName) {
+    await getPool().query('UPDATE activity_log SET captured_at = $1 WHERE id = $2', [now, last.id]);
+    return { id: last.id, capturedAt: now };
+  }
+
   const { rows } = await getPool().query(
     `INSERT INTO activity_log (machine_id, window_title, process_name, captured_at)
      VALUES ($1, $2, $3, $4) RETURNING id`,
-    [machineId, windowTitle || '', processName || '', now]
+    [machineId, safeWindowTitle, safeProcessName, now]
   );
   return { id: rows[0].id, capturedAt: now };
 }
@@ -2395,10 +2697,65 @@ async function recordAlertsSent(rows) {
   }
 }
 
+// getLongRunningTransactions: transações Postgres (pg_stat_activity) abertas
+// há mais de `thresholdMinutes` -- motivação real: `UPDATE machines SET id=$1
+// WHERE id=$2` (antes da Task 4 deste mesmo plano) segurava o lock da linha
+// durante o cascade de FK em activity_log/nfce_index, travando de 1 a 71+
+// minutos, derrubando /api/healthz e o pool de conexões -- só foi descoberto
+// quando alguém notou o sintoma, sem nenhum alerta próprio. Detecta qualquer
+// transação anormalmente longa (não só esse caso específico, já corrigido)
+// ANTES que ela vire outage -- ver services/longTransactionMonitor.js.
+//
+// `client` é opcional (default: pool compartilhado de getPool()). Achado 🟠
+// ALTO do code-reviewer (revisão independente, 27/11/2026): o monitor
+// (longTransactionMonitor.js) SEMPRE passa seu próprio pool isolado aqui,
+// nunca o compartilhado -- se esta query usasse o pool do app e esse pool
+// estivesse esgotado (exatamente o cenário que o monitor existe pra
+// detectar), a própria query do monitor ficaria pendurada esperando uma
+// conexão livre e o monitor nunca chegaria a alertar sobre nada.
+//
+// 🟡 Limitação conhecida (achado do mesmo review, sem fix de código possível
+// sem confirmar o role real de produção): `pg_stat_activity` só expõe
+// xact_start/state/query de sessões de OUTROS roles pra quem tem
+// `pg_read_all_stats` ou é superuser -- sem esse privilégio, essas colunas
+// vêm NULL pra sessão de qualquer role diferente do que está rodando esta
+// query, e `xact_start IS NOT NULL` descarta essa linha em silêncio. Ou seja,
+// este monitor só vê de verdade as transações do MESMO role da aplicação, a
+// menos que esse role tenha `pg_read_all_stats` concedido explicitamente --
+// confirmar isso em produção antes de contar que o monitor cobre uma
+// migração manual ou outro serviço rodando com um role diferente.
+async function getLongRunningTransactions(thresholdMinutes, client) {
+  const runner = client || getPool();
+  const { rows } = await runner.query(`
+    SELECT pid, usename, application_name, state, query,
+           EXTRACT(EPOCH FROM (now() - xact_start))::int AS xact_duration_seconds,
+           EXTRACT(EPOCH FROM (now() - query_start))::int AS query_duration_seconds
+    FROM pg_stat_activity
+    WHERE xact_start IS NOT NULL
+      AND backend_type = 'client backend'
+      AND datname = current_database()
+      AND now() - xact_start > make_interval(mins => $1::int)
+      AND pid != pg_backend_pid()
+    ORDER BY xact_start ASC
+  `, [thresholdMinutes]);
+  // query truncada a 200 chars -- mesmo padrão de truncamento de ncrMonitor.js
+  // (pode conter literais de dados reais, não vaza payload gigante em log/e-mail).
+  return rows.map(r => ({
+    pid: r.pid,
+    usename: r.usename,
+    applicationName: r.application_name,
+    state: r.state,
+    query: typeof r.query === 'string' ? r.query.slice(0, 200) : r.query,
+    xactDurationSeconds: r.xact_duration_seconds,
+    queryDurationSeconds: r.query_duration_seconds,
+  }));
+}
+
 module.exports = {
-  getPool, closePool, withTransaction,
+  getPool, closePool, withTransaction, updateMachineIdInBatches, updateMachineIdDirect,
+  cloneMachineRow, MACHINE_CHILD_TABLES_NO_FK,
   recordDbSizeSnapshot, getLatestDbSizeByTable, getDbSizeGrowth, purgeDbSizeSnapshots,
-  getTablesAlertedWithinDays, recordAlertsSent,
+  getTablesAlertedWithinDays, recordAlertsSent, getLongRunningTransactions,
   getMachineByToken, getMachineById, getMachineByHostname, getAllMachines,
   deleteMachine, isDeletedMachine, updateMachine, setMachineStatus,
   getMachinesStale, setWolStatus, getMachinesWolTesting, getMachinesBiosNeeded,

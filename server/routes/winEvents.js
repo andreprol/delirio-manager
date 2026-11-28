@@ -15,7 +15,10 @@ router.post('/win-events', asyncHandler(async (req, res) => {
   }
 
   const machine = await db.getMachineByToken(token);
-  if (!machine || machine.id !== machineId) {
+  // Mesmo ruling de routes/agent.js -- aceita o new_id pendente de re-key
+  // (Task 4, machineRekeyWorker.js) enquanto a Fase B não comitou
+  // machines.id, só pra fins de AUTORIZAÇÃO.
+  if (!machine || (machine.id !== machineId && machine.pending_rekey_new_id !== machineId)) {
     return res.status(401).json({ error: 'Token inválido' });
   }
 
@@ -23,12 +26,21 @@ router.post('/win-events', asyncHandler(async (req, res) => {
     return res.json({ saved: 0 });
   }
 
+  // 🔴 Achado do revisor (fix-wave pós-revisão da Task 4): grava sempre com
+  // `machine.id` (o id que de fato existe em `machines` nesse momento --
+  // `oldId` durante a janela pendente, `newId` depois que a Fase B
+  // comitou), NUNCA com `machineId` do payload. `win_events` tem FK ativa
+  // pra `machines(id)` -- gravar com o `newId` do payload enquanto ele só
+  // existe como `pending_rekey_new_id` (ainda não comitado) virava violação
+  // de FK (500) no desenho antigo; no desenho clone-and-swap atual, `newId`
+  // chega a existir mais cedo (desde o clone da Fase B), mas ainda não é
+  // garantia -- `machine.id` é sempre a fonte da verdade.
   try {
-    await db.saveWinEvents(machineId, events);
+    await db.saveWinEvents(machine.id, events);
 
-    const unread = await db.countUnreadWinEvents(machineId);
+    const unread = await db.countUnreadWinEvents(machine.id);
     broadcast('new_win_events', {
-      machineId,
+      machineId: machine.id,
       count: unread,
     });
 

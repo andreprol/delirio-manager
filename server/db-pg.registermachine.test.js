@@ -6,7 +6,21 @@
  * mais arriscada do arquivo (re-key de UUID + merge de duplicatas) --
  * cobertura extra aqui, incluindo as 10 tabelas com FK ON UPDATE CASCADE
  * e as 5 sem FK que precisam de UPDATE/DELETE manual.
+ *
+ * Task 4 (plano 2026-11-27-registermachine-rekey-fix): registerMachine só
+ * faz mais a Fase A do re-key (rápida, enfileira em machine_rekey_queue) --
+ * a troca de fato de machines.id + cascade + dedup de duplicatas virou Fase
+ * B, em segundo plano, em services/machineRekeyWorker.js. Os testes de
+ * "caso 2"/"caso 2b"/"prefere canonical" abaixo chamam
+ * machineRekeyWorker.runCycleOnce() diretamente (não via setTimeout) pra
+ * completar a Fase B dentro do teste, sem depender do scheduler real.
+ * leaderElection é mockado pra isLeader() sempre true -- sem isso,
+ * runCycleOnce() faria no-op (not-leader) sem leaderElection.start() ter
+ * ganhado o advisory lock de sessão numa conexão própria, o que exigiria
+ * outro Client real só pra isto.
  */
+
+jest.mock('./services/leaderElection', () => ({ isLeader: () => true }));
 
 const crypto = require('crypto');
 
@@ -18,15 +32,26 @@ if (!hasDb) {
 }
 
 describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
-  let db;
+  let db, machineRekeyWorker;
   const createdMachineIds = [];
 
   beforeAll(() => {
     db = require('./db-pg');
+    machineRekeyWorker = require('./services/machineRekeyWorker');
   });
 
   afterEach(async () => {
     const pool = db.getPool();
+    if (createdMachineIds.length) {
+      // machine_rekey_queue não tem FK pra machines (de propósito -- um job
+      // 'done' sobrevive mesmo depois da linha antiga deixar de existir) --
+      // limpeza manual antes de apagar as máquinas, senão vaza na instância
+      // dev compartilhada.
+      await pool.query(
+        'DELETE FROM machine_rekey_queue WHERE old_id = ANY($1) OR new_id = ANY($1)',
+        [createdMachineIds]
+      );
+    }
     while (createdMachineIds.length) {
       const id = createdMachineIds.pop();
       // Tabelas sem FK pra machines (mesmas do MACHINE_CHILD_TABLES_NO_FK
@@ -51,13 +76,42 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
     return id;
   }
 
+  // runCycleOnce() sem argumento pega o job 'pending' GLOBALMENTE mais
+  // antigo (correto em produção -- não precisa saber de hostname, a UNIQUE
+  // parcial + advisory lock por hostname já isolam tudo). Jest roda arquivos
+  // de teste em paralelo (workers separados) contra a MESMA instância dev
+  // do Postgres -- sem filtro, uma única chamada podia acabar roubando o job
+  // de OUTRO arquivo em voo e, se aquele processo terminasse no meio, deixar
+  // o job preso em 'processing' pra sempre (🔴 achado rodando a suíte
+  // completa de verdade). Por isso runCycleOnce(hostname) aqui -- filtro só
+  // de teste, nunca usado em produção. Ainda assim drena ciclos (em vez de
+  // assumir que a 1ª chamada bastou) e falha com mensagem clara se não
+  // ficar 'done' a tempo.
+  async function runWorkerUntilDone(hostname, { maxCycles = 20 } = {}) {
+    for (let i = 0; i < maxCycles; i++) {
+      const { rows } = await db.getPool().query(
+        'SELECT status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
+      );
+      if (rows[0]?.status === 'done') return;
+      const result = await machineRekeyWorker.runCycleOnce(hostname);
+      if (!result.processed) break; // sem job pending pra este hostname
+    }
+    const { rows } = await db.getPool().query(
+      'SELECT status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
+    );
+    if (rows[0]?.status !== 'done') {
+      throw new Error(`job de ${hostname} nao ficou 'done' apos ${maxCycles} ciclos (status atual: ${rows[0]?.status})`);
+    }
+  }
+
   describe('registerMachine', () => {
     it('caso 1: UUID já conhecido -- atualiza presença e devolve o token existente', async () => {
       const id = trackMachine(crypto.randomUUID());
-      const token1 = await db.registerMachine({ machineId: id, hostname: 'PDV-NOVO', agentVersion: '1.0' });
+      const { token: token1 } = await db.registerMachine({ machineId: id, hostname: 'PDV-NOVO', agentVersion: '1.0' });
 
-      const token2 = await db.registerMachine({ machineId: id, hostname: 'PDV-NOVO', agentVersion: '1.1' });
+      const { token: token2, machineId: effectiveMachineId } = await db.registerMachine({ machineId: id, hostname: 'PDV-NOVO', agentVersion: '1.1' });
       expect(token2).toBe(token1);
+      expect(effectiveMachineId).toBe(id); // ALTO 2: caso 1 sempre devolve o machineId recebido
 
       const m = await db.getMachineById(id);
       expect(m.agent_version).toBe('1.1');
@@ -66,7 +120,8 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
 
     it('caso 3: máquina genuinamente nova -- cria com location Temporário e dispara evento', async () => {
       const id = trackMachine(crypto.randomUUID());
-      const token = await db.registerMachine({ machineId: id, hostname: `NOVA-${id.slice(0, 8)}`, agentVersion: '1.0' });
+      const { token, machineId: effectiveMachineId } = await db.registerMachine({ machineId: id, hostname: `NOVA-${id.slice(0, 8)}`, agentVersion: '1.0' });
+      expect(effectiveMachineId).toBe(id); // ALTO 2: caso 3 sempre devolve o machineId recebido
 
       const m = await db.getMachineById(id);
       expect(m.token).toBe(token);
@@ -77,44 +132,273 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       expect(events.some(e => e.type === 'agent_installed')).toBe(true);
     });
 
-    it('caso 2: re-key por hostname -- migra filhos COM FK (ON UPDATE CASCADE) e SEM FK, preserva token', async () => {
+    it('caso 2: re-key por hostname -- Fase A enfileira e marca online rápido SEM tocar NENHUMA tabela filha; Fase B (clone-and-swap) migra todas, preserva token, apaga a linha antiga', async () => {
       const hostname = `REKEY-${crypto.randomUUID().slice(0, 8)}`;
       const oldId = trackMachine(crypto.randomUUID());
-      const originalToken = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+      const { token: originalToken } = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
 
-      // Popula filho COM FK (win_events), filho SEM FK (metrics) e o caso
+      // Popula filho COM FK (win_events), filho SEM FK (metrics), o caso
       // específico do `insights` (tinha FK mas NUNCA esteve na lista
       // _MACHINE_CHILD_TABLES do SQLite original -- bug corrigido de graça
-      // no port, ver comentário em registerMachine; único comportamento
-      // desta migração sem equivalente direto pra comparar, por isso
-      // cobertura própria aqui, não só validação manual via information_schema).
+      // no port original, ver comentário em registerMachine) e outro filho
+      // SEM FK (commands) -- usados abaixo pra provar que a Fase A (fix-wave
+      // pós-revisão, Step 10 do brief) não toca NENHUM deles, só a Fase B.
       await db.saveWinEvents(oldId, [{
         eventTime: new Date().toISOString(), eventId: 41, source: 'Kernel', level: 'Error', translation: 'Antes do re-key',
       }]);
       await db.saveMetrics(oldId, { cpuPct: 10 });
       await db.saveInsight({ machineId: oldId, severity: 'warning', pattern: 'p', patternHash: crypto.randomUUID() });
+      await db.createCommand(oldId, 'ping', {});
 
       const newId = trackMachine(crypto.randomUUID());
-      const returnedToken = await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' });
+      const { token: returnedToken, machineId: effectiveMachineId } = await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' });
+      expect(returnedToken).toBe(originalToken); // token do canonical, já preservado na Fase A
+      expect(effectiveMachineId).toBe(newId); // ALTO 2: sem job concorrente 'processing', o efetivo é o machineId recebido
 
-      expect(returnedToken).toBe(originalToken); // token do canonical, preservado
-      expect(await db.getMachineById(oldId)).toBeUndefined(); // oldId não existe mais (foi re-keyed pro newId)
+      // ── Fase A (síncrona, dentro de registerMachine) já terminou ──
+      // machines.id AINDA é oldId -- só a Fase B (clone-and-swap) troca isso.
+      const oldMachineAfterPhaseA = await db.getMachineById(oldId);
+      expect(oldMachineAfterPhaseA).toBeDefined();
+      expect(oldMachineAfterPhaseA.agent_version).toBe('2.0'); // já refletido, sem esperar o worker
+      expect(oldMachineAfterPhaseA.status).toBe('online');
+      expect(await db.getMachineById(newId)).toBeUndefined(); // a linha só passa a existir com esse id na Fase B (clone)
+
+      // NENHUMA tabela filha migrou ainda -- Fase A (pós fix-wave) não toca
+      // tabela filha nenhuma, nem as pequenas sem FK.
+      expect(await db.getMetrics(newId, 24)).toHaveLength(0);
+      expect(await db.getMetrics(oldId, 24)).toHaveLength(1);
+      expect(await db.getCommandHistory(newId, 10)).toHaveLength(0);
+      expect(await db.getCommandHistory(oldId, 10)).toHaveLength(1);
+      expect(await db.getWinEvents(newId, 'all')).toHaveLength(0);
+      expect(await db.getInsights({ machineId: newId })).toHaveLength(0);
+
+      // evento 'agent_reregistered' já disparado na Fase A -- addEvent grava
+      // direto com o NOVO id (events não tem FK, nasce já correto, não
+      // precisa de migração nenhuma).
+      expect((await db.getEvents(newId, 10)).some(e => e.type === 'agent_reregistered')).toBe(true);
+
+      // exatamente 1 job pending enfileirado pra este hostname
+      const { rows: queueRows } = await db.getPool().query(
+        'SELECT * FROM machine_rekey_queue WHERE hostname=$1', [hostname]
+      );
+      expect(queueRows).toHaveLength(1);
+      expect(queueRows[0].status).toBe('pending');
+      expect(queueRows[0].old_id).toBe(oldId);
+      expect(queueRows[0].new_id).toBe(newId);
+
+      // ── Fase B (worker, chamada direta -- não via setTimeout) ──
+      await runWorkerUntilDone(hostname);
+
+      expect(await db.getMachineById(oldId)).toBeUndefined(); // oldId não existe mais -- a linha foi DELETADA (clone-and-swap), não re-chaveada no lugar
 
       const newMachine = await db.getMachineById(newId);
       expect(newMachine.token).toBe(originalToken);
       expect(newMachine.agent_version).toBe('2.0');
 
-      const winEvents = await db.getWinEvents(newId, 'all');
-      expect(winEvents).toHaveLength(1); // migrado via ON UPDATE CASCADE
+      expect(await db.getWinEvents(newId, 'all')).toHaveLength(1); // migrado em lote (updateMachineIdInBatches, Fase B)
+      expect(await db.getMetrics(newId, 24)).toHaveLength(1); // migrado em lote (updateMachineIdDirect/InBatches, Fase B)
+      expect(await db.getInsights({ machineId: newId })).toHaveLength(1); // migrado em lote (Fase B)
+      expect(await db.getCommandHistory(newId, 10)).toHaveLength(1); // migrado em lote pela Fase B (updateMachineIdInBatches)
 
-      const metrics = await db.getMetrics(newId, 24);
-      expect(metrics).toHaveLength(1); // migrado via UPDATE manual (metrics não tem FK)
+      const { rows: queueAfter } = await db.getPool().query(
+        'SELECT status FROM machine_rekey_queue WHERE old_id=$1', [oldId]
+      );
+      expect(queueAfter[0].status).toBe('done');
+    });
 
-      const insights = await db.getInsights({ machineId: newId });
-      expect(insights).toHaveLength(1); // migrado via ON UPDATE CASCADE -- bug do original corrigido
+    it('Fase B: rodar o worker de novo sobre um job já done não duplica nem quebra (idempotência)', async () => {
+      const hostname = `REKEY-IDEMPOTENT-${crypto.randomUUID().slice(0, 8)}`;
+      const oldId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
 
-      const events = await db.getEvents(newId, 10);
-      expect(events.some(e => e.type === 'agent_reregistered')).toBe(true);
+      const newId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' });
+
+      await runWorkerUntilDone(hostname);
+
+      // Job já 'done' -- chamar o worker de novo com o MESMO filtro de
+      // hostname (nunca sem filtro aqui: outro arquivo de teste rodando em
+      // paralelo pode ter um job 'pending' em voo, e uma chamada sem filtro
+      // roubaria esse trabalho, deixando aquele outro teste ler 'processing'
+      // no meio de uma sequência de asserts -- 🔴 reproduzido ao vivo) não
+      // acha nada pra este hostname (já 'done'), não duplica nem quebra:
+      // continua existindo exatamente 1 linha pra este hostname, ainda 'done'.
+      await machineRekeyWorker.runCycleOnce(hostname).catch(() => {});
+
+      const { rows } = await db.getPool().query(
+        'SELECT status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
+      );
+      expect(rows).toHaveLength(1); // nenhum job duplicado
+      expect(rows[0].status).toBe('done');
+    });
+
+    it('Fase A é idempotente por hostname (Step 8 do brief): 2ª chamada antes do worker processar só atualiza o new_id da fila, nunca cria um 2º job', async () => {
+      const hostname = `REKEY-QUEUE-${crypto.randomUUID().slice(0, 8)}`;
+      const oldId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+
+      const machineId1 = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: machineId1, hostname, agentVersion: '2.0' });
+
+      const machineId2 = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: machineId2, hostname, agentVersion: '3.0' });
+
+      const { rows } = await db.getPool().query(
+        'SELECT old_id, new_id, status FROM machine_rekey_queue WHERE hostname=$1', [hostname]
+      );
+      expect(rows).toHaveLength(1); // nunca 2 jobs concorrentes pro mesmo hostname -- UNIQUE parcial
+      expect(rows[0].status).toBe('pending');
+      expect(rows[0].old_id).toBe(oldId);
+      expect(rows[0].new_id).toBe(machineId2); // o mais recente prevalece (machineId1 nunca foi aplicado)
+
+      await runWorkerUntilDone(hostname); // limpeza -- processa o job antes do afterEach
+    });
+
+    it('🔴 achado real do revisor (2ª rodada) + ALTO 2 (revisão final de branch, 27/11/2026): job já "processing" (worker já clonou) não tem new_id sobrescrito por uma 2ª chamada concorrente de registerMachine, e essa 2ª chamada devolve o machineId EFETIVO (o que o worker vai aplicar), nunca o id que acabou de ser rejeitado', async () => {
+      const hostname = `REKEY-PROCESSING-${crypto.randomUUID().slice(0, 8)}`;
+      const oldId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+
+      const claimedNewId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: claimedNewId, hostname, agentVersion: '2.0' });
+
+      // 🟡 achado real do revisor (3ª rodada): a versão anterior deste teste
+      // marcava 'processing' ANTES de chamar registerMachine -- o SELECT da
+      // Fase A já lia 'processing' desde o início, então até o código ANTIGO
+      // (um `if` em JS sobre esse status já lido) passava sem o fix. Não
+      // provava a corrida real: SELECT lê 'pending', o claim grava
+      // 'processing' DEPOIS do SELECT mas ANTES do UPDATE condicional.
+      // Reproduz isso de verdade com uma 2ª conexão que trava a linha num
+      // BEGIN sem commit (igual o claim real faria), só libera depois que a
+      // chamada concorrente já estiver bloqueada esperando esse lock.
+      const claimClient = await db.getPool().connect();
+      await claimClient.query('BEGIN');
+      await claimClient.query(
+        `UPDATE machine_rekey_queue SET status='processing', claimed_at=now() WHERE hostname=$1`,
+        [hostname]
+      );
+
+      // 2ª chamada concorrente (agente reinstalou de novo antes do worker
+      // terminar) -- disparada sem esperar, igual uma corrida real. Antes do
+      // fix, o UPDATE de new_id rodava incondicional (JS checava um status
+      // já lido, stale), sobrescrevendo o new_id que o worker JÁ tinha
+      // clonado -- o dedup da transação final então apagaria (com cascade)
+      // esse clone, perdendo o histórico já migrado.
+      const otherNewId = trackMachine(crypto.randomUUID());
+      const concurrentCall = db.registerMachine({ machineId: otherNewId, hostname, agentVersion: '3.0' });
+
+      // Espera o UPDATE condicional da 2ª chamada travar no lock da linha
+      // (pg_stat_activity.wait_event_type='Lock') antes de soltar o claim --
+      // sem isso o teste teria uma corrida contra o próprio teste, voltando
+      // a não provar nada sobre a janela real.
+      const pool = db.getPool();
+      let locked = false;
+      for (let i = 0; i < 50 && !locked; i++) {
+        const { rows: waiting } = await pool.query(
+          `SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query ILIKE '%machine_rekey_queue SET new_id%'`
+        );
+        locked = waiting.length > 0;
+        if (!locked) await new Promise(r => setTimeout(r, 20));
+      }
+      // Se o loop acima nunca viu o lock, solta o claim antes do assert
+      // falhar -- senão a 2ª chamada (concurrentCall) ficaria travada pra
+      // sempre esperando um COMMIT que nunca viria, e a conexão do claim
+      // vazaria do pool com uma transação aberta.
+      if (!locked) {
+        await claimClient.query('ROLLBACK');
+        claimClient.release();
+      }
+      expect(locked).toBe(true); // confirma que a 2ª chamada estava mesmo esperando o lock, não terminou antes por timing
+
+      await claimClient.query('COMMIT');
+      claimClient.release();
+
+      const concurrentResult = await concurrentCall;
+
+      const { rows } = await pool.query('SELECT new_id, status FROM machine_rekey_queue WHERE hostname=$1', [hostname]);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe('processing'); // _rekeyAndMergeMachine não tocou o status
+      expect(rows[0].new_id).toBe(claimedNewId); // nunca sobrescrito pra otherNewId, mesmo com o SELECT da Fase A tendo lido 'pending' antes do claim committar
+
+      // ALTO 2: a 3ª chamada (concurrentCall, otherNewId) tem que devolver o
+      // machineId EFETIVO -- claimedNewId (o que o worker já clonou e vai
+      // de fato finalizar), nunca otherNewId (que acabou de ser rejeitado
+      // pela guarda `AND status='pending'` e NUNCA vai existir em
+      // `machines`). Antes deste fix, registerMachine só devolvia `token`
+      // -- um caller que confiasse no machineId do próprio payload (como
+      // POST /api/register fazia) devolveria otherNewId pro agente, que o
+      // adotaria e nunca mais receberia comando nenhum. otherNewId é um
+      // UUID gerado à parte -- diferente de claimedNewId por construção,
+      // então um único toBe já cobre as duas pontas.
+      expect(concurrentResult.machineId).toBe(claimedNewId);
+
+      // Limpeza: o 'processing' simulado acima nunca foi um claim de
+      // verdade (_claimNextJob nunca rodou, cloneMachineRow nunca clonou a
+      // linha) -- runWorkerUntilDone ficaria esperando pra sempre (o job
+      // não é 'pending', e `claimed_at=now()` é recente demais pra
+      // _reclaimStuckJobs considerar travado). Reseta pra 'pending' antes
+      // de deixar o worker processar de verdade.
+      await pool.query(`UPDATE machine_rekey_queue SET status='pending' WHERE hostname=$1`, [hostname]);
+      await runWorkerUntilDone(hostname);
+    });
+
+    it('ALTO 1b (revisão final de branch, 27/11/2026): job \'failed\' (MAX_ATTEMPTS esgotado) continua autorizando via pending_rekey_new_id -- getMachineByToken não some com ele', async () => {
+      // Antes do fix, o LEFT JOIN de getMachineByToken só aceitava
+      // 'pending'/'processing'. Um job 'failed' fazia pending_rekey_new_id
+      // voltar NULL, e o agente (já usando new_id desde o 201 da Fase A)
+      // tomava 403 pra sempre em /commands e /service-status -- sem
+      // alerta, sem recuperação automática (o agente só se re-registra em
+      // 401, nunca em 403). Incluir 'failed' no JOIN não resolve o re-key
+      // em si (fica mesmo pra investigação manual, ver o alerta em
+      // machineRekeyWorker.js), só estanca o sangramento.
+      const hostname = `REKEY-FAILED-${crypto.randomUUID().slice(0, 8)}`;
+      const oldId = trackMachine(crypto.randomUUID());
+      const { token } = await db.registerMachine({ machineId: oldId, hostname, agentVersion: '1.0' });
+
+      const newId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: newId, hostname, agentVersion: '2.0' });
+
+      // Simula o job já ter esgotado MAX_ATTEMPTS (mesmo estado final que
+      // _reclaimStuckJobs()/o catch de runCycleOnce() produzem) -- não
+      // precisa rodar o worker de verdade pra este teste, só o estado
+      // resultante na fila.
+      await db.getPool().query(
+        `UPDATE machine_rekey_queue SET status='failed', attempts=5 WHERE hostname=$1`, [hostname]
+      );
+
+      const machine = await db.getMachineByToken(token);
+      expect(machine.id).toBe(oldId); // machines.id nunca mudou -- o worker nunca completou
+      expect(machine.pending_rekey_new_id).toBe(newId); // continua resolvendo, mesmo com o job 'failed'
+    });
+
+    it('hostname em case diferente não cria 2 jobs ativos -- UNIQUE por UPPER(hostname) (Step 9/10 do brief, fix-wave pós-revisão)', async () => {
+      const base = `CaseTest-${crypto.randomUUID().slice(0, 8)}`;
+      const oldId = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: oldId, hostname: base, agentVersion: '1.0' });
+
+      const newId1 = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: newId1, hostname: base.toUpperCase(), agentVersion: '2.0' });
+
+      const newId2 = trackMachine(crypto.randomUUID());
+      await db.registerMachine({ machineId: newId2, hostname: base.toLowerCase(), agentVersion: '3.0' });
+
+      // A coluna `hostname` da fila nunca é reescrita depois do 1º INSERT
+      // (só `new_id` é atualizado -- ver _rekeyAndMergeMachine) -- por isso
+      // o UPPER() na query, não o valor exato de `base`.
+      const { rows } = await db.getPool().query(
+        'SELECT old_id, new_id, hostname, status FROM machine_rekey_queue WHERE UPPER(hostname) = UPPER($1)', [base]
+      );
+      expect(rows).toHaveLength(1); // nunca 2 jobs ativos, mesmo com hostname chegando em case diferente
+      expect(rows[0].status).toBe('pending');
+      expect(rows[0].old_id).toBe(oldId);
+      expect(rows[0].new_id).toBe(newId2); // o mais recente prevalece (newId1 nunca foi aplicado)
+
+      // Limpeza -- _claimNextJob(hostnameFilter) compara hostname exato
+      // (case-sensitive), e a coluna armazenada na fila é o case da 2ª
+      // chamada (base.toUpperCase(), que criou a linha -- linha 265-267
+      // acima), nunca o `base` original. Passar `base` aqui faria o filtro
+      // nunca achar a linha (🔴 achado ao vivo: "status atual: undefined").
+      await runWorkerUntilDone(base.toUpperCase());
     });
 
     it('2 chamadas concorrentes pro MESMO hostname (machineIds diferentes) não perdem nenhuma máquina/filho', async () => {
@@ -131,7 +415,7 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       const idA = trackMachine(crypto.randomUUID());
       const idB = trackMachine(crypto.randomUUID());
 
-      const [tokenA, tokenB] = await Promise.all([
+      const [resultA, resultB] = await Promise.all([
         db.registerMachine({ machineId: idA, hostname, agentVersion: 'A' }),
         db.registerMachine({ machineId: idB, hostname, agentVersion: 'B' }),
       ]);
@@ -139,7 +423,7 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       // As 2 chamadas devem ter concordado numa única máquina sobrevivente
       // com o MESMO token original -- nunca 2 máquinas "Temporário"
       // duplicadas nem a perda total do registro.
-      expect(tokenA).toBe(tokenB);
+      expect(resultA.token).toBe(resultB.token);
 
       const { rows } = await db.getPool().query(
         'SELECT id FROM machines WHERE UPPER(hostname) = UPPER($1)', [hostname]
@@ -148,14 +432,14 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       trackMachine(rows[0].id); // garante limpeza seja qual for o id sobrevivente
     });
 
-    it('caso 2b: re-key com duplicata -- apaga a duplicata e seus filhos (com e sem FK)', async () => {
+    it('caso 2b: re-key com duplicata -- Fase A não remove nada ainda, Fase B apaga a duplicata e seus filhos (com e sem FK)', async () => {
       const hostname = `REKEY-DUP-${crypto.randomUUID().slice(0, 8)}`;
       const canonicalId = trackMachine(crypto.randomUUID());
       await db.registerMachine({ machineId: canonicalId, hostname, agentVersion: '1.0' });
 
       // Simula uma 2ª máquina física/registro remanescente com o MESMO
       // hostname (cenário que o dedup existe pra limpar).
-      const dupId = crypto.randomUUID(); // não rastreado -- deve ser apagada pelo próprio registerMachine
+      const dupId = crypto.randomUUID(); // não rastreado -- deve ser apagada pela Fase B
       await db.getPool().query(
         `INSERT INTO machines (id, hostname, token, registered_at) VALUES ($1,$2,$3,$4)`,
         [dupId, hostname, crypto.randomUUID(), new Date().toISOString()]
@@ -167,6 +451,11 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
 
       const newId = trackMachine(crypto.randomUUID());
       await db.registerMachine({ machineId: newId, hostname, agentVersion: '3.0' });
+
+      // Fase A (Step 2.4 do brief) nunca remove duplicata -- isso é Fase B.
+      expect(await db.getMachineById(dupId)).toBeDefined();
+
+      await runWorkerUntilDone(hostname);
 
       expect(await db.getMachineById(dupId)).toBeUndefined();
       const { rows: dupMetrics } = await db.getPool().query('SELECT 1 FROM metrics WHERE machine_id=$1', [dupId]);
@@ -193,8 +482,15 @@ describeDb('db-pg (Grupo 7: registerMachine + dr_backups)', () => {
       const newId = trackMachine(crypto.randomUUID());
       await db.registerMachine({ machineId: newId, hostname, agentVersion: '4.0' });
 
+      // Fase A ainda não trocou machines.id -- é a MESMA linha física
+      // (realId) que vai sobreviver depois da Fase B, location intocado
+      // (Fase A nunca mexe nessa coluna).
+      expect((await db.getMachineById(realId)).location).toBe('Loja Real');
+
+      await runWorkerUntilDone(hostname); // Fase B -- também limpa tempDupId (dedup)
+
       const newMachine = await db.getMachineById(newId);
-      expect(newMachine.location).toBe('Loja Real'); // herdou do canonical real, não do Temporário
+      expect(newMachine.location).toBe('Loja Real'); // herdou do canonical real (mesma linha física), não do Temporário
     });
   });
 

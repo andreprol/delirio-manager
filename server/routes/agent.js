@@ -39,7 +39,15 @@ router.post('/register', asyncHandler(async (req, res) => {
   }
 
   try {
-    const token = await db.registerMachine({
+    // 🔴 ALTO 2 (revisão final de branch, 27/11/2026): registerMachine agora
+    // devolve { token, machineId } -- machineId aqui é o EFETIVO (quase
+    // sempre igual ao `machineId` do payload, mas diverge quando um job de
+    // re-key concorrente pro mesmo hostname já estava 'processing': nesse
+    // caso é o id que o worker vai de fato aplicar, nunca o que acabou de
+    // ser rejeitado). Responder sempre `req.body.machineId` aqui, ignorando
+    // esse retorno, fazia o agente adotar um id que nunca existiria em
+    // `machines` -- 403 pra sempre, sem alerta, sem recuperação automática.
+    const { token, machineId: effectiveMachineId } = await db.registerMachine({
       machineId,
       hostname,
       agentVersion: version || '',
@@ -47,6 +55,9 @@ router.post('/register', asyncHandler(async (req, res) => {
 
     console.log(`[Register] ${machineId} (${hostname}) registrado`);
 
+    // broadcast segue usando o machineId do payload de propósito -- é só
+    // notificação de UI (dashboard via websocket), não autorização; o
+    // agente nunca usa este evento pra decidir nada.
     broadcast('machine:update', {
       machineId,
       hostname,
@@ -54,7 +65,7 @@ router.post('/register', asyncHandler(async (req, res) => {
       agentVersion: version,
     });
 
-    return res.status(201).json({ token, machineId });
+    return res.status(201).json({ token, machineId: effectiveMachineId });
   } catch (err) {
     console.error('[Register] Erro:', err.message);
     return res.status(500).json({ error: 'Erro interno' });
@@ -326,7 +337,11 @@ router.post('/offline-event', agentAuth, asyncHandler(async (req, res) => {
 router.get('/commands/:machineId', agentAuthNoLimit, asyncHandler(async (req, res) => {
   const machine = req.machine;
 
-  if (machine.id !== req.params.machineId) {
+  // machine.id ainda pode ser o UUID ANTIGO enquanto a Fase B do re-key
+  // assíncrono (Task 4, machineRekeyWorker.js) não comitou machines.id --
+  // o agente já usa o novo UUID (pending_rekey_new_id) desde que
+  // registerMachine respondeu 201, sem esperar o worker.
+  if (machine.id !== req.params.machineId && machine.pending_rekey_new_id !== req.params.machineId) {
     return res.status(403).json({ error: 'Token nao corresponde ao machineId' });
   }
 
@@ -492,7 +507,12 @@ async function _upsertServiceEntries(machineId, services) {
 // Usa agentAuthNoLimit para evitar conflito com o rate-limit de 5s do heartbeat.
 router.post('/machines/:id/service-status', agentAuthNoLimit, asyncHandler(async (req, res) => {
   const { id } = req.params;
-  if (req.machine.id !== id) return res.status(403).json({ error: 'Token não corresponde ao machineId' });
+  // Mesmo ruling de /commands/:machineId acima -- aceita o new_id pendente
+  // de re-key (Task 4) enquanto a Fase B não comitou machines.id, só pra
+  // fins de AUTORIZAÇÃO.
+  if (req.machine.id !== id && req.machine.pending_rekey_new_id !== id) {
+    return res.status(403).json({ error: 'Token não corresponde ao machineId' });
+  }
 
   const { services } = req.body;
   if (!Array.isArray(services) || services.length === 0) {
@@ -500,7 +520,11 @@ router.post('/machines/:id/service-status', agentAuthNoLimit, asyncHandler(async
   }
 
   try {
-    const written = await _upsertServiceEntries(id, services);
+    // 🔴 Achado do revisor (fix-wave pós-revisão da Task 4): grava sempre
+    // com `req.machine.id` (o id que de fato existe em `machines` nesse
+    // momento), nunca com `id` (o id do payload/params) -- mesmo quando
+    // `id` bateu com `pending_rekey_new_id` só pra autorizar a request.
+    const written = await _upsertServiceEntries(req.machine.id, services);
     if (written === 0) return res.status(400).json({ error: 'Nenhuma entrada válida em services' });
     return res.json({ ok: true });
   } catch (err) {
