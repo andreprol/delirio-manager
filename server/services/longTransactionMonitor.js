@@ -22,7 +22,18 @@ const POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 min
 // THRESHOLD_MINUTES: bem acima de qualquer query/transação normal do sistema
 // (que leva segundos) -- alerta cedo, antes de virar outage. O incidente
 // original levou de 1 a 71+ minutos até alguém notar.
-const THRESHOLD_MINUTES = 5;
+//
+// 🔴 Baixado de 5 pra 2 (revisão final de branch, 27/11/2026, MÉDIO 1): a
+// Task 5 desta mesma branch já aplicou `statement_timeout = 180000` (3min)
+// em produção (ver server/.env.postgres.example) -- o próprio Postgres mata
+// qualquer transação de UMA instrução que passe de 3min. Com threshold=5,
+// este monitor nunca chegava a VER essas transações: o statement_timeout já
+// tinha matado a conexão antes do próximo poll (POLL_INTERVAL_MS=2min). O
+// objetivo é pegar a transação ENQUANTO ainda está rodando, antes do
+// Postgres cortar -- 2min fica abaixo do timeout de 3min com alguma margem
+// pro próprio intervalo de poll, mesmo que isso signifique falsos negativos
+// ocasionais pra transações que começam e terminam entre um poll e outro.
+const THRESHOLD_MINUTES = 2;
 
 // ALERT_COOLDOWN_MS: mesma janela do rhHealthMonitor -- evita espamar um
 // e-mail a cada 2 minutos enquanto a mesma transação continuar travada.
