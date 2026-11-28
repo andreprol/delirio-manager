@@ -107,7 +107,7 @@ async function _alertJobFailed(jobId, hostname) {
   await sendAlert({
     source:      'MachineRekeyWorker',
     stage:       'Job de re-key falhou definitivamente',
-    detail:      `Job de re-key pra hostname "${hostname}" (id ${jobId}) esgotou ${MAX_ATTEMPTS} tentativas e foi marcado 'failed'. A máquina continua "online" no dashboard mas NÃO recebe comandos (403 silencioso) até alguém investigar manualmente machine_rekey_queue e, se for o caso, resetar o job pra 'pending' (UPDATE machine_rekey_queue SET status='pending', attempts=0 WHERE id=${jobId}).`,
+    detail:      `Job de re-key pra hostname "${hostname}" (id ${jobId}) esgotou ${MAX_ATTEMPTS} tentativas e foi marcado 'failed'. A máquina continua recebendo comandos normalmente (via o UUID antigo, pending_rekey_new_id ainda resolve -- ver ALTO 1b), mas o re-key NÃO vai terminar sozinho: machines.id nunca vai virar o UUID novo até alguém investigar manualmente machine_rekey_queue e, se for o caso, resetar o job pra 'pending' (UPDATE machine_rekey_queue SET status='pending', attempts=0 WHERE id=${jobId}).`,
     cooldownKey: `rekey:failed:${hostname}`,
     cooldownMs:  ALERT_COOLDOWN_MS,
   }).catch(e => logger.error('[MachineRekeyWorker] falha ao enviar alerta de job failed', {
